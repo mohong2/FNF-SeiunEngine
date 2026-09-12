@@ -49,3 +49,22 @@ jobs:
           path: export/release/linux/bin
           if-no-files-found: error
           retention-days: 14
+
+      - name: Check crash symbols
+        id: symbols
+        shell: bash
+        run: |
+          if [ -d export/release/linux/symbols ] && [ -n "$(ls -A export/release/linux/symbols)" ]; then
+            echo "present=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=0" >> "$GITHUB_OUTPUT"
+            echo "::warning::crash symbols missing for linux"
+          fi
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: steps.symbols.outputs.present == '1'
+        with:
+          name: SeiunEngine-linux-x64-symbols
+          path: export/release/linux/symbols
+          if-no-files-found: error
+          retention-days: 90

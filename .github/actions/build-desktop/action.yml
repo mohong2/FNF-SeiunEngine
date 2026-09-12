@@ -138,6 +138,86 @@ runs:
       shell: bash
       run: ${{ inputs.build }}
 
+    - name: Collect crash symbols
+      shell: bash
+      # Official builds keep HXCPP_DEBUG_LINK off (it would bloat the exe by
+      # writing debug directory data into the image), so the shipped binary has
+      # no CodeView (RSDS) record and dbghelp cannot pair it with a PDB.
+      # The linker .map file is unaffected by that: it maps every function's exact
+      # RVA, so a crash report's "Fault offset" resolves offline. Ship it as its
+      # own artifact - never inside the game package.
+      run: |
+        set -euo pipefail
+        TARGET="${{ inputs.target }}"
+        case "$TARGET" in
+          windows) OUT="export/release/windows" ;;
+          linux)   OUT="export/release/linux" ;;
+          *)       OUT="export/release/macos" ;;
+        esac
+
+        mkdir -p "$OUT/symbols"
+        found=0
+        # Only the .map: with HXCPP_DEBUG_LINK off the linker never runs /DEBUG,
+        # so no PDB is regenerated and whatever .pdb sits in obj/ belongs to some
+        # older build. Shipping it would actively mislead - resolve against the map.
+        for f in "$OUT"/obj/ApplicationMain.map; do
+          if [ -e "$f" ]; then
+            cp -R "$f" "$OUT/symbols/"
+            found=1
+            echo "collected: $f"
+          fi
+        done
+
+        if [ "$found" -eq 0 ]; then
+          echo "::warning::No symbol files found for $TARGET - crash reports will not be symbolizable"
+          exit 0
+        fi
+
+        # Shim so `python tools/mapresolve.py <map> <offset>` works with the
+        # published layout (the CI collector is named after the target).
+        if [ -f "$OUT/symbols/ApplicationMain.map" ]; then
+          cat > "$OUT/symbols/README.txt" <<'EOF'
+        SeiunEngine crash symbol files
+        ==============================
+
+        These files map a crash report's "Fault offset" back to a real function.
+
+        How to use
+        ----------
+        1. Get crash/native_crash_*.txt from the affected user.
+        2. Confirm the report is from THIS build: its "Main module stamp:
+           TimeDateStamp=0x..." line must match the TimeDateStamp of the exe these
+           symbols were produced with. Symbols only resolve against their own build.
+        3. Resolve the offsets (the report may contain several, from the backtrace):
+
+             python tools/mapresolve.py ApplicationMain.map 0x1340289 0x133429A
+
+           or point it straight at a crash directory:
+
+             python tools/mapresolve.py --crash-dir <crash dir> ApplicationMain.map
+
+        4. Read the nearest preceding function and the +0x offset. Frames whose
+           offset is implausibly large (hundreds of KB) are not reliable: release
+           builds do not list every function in the map.
+
+        Note: ignore the inline "<name>+0x..." frames printed inside the crash
+        report itself. Without HXCPP_DEBUG_LINK those fall back to export-table
+        guesses and are usually wrong; the report's own "Symbols:" line says so
+        (SymType=0 SymNone). Only the Fault offset is trustworthy.
+
+        A real .pdb is intentionally NOT shipped: with HXCPP_DEBUG_LINK off the
+        linker never runs /DEBUG, so no PDB is regenerated for a release build.
+        If you need function-name + file:line backtraces directly inside the crash
+        report, build a dedicated debugging binary with HXCPP_DEBUG_LINK enabled -
+        it grows the Windows exe from ~29.6 MB to ~47.1 MB, which is why official
+        releases do not do it.
+        EOF
+          echo "wrote $OUT/symbols/README.txt"
+        fi
+
+        du -sh "$OUT/symbols" || true
+        ls -la "$OUT/symbols"
+
     - name: Ad-hoc codesign macOS app
       if: startsWith(inputs.target, 'macos')
       shell: bash

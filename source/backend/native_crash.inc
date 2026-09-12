@@ -175,6 +175,7 @@ static char seiun_dir[512];          // absolute crash dir with trailing slash, 
 static char seiun_app_info[256];     // "SeiunEngine <version> (<platform>)"
 static char seiun_ctx_line[512];     // "state=... | song=... | glErr=..."
 static char seiun_recent_logs[12288]; // TraceManager tail
+static char seiun_build_info[256];    // "built=... | exe=... | map=..." (Haxe-fed)
 
 void seiun_set_crash_dir(const char* dir)
 {
@@ -209,6 +210,23 @@ void seiun_set_recent_logs(const char* logs)
 	if (l >= sizeof(seiun_recent_logs)) l = sizeof(seiun_recent_logs) - 1;
 	memcpy(seiun_recent_logs, logs, l);
 	seiun_recent_logs[l] = 0;
+}
+
+/**
+ * Build fingerprint fed from Haxe (exe/PDB paths + mtimes + hashes).
+ *
+ * A crash log is only useful if it can be tied to the exact build that produced
+ * it: the offsets in the report must be resolved against the PDB that matches
+ * that exe. Reports used to carry no build identity at all, so a log could
+ * silently predate several relinks and be symbolized against the wrong PDB.
+ */
+void seiun_set_build_info(const char* info)
+{
+	if (info == NULL) return;
+	size_t l = strlen(info);
+	if (l >= sizeof(seiun_build_info)) l = sizeof(seiun_build_info) - 1;
+	memcpy(seiun_build_info, info, l);
+	seiun_build_info[l] = 0;
 }
 
 // CPU ABI of the running build (compile-time constant, NOT the device's
@@ -872,6 +890,7 @@ typedef BOOL (WINAPI *SeiunSymFromAddrFn)(HANDLE, DWORD64, PDWORD64, PSYMBOL_INF
 typedef BOOL (WINAPI *SeiunSymGetLineFromAddr64Fn)(HANDLE, DWORD64, PDWORD, PIMAGEHLP_LINE64);
 typedef DWORD (WINAPI *SeiunSymSetOptionsFn)(DWORD);
 typedef unsigned short (WINAPI *SeiunCaptureStackBackTraceFn)(unsigned long, unsigned long, void**, unsigned long*);
+typedef BOOL (WINAPI *SeiunSymGetModuleInfo64Fn)(HANDLE, DWORD64, PIMAGEHLP_MODULE64);
 
 static struct
 {
@@ -882,6 +901,9 @@ static struct
 	SeiunSymFromAddrFn symFromAddr;
 	SeiunSymGetLineFromAddr64Fn symGetLineFromAddr64;
 	SeiunCaptureStackBackTraceFn captureBacktrace;
+	/* Deliberately NOT named like the dbghelp.h symbol: this TU must resolve it
+	   through GetProcAddress only, never through dbghelp.lib. */
+	SeiunSymGetModuleInfo64Fn seiun_symModuleInfo;
 	int ready; // StackWalk64/SymFromAddr usable (SymInitialize succeeded)
 } seiun_dbghelp;
 
@@ -904,6 +926,7 @@ static void seiun_dbghelp_init(void)
 	seiun_dbghelp.getModuleBase64 = gmb;
 	seiun_dbghelp.symFromAddr = (SeiunSymFromAddrFn)GetProcAddress(lib, "SymFromAddr");
 	seiun_dbghelp.symGetLineFromAddr64 = (SeiunSymGetLineFromAddr64Fn)GetProcAddress(lib, "SymGetLineFromAddr64");
+	seiun_dbghelp.seiun_symModuleInfo = (SeiunSymGetModuleInfo64Fn)GetProcAddress(lib, "SymGetModuleInfo64");
 	{
 		HMODULE ntdll = GetModuleHandleA("ntdll.dll");
 		if (ntdll != NULL)
@@ -984,6 +1007,120 @@ static void seiun_annotate_address(char* dst, size_t cap, DWORD64 pc)
 				}
 			}
 		}
+	}
+}
+
+// ── build identity (makes a crash log resolvable against a specific PDB) ─────
+
+/**
+ * PE TimeDateStamp + SizeOfImage of the running main module, read straight from
+ * its mapped headers (cheap: no file IO, no heap).
+ */
+static int seiun_module_build_stamp(HMODULE mod, unsigned long* outStamp, unsigned long* outSize)
+{
+	if (mod == NULL || outStamp == NULL || outSize == NULL)
+		return 0;
+	const unsigned char* base = (const unsigned char*)mod;
+	__try
+	{
+		if (base[0] != 'M' || base[1] != 'Z')
+			return 0;
+		long e_lfanew = *(const long*)(base + 0x3C);
+		if (e_lfanew <= 0 || e_lfanew > 0x1000)
+			return 0;
+		const unsigned char* pe = base + e_lfanew;
+		if (pe[0] != 'P' || pe[1] != 'E' || pe[2] != 0 || pe[3] != 0)
+			return 0;
+		*outStamp = *(const unsigned long*)(pe + 8);       // COFF TimeDateStamp
+		if (*(const unsigned short*)(pe + 24) != 0x20B)    // PE32+ only
+			return 0;
+		*outSize = *(const unsigned long*)(pe + 24 + 56);  // SizeOfImage
+		return 1;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+		return 0;
+	}
+}
+
+/**
+ * Records which binary is running and whether dbghelp actually managed to pair
+ * it with a symbol file.
+ *
+ * SymType is the verdict that matters: SymNone (0) means no PDB was matched, so
+ * every "<name>+0x..." later in this report is an export-table guess and must
+ * not be trusted. SymPdb (3) means real function names and file:line.
+ */
+static void seiun_append_build_identity(char* buf, size_t cap, int* len)
+{
+	char exePath[MAX_PATH];
+	exePath[0] = 0;
+	HMODULE exeMod = GetModuleHandleA(NULL);
+	GetModuleFileNameA(exeMod, exePath, (DWORD)sizeof(exePath));
+
+	unsigned long stamp = 0, imgSize = 0;
+	int haveStamp = seiun_module_build_stamp(exeMod, &stamp, &imgSize);
+
+	if (seiun_build_info[0])
+		seiun_append(buf, cap, len, "Build: %s\n", seiun_build_info);
+	seiun_append(buf, cap, len, "Main module: %s\n", exePath[0] ? exePath : "?");
+	if (haveStamp)
+		seiun_append(buf, cap, len,
+			"Main module stamp: TimeDateStamp=0x%08lX (%lu) SizeOfImage=0x%lX\n",
+			stamp, stamp, imgSize);
+
+	// Conventional PDB name: the toolchain pairs "<image name>.pdb".
+	char pdbPath[MAX_PATH];
+	pdbPath[0] = 0;
+	if (exePath[0])
+	{
+		size_t l = strlen(exePath);
+		if (l + 5 < sizeof(pdbPath))
+		{
+			memcpy(pdbPath, exePath, l + 1);
+			char* dot = NULL;
+			for (char* p = pdbPath; *p; ++p)
+				if (*p == '.') dot = p;
+			if (dot != NULL && dot > pdbPath)
+				*dot = 0;
+			strcat(pdbPath, ".pdb");
+		}
+	}
+	if (pdbPath[0])
+	{
+		HANDLE h = CreateFileA(pdbPath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+			OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+		if (h == INVALID_HANDLE_VALUE)
+			seiun_append(buf, cap, len, "Matching PDB: %s (MISSING - frames cannot be resolved)\n", pdbPath);
+		else
+		{
+			LARGE_INTEGER sz;
+			sz.QuadPart = 0;
+			GetFileSizeEx(h, &sz);
+			CloseHandle(h);
+			seiun_append(buf, cap, len, "Matching PDB: %s (%lld bytes)\n", pdbPath, (long long)sz.QuadPart);
+		}
+	}
+
+	if (!seiun_dbghelp.ready)
+		seiun_append(buf, cap, len, "Symbols: dbghelp unavailable - frames are raw offsets\n");
+	else if (seiun_dbghelp.seiun_symModuleInfo != NULL)
+	{
+		IMAGEHLP_MODULE64 mi;
+		memset(&mi, 0, sizeof(mi));
+		mi.SizeOfStruct = sizeof(IMAGEHLP_MODULE64);
+		if (seiun_dbghelp.seiun_symModuleInfo(GetCurrentProcess(), (DWORD64)(ULONG_PTR)exeMod, &mi))
+			seiun_append(buf, cap, len,
+				"Symbols: SymType=%d %s | PdbAge=%lu | PdbSig=%08lX%04lX%04lX | LoadedPdb=%s\n",
+				(int)mi.SymType,
+				mi.SymType == 0 ? "(SymNone - REPORT UNRELIABLE, PDB not matched)" :
+				mi.SymType == 3 ? "(SymPdb - function names and file:line are real)" : "(partial)",
+				(unsigned long)mi.PdbAge,
+				(unsigned long)mi.PdbSig70.Data1, (unsigned long)mi.PdbSig70.Data2,
+				(unsigned long)mi.PdbSig70.Data3,
+				mi.LoadedPdbName[0] ? mi.LoadedPdbName : "(none)");
+		else
+			seiun_append(buf, cap, len, "Symbols: SymGetModuleInfo64 failed (err %lu)\n", GetLastError());
 	}
 }
 
@@ -1149,6 +1286,15 @@ static LONG WINAPI seiun_seh_handler(EXCEPTION_POINTERS* info)
 	}
 	seiun_append_engine_context(body, cap, &len);
 
+	// Build identity in phase 1: if the symbol work below faults, the report
+	// still says which exe/PDB pair produced these offsets.
+	// dbghelp is initialized first so the Symbols: line reflects whether the PDB
+	// actually matched (SymType == SymNone means every "<name>+0x..." below is an
+	// export-table guess and must not be trusted).
+	seiun_dbghelp_init();
+	seiun_append_build_identity(body, cap, &len);
+	seiun_append(body, cap, &len, "\n");
+
 	// Phase 1 on disk: registers/exception info land even if dbghelp itself
 	// dies inside a corrupted heap while resolving symbols below.
 	seiun_write_crash_file(body);
@@ -1157,7 +1303,6 @@ static LONG WINAPI seiun_seh_handler(EXCEPTION_POINTERS* info)
 	seiun_native_crash_popup(seiun_crash_file());
 
 	// Phase 2: backtrace + stack scan appended, file overwritten in place.
-	seiun_dbghelp_init();
 	len += seiun_write_stackwalk(body + len, cap - (size_t)len, info->ContextRecord);
 #if defined(_M_X64) || defined(__x86_64__)
 	if (info->ContextRecord != NULL)
@@ -1183,6 +1328,8 @@ static void __cdecl seiun_sigabrt_handler(int sig)
 	int len = 0;
 	seiun_append(body, cap, &len, "Native crash (abort()/terminate path - SIGABRT; CRT assert, pure virtual call, etc.)\n");
 	seiun_append_engine_context(body, cap, &len);
+	seiun_append_build_identity(body, cap, &len);
+	seiun_append(body, cap, &len, "\n");
 	len += seiun_write_live_backtrace(body + len, cap - (size_t)len);
 	seiun_write_crash_file(body);
 	seiun_native_crash_popup(seiun_crash_file());
@@ -1300,3 +1447,4 @@ static void seiun_install_native_crash_hooks()
 	sigaction(SIGILL, &sa, NULL);
 #endif
 }
+

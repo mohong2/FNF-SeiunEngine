@@ -2,7 +2,7 @@
 <project>
 	<!-- _________________________ Application Settings _________________________ -->
 
-	<app title="SeiunEngine" file="SeiunEngine" packageName="com.mohong.Seiunengine" package="com.mohong.Seiunengine" main="Main" version="0.2.1hotfix" company="Mohong"/>
+	<app title="SeiunEngine" file="SeiunEngine" packageName="com.mohong.Seiunengine" package="com.mohong.Seiunengine" main="Main" version="0.2.2" company="Mohong"/>
 
 	<!--Switch Export with Unique ApplicationID and Icon-->
 	<set name="APP_ID" value="0x0100f6c013bbc000" />
@@ -206,10 +206,20 @@
 	<!--Make's-the-Game-use-less-ram-->
 	<haxedef name="HXCPP_GC_BIG_BLOCKS" />
 
-	<!--Emit full debug info (PDB next to the exe) even in release builds, so the
-	native crash handler in backend/native_crash.inc can symbolize stack frames.
-	Removable if binary size matters; cost is build time and a large .pdb file.
-	<haxedef name="HXCPP_DEBUG_LINK" />-->
+	<!--Crash-symbol support for release builds.
+	HXCPP_MAP_FILE emits a plain-text .map symbol table (exe is unchanged, no
+	size cost). It is the ONLY switch left on here on purpose: it keeps every
+	crash report resolvable to a real function name + file:line offline.
+	HXCPP_DEBUG_LINK is deliberately OFF because it passes /DEBUG to the linker,
+	which makes MSVC write debug directory data into the image - the release exe
+	grows from ~29.6 MB to ~47.1 MB. Keep it OFF for official builds.
+	When HXCPP_DEBUG_LINK is off the exe has no CodeView (RSDS) record, so
+	dbghelp CANNOT auto-pair it with a PDB - the report's "Symbols:" line will say
+	SymNone and its inline "<name>+0x..." frames must be ignored. Resolve the
+	report's "Fault offset" against ApplicationMain.map instead (see
+	docs/CRASH_ROOTCAUSE_20260912.md). Turn HXCPP_DEBUG_LINK back on only for a
+	dedicated debugging build where exe size does not matter.-->
+	<haxedef name="HXCPP_MAP_FILE" value="ApplicationMain.map" />
 	<haxedef name="HXCPP_CPP11" if="cpp" />
 	<haxedef name="HXCPP_GC_GENERATIONAL" if="cpp" />
 	<haxedef name="HXCPP_ALIGN_ALLOC" if="cpp" /> 

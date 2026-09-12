@@ -191,6 +191,9 @@ class Main extends Sprite
 		try { appVersion = Lib.application.meta.get('version'); } catch (e:Dynamic) {}
 		if (appVersion == null || appVersion.length == 0) appVersion = '?';
 		NativeCrash.setAppInfo('SeiunEngine ' + appVersion);
+		// Tie every crash report to the exact exe/PDB pair, so offsets can never be
+		// resolved against a stale symbol file again.
+		NativeCrash.setBuildInfo();
 		#end
 		#if android
 		NativeCrash.loadLinemap(SUtil.getStorageDirectory());

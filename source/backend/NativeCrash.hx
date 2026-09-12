@@ -8,6 +8,7 @@ import mohong.TraceManager;
 #if sys
 import sys.FileSystem;
 import sys.io.File;
+import sys.io.FileSeek;
 #end
 
 /**
@@ -83,6 +84,79 @@ class NativeCrash
 		if (info == null || info.length == 0) return;
 		try { untyped __cpp__('::seiun_set_app_info({0}.__CStr())', info); } catch (e:Dynamic) {}
 		#end
+	}
+
+	/**
+	 * Build fingerprint, written into every native crash report.
+	 *
+	 * A report is only resolvable if it can be tied to the exe/PDB pair that
+	 * produced it: the "Fault offset" values only mean something relative to one
+	 * specific link. Reports used to carry no build identity, so a log could
+	 * silently outlive several relinks and end up symbolized against the wrong
+	 * PDB (which yields plausible-looking but completely wrong function names).
+	 *
+	 * Records exe and PDB size + mtime, plus a cheap content hash so two builds
+	 * that differ only in a rebuild timestamp are still distinguishable.
+	 */
+	public static function setBuildInfo():Void
+	{
+		#if (cpp && sys)
+		try
+		{
+			var parts:Array<String> = [];
+
+			for (name in ['SeiunEngine.exe', 'ApplicationMain.exe', 'MohongEngine.exe'])
+			{
+				if (!FileSystem.exists(name)) continue;
+				var st = FileSystem.stat(name);
+				parts.push(name + '=' + st.size + 'B@' + Std.string(Std.int(st.mtime.getTime() / 1000)) + 's#' + fnv1aFile(name));
+				break;
+			}
+
+			for (name in ['SeiunEngine.pdb', 'ApplicationMain.pdb', 'ApplicationMain.map'])
+			{
+				if (!FileSystem.exists(name)) continue;
+				var st = FileSystem.stat(name);
+				parts.push(name + '=' + st.size + 'B@' + Std.string(Std.int(st.mtime.getTime() / 1000)) + 's');
+			}
+
+			if (parts.length == 0) return;
+			untyped __cpp__('::seiun_set_build_info({0}.__CStr())', parts.join(' | '));
+		}
+		catch (e:Dynamic) {}
+		#end
+	}
+
+	/** FNV-1a over the first/last 64KB of a file: cheap, stable build discriminator. */
+	static function fnv1aFile(path:String):String
+	{
+		try
+		{
+			var input = sys.io.File.read(path, true);
+			var h:Int = 0x811C9DC5;
+			var chunk:Int = 65536;
+			for (round in 0...2)
+			{
+				if (round == 1)
+				{
+					var size = FileSystem.stat(path).size;
+					if (size <= chunk * 2) break;
+					input.seek(size - chunk, SeekBegin);
+				}
+				var bytes = input.read(chunk);
+				for (i in 0...bytes.length)
+				{
+					h ^= bytes.get(i);
+					h = (h * 0x01000193) & 0xFFFFFFFF;
+				}
+			}
+			input.close();
+			return StringTools.hex(h, 8);
+		}
+		catch (e:Dynamic)
+		{
+			return '?';
+		}
 	}
 
 	/**

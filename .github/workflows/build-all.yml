@@ -106,10 +106,22 @@ jobs:
           set -euo pipefail
           rm -rf dist
           mkdir -p dist
+          mkdir -p dist/crash-symbols
           cd release
           for d in */; do
             d="${d%/}"
             [ -d "$d" ] || continue
+
+            # Crash symbol artifacts are published as downloadable files next to
+            # the game builds, never inside them: the .map is tens of MB and only
+            # developers triaging a bug report need it.
+            case "$d" in
+              *-symbols)
+                zip -r "../dist/crash-symbols/${d}.zip" "$d"
+                continue
+                ;;
+            esac
+
             mobile=0
             for f in "$d"/*.apk "$d"/*.ipa; do
               if [ -f "$f" ]; then
@@ -123,11 +135,15 @@ jobs:
           done
           cd ../dist
           shopt -s nullglob
+          if [ -z "$(ls -A crash-symbols 2>/dev/null)" ]; then
+            rmdir crash-symbols 2>/dev/null || true
+          fi
           files=(*.apk *.ipa *.zip)
           if [ "${#files[@]}" -gt 0 ]; then
             sha256sum "${files[@]}" > SHA256SUMS.txt
           fi
           ls -la
+          ls -la crash-symbols 2>/dev/null || true
 
       - name: Prepare release body
         env:
@@ -165,6 +181,20 @@ jobs:
           - macOS arm64 (experimental)
           - Android (APK, armv7 + arm64)
           - iOS Device (IPA)
+
+          ### Crash debugging symbols
+
+          Official builds ship deliberately **without** full debug info (it would
+          grow the Windows exe from ~29.6 MB to ~47.1 MB), so the inline frames in a
+          crash report are export-table guesses and must be ignored. The
+          `crash-symbols/` files resolve a report's `Fault offset` to a real function.
+          Download the one matching the build the report came from:
+
+          - `SeiunEngine-windows-x64-symbols.zip`
+          - `SeiunEngine-linux-x64-symbols.zip`
+          - `SeiunEngine-mac-x64-symbols.zip` / `SeiunEngine-mac-arm64-symbols.zip`
+
+          Then: `python tools/mapresolve.py ApplicationMain.map <fault offset>`
 
           Checksums are included in `SHA256SUMS.txt`.
           EOF

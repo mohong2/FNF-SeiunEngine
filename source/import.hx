@@ -27,6 +27,9 @@ import states.PlayState;
 import states.LoadingState;
 import states.TitleState;
 import backend.MusicBeatSubstate;
+#if (seiun_lua_perf && LUA_ALLOWED)
+import backend.LuaPerf;
+#end
 #if HSCRIPT_ALLOWED
 import script.hscript.*;
 #end

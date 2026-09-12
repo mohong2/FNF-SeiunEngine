@@ -51,8 +51,6 @@ import EKData.Keybinds;
 import flixel.input.keyboard.FlxKey;
 import Note.EventNote;
 import Note.PreloadedChartNote;
-import TurboDensity.TurboDensityZone;
-import TurboDensity.TurboDensityData;
 import TurboDensity;
 import openfl.events.KeyboardEvent;
 import flixel.effects.particles.FlxEmitter;
@@ -109,6 +107,20 @@ import states.stages.MallEvilStage;
 import states.stages.SchoolStage;
 import states.stages.SchoolEvilStage;
 import states.stages.TankStage;
+
+/**
+ * 一趟数据层批量结算的累加器。
+ * 同一个对象在一帧内被 fastSkipPastNotes 与物化路径共用, 帧末一次性交给
+ * finishBulkFrame 做聚合表现 (避免逐条触发 popUpScore/RecalculateRating)。
+ */
+typedef BulkAccumulator = {
+	var drainedHit:Int;
+	var skippedHit:Int;
+	var skippedHitHealth:Float;
+	var skippedMiss:Int;
+	var skippedMissHealth:Float;
+	var oppDrained:Int;
+}
 
 @:allow(Replay)
 class PlayState extends MusicBeatState
@@ -327,31 +339,55 @@ class PlayState extends MusicBeatState
 	private var _mobilePressTimes:Array<Float> = [];
 	/** Same-frame mobile release queue: preserve press→release order when a fast tap down+up lands in one frame. */
 	private var _mobileReleaseQueue:Array<Int> = [];
-	/** 可视物化地平线 (ms): 超出剔除距离的音符物化后必然被驻留/数据层结算, 不值得构造。 */
-	var _visHorizonMs:Float = 2000;
+	/**
+	 * 可视物化地平线 (ms): 超出该时长的音符从物化到被离屏剔除之间根本不会进入屏幕,
+	 * 构造精灵纯属浪费。由 refreshNoteCullRanges() 按真实屏幕几何 + 当前流速推导。
+	 *
+	 * 初值刻意取小: 倒计时开始前 refreshNoteCullRanges 还没跑过, 若沿用 2000ms,
+	 * 低流速谱面第一帧就会按整整 2 秒的窗口把成千上万条 Note 全部物化。
+	 */
+	var _visHorizonMs:Float = 250;
 	/** 上一次数据级批量推进消费的条目数 —— 引擎"是否跟不上到达速率"的过载信号。 */
 	var _bulkDrainedLast:Int = 0;
 	/** 过载状态滞回计数: drain 显著非零时置满, 之后逐帧衰减 —— 防止模式来回抖动。 */
 	var _overloadFrames:Int = 0;
 
-	// ── Turbo 模式: 高密度聚合 / 侧车缓存 / 视觉流 ──
+	// ── Turbo 模式: 屏幕像素级谱面合并 ──
 	/** Turbo 总开关是否在本局生效。 */
 	public var turboModeActive:Bool = false;
 	/** 进入歌曲前保存的 perfMode/bulkSkip/fastSort, 退出时恢复 (Turbo 不持久篡改用户设置)。 */
 	private var _turboPrevPerf:Bool = false;
 	private var _turboPrevBulk:Bool = false;
 	private var _turboPrevFastSort:Bool = false;
-	/** 高密度聚合区间 (unspawnNotes 下标区间, 不含长条)。 */
-	private var turboZones:Array<TurboDensityZone> = [];
-	/** 当前聚合区游标。 */
-	private var turboZoneCursor:Int = 0;
-	/** 聚合阈值: 每秒 Note 数超过该值就进入高密度聚合区。 */
-	static inline var TURBO_AGGREGATE_NPS:Float = 4000;
+	/**
+	 * Turbo 预处理把"屏幕上分不开"的 tap 折叠成代表 Note, 每条代表携带折叠数量
+	 * (noteDensity)。同时存活精灵数因此只由流速与屏幕几何决定, 与谱面密度无关。
+	 */
+	/** 本局参与合并的 tap 条数 (未折叠前), 日志/诊断用。 */
+	private var _turboRawTapCount:Int = 0;
 	/** 每轨 cos/sin 缓存: 万级音符逐帧 trig → 每轨每帧一次 (方向本就按轨道常量)。 */
 	var _playerLaneCos:Array<Float> = [];
 	var _playerLaneSin:Array<Float> = [];
 	var _oppLaneCos:Array<Float> = [];
 	var _oppLaneSin:Array<Float> = [];
+	/**
+	 * 运行时像素级归属闸门状态 (每条 lane+side 一组) + 共享的数据层结算累加器。
+	 *
+	 * 加载期折叠已经按"屏幕像素间距"把重叠的 tap 收进代表 Note; 运行时闸门是第二道:
+	 * 若运行中 songSpeed 被事件/缓动改写, 折叠结果与当前流速不再匹配时仍然有界。
+	 */
+	static inline var TURBO_KEEP_GAP_PX:Float = 4.0;
+	private var _laneLastKeptTime:Array<Float> = [];
+	private var _laneLastKeptRate:Array<Float> = [];
+	private var _laneLastKeptSlow:Array<Float> = [];
+	private var _bulkAcc:BulkAccumulator = {
+		drainedHit: 0,
+		skippedHit: 0,
+		skippedHitHealth: 0,
+		skippedMiss: 0,
+		skippedMissHealth: 0,
+		oppDrained: 0
+	};
 
 	public var limitNC:Int = 0;
 	/** True if the loaded chart contains holds/sustains. Fast bulk-skip is disabled for such charts to avoid orphan sustain tails. */
@@ -3672,8 +3708,18 @@ class PlayState extends MusicBeatState
 		lastChartNoteTime = 0;
 		if (preloadedNotes.length > 0 && preloadedNotes[preloadedNotes.length - 1] != null)
 			lastChartNoteTime = preloadedNotes[preloadedNotes.length - 1].strumTime;
+
+		// Turbo: 按"屏幕像素间距"折叠 tap —— 低流速下屏幕可视频段会被拉长到数秒,
+		// 几千万 Note 的谱面在这个窗口里能塞进六位数条 Note; 其中绝大多数在屏幕上
+		// 完全重叠 (同一轨道同向, 间距不足几个像素), 全部物化纯粹是浪费。
+		// 折叠后同时存活精灵数只由"流速 × 屏幕几何 × 轨道数"决定, 与谱面密度无关。
+		// 这一步是纯数据变换: 不改写入参对象, 不落盘, 重复调用结果一致。
+		_turboRawTapCount = 0;
 		if (turboModeActive)
-			preloadedNotes = TurboDensity.collapseGhostNotes(preloadedNotes, Note.ammo[mania], 1.0);
+		{
+			_turboRawTapCount = preloadedNotes.length;
+			preloadedNotes = TurboDensity.collapseGhostNotes(preloadedNotes, Note.ammo[mania], 1.0, songSpeed, mania);
+		}
 
 		// 轻量谱面数据：不再提前物化成 Note 对象。
 		// Note 只在进入生成窗口时由 spawn 循环物化，峰值内存 = 同时存活 Note，而不是整张谱面。
@@ -3689,9 +3735,12 @@ class PlayState extends MusicBeatState
 			}
 		}
 
-		// Turbo: 载入或生成高密度聚合区间 (不改谱面文件, 只读数据 + 可写引擎根目录侧车缓存)。
 		if (turboModeActive)
-			initTurboDensity(dataPath, songName);
+		{
+			trace('Turbo: chart notes ' + _turboRawTapCount + ' -> ' + unspawnNotes.length
+				+ ' representatives (represented=' + TurboDensity.representedTotal(unspawnNotes)
+				+ ', speed=' + FlxMath.roundDecimal(songSpeed, 2) + ', mania=' + mania + ')');
+		}
 
 		if (eventNotes.length > 1)
 			eventNotes.sort(sortByTime);
@@ -3707,73 +3756,20 @@ class PlayState extends MusicBeatState
 	}
 
 	// ─────────────────────────────────────────────────────────────
-	// Turbo 高密度聚合
+	// Turbo 谱面预处理
 	// ─────────────────────────────────────────────────────────────
-	function initTurboDensity(dataPath:String, songName:String):Void
-	{
-		turboZoneCursor = 0;
-		turboZones = [];
-
-		var cachePath:String = null;
-		var meta:Dynamic = null;
-		var haveCached:Bool = false;
-		#if sys
-		var fingerprint:Int = TurboDensity.chartFingerprint(unspawnNotes);
-		cachePath = turboCachePath(songName, fingerprint);
-		meta = {
-			song: SONG != null ? SONG.song : songName,
-			mod: Paths.currentModDirectory != null ? Paths.currentModDirectory : '',
-			notes: unspawnNotes.length,
-			lastTime: unspawnNotes.length > 0 ? unspawnNotes[unspawnNotes.length - 1].strumTime : 0,
-			fingerprint: fingerprint
-		};
-		var cached:Null<{zones:Array<TurboDensityZone>, density:TurboDensityData}> = TurboDensity.loadCache(cachePath, meta);
-		if (cached != null)
-		{
-			turboZones = cached.zones;
-			haveCached = true;
-		}
-		#end
-
-		if (!haveCached)
-		{
-			turboZones = TurboDensity.buildZones(unspawnNotes, TURBO_AGGREGATE_NPS);
-			#if sys
-			// 视觉流已移除；密度分箱不再需要，缓存只保留 zones（density 传 null）。
-			TurboDensity.saveCache(cachePath, turboZones, null, meta);
-			#end
-		}
-
-		// 不再创建假视觉流带/假 Note：高密度段直接走真实 Note 物化 + bulkSkip + noteLimit，
-		// 尺寸/轨迹/消失全部与真实 Note 一致；H-Slice 风格鬼 Note 合并已在加载阶段完成。
-	}
-
-	inline function turboCachePath(songName:String, fingerprint:Int):String
-	{
-		#if sys
-		var key:String = songName + '|' + (Paths.currentModDirectory != null ? Paths.currentModDirectory : '') + '|' + Std.string(unspawnNotes.length) + '|' + Std.string(fingerprint);
-		var hash:String = haxe.crypto.Md5.encode(key).substr(0, 16);
-		return Sys.getCwd() + 'turbo_cache/' + hash + '.bin';
-		#else
-		return '';
-		#end
-	}
-
-	inline function isTurboAggregateIndex(index:Int):Bool
-	{
-		if (turboZones == null || turboZones.length == 0 || index < 0)
-			return false;
-
-		// notesAddedCount 单调递增; 游标只会往前走。
-		while (turboZoneCursor < turboZones.length && turboZones[turboZoneCursor].endIndex <= index)
-			turboZoneCursor++;
-
-		if (turboZoneCursor >= turboZones.length)
-			return false;
-
-		var z:TurboDensityZone = turboZones[turboZoneCursor];
-		return index >= z.startIndex && index < z.endIndex;
-	}
+	// 高密度段的处理全部在加载期完成 (TurboDensity.collapseGhostNotes):
+	// 屏幕上分不开的 tap 折叠成代表 Note, 其 noteDensity = 折叠数量,
+	// 运行时按簇批量结算 (见 bulkSettleNote)。
+	//
+	// 这里刻意不再有"高密度聚合区"侧车缓存:
+	//   - 缓存内容是 unspawnNotes 的**下标区间**, 属于位置相关状态。任何一次折叠
+	//     口径变化都会让它整体错位, 而写坏的索引不会崩, 只会静默算错区间;
+	//   - 旧折叠实现会直接改写共享对象 (prev.noteDensity += 1), 因此对同一数组
+	//     重复调用会得到不同结果 —— 也就是同一张谱面会不停生成新的缓存文件。
+	//     实测 turbo_cache/ 里同一首歌、同一 Note 数留下了 5 份不同指纹的缓存;
+	//   - 折叠口径改为像素级之后, 物化量已由流速与屏幕几何定量约束, 区间缓存
+	//     带来的收益 (省一次 O(n) 扫描) 远小于它引入的失效风险。
 
 	function eventPushed(event:EventNote) {
 		switch(event.event) {
@@ -4319,6 +4315,15 @@ class PlayState extends MusicBeatState
 			_splashBudgetLeft = 999999;
 		}
 		var _phaseT:Float = haxe.Timer.stamp();
+		#if seiun_lua_perf
+		// 埋点（默认关闭）：本窗口测量的是「一次 update 步」内的耗时。
+		// 注意 FlxG.fixedTimestep = true（见 flixel/FlxG.hx:78），所以 update() 每渲染帧
+		// 可能被调用 0..N 次；这里绝不能放每秒一次的逻辑（落盘由 SystemDiag 心跳负责）。
+		// English: measures one update *step*; update() may run 0..N times per drawn
+		// frame under fixed timestep, so no once-per-frame work belongs here.
+		var _perfFrameT0:Float = LuaPerf.now();
+		var _perfLuaT0:Float = _perfFrameT0;
+		#end
 		/*if (FlxG.keys.justPressed.NINE)
 		{
 			iconP1.swapOldIcon();
@@ -4597,6 +4602,9 @@ class PlayState extends MusicBeatState
 			var spawnedThisFrame:Int = 0;
 
 			_phaseT = haxe.Timer.stamp();
+			// Turbo: 每帧重置运行时归属闸门 (见 turboKeepNote)。
+			if (turboModeActive)
+				resetTurboKeepGate();
 			// perfMode 关闭: 无预算节流、无硬时限追加 —— 与原版逐条无条件物化一致。
 			// 手动模式 (manualUnthrottled): 同样不节流, 保证屏外滑入的正确性优先。
 			while (targetData != null && targetData.strumTime - Conductor.songPosition < effTime
@@ -4605,6 +4613,16 @@ class PlayState extends MusicBeatState
 					|| (!behind && targetData.strumTime <= hardDeadline && spawnedThisFrame < spawnBudget + 4096)))
 			{
 				if (targetData.wasHit)
+				{
+					notesAddedCount++;
+					if (notesAddedCount < unspawnNotes.length)
+						targetData = unspawnNotes[notesAddedCount];
+					else
+						break;
+					continue;
+				}
+
+				if (turboModeActive && !turboKeepNote(targetData) && bulkSettleNote(targetData, _bulkAcc))
 				{
 					notesAddedCount++;
 					if (notesAddedCount < unspawnNotes.length)
@@ -4670,8 +4688,8 @@ class PlayState extends MusicBeatState
 					targetData = unspawnNotes[notesAddedCount];
 				else
 					break;
+			}
 		}
-	}
 
 		if (generatedMusic && !inCutscene)
 		{
@@ -4837,6 +4855,9 @@ class PlayState extends MusicBeatState
 		setOnScripts('cameraY', camFollowPos.y);
 		setOnScripts('botPlay', cpuControlled);
 		callOnScripts('onUpdatePost', [elapsed]);
+		#if seiun_lua_perf
+		LuaPerf.noteFrame(LuaPerf.now() - _perfFrameT0, LuaPerf.now() - _perfLuaT0);
+		#end
 	}
 	// Health icon updaters(like 073?)
 	public dynamic function updateIconsScale(elapsed:Float){
@@ -8040,6 +8061,13 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 	 *   (再留 140px 给长条裁剪/offset 抖动)。被剔除的音符必然不可见。
 	 * - 覆盖 HUD 相机缩放 (zoom<1 时可见世界范围更大)
 	 * - 除以轨道滚动方向的 |sin|: 即使模组旋转了接收器也保证正确; 纯水平滚动放弃剔除。
+	 *
+	 * 同时推导可视物化地平线: "音符还能停多久才越过剔除边界"的毫秒数。
+	 * 这是决定物化量的唯一闸门 ——
+	 *   可视频段(ms) = 屏幕像素带 / (0.45 * songSpeed * maniaScale)
+	 * speed=1 时约 3 秒, speed=0.5 时约 6 秒; 几十万 NPS 的谱面在这个窗口里
+	 * 能塞进六位数条 Note。把物化窗口钉在真实像素带上, 物化量就由屏幕几何决定,
+	 * 而不是由谱面密度决定 (再叠加 Turbo 的像素级折叠, 两者互相独立地兜底)。
 	 */
 	function refreshNoteCullRanges(elapsed:Float):Void
 	{
@@ -8054,14 +8082,15 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		_cullDistPlayer = noteCullDistFor(playerStrums, viewTop, viewBottom, cullMargin);
 		_cullDistOpponent = noteCullDistFor(opponentStrums, viewTop, viewBottom, cullMargin);
 
-		// 可视物化地平线 (ms): 音符从物化到滚入判定线的可视时长。
-		// 距离换算: px/ms = 0.45 * songSpeed * maniaScale (updateDaNote 同款公式),
-		// 取两侧剔除距离的较小者并留 20% 余量; 超出地平线物化的音符只会被
-		// 离屏驻留或数据层结算 —— speed=10 的尾杀里旧 2000ms 窗口是可视视距的 ~10 倍。
+		// 可视物化地平线 (ms): 距离换算 px/ms = 0.45 * songSpeed * maniaScale
+		// (与 updateDaNote 的位置公式同源)。用真实屏幕像素带 + 剔除余量, 余量本身
+		// 已含帧量化超冲, 因此这个窗口里物化出来的音符一定能在屏内被看到,
+		// 也一定能等到下一次更新的机会 —— 不会在屏内凭空出现。
+		// 上限仍是 spawnTime (原版生成窗口), 下限防止极端值把窗口压成 0。
 		var cullMin:Float = Math.min(_cullDistPlayer, _cullDistOpponent);
 		var speedFactor:Float = 0.45 * songSpeed * Note.getManiaScale(mania);
 		if (speedFactor <= 0.0001) speedFactor = 0.45;
-		_visHorizonMs = Math.min(spawnTime, Math.max(120.0, (cullMin / speedFactor) * 1.2 + 50));
+		_visHorizonMs = Math.min(spawnTime, Math.max(120.0, (cullMin + cullMargin) / speedFactor));
 	}
 
 	/**
@@ -8517,25 +8546,24 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		// 物化预算不足时, 近半带的音符只会在判定线附近闪现一帧就被回收,
 		// 与其白付构造费不如直接数据层结算; 物化因此集中到外半带 ——
 		// 每个精灵存活整个下落过程 (多帧可见), 视觉变成连续稀疏流而非贴线闪烁。
-		// (结算口径不变: 该自动命中的照常计入 combo/判定/血量, 只是提前几毫秒。)
-		// Turbo 聚合区内禁止未来软截止: 这些音符由真实 Note 物化 + noteLimit 维持可见窗口,
-		// 不需要一口气提前结算海量未来音符。
-		var inTurboAgg:Bool = turboModeActive && isTurboAggregateIndex(notesAddedCount);
-		if (cpuControlled && _overloadFrames > 0 && !inTurboAgg)
+		// (结算口径不变: 该自动命中的照常计入 combo/判定/血量, 只是提前几毫秒。
+		//  Turbo 的像素级折叠已把物化量按屏幕几何定量约束, 这里不再需要
+		//  "高密度聚合区"之类的特例分支。)
+		if (cpuControlled && _overloadFrames > 0)
 			softCut = pos + _visHorizonMs * 0.5;
 		var drainTotal:Int = 0;
 
-		var drainedHit:Int = 0;
-		var skippedMiss:Int = 0;
-		var skippedMissHealth:Float = 0;
-		var skippedHit:Int = 0;
-		var skippedHitHealth:Float = 0;
-		var oppDrained:Int = 0;
+		// 累加器由"帧末消费点"归零 (finishBulkFrame -> resetBulkAccumulator):
+		// 物化路径在 fastSkipPastNotes 之前就把折叠组结算进同一个累加器,
+		// 这里必须沿用它的内容, 否则同帧的命中会漏进表现层。
+		var acc:BulkAccumulator = _bulkAcc;
 
 		// Turbo 模式专用自适应每帧预算: 约 100 条/ms 帧时间, 上限 65536。
 		// 70k NPS 在 60fps 约 1167 条/帧, 这个预算既跟得上极密尾杀,
 		// 又避免单帧一次性 drain 数万条造成尖峰; 低配帧率下自动放大追补。
 		// 非 Turbo 模式保持原版一次性 drain 行为 (关闭 Turbo 时行为不变)。
+		// 折叠组按"组"计一次预算: 组内成员是同一像素带里的重叠 Note,
+		// 与旧实现消费折叠组时的口径一致。
 		var drainBudget:Int = turboModeActive ? Std.int(Math.max(4096, Math.min(65536, elapsed * 1000 * 100))) : 0x7FFFFFFF;
 		var processed:Int = 0;
 
@@ -8556,99 +8584,182 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 				notesAddedCount++;
 				continue;
 			}
+
+			// 数据层结算 (含 Turbo 折叠组的一次性展开)。未到点/非玩家/长条一律
+			// 返回 false 且保持游标不动 —— 这里也是唯一能推进结算游标的路径,
+			// 任何"提前消费却不推进游标"的分支都会把后续 Note 永久卡死。
+			if (!bulkSettleNote(d, acc))
+				break;
 			drainTotal++;
-			// 鬼 Note 合并后 noteDensity 表示被折叠的重复数量，结算/计分按密度加权。
-			var den:Int = Std.int(Math.max(1, Math.round(d.noteDensity)));
-
-			if (d.mustPress)
-			{
-				var lane:Int = Std.int(Math.abs(d.noteData));
-				var laneTotal:Int = Note.ammo[mania];
-				if (lane >= laneTotal) lane = lane % laneTotal;
-
-				if (d.strumTime <= softCut)
-				{
-					d.wasHit = true;
-					if (d.blockHit)
-					{
-						// 卡键音符从不参与判定: 静默消费 (与原路径最终效果一致)
-					}
-					else if (d.ignoreNote)
-					{
-						// botplay 下原路径仅触发脚本 (此处无脚本): 静默消费
-					}
-					else if (d.hitCausesMiss)
-					{
-						bulkHurtCount += den;
-						combo = 0;
-						if (playOpponent)
-							health += d.missHealth * healthLoss * den;
-						else
-							health -= d.missHealth * healthLoss * den;
-						songMisses += den;
-						totalPlayed += den;
-					}
-					else
-					{
-						drainedHit += den;
-						combo += den;
-						if (combo > maxcombo) maxcombo = combo;
-						totalPlayed += den;
-						songHits += den;
-						notehitlol += den; // HUD 总命中数口径与 totalPlayed 同源
-						totalNotesHit += den; // botplay 判定恒为 ratingsData[0], ratingMod=1
-						if (ClientPrefs.data.marvelousRatings)
-							marvelouses += den;
-						else
-							sicks += den;
-						if (playOpponent)
-							health -= d.hitHealth * healthGain * den;
-						else
-							health += d.hitHealth * healthGain * den;
-						gateBotLaneAnim(lane);
-					}
-				}
-				else if (cpuControlled)
-				{
-					d.wasHit = true;
-					if (!d.ignoreNote && !d.blockHit)
-					{
-						skippedHit += den;
-						skippedHitHealth += d.hitHealth * den;
-					}
-				}
-				else
-				{
-					d.wasHit = true;
-					if (!d.ignoreNote)
-					{
-						skippedMiss += den;
-						skippedMissHealth += d.missHealth * den;
-					}
-				}
-			}
-			else
-			{
-				if (d.strumTime > hardCut)
-				{
-					if (!cpuControlled) break; // 手动模式: 对手只受 hardCut drain
-					// botplay: 对手 tap 到点 → 数据层结算表现门控后消费,
-					// 否则混流谱面里"到点未过期"的对手音符会卡住整条 drain 队列。
-					d.wasHit = true;
-					gateOppLaneAnim(laneOf(d.noteData));
-					oppDrained++;
-					notesAddedCount++;
-					continue;
-				}
-				d.wasHit = true;
-				oppDrained++;
-			}
 			notesAddedCount++;
 		}
 
 		_bulkDrainedLast = drainTotal;
-		if (drainedHit > 0 || skippedHit > 0 || skippedMiss > 0 || bulkHurtCount > 0 || oppDrained > 0)
-			finishBulkFrame(drainedHit, skippedHit, skippedHitHealth, skippedMiss, skippedMissHealth, oppDrained);
+		if (acc.drainedHit > 0 || acc.skippedHit > 0 || acc.skippedMiss > 0 || bulkHurtCount > 0 || acc.oppDrained > 0)
+			finishBulkFrame(acc.drainedHit, acc.skippedHit, acc.skippedHitHealth, acc.skippedMiss, acc.skippedMissHealth, acc.oppDrained);
+	}
+
+	/** 每帧重置 Turbo 运行时归属闸门 (每条 lane+side 一份"上一条已物化"记录)。 */
+	function resetTurboKeepGate():Void
+	{
+		var slots:Int = Note.ammo[mania] * 2;
+		if (_laneLastKeptTime.length != slots)
+		{
+			_laneLastKeptTime = [for (i in 0...slots) -1e30];
+			_laneLastKeptRate = [for (i in 0...slots) 0.0];
+			_laneLastKeptSlow = [for (i in 0...slots) 0.0];
+		}
+		else
+		{
+			for (i in 0...slots)
+			{
+				_laneLastKeptTime[i] = -1e30;
+				_laneLastKeptRate[i] = 0.0;
+				_laneLastKeptSlow[i] = 0.0;
+			}
+		}
+	}
+
+	/**
+	 * Turbo 运行时归属闸门: 判断这条 tap 是否值得为它构造精灵。
+	 *
+	 * 判据与加载期折叠一致 (同 lane + 同侧 + 同 multSpeed, 屏幕像素间距小于阈值),
+	 * 但用的是**当前** songSpeed: 加载期折叠用的是进入歌曲时的流速, 若运行中
+	 * songSpeed 被事件/缓动改写, 折叠结果就不再匹配, 这道闸门保证物化量仍然有界。
+	 *
+	 * 返回 false 表示"屏幕上与上一条已物化 Note 完全重叠", 调用方应直接数据层结算。
+	 * 长条/长条头一律放行 (尾段链与裁剪语义不允许被跳过)。
+	 */
+	function turboKeepNote(pn:PreloadedChartNote):Bool
+	{
+		if (pn.isSustainNote || pn.sustainLength > 0)
+			return true;
+
+		var laneTotal:Int = Note.ammo[mania];
+		var lane:Int = Std.int(Math.abs(pn.noteData));
+		if (lane >= laneTotal)
+			lane = lane % laneTotal;
+		var idx:Int = (pn.mustPress ? 1 : 0) * laneTotal + lane;
+		if (idx < 0 || idx >= _laneLastKeptTime.length)
+			return true;
+
+		var maniaScale:Float = Note.getManiaScale(mania);
+		if (!Math.isFinite(maniaScale) || maniaScale <= 0)
+			maniaScale = 1.0;
+		var rate:Float = 0.45 * songSpeed * maniaScale * (pn.multSpeed > 0 ? pn.multSpeed : 1.0);
+
+		var keep:Bool = true;
+		if (_laneLastKeptSlow[idx] > 0)
+		{
+			var dt:Float = pn.strumTime - _laneLastKeptTime[idx];
+			// 以较慢的那条为准 (lastSlow): 保证"两条 Note 在任何时刻都不会分开到
+			// 可分辨程度"这个结论对 multSpeed 不同的音符同样成立。
+			if (dt >= 0 && dt * _laneLastKeptSlow[idx] < TURBO_KEEP_GAP_PX)
+				keep = false;
+		}
+
+		if (keep)
+		{
+			// 速率不变时保持取较小值; 速率变了就重新以当前速率为准。
+			var prevRate:Float = _laneLastKeptRate[idx];
+			var slow:Float = (prevRate == rate && _laneLastKeptSlow[idx] < rate) ? _laneLastKeptSlow[idx] : rate;
+			_laneLastKeptTime[idx] = pn.strumTime;
+			_laneLastKeptRate[idx] = rate;
+			_laneLastKeptSlow[idx] = slow;
+		}
+		return keep;
+	}
+
+	/**
+	 * 数据层结算一条未物化 Note, 不构造精灵。
+	 *
+	 * Turbo 折叠后一条代表 Note 代表 noteDensity 条原始 tap (屏幕像素间距小于阈值,
+	 * 任何时刻都互相重叠)。它们必须在同一时刻一起结算:
+	 *   - 少结算 -> 命中数与 totalPlayed 对不上, 命中率/评级算错;
+	 *   - 分帧结算 -> 同一像素带里的音符会把 combo 拆成好几段。
+	 * 因此这里一次性展开整组, 并按"组"计一次每帧预算。
+	 *
+	 * @return 是否结算成功 (调用方可以推进游标)。
+	 */
+	function bulkSettleNote(d:PreloadedChartNote, acc:BulkAccumulator):Bool
+	{
+		if (d == null || d.wasHit)
+			return false;
+		// 长条/长条头: 逐对象路径专有 (尾段链与裁剪语义)。
+		if (d.isSustainNote || d.sustainLength > 0)
+			return false;
+
+		var pos:Float = Conductor.songPosition;
+		var onTime:Bool = d.strumTime <= pos;
+
+		var den:Int = Std.int(Math.max(1, Math.round(d.noteDensity)));
+
+		if (!d.mustPress)
+		{
+			d.wasHit = true;
+			acc.oppDrained += den;
+			// 到点的对手音符补一次表现门控, 与原逐对象路径一致。
+			if (onTime) gateOppLaneAnim(laneOf(d.noteData));
+			return true;
+		}
+
+		if (onTime)
+		{
+			d.wasHit = true;
+			if (d.blockHit)
+			{
+				// 卡键音符从不参与判定: 静默消费 (与原路径最终效果一致)
+			}
+			else if (d.ignoreNote)
+			{
+				// botplay 下原路径仅触发脚本 (此处无脚本): 静默消费
+			}
+			else if (d.hitCausesMiss)
+			{
+				bulkHurtCount += den;
+				combo = 0;
+				if (playOpponent)
+					health += d.missHealth * healthLoss * den;
+				else
+					health -= d.missHealth * healthLoss * den;
+				songMisses += den;
+				totalPlayed += den;
+			}
+			else
+			{
+				acc.drainedHit += den;
+				combo += den;
+				if (combo > maxcombo) maxcombo = combo;
+				totalPlayed += den;
+				songHits += den;
+				notehitlol += den; // HUD 总命中数口径与 totalPlayed 同源
+				totalNotesHit += den; // botplay 判定恒为 ratingsData[0], ratingMod=1
+				if (ClientPrefs.data.marvelousRatings)
+					marvelouses += den;
+				else
+					sicks += den;
+				if (playOpponent)
+					health -= d.hitHealth * healthGain * den;
+				else
+					health += d.hitHealth * healthGain * den;
+				gateBotLaneAnim(laneOf(d.noteData));
+			}
+			return true;
+		}
+
+		// 尚未到点: 只有 botplay 的玩家 tap 可以在数据层提前自动命中
+		// (等价旧实现 cpuControlled 的 skippedHit 分支)。手动模式返回 false,
+		// 保持"外轨音符不被提前结算"的原语义。
+		if (!cpuControlled)
+			return false;
+
+		d.wasHit = true;
+		if (!d.ignoreNote && !d.blockHit)
+		{
+			acc.skippedHit += den;
+			acc.skippedHitHealth += d.hitHealth * den;
+		}
+		return true;
 	}
 
 	inline function laneOf(noteData:Int):Int
@@ -8825,7 +8936,10 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		}
 	}
 
-	/** 本帧数据级批量结算收尾: 统一一次 RecalculateRating / 弹窗合并标记 / 音量。 */
+	/**
+	 * 本帧数据级批量结算收尾: 统一一次 RecalculateRating / 弹窗合并标记 / 音量。
+	 * 结束时清零共用累加器 (物化路径与 fastSkipPastNotes 在帧内共用同一个对象)。
+	 */
 	function finishBulkFrame(drainedHit:Int, skippedHit:Int, skippedHitHealth:Float,
 		skippedMiss:Int, skippedMissHealth:Float, oppDrained:Int):Void
 	{
@@ -8889,6 +9003,18 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 			doDeathCheck(true);
 
 		bulkHurtCount = 0;
+		resetBulkAccumulator();
+	}
+
+	/** 清零每帧复用的数据层结算累加器 (finishBulkFrame 消费完就归零)。 */
+	inline function resetBulkAccumulator():Void
+	{
+		_bulkAcc.drainedHit = 0;
+		_bulkAcc.skippedHit = 0;
+		_bulkAcc.skippedHitHealth = 0;
+		_bulkAcc.skippedMiss = 0;
+		_bulkAcc.skippedMissHealth = 0;
+		_bulkAcc.oppDrained = 0;
 	}
 
 public function setOpponentStrumStatic(direction:Int) {
@@ -9264,6 +9390,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 			// botplay 降阶: static 化同样"每轨每帧一次" (原为每击一次 playAnim)
 			var stIdx:Int = Std.int(Math.abs(note.noteData));
 			var laneTotal:Int = Note.ammo[mania];
+			if (laneTotal <= 0) laneTotal = 1; // 防 % 0
 			if (stIdx >= laneTotal) stIdx %= laneTotal;
 			if (stIdx >= 0 && stIdx < _botStrumStatic.length && !_botStrumStatic[stIdx])
 			{
@@ -9280,7 +9407,9 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 			// noteData=4 折叠回 0, 溅射错误落在第 0 轨; 与 update 里的
 			// strum 索引修复保持同一策略。
 			var strumIdx:Int = Std.int(Math.abs(note.noteData));
-			if (strumIdx >= playerStrums.members.length) strumIdx %= playerStrums.members.length;
+			var strumCount:Int = playerStrums.members.length;
+			if (strumCount <= 0) return; // 重建/清空 strum 组期间没有轨道可取
+			if (strumIdx >= strumCount) strumIdx %= strumCount;
 			var strum:StrumNote = playerStrums.members[strumIdx];
 			if(strum != null) {
 				spawnNoteSplash(strum.x, strum.y, note.noteData, note);

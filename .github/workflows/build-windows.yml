@@ -49,3 +49,24 @@ jobs:
           path: export/release/windows/bin
           if-no-files-found: error
           retention-days: 14
+
+      # Crash symbols are published separately so they never land inside the game
+      # zip users download. Attach this artifact to bug reports when triaging.
+      - name: Check crash symbols
+        id: symbols
+        shell: bash
+        run: |
+          if [ -d export/release/windows/symbols ] && [ -n "$(ls -A export/release/windows/symbols)" ]; then
+            echo "present=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=0" >> "$GITHUB_OUTPUT"
+            echo "::warning::crash symbols missing - release debugging will not be possible"
+          fi
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: steps.symbols.outputs.present == '1'
+        with:
+          name: SeiunEngine-windows-x64-symbols
+          path: export/release/windows/symbols
+          if-no-files-found: error
+          retention-days: 90

@@ -1,38 +1,49 @@
-import haxe.Json;
+#if seiun_turbo_harness
+// Standalone benchmark harness (tools/turboharness) compiles this same file
+// against a flixel-free stub of source/Note.hx. Engine builds take the normal path.
+import PreloadedChartNote;
+#else
 import Note.PreloadedChartNote;
+#end
 
 /**
- * Turbo 模式的高密度谱面分析结果。
- * 每个 zone 是 unspawnNotes 中一段连续的、不含长条的极高密度 tap 区间。
- * 区间内的原始 Note 不物化为 Sprite，改由数据级批量路径结算；
- * 视觉层使用密度分箱驱动的箭头流带。
+ * Turbo 模式的谱面预处理。
+ *
+ * 引擎只有一条渲染路径：真实 Note 精灵。所以"性能不够"永远等价于
+ * "同时存活的精灵太多了"。低流速下这个问题最严重 —— 屏幕像素带 ±700px
+ * 对应的可视频段是 1400 / (0.45 * songSpeed) 毫秒，speed=1 时约 3.1 秒，
+ * speed=0.5 时约 6.2 秒；几千万 Note 的谱面在这个窗口里能塞进六位数条 Note，
+ * 全部物化就是纯粹的浪费。
+ *
+ * 关键观察：同一轨道上两条 Note 如果屏幕间距小于一个像素级阈值，它们在玩家
+ * 眼里、以及在实际绘制结果里就是同一条（Note 是不透明精灵，互相覆盖）。
+ * 因此按"屏幕像素间距"而不是"时间间距"来合并，才是与流速自洽的口径：
+ * 流速越低 -> 像素间距越小 -> 合并得越多 -> 物化量恒定，不随谱面密度爆炸。
+ *
+ * 本类只做无副作用的纯数据变换，不落盘、不缓存、不改谱面文件。
  */
-typedef TurboDensityZone = {
-	var startIndex:Int;
-	var endIndex:Int;
-	var startTime:Float;
-	var endTime:Float;
-}
-
-/** 真实谱面按轨抽出的视觉样本: 只保留真实存在的 lane/side。 */
-typedef TurboSampleRef = {
-	var time:Float;
-	var lane:Int;
-	var must:Bool;
-}
-
-/** 每 lane/side 的 10ms 密度分箱，供视觉流带预计算/增量维护。 */
-typedef TurboDensityData = {
-	var laneCount:Int;
-	var binMs:Int;
-	var binCount:Int;
-	var counts:Array<Int>;
+typedef TurboGhostScratch = {
+	var lastTime:Array<Float>;
+	var lastRate:Array<Float>;
+	var lastSlowRate:Array<Float>;
 }
 
 class TurboDensity
 {
-	public static inline final CACHE_VERSION:Int = 5;
+	/** 低于该屏幕间距的同轨同向 tap 视为同一条 Note（像素）。 */
+	public static inline final DEFAULT_MIN_GAP_PX:Float = 4.0;
 
+	/** 单条 Note 最多代表多少条原始 tap —— 为极端鬼谱面兜底，避免密度值失真。 */
+	public static inline final MAX_REPRESENTED:Int = 512;
+
+	/**
+	 * 谱面内容指纹。
+	 *
+	 * 只包含"谱面自身"的字段：时间、轨道、判定归属、长度。刻意排除
+	 * noteDensity —— 它是 collapseGhostNotes 的输出（被折叠的数量），
+	 * 任何对同一数组重复调用都会改变它，导致指纹不稳定、任何由指纹派生的
+	 * 持久化状态随之漂移。本类不再有缓存，指纹仅用于日志与诊断。
+	 */
 	public static function chartFingerprint(notes:Array<PreloadedChartNote>):Int
 	{
 		var h:Int = 0x811C9DC5;
@@ -50,126 +61,77 @@ class TurboDensity
 			h = (h * 31 + (pn.mustPress ? 2 : 0) + (pn.isSustainNote ? 4 : 0) + (pn.isSustainEnd ? 8 : 0) + (pn.gfNote ? 16 : 0)) & 0x7FFFFFFF;
 			h = (h * 31 + Std.int(pn.sustainLength * 1000)) & 0x7FFFFFFF;
 			h = (h * 31 + Std.int(pn.parentST * 1000)) & 0x7FFFFFFF;
-			h = (h * 31 + Std.int(pn.noteDensity * 1000)) & 0x7FFFFFFF;
 		}
 		return h;
 	}
 
 	/**
-	 * 100ms 分箱 + 滑窗聚合。
-	 * aggregateNPS = 判定为“高密度聚合区”的每秒 Note 数阈值。
+	 * 谱面加载期的 Turbo 预处理：把"屏幕上分不开"的 tap 折叠成一条代表 Note。
+	 *
+	 * 纯函数：不改写入参数组里的任何对象，也不依赖调用次数，重复调用结果完全一致
+	 * （旧实现直接 `prev.noteDensity += 1` 改写共享对象，第二次调用结果不同，
+	 * 指纹与由此派生的任何索引都会漂移）。
+	 *
+	 * 合并判据（同一 lane + 同一侧 mustPress + 同一 multSpeed，按时间相邻）：
+	 *   屏幕间距 = Δt * 0.45 * songSpeed * multSpeed * maniaScale < minGapPx
+	 * 间距取两条 Note 各自可见期内的较小值（以较慢的那条为准），因此对缓动/变速
+	 * （songSpeedTween）也是保守安全的：只有当它们在任何时刻都不可能分开到
+	 * minGapPx 以上时才合并。
+	 *
+	 * 代表 Note 保留折叠组里最早的一条（最先到判定线的那条，视觉上填补该像素带），
+	 * 折叠数量累加到它的 noteDensity 上 —— 与既有判定加权口径一致
+	 * （PlayState 结算时按 noteDensity 计 combo/判定数）。
+	 *
+	 * @param songSpeed  本局实际流速（PlayState.songSpeed）
+	 * @param mania      本局 k 值（决定 maniaScale）
+	 * @param rangeMs    额外的时间硬下限（鬼 Note 合并），默认 1.0ms
+	 * @param minGapPx   屏幕像素间距阈值
 	 */
-	public static function buildZones(unspawnNotes:Array<PreloadedChartNote>, aggregateNPS:Float = 4000, binMs:Int = 100, minZoneMs:Float = 500):Array<TurboDensityZone>
-	{
-		if (unspawnNotes == null || unspawnNotes.length == 0)
-			return [];
-
-		var lastTime:Float = unspawnNotes[unspawnNotes.length - 1].strumTime;
-		if (lastTime < 0) lastTime = 0;
-		var binCount:Int = Std.int(lastTime / binMs) + 2;
-		var bins:Array<Int> = [for (i in 0...binCount) 0];
-		var holdBins:Array<Bool> = [for (i in 0...binCount) false];
-
-		for (pn in unspawnNotes)
-		{
-			var b:Int = Std.int(pn.strumTime / binMs);
-			if (b < 0) b = 0;
-			if (b >= binCount) b = binCount - 1;
-			bins[b]++;
-			if (pn.isSustainNote || pn.sustainLength > 0)
-				holdBins[b] = true;
-		}
-
-		var thresholdPerBin:Int = Math.ceil(aggregateNPS * binMs / 1000.0);
-		var agg:Array<Bool> = [for (i in 0...binCount) false];
-		for (i in 0...binCount)
-			agg[i] = (!holdBins[i] && bins[i] >= thresholdPerBin);
-
-		var zones:Array<TurboDensityZone> = [];
-		var i:Int = 0;
-		while (i < binCount)
-		{
-			if (!agg[i]) { i++; continue; }
-			var start:Int = i;
-			while (i + 1 < binCount && agg[i + 1]) i++;
-			var end:Int = i;
-			var zStartTime:Float = start * binMs;
-			var zEndTime:Float = (end + 1) * binMs;
-			var startIndex:Int = lowerBound(unspawnNotes, zStartTime);
-			var endIndex:Int = lowerBound(unspawnNotes, zEndTime);
-			if (endIndex > startIndex && (zEndTime - zStartTime) >= minZoneMs)
-				zones.push({
-					startIndex: startIndex,
-					endIndex: endIndex,
-					startTime: zStartTime,
-					endTime: zEndTime
-				});
-			i++;
-		}
-		return zones;
-	}
-
-	static function lowerBound(arr:Array<PreloadedChartNote>, time:Float):Int
-	{
-		var lo:Int = 0;
-		var hi:Int = arr.length;
-		while (lo < hi)
-		{
-			var mid:Int = (lo + hi) >>> 1;
-			if (arr[mid].strumTime < time)
-				lo = mid + 1;
-			else
-				hi = mid;
-		}
-		return lo;
-	}
-
-	/**
-	 * 从真实谱面抽取“每轨每 intervalMs 一个”的视觉样本。
-	 * 只抽实际存在的 Note, 因此空轨/单边谱面不会出现假满屏。
-	 */
-	public static function buildLaneSamples(unspawnNotes:Array<PreloadedChartNote>, intervalMs:Float = 40):Array<TurboSampleRef>
-	{
-		var out:Array<TurboSampleRef> = [];
-		if (unspawnNotes == null || unspawnNotes.length == 0)
-			return out;
-
-		var lastByLane:Map<String, Float> = new Map();
-		for (pn in unspawnNotes)
-		{
-			if (pn.isSustainNote || pn.sustainLength > 0)
-				continue;
-			var key:String = (pn.mustPress ? 'P' : 'O') + ':' + Std.string(pn.noteData);
-			var lastTime:Null<Float> = lastByLane.get(key);
-			if (lastTime == null || (pn.strumTime - lastTime) >= intervalMs)
-			{
-				out.push({
-					time: pn.strumTime,
-					lane: pn.noteData,
-					must: pn.mustPress
-				});
-				lastByLane.set(key, pn.strumTime);
-			}
-		}
-		return out;
-	}
-
-	/**
-	 * H-Slice 风格鬼 Note 合并：同一 lane/side、同一 noteType、时间差 <= rangeMs 的
-	 * 重复/重叠 tap 被折叠为一条，并把数量累加到 noteDensity。
-	 * 只用于 Turbo 模式，关闭时保持原版谱面数据不变。
-	 */
-	public static function collapseGhostNotes(notes:Array<PreloadedChartNote>, laneCount:Int, rangeMs:Float = 1.0):Array<PreloadedChartNote>
+	public static function collapseGhostNotes(notes:Array<PreloadedChartNote>, laneCount:Int,
+		rangeMs:Float = 1.0, songSpeed:Float = 1.0, mania:Int = -1, minGapPx:Float = DEFAULT_MIN_GAP_PX):Array<PreloadedChartNote>
 	{
 		if (notes == null || notes.length == 0)
 			return notes != null ? notes : [];
+		if (laneCount <= 0)
+			laneCount = 4;
+		if (!Math.isFinite(songSpeed) || songSpeed <= 0)
+			songSpeed = 1.0;
+		if (!Math.isFinite(minGapPx) || minGapPx < 0)
+			minGapPx = 0;
+		if (!Math.isFinite(rangeMs) || rangeMs < 0)
+			rangeMs = 0;
+
+		var maniaScale:Float = 1.0;
+		#if !seiun_turbo_harness
+		maniaScale = Note.getManiaScale(mania);
+		#end
+		if (!Math.isFinite(maniaScale) || maniaScale <= 0)
+			maniaScale = 1.0;
+
+		// 像素/毫秒 -> 毫秒阈值 的换算系数（与 Note 位置公式同源）：
+		// 两条 Note 的屏幕间距 = Δt * 0.45 * songSpeed * multSpeed * maniaScale
+		var pxPerMs:Float = 0.45 * songSpeed * maniaScale;
+
+		var slots:Int = laneCount * 2;
+		var scratch:TurboGhostScratch = {
+			lastTime: [for (i in 0...slots) -1e30],
+			lastRate: [for (i in 0...slots) 0.0],
+			lastSlowRate: [for (i in 0...slots) 0.0]
+		};
+
+		// 每条 lane/side 当前"可继续吸收折叠"的代表下标。
+		// 必须按 lane 记录而不是直接看 out 的尾部: 长条/尾段会插在代表之间,
+		// 而代表 Note 是唯一允许承载 noteDensity 的对象。
+		var anchor:Array<Int> = [for (i in 0...slots) -1];
 
 		var out:Array<PreloadedChartNote> = [];
-		var last:Array<PreloadedChartNote> = [for (i in 0...(laneCount * 2)) null];
 
 		for (pn in notes)
 		{
-			// 长条/尾段不参与鬼 Note 合并，保留原语义。
+			if (pn == null)
+				continue;
+
+			// 长条/尾段/长条头不参与合并：尾段的裁剪与 prev/next 链语义必须保持原样。
 			if (pn.isSustainNote || pn.sustainLength > 0)
 			{
 				out.push(pn);
@@ -177,243 +139,110 @@ class TurboDensity
 			}
 
 			var lane:Int = Std.int(Math.abs(pn.noteData));
-			if (lane < 0 || lane >= laneCount)
+			if (lane >= laneCount)
 				lane = lane % laneCount;
-			var side:Int = pn.mustPress ? 1 : 0;
-			var idx:Int = side * laneCount + lane;
+			var idx:Int = (pn.mustPress ? 1 : 0) * laneCount + lane;
 
-			var prev:PreloadedChartNote = last[idx];
-			if (prev != null
-				&& prev.noteType == pn.noteType
-				&& prev.mustPress == pn.mustPress
-				&& Math.abs(pn.strumTime - prev.strumTime) <= rangeMs)
+			var rate:Float = pxPerMs * (pn.multSpeed > 0 ? pn.multSpeed : 1.0);
+
+			var mergeable:Bool = false;
+			if (anchor[idx] >= 0 && scratch.lastRate[idx] == rate && scratch.lastSlowRate[idx] > 0)
+			{
+				var dt:Float = pn.strumTime - scratch.lastTime[idx];
+				if (dt <= rangeMs)
+				{
+					// 时间上重叠的鬼 Note：无条件合并（等价旧行为）。
+					mergeable = true;
+				}
+				else if (minGapPx > 0 && dt * scratch.lastSlowRate[idx] < minGapPx)
+				{
+					// 较慢的那条决定了"最小可见间距"：只要它都不足 minGapPx，
+					// 两条 Note 在任何时刻都不会分开到可分辨的程度。
+					mergeable = true;
+				}
+			}
+
+			var prev:Null<PreloadedChartNote> = (anchor[idx] >= 0) ? out[anchor[idx]] : null;
+
+			if (mergeable && prev != null && prev.noteDensity < MAX_REPRESENTED)
 			{
 				prev.noteDensity += 1;
 				continue;
 			}
 
-			out.push(pn);
-			last[idx] = pn;
+			// 新的一条代表：复制一份再入列，调用方数组里的对象保持原样。
+			// noteDensity 归一为 1：折叠数量是本次预处理的结果，不是谱面属性。
+			var rep:PreloadedChartNote = cloneNote(pn);
+			rep.noteDensity = 1;
+			out.push(rep);
+			anchor[idx] = out.length - 1;
+
+			// 无论是因为"分得开"还是因为"组已封顶"，这条代表都是该轨接下来的锚点。
+			scratch.lastTime[idx] = rep.strumTime;
+			scratch.lastRate[idx] = rate;
+			scratch.lastSlowRate[idx] = rate;
 		}
+
 		return out;
 	}
 
 	/**
-	 * 预计算每 lane/side 的 10ms 密度分箱。
-	 * 只统计 tap（与聚合区口径一致），sustain/hold 不参与视觉密度。
+	 * 浅拷贝一条 PreloadedChartNote。
+	 * 只在 Turbo 预处理阶段使用：调用方数组里的对象保持原样，
+	 * 折叠结果才有资格做到幂等、可重复、可指纹化。
 	 */
-	public static function buildDensityBins(unspawnNotes:Array<PreloadedChartNote>, laneCount:Int, binMs:Int = 10):TurboDensityData
+	static function cloneNote(src:PreloadedChartNote):PreloadedChartNote
 	{
-		if (unspawnNotes == null || unspawnNotes.length == 0)
-		{
-			return {
-				laneCount: laneCount,
-				binMs: binMs,
-				binCount: 0,
-				counts: []
-			};
-		}
-
-		var lastTime:Float = unspawnNotes[unspawnNotes.length - 1].strumTime;
-		if (lastTime < 0) lastTime = 0;
-		var binCount:Int = Std.int(lastTime / binMs) + 2;
-		var sideCount:Int = 2;
-		var total:Int = binCount * laneCount * sideCount;
-		var counts:Array<Int> = [for (i in 0...total) 0];
-
-		for (pn in unspawnNotes)
-		{
-			if (pn.isSustainNote || pn.sustainLength > 0)
-				continue;
-			var lane:Int = Std.int(Math.abs(pn.noteData));
-			if (lane < 0 || lane >= laneCount)
-				lane = lane % laneCount;
-			var side:Int = pn.mustPress ? 1 : 0;
-			var b:Int = Std.int(pn.strumTime / binMs);
-			if (b < 0) b = 0;
-			if (b >= binCount) b = binCount - 1;
-			counts[(b * sideCount + side) * laneCount + lane]++;
-		}
-
 		return {
-			laneCount: laneCount,
-			binMs: binMs,
-			binCount: binCount,
-			counts: counts
+			strumTime: src.strumTime,
+			sustainLength: src.sustainLength,
+			parentST: src.parentST,
+			parentSL: src.parentSL,
+			stepCrochet: src.stepCrochet,
+			hitHealth: src.hitHealth,
+			missHealth: src.missHealth,
+			multSpeed: src.multSpeed,
+			multAlpha: src.multAlpha,
+			noteDensity: src.noteDensity,
+			offsetX: src.offsetX,
+			offsetY: src.offsetY,
+			noteSplashHue: src.noteSplashHue,
+			noteSplashSat: src.noteSplashSat,
+			noteSplashBrt: src.noteSplashBrt,
+			noteType: src.noteType,
+			animSuffix: src.animSuffix,
+			noteskin: src.noteskin,
+			texture: src.texture,
+			noteSplashTexture: src.noteSplashTexture,
+			noteData: src.noteData,
+			mania: src.mania,
+			mustPress: src.mustPress,
+			oppNote: src.oppNote,
+			gfNote: src.gfNote,
+			noAnimation: src.noAnimation,
+			noMissAnimation: src.noMissAnimation,
+			isSustainNote: src.isSustainNote,
+			isSustainEnd: src.isSustainEnd,
+			hitCausesMiss: src.hitCausesMiss,
+			ignoreNote: src.ignoreNote,
+			blockHit: src.blockHit,
+			lowPriority: src.lowPriority,
+			wasHit: src.wasHit,
+			noteSplashDisabled: src.noteSplashDisabled,
+			hitsoundDisabled: src.hitsoundDisabled
 		};
 	}
 
-	/** 查询某 [startTime, endTime) 窗内、某 side/lane 的 tap 数量。O(窗口内 bin 数)。 */
-	public static function densityCount(data:TurboDensityData, startTime:Float, endTime:Float, side:Int, lane:Int):Int
+	/**
+	 * 把已经合并长条/尾段逻辑排除在外的 tap 序列，转换为"每条代表 Note 代表多少条"。
+	 * 只用于诊断/测试。
+	 */
+	public static function representedTotal(notes:Array<PreloadedChartNote>):Int
 	{
-		if (data == null || data.counts == null || data.counts.length == 0)
-			return 0;
-		if (endTime <= startTime)
-			return 0;
-		var laneCount:Int = data.laneCount;
-		if (laneCount <= 0)
-			return 0;
-		if (side < 0 || side > 1)
-			side = 0;
-		if (lane < 0 || lane >= laneCount)
-			lane = lane % laneCount;
-
-		var b0:Int = Std.int(startTime / data.binMs);
-		var b1:Int = Std.int(endTime / data.binMs);
-		if (b0 < 0) b0 = 0;
-		if (b1 < 0) b1 = 0;
-		if (b1 > data.binCount) b1 = data.binCount;
-		if (b0 > data.binCount) b0 = data.binCount;
-		if (b1 <= b0)
-			return 0;
-
-		var sum:Int = 0;
-		var stride:Int = laneCount * 2;
-		var baseLane:Int = (side * laneCount + lane);
-		var total:Int = data.counts.length;
-		for (b in b0...b1)
-		{
-			var idx:Int = b * stride + baseLane;
-			if (idx >= total)
-				break;
-			sum += data.counts[idx];
-		}
-		return sum;
+		var t:Int = 0;
+		if (notes == null) return 0;
+		for (pn in notes)
+			if (pn != null) t += Std.int(Math.max(1, Math.round(pn.noteDensity)));
+		return t;
 	}
-
-	#if sys
-	public static function saveCache(path:String, zones:Array<TurboDensityZone>, density:TurboDensityData, meta:Dynamic):Void
-	{
-		try
-		{
-			var dir:String = haxe.io.Path.directory(path);
-			if (dir != null && dir.length > 0 && !sys.FileSystem.exists(dir))
-				sys.FileSystem.createDirectory(dir);
-
-			var buf:haxe.io.BytesBuffer = new haxe.io.BytesBuffer();
-			buf.addString('TURB');
-			buf.addInt32(CACHE_VERSION);
-			var metaStr:String = Json.stringify(meta);
-			var metaBytes:haxe.io.Bytes = haxe.io.Bytes.ofString(metaStr);
-			buf.addInt32(metaBytes.length);
-			buf.add(metaBytes);
-
-			buf.addInt32(zones == null ? 0 : zones.length);
-			if (zones != null)
-				for (z in zones)
-				{
-					buf.addInt32(z.startIndex);
-					buf.addInt32(z.endIndex);
-					buf.addDouble(z.startTime);
-					buf.addDouble(z.endTime);
-				}
-
-			var laneCount:Int = density != null ? density.laneCount : 0;
-			var binMs:Int = density != null ? density.binMs : 0;
-			var binCount:Int = density != null ? density.binCount : 0;
-			buf.addInt32(laneCount);
-			buf.addInt32(binMs);
-			buf.addInt32(binCount);
-			if (density != null && density.counts != null)
-			{
-				buf.addInt32(density.counts.length);
-				for (c in density.counts)
-					buf.addInt32(c);
-			}
-			else
-				buf.addInt32(0);
-
-			sys.io.File.saveBytes(path, buf.getBytes());
-		}
-		catch (e:Dynamic)
-		{
-			// 缓存失败不影响游戏运行
-		}
-	}
-
-	public static function loadCache(path:String, expectedMeta:Dynamic):Null<{
-		zones:Array<TurboDensityZone>,
-		density:TurboDensityData
-	}>
-	{
-		if (!sys.FileSystem.exists(path))
-			return null;
-		try
-		{
-			var bytes:haxe.io.Bytes = sys.io.File.getBytes(path);
-			if (bytes == null || bytes.length < 8)
-				return null;
-			var pos:Int = 0;
-			if (bytes.getString(pos, 4) != 'TURB')
-				return null;
-			pos += 4;
-			var version:Int = bytes.getInt32(pos);
-			pos += 4;
-			if (version != CACHE_VERSION)
-				return null;
-
-			var metaLen:Int = bytes.getInt32(pos);
-			pos += 4;
-			var metaStr:String = bytes.getString(pos, metaLen);
-			pos += metaLen;
-			var parsedMeta:Dynamic = Json.parse(metaStr);
-			if (!cacheMetaMatches(parsedMeta, expectedMeta))
-				return null;
-
-			var zones:Array<TurboDensityZone> = [];
-			var zoneCount:Int = bytes.getInt32(pos);
-			pos += 4;
-			for (i in 0...zoneCount)
-			{
-				zones.push({
-					startIndex: bytes.getInt32(pos),
-					endIndex: bytes.getInt32(pos + 4),
-					startTime: bytes.getDouble(pos + 8),
-					endTime: bytes.getDouble(pos + 16)
-				});
-				pos += 24;
-			}
-
-			var laneCount:Int = bytes.getInt32(pos);
-			pos += 4;
-			var binMs:Int = bytes.getInt32(pos);
-			pos += 4;
-			var binCount:Int = bytes.getInt32(pos);
-			pos += 4;
-			var countLen:Int = bytes.getInt32(pos);
-			pos += 4;
-			var counts:Array<Int> = [for (i in 0...countLen) 0];
-			for (i in 0...countLen)
-			{
-				counts[i] = bytes.getInt32(pos);
-				pos += 4;
-			}
-			var density:TurboDensityData = {
-				laneCount: laneCount,
-				binMs: binMs,
-				binCount: binCount,
-				counts: counts
-			};
-
-			return { zones: zones, density: density };
-		}
-		catch (e:Dynamic)
-		{
-			return null;
-		}
-	}
-
-	static function cacheMetaMatches(a:Dynamic, b:Dynamic):Bool
-	{
-		if (a == null || b == null) return false;
-		if (a.song != b.song
-			|| a.mod != b.mod
-			|| a.notes != b.notes
-			|| a.lastTime != b.lastTime)
-			return false;
-		if (b.fingerprint != null && a.fingerprint != b.fingerprint)
-			return false;
-		return true;
-	}
-	#end
 }

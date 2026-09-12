@@ -5123,9 +5123,6 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 			return;
 		}
 
-		// Haxe 类实例（Controls/State 等）无法被 Lua 直接使用，Convert 会打印
-		// "Haxe value ... not supported" 并 push nil。这里静默走同一逻辑：
-		// 不产生噪音日志，也不会让脚本拿到半成品对象。
 		var oldEnableUnsupportedTraces:Bool = Convert.enableUnsupportedTraces;
 		Convert.enableUnsupportedTraces = false;
 		Convert.toLua(lua, data);
