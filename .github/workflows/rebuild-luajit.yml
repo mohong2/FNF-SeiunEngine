@@ -1,0 +1,415 @@
+name: Rebuild LuaJIT (Lua 5.2 compat, Windows x64)
+
+# Rebuilds the vendored LuaJIT static library that linc_luajit links against,
+# with LUAJIT_ENABLE_LUA52COMPAT on. Same idea as the "Rebuild Lime ndll (SDL3)"
+# step in build-windows.yml: regenerate a native dependency, then let the normal
+# build consume it.
+#
+# WHY THIS EXISTS
+# ---------------
+# The vendored library is LuaJIT 2.1.1727870382 == upstream commit
+# 97813fb924edf822455f91a5fbbdfdb349e5984f, built WITHOUT
+# LUAJIT_ENABLE_LUA52COMPAT. Verified by extracting the symbol table of
+# project/luajit/lib/Windows/lua51-x86_64.lib: it exports luaL_typerror /
+# luaL_findtable / luaopen_bit / luaopen_jit but NOT lua_pushglobaltable /
+# lua_rawlen / luaL_newlib / luaL_requiref -- the set that only exists when
+# LJ_52 is 1 (src/lj_arch.h).
+#
+# With LJ_52 = 0 the engine is short of these Lua 5.2 pieces:
+#   table.pack, rawlen, package.searchers, __pairs / __ipairs,
+#   `;` empty statements, and 5.2-conformant coroutine.running / os.execute /
+#   io.popen / string.find.
+#
+# WARNING: at commit 97813fb9, src/msvcbuild.bat has NO "lua52compat" option
+# (that switch was added upstream later). The patch step below therefore injects
+# the define into LJCOMPILE by hand. Without it the .lib is built exactly as
+# before and this workflow silently achieves nothing -- hence the symbol
+# assertion that follows the build.
+#
+# SCOPE: Windows x64 (MSVC) only. Every other target keeps the stock library,
+# because project/Build.xml gates LINC_LUA_COMPAT52 on `if="windows"`.
+#
+# LOCAL EQUIVALENT: setup/build-luajit-windows.ps1 does the same build for a dev
+# machine. Keep the pinned revision, the msvcbuild.bat patch and the probe
+# assertions in step with each other.
+#
+# SEE ALSO: docs/lua-perf-audit/lua52-support.md
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  # Upstream LuaJIT commit that produces LUAJIT_VERSION "LuaJIT 2.1.1727870382",
+  # i.e. the exact source the vendored headers were taken from.
+  LUAJIT_REV: 97813fb924edf822455f91a5fbbdfdb349e5984f
+  LUAJIT_VERSION_STR: "2.1.1727870382"
+  # Lua GC tuning baked in via Build.xml (documented there):
+  GC_PAUSE: "150"
+  GC_STEPMUL: "400"
+
+jobs:
+  windows-x64:
+    name: LuaJIT 2.1 + LUA52COMPAT (Windows x64)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: krdlab/setup-haxe@d93667502be3b4f31a94a3308a74388f2e178a8d # v2.1.0
+        with:
+          haxe-version: 4.2.5
+
+      - name: Install haxelib dependencies
+        run: |
+          haxelib --quiet setup "$env:GITHUB_WORKSPACE\.haxelib"
+          haxe -cp ./setup -main Main --interp
+
+      - name: Resolve linc_luajit path
+        run: |
+          $raw = haxelib path linc_luajit
+          $lib = ($raw | Where-Object { $_ -and -not $_.StartsWith('-') } | Select-Object -First 1)
+          if (-not $lib) { throw 'haxelib path linc_luajit returned nothing' }
+          $lib = $lib.Trim() -replace '\\', '/'
+          "LINC_LUAJIT_DIR=$lib" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Output "linc_luajit -> $lib"
+
+      - name: Check out LuaJIT ${{ env.LUAJIT_REV }}
+        run: |
+          git clone --quiet https://github.com/LuaJIT/LuaJIT.git "$env:RUNNER_TEMP\luajit"
+          git -C "$env:RUNNER_TEMP\luajit" checkout --quiet $env:LUAJIT_REV
+          git -C "$env:RUNNER_TEMP\luajit" log --oneline -1
+          "LUAJIT_SRC=$env:RUNNER_TEMP\luajit" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Guard -- confirm this is the revision the headers came from
+        run: |
+          # The version string is generated at build time (genversion.lua
+          # substitutes the commit timestamp into luajit_rolling.h), so before
+          # the build the only thing to check is that we are on the pinned
+          # commit and that the vendored header agrees with our expectation.
+          $head = (git -C $env:LUAJIT_SRC rev-parse HEAD).Trim()
+          if ($head -ne $env:LUAJIT_REV) {
+            throw "LuaJIT HEAD is $head, expected $env:LUAJIT_REV"
+          }
+          $ct = (git -C $env:LUAJIT_SRC show -s --format=%ct HEAD).Trim()
+          if ($ct -ne $env:LUAJIT_VERSION_STR) {
+            throw "commit time $ct != version string $env:LUAJIT_VERSION_STR"
+          }
+          $rolling = Get-Content "$env:LUAJIT_SRC\src\luajit_rolling.h" -Raw
+          if ($rolling -notmatch 'LUAJIT_VERSION_SYM\s+luaJIT_version_2_1_ROLLING') {
+            throw 'luajit_rolling.h does not carry the ROLLING placeholder -- genversion.lua assumptions changed'
+          }
+          Write-Output "pinned commit $head, commit time $ct"
+
+          $vendored = "$env:LINC_LUAJIT_DIR\project\luajit\include\luajit.h"
+          $want = (Select-String -Path $vendored -Pattern 'LUAJIT_VERSION\s+"(.+)"').Matches[0].Groups[1].Value
+          Write-Output "vendored header claims: $want"
+          if ($want -ne "LuaJIT $env:LUAJIT_VERSION_STR") {
+            throw "vendored header says '$want', workflow expects 'LuaJIT $env:LUAJIT_VERSION_STR'"
+          }
+
+      - name: Patch msvcbuild.bat to enable LUAJIT_ENABLE_LUA52COMPAT
+        run: |
+          $bat = "$env:LUAJIT_SRC\src\msvcbuild.bat"
+          $text = Get-Content $bat -Raw
+          $needle = '@set LJCOMPILE=cl /nologo /c /O2'
+          if ($text -notmatch [regex]::Escape($needle)) {
+            throw "LJCOMPILE line not found in $bat -- upstream build script changed"
+          }
+          if ($text -match 'LUAJIT_ENABLE_LUA52COMPAT') {
+            Write-Output 'already patched'
+          } else {
+            # LJCOMPILE must carry the define BEFORE buildvm is compiled
+            # (line ~74) so that the generated lj_libdef.h / lj_ffdef.h and the
+            # compiled lj_*.obj / lib_*.obj agree on which entries exist.
+            $text = $text.Replace(
+              $needle,
+              '@set LJCOMPILE=cl /nologo /c /O2 /DLUAJIT_ENABLE_LUA52COMPAT'
+            )
+            Set-Content -Path $bat -Value $text -NoNewline
+          }
+          (Select-String -Path $bat -Pattern 'LUAJIT_ENABLE_LUA52COMPAT').Line
+
+      - name: Set up MSVC (x64) from the runner's preinstalled Visual Studio
+        run: |
+          # Deliberately no third-party action here: this repository pins every
+          # external action to a full commit SHA, and a SHA that cannot be
+          # verified is worse than not using the action at all. windows-latest
+          # always ships Visual Studio with the C++ workload, and vswhere.exe is
+          # part of its installer, so the environment can be set up directly.
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found at $vswhere" }
+          $vsPath = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1)
+          if (-not $vsPath) { throw 'No Visual Studio installation with the C++ toolset found' }
+          Write-Output "Visual Studio: $vsPath"
+          $devCmd = Join-Path $vsPath 'Common7\Tools\VsDevCmd.bat'
+          if (-not (Test-Path $devCmd)) { throw "VsDevCmd.bat not found at $devCmd" }
+          # VsDevCmd.bat prints the environment it sets; importing that dump is
+          # the documented way to reuse it from a non-cmd shell.
+          $dump = cmd /c "`"$devCmd`" -arch=amd64 -host_arch=amd64 && set"
+          if ($LASTEXITCODE -ne 0) { throw "VsDevCmd.bat failed ($LASTEXITCODE)" }
+          $count = 0
+          foreach ($line in $dump) {
+            if ($line -notmatch '^[A-Za-z_][A-Za-z0-9_()]*=') { continue }
+            Add-Content -Path $env:GITHUB_ENV -Value $line
+            $count++
+          }
+          Write-Output "exported $count environment variables"
+          if ($count -lt 10) { throw 'VsDevCmd.bat produced suspiciously little output' }
+
+      - name: Build static lua51.lib
+        working-directory: ${{ env.LUAJIT_SRC }}\src
+        run: |
+          cmd /c "msvcbuild.bat static"
+          if ($LASTEXITCODE -ne 0) { throw "msvcbuild.bat static failed with $LASTEXITCODE" }
+          if (-not (Test-Path .\lua51.lib)) { throw 'lua51.lib was not produced' }
+          Get-Item .\lua51.lib | Select-Object Name, Length
+
+      - name: Assert lua51.lib really is a Lua 5.2-compat build
+        working-directory: ${{ env.LUAJIT_SRC }}\src
+        run: |
+          # DO NOT try to verify this by scanning the archive for 5.2 API names.
+          # None of them exist in LuaJIT:
+          #   lua_pushglobaltable  not declared or defined anywhere
+          #   lua_rawlen           not declared or defined anywhere
+          #   luaL_requiref        not declared or defined anywhere
+          #   luaL_newlib          a macro in lauxlib.h, so never a symbol
+          # and the members this LuaJIT DOES declare as "From Lua 5.2 / 5.3"
+          # (lua_copy, lua_version, lua_tonumberx, lua_isyieldable,
+          # luaL_testudata, luaL_setfuncs, ...) are declared UNCONDITIONALLY at
+          # lua.h:346-357, so a stock 5.1 build exports them too.
+          #
+          # LJ_52 has no reliable symbol-level fingerprint. The runtime surface
+          # is the only honest test, so this builds a harness against the
+          # vendored headers AND the freshly built lua51.lib, then loads a Lua
+          # chunk that asserts the 5.2 features with luaL_dofile -- the same call
+          # FunkinLua makes for a mod script.
+          #
+          # A link failure means the archive is missing API the engine actually
+          # calls (luaL_newstate / luaL_openlibs / luaL_dofile); an assertion
+          # failure means LUAJIT_ENABLE_LUA52COMPAT did not take effect.
+          $hdr = "$env:LINC_LUAJIT_DIR\project\luajit\include".Replace('\', '/')
+          $src = Join-Path $env:RUNNER_TEMP 'lua52_probe.c'
+          @"
+          /* Generated by .github/workflows/rebuild-luajit.yml -- do not edit. */
+          #include <stdio.h>
+          #include <string.h>
+          #include "lua.hpp"
+
+          static int failures = 0;
+
+          /*
+           * Every assert below is a Lua 5.2 feature that is ABSENT when the
+           * library is built without LUAJIT_ENABLE_LUA52COMPAT, except the
+           * goto / \z / \x / \u{} ones, which LuaJIT provides regardless --
+           * those are here to catch a regression in the other direction.
+           */
+          static const char *k_probe_lua =
+            "assert(rawlen('abcd') == 4, 'rawlen missing -- LJ_52 is off')\n"
+            "assert(type(table.pack) == 'function', 'table.pack missing -- LJ_52 is off')\n"
+            "assert(table.pack(1,2,3).n == 3, 'table.pack n wrong')\n"
+            "assert(type(table.unpack) == 'function', 'table.unpack missing')\n"
+            "assert(type(unpack) == 'function', 'global unpack was removed')\n"
+            "assert(type(package.searchers) == 'table', 'package.searchers missing -- LJ_52 is off')\n"
+            "assert(type(package.loaders) == 'table', 'package.loaders was removed')\n"
+            "local function f() local x = 1; ; return x end\n"
+            "assert(f() == 1, 'empty statement rejected -- LJ_52 is off')\n"
+            "local function g() local i = 0 ::again:: i = i + 1 if i < 3 then goto again end return i end\n"
+            "assert(g() == 3, 'goto/::label:: rejected')\n"
+            "local n = 0\n"
+            "for i = 1, 10 do n = n + 1; if i == 3 then break end; n = n + 100 end\n"
+            "assert(n == 3, 'break mid-block rejected -- LJ_52 is off')\n"
+            "assert('a\\z\n   b' == 'ab', '\\\\z escape rejected')\n"
+            "assert('\\x41' == 'A', '\\\\xNN escape rejected')\n"
+            "assert('\\u{48}' == 'H', '\\\\u{} escape rejected')\n";
+
+          int main(void) {
+            lua_State *L = luaL_newstate();
+            FILE *fp;
+            int rc;
+            if (L == NULL) { printf("luaL_newstate failed\n"); return 2; }
+            luaL_openlibs(L);
+
+            fp = fopen("lua52_probe.lua", "wb");
+            if (fp == NULL) { printf("could not write probe script\n"); return 2; }
+            fwrite(k_probe_lua, 1, strlen(k_probe_lua), fp);
+            fclose(fp);
+
+            printf("LUA_VERSION=%s  LUAJIT=%s\n", LUA_VERSION, LUAJIT_VERSION);
+
+            rc = luaL_dofile(L, "lua52_probe.lua");
+            if (rc != 0) {
+              printf("  FAIL probe chunk did not load or run: %s\n", lua_tostring(L, -1));
+              lua_pop(L, 1);
+              failures++;
+            } else {
+              printf("  ok   probe chunk loaded via luaL_dofile and ran\n");
+            }
+
+            lua_close(L);
+            printf("PROBE %s (%d failure(s))\n", failures == 0 ? "PASS" : "FAIL", failures);
+            return failures == 0 ? 0 : 1;
+          }
+          "@ | Set-Content -Path $src -Encoding ascii
+          Write-Output "harness: $src"
+          & cl /nologo /W3 /O2 /I"$hdr" /Fe:lua52_probe.exe $src lua51.lib
+          if ($LASTEXITCODE -ne 0) {
+            throw "compile/link against lua51.lib failed ($LASTEXITCODE) -- archive is missing API the engine needs"
+          }
+          .\lua52_probe.exe
+          if ($LASTEXITCODE -ne 0) { throw "Lua 5.2 probe failed ($LASTEXITCODE): LUAJIT_ENABLE_LUA52COMPAT did not take effect" }
+
+      - name: Build luajit.exe for the shim runtime test
+        working-directory: ${{ env.LUAJIT_SRC }}\src
+        run: |
+          # msvcbuild.bat deletes luajit.exe at the end of a successful run, so
+          # it is relinked here from the same objects + the same lua51.lib the
+          # game will link against. This guarantees the test exercises the exact
+          # artifact being shipped.
+          & cl /nologo /c /O2 /W3 /D_CRT_SECURE_NO_DEPRECATE /D_CRT_STDIO_INLINE="__declspec(dllexport)__inline" /DLUAJIT_ENABLE_LUA52COMPAT /Zi luajit.c
+          if ($LASTEXITCODE -ne 0) { throw 'cl luajit.c failed' }
+          & link /nologo /DEBUG /RELEASE /OPT:REF /OPT:ICF /INCREMENTAL:NO /out:luajit.exe luajit.obj lua51.lib
+          if ($LASTEXITCODE -ne 0) { throw 'link luajit.exe failed' }
+          .\luajit.exe -v
+
+      - name: Runtime test for the C shim (utf8 / bit32 / table.maxn)
+        working-directory: ${{ env.LUAJIT_SRC }}\src
+        run: |
+          $test = Join-Path $env:RUNNER_TEMP 'linc_lua_shim.lua'
+          $lua = @'
+          -- Only the C shim from project/src/linc_lua.cpp is checked here: the
+          -- Lua 5.2 surface itself is already proven by the C probe above. This
+          -- runs the real shim through the real interpreter instead of
+          -- reimplementing it.
+          -- These are the LuaJIT-EXTENDED patterns (not the plain 5.1 set), so
+          -- \0, \xNN and \z below are intentional.
+          local utf8charpattern_expected = '[\0-\x7F\xC2-\xFD][\x80-\xBF]*'
+          local cjk = '\228\189\160\229\165\189'
+
+          local failures = {}
+          local function ok(name, cond, detail)
+            if cond then
+              print(('  ok   %s'):format(name))
+            else
+              print(('  FAIL %s %s'):format(name, detail or ''))
+              failures[#failures + 1] = name
+            end
+          end
+
+          ok('utf8 library installed', type(utf8) == 'table')
+          ok('utf8.charpattern', utf8 and utf8.charpattern == utf8charpattern_expected)
+          ok('utf8.char ascii', utf8 and utf8.char(72, 105) == 'Hi')
+          ok('utf8.char multi-byte', utf8 and utf8.char(0x4F60, 0x597D) == cjk)
+          ok('utf8.len ascii', utf8 and utf8.len('hello') == 5)
+          ok('utf8.len multi-byte', utf8 and utf8.len(cjk) == 2)
+          ok('utf8.len rejects bad bytes', utf8 and utf8.len('\255') == nil)
+          ok('utf8.codepoint', utf8 and utf8.codepoint('A') == 65)
+          ok('utf8.offset', utf8 and utf8.offset('abc', 2) == 2)
+          ok('utf8.codes', (function()
+            local n = 0
+            for _p, _c in utf8.codes(cjk) do n = n + 1 end
+            return n
+          end)() == 2)
+          ok('utf8 round-trip', utf8.char(utf8.codepoint('Z')) == 'Z')
+
+          ok('bit32 aliases bit', type(bit32) == 'table' and bit32.band(0xF0, 0x3C) == 0x30)
+          ok('bit32.bnot', bit32.bnot(0) == -1)
+          ok('bit32 shifts', bit32.lshift(1, 4) == 16 and bit32.rshift(16, 4) == 1)
+          ok('table.maxn restored', table.maxn({1, 2, 3, [9] = 1}) == 9)
+
+          print(('RESULT %s (%d failure(s))'):format(#failures == 0 and 'PASS' or 'FAIL', #failures))
+          if #failures > 0 then os.exit(1) end
+          os.exit(0)
+          '@
+          # -Encoding utf8 in Windows PowerShell prepends a UTF-8 BOM, and
+          # LuaJIT's luaL_loadfile does NOT skip one: the file would fail to
+          # load with "unexpected symbol near '<\239>'". Write the bytes without
+          # a BOM explicitly.
+          [System.IO.File]::WriteAllText($test, $lua, [System.Text.UTF8Encoding]::new($false))
+          .\luajit.exe $test
+          if ($LASTEXITCODE -ne 0) { throw "linc_lua compat shim test failed ($LASTEXITCODE)" }
+
+      - name: Runtime conformance test (negative -- 5.3 operators still rejected)
+        working-directory: ${{ env.LUAJIT_SRC }}\src
+        run: |
+          # These must NOT silently pass: LuaJIT 2.1 has no 5.3 operators. If a
+          # future LuaJIT gains them, this test fails and the premise behind the
+          # compat shim's operator detector needs revisiting.
+          $cases = [ordered]@{
+            'integer division' = 'local a = 7 // 2'
+            'left shift'       = 'local a = 1 << 3'
+            'right shift'      = 'local a = 8 >> 1'
+          }
+          foreach ($name in $cases.Keys) {
+            $f = Join-Path $env:RUNNER_TEMP ("neg_" + ($name -replace ' ', '_') + ".lua")
+            Set-Content -Path $f -Value $cases[$name] -Encoding ascii
+            # Merge both streams: a compile-time syntax error lands on stderr
+            # ("unexpected symbol"), a runtime one comes from our C hook. Both
+            # must mention the operator we are complaining about.
+            $out = (& .\luajit.exe $f 2>&1 | Out-String)
+            $code = $LASTEXITCODE
+            if ($code -eq 0) { throw "$name unexpectedly parsed and ran" }
+            if ($out -notmatch 'unexpected symbol|line|operator') {
+              throw "$name failed with an unrecognisable message: $out"
+            }
+            Write-Output "  ok   $name rejected (exit $code): $(($out -split "`n")[0].Trim())"
+          }
+
+      - name: Install the rebuilt library into linc_luajit
+        run: |
+          $dst = "$env:LINC_LUAJIT_DIR\project\luajit\lib\Windows\lua52compat"
+          New-Item -ItemType Directory -Force -Path $dst | Out-Null
+          # Keep a pristine copy of the stock 5.1 library so a rollback is a
+          # one-file rename rather than a re-clone of the haxelib.
+          $stock = "$env:LINC_LUAJIT_DIR\project\luajit\lib\Windows\lua51-x86_64.lib"
+          $keep  = "$env:LINC_LUAJIT_DIR\project\luajit\lib\Windows\lua51-x86_64.lib.upstream"
+          if ((Test-Path $stock) -and -not (Test-Path $keep)) {
+            Copy-Item $stock $keep
+            Write-Output "archived stock library -> lua51-x86_64.lib.upstream"
+          }
+          Copy-Item "$env:LUAJIT_SRC\src\lua51.lib" "$dst\lua51-x86_64.lib" -Force
+          # Correctness of the installed bytes was already proven by the C probe
+          # in the "Assert lua51.lib really is a Lua 5.2-compat build" step,
+          # which linked against this very archive.
+          $installed = "$dst\lua51-x86_64.lib"
+          $built = "$env:LUAJIT_SRC\src\lua51.lib"
+          $a = (Get-FileHash $installed -Algorithm SHA256).Hash
+          $b = (Get-FileHash $built -Algorithm SHA256).Hash
+          if ($a -ne $b) { throw "installed library does not match the built one ($a vs $b)" }
+          Get-Item $installed | Select-Object FullName, Length
+          Write-Output "installed library verified: sha256 $a"
+
+      - name: Upload rebuilt library
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: luajit-2.1-lua52compat-windows-x64
+          path: ${{ env.LINC_LUAJIT_DIR }}/project/luajit/lib/Windows/lua52compat/lua51-x86_64.lib
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Summary
+        if: always()
+        run: |
+          @"
+          ### LuaJIT Lua 5.2 compat rebuild
+
+          | | |
+          |---|---|
+          | Upstream revision | ``$env:LUAJIT_REV`` |
+          | Version string | ``LuaJIT $env:LUAJIT_VERSION_STR`` |
+          | Build define | ``LUAJIT_ENABLE_LUA52COMPAT`` |
+          | GC tuning | pause=$env:GC_PAUSE, stepmul=$env:GC_STEPMUL |
+          | Installed to | ``project/luajit/lib/Windows/lua52compat/lua51-x86_64.lib`` |
+          | Consumed by | ``project/Build.xml``, ``if="windows"`` |
+
+          To roll back: rename ``lua51-x86_64.lib.upstream`` back to
+          ``lua51-x86_64.lib`` and remove the ``if="windows"`` compilerflags in
+          ``project/Build.xml``.
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
