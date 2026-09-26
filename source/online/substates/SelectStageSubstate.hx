@@ -97,10 +97,6 @@ class SelectStageSubstate extends MusicBeatSubstate {
         }
 
         coolCam.setScrollBounds(FlxG.width, FlxG.width, 0, endScrollY > FlxG.height ? endScrollY : FlxG.height);
-		#if (TOUCH_CONTROLS || desktop)
-		addVirtualPad(UP_DOWN, A_B);
-		addPadCamera();
-		#end
     }
 
 	/**

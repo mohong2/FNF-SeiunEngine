@@ -159,10 +159,6 @@ class DownloaderState extends MusicBeatState {
 
 		updateModProvider();
 		loadNextPage(true);
-		#if (TOUCH_CONTROLS || desktop)
-		addVirtualPad(LEFT_FULL, A_B);
-		addPadCamera();
-		#end
     }
 
 	function updateModProvider() {

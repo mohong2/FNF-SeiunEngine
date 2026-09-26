@@ -96,10 +96,6 @@ class SetupModsState extends MusicBeatState {
 		FlxG.stage.addEventListener(KeyboardEvent.KEY_DOWN, onKeyDown);
 
 		changeSelection(0);
-		#if (TOUCH_CONTROLS || desktop)
-		addVirtualPad(UP_DOWN, A_B);
-		addPadCamera();
-		#end
     }
 
     override function update(elapsed:Float) {

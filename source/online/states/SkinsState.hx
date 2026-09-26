@@ -482,10 +482,6 @@ class SkinsState extends MusicBeatState {
 		CustomFadeTransition.nextCamera = hud; // wat
 
 		GameClient.send("status", "Selecting their skin");
-		#if (TOUCH_CONTROLS || desktop)
-		addVirtualPad(LEFT_RIGHT, A_B);
-		addPadCamera();
-		#end
     }
 
 	function getCharacterName(i:Int) {

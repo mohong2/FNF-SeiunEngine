@@ -57,10 +57,6 @@ class TopPlayerSubstate extends MusicBeatSubstate {
 		resetTxt = new FlxText(0, topShit.y + topShit.background.height + 8);
 		resetTxt.setFormat(OnlineLang.font(), 16, 0xFF9FB2C0, CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 		add(resetTxt);
-		#if (TOUCH_CONTROLS || desktop)
-		addVirtualPad(LEFT_FULL, A_B);
-		addPadCamera();
-		#end
     }
 
     var top:Array<Dynamic> = [];

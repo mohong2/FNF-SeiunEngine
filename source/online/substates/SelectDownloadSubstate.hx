@@ -129,10 +129,6 @@ class SelectDownloadSubstate extends MusicBeatSubstate {
 
 		var endScrollBound = endCoord + 20 > FlxG.height ? endCoord + 20 : FlxG.height;
 		coolCam.setScrollBounds(FlxG.width, FlxG.width, 0, endScrollBound);
-		#if (TOUCH_CONTROLS || desktop)
-		addVirtualPad(UP_DOWN, A_B);
-		addPadCamera();
-		#end
     }
 
 	override function destroy() {

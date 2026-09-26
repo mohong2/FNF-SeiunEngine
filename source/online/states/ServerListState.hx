@@ -201,10 +201,6 @@ class ServerListState extends MusicBeatState {
 
 		changeSelection(0);
 		probeAll();
-		#if (TOUCH_CONTROLS || desktop)
-		addVirtualPad(UP_DOWN, A_B);
-		addPadCamera();
-		#end
 	}
 
 	// ------------------------------------------------------------------

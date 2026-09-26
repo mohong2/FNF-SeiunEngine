@@ -181,10 +181,6 @@ class RequestSubstate extends MusicBeatSubstate {
 
 		if (onCreate != null)
 			onCreate(this);
-		#if (TOUCH_CONTROLS || desktop)
-		addVirtualPad(LEFT_RIGHT, A_B);
-		addPadCamera();
-		#end
 	}
 
 	override function destroy() {

@@ -71,10 +71,6 @@ class FindRoomState extends MusicBeatState {
 		emptyMessage.screenCenter();
 		emptyMessage.visible = false;
 		add(emptyMessage);
-		#if (TOUCH_CONTROLS || desktop)
-		addVirtualPad(UP_DOWN, A_B);
-		addPadCamera();
-		#end
     }
 
     override function update(elapsed) {
