@@ -185,7 +185,18 @@ class LoadingState extends MusicBeatState
 		{
 			@:privateAccess
 			if (!LimeAssets.libraryPaths.exists(library))
-				throw new haxe.Exception("Missing library: " + library);
+			{
+				// The asset folder asked for is not a lime library at all. A chart's stage file is
+				// free to name any folder (BPM-2021's stages/BPM.json asks for "week0", which is
+				// neither a real week nor a registered library), and there is nothing to wait for in
+				// that case: Paths resolves the real assets from disk paths and falls back to
+				// shared/ when the level folder does not exist. Only a genuinely stalled library
+				// should hold the load, so an unknown name is skipped with a warning instead of
+				// killing the whole song with "Missing library: <name>".
+				TraceManager.warn('trace.loading.libraryNotRegistered',
+					'asset folder is not a lime library, skipping library wait: {}', [library]);
+				return;
+			}
 
 			var callback = callbacks.add("library:" + library);
 			var fut = Assets.loadLibrary(library);
