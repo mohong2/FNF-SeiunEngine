@@ -122,6 +122,15 @@ class CopyState extends MusicBeatState
 	{
 		instance = this;
 
+		// PlayerSettings.player1 is null until init() runs, and BOTH of the things below need
+		// it: ClientPrefs.loadPrefs() ends in reloadControls() (PlayerSettings.player1.controls),
+		// and MusicBeatState.controls is the property PlayerSettings.player1.controls, which
+		// MusicBeatState.create() dereferences via setOnHscript. TitleState used to call init()
+		// before loadPrefs() and before super.create(); the boot state has to do the same or the
+		// process dies with SIGSEGV at a null + small offset during startup.
+		if (PlayerSettings.player1 == null)
+			PlayerSettings.init();
+
 		// The boot states own the prefs bootstrap: autoExtractAssets, storageType and the
 		// saved language all come from here, and MusicBeatState.create() loads the language.
 		ClientPrefs.ensureLoaded();
@@ -430,10 +439,9 @@ class CopyState extends MusicBeatState
 
 	function handOver():Void
 	{
-		// Cold-start storage check: warn once when the data does not sit on the public root
-		// directory, where the file manager, mods and saves can find it.
-		SUtil.checkStorageRootWarning();
-
+		// The cold-start storage-location warning is raised by TitleState's normal flow, next
+		// to the engine's other boot dialogs: showing a native dialog from the very first
+		// state is one unknown too many for a startup path.
 		TraceManager.info('trace.copy.handOver', 'Assets ready; entering TitleState');
 		MusicBeatState.switchState(new TitleState());
 	}

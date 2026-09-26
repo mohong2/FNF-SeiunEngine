@@ -1045,6 +1045,12 @@ class ClientPrefs {
 
 
 	public static function reloadControls() {
+		// player1 is null until PlayerSettings.init() runs. loadPrefs() (which ends here) can be
+		// reached from the boot state before any state has created the players, so establish
+		// them rather than dereferencing null.
+		if (PlayerSettings.player1 == null)
+			PlayerSettings.init();
+
 		PlayerSettings.player1.controls.setKeyboardScheme(KeyboardScheme.Solo);
 
 		TitleState.muteKeys = copyKey(keyBinds.get('volume_mute'));

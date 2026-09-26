@@ -341,6 +341,10 @@ class TitleState extends MusicBeatState
 	{
 		#if android
 		Language.load();
+		// Once per cold start: tell the player when the data does not sit on the public root
+		// directory, where the file manager, mods and saves can find it. Raised here rather
+		// than in the boot state so it shares the proven-safe dialog slot below.
+		SUtil.checkStorageRootWarning();
 		SUtil.maybeRequestAllFilesAccess();
 		SUtil.maybeRequestOverlayPermission();
 		#end
