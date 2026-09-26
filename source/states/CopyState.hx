@@ -652,6 +652,16 @@ class CopyState extends MusicBeatState
 	#if !android
 	function startLegacyLoop():Void
 	{
+		if (maxLoopTimes <= 0)
+		{
+			// Readiness flagged something, but the asset list has nothing left to copy (the
+			// platform paths can disagree). Never wait on an empty async loop.
+			shouldCopy = false;
+			TraceManager.info('trace.copy.noop', 'No files to copy; continuing.');
+			handOver();
+			return;
+		}
+
 		var ticks:Int = 15;
 		if (maxLoopTimes <= 15)
 			ticks = 1;

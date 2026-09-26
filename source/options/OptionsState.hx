@@ -1748,7 +1748,10 @@ class OptionsState extends MusicBeatState
 		ClientPrefs.saveSettings();
 		SUtil.invalidateStorageCache();
 
-		var resolved:String = SUtil.getStorageDirectory(true);
+		// Re-resolve through the normal path (getStorageDirectory(true) caches the *forced*
+		// path, which is only a guess) and re-apply it, so cwd, the crash directory and the
+		// linemap all move to the new root together.
+		var resolved:String = SUtil.applyStorageDirectory();
 		mohong.TraceManager.info('trace.options.storageTypeChanged',
 			'Storage type {} now resolves to {}', [ClientPrefs.data.storageType, resolved]);
 
