@@ -1,7 +1,7 @@
 > ⚠️ **已废弃 / DEPRECATED（2026-09-12）**
 >
 > 本文描述的是 SeiunEngine **旧版联机实现**，该实现已在 commit `8ab3200` 中整体拆除。
-> 它与现役的 SeiunEngine 联机实现（Colyseus/WebSocket，见 `docs/ONLINE_PORT_HANDOFF.md`）
+> 它与现役的 SeiunEngine 联机实现（Colyseus/WebSocket，见 `server/README.md`）
 > **协议不兼容**，因此本文**不能作为新实现的参考**。
 > 保留仅为历史记录，将在新实现落地后重写或替换。
 

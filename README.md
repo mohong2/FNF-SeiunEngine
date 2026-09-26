@@ -65,7 +65,7 @@ themselves are **not** vendored into this repo.
 > `source/import.hx` applies to a directory *and all its subdirectories* and would
 > leak engine imports into those third-party root packages.
 >
-> See `source/_online_libs/README.md` and `docs/ONLINE_PORT_HANDOFF.md`.
+> See `source/_online_libs/README.md`.
 
 | override file | patches |
 |---|---|
