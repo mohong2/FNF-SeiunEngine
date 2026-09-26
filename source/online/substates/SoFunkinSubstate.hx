@@ -101,6 +101,10 @@ class SoFunkinSubstate extends MusicBeatSubstate {
 		FlxG.stage.addEventListener(KeyboardEvent.KEY_DOWN, onKeyDown);
 
 		super.create();
+		#if (TOUCH_CONTROLS || desktop)
+		addVirtualPad(LEFT_FULL, A_B);
+		addPadCamera();
+		#end
 	}
 	
 	override function destroy() {
