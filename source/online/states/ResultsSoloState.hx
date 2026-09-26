@@ -425,6 +425,10 @@ class ResultsSoloState extends MusicBeatState {
 		//tween to 4 for 100%lerp
 
         add(new DebugPosHelper());
+		#if (TOUCH_CONTROLS || desktop)
+		addVirtualPad(NONE, A_B);
+		addPadCamera();
+		#end
     }
 
 	function playMusic() {
