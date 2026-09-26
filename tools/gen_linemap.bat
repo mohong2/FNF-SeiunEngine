@@ -29,18 +29,28 @@ if errorlevel 1 (
     python -m pip install pyelftools || exit /b 1
 )
 
-if not exist "export\%BUILD%\android\obj\libApplicationMain-64.so" (
-    echo [gen_linemap] export\%BUILD%\android\obj\libApplicationMain-64.so not found.
-    echo Run "lime build android" first.
+rem -DHXCPP_DEBUG_LINK_AND_STRIP keeps the unstripped link output in
+rem obj\obj\android-64 (and android-v7); obj\libApplicationMain-*.so next to it is
+rem the stripped deployment copy. Prefer the unstripped one, fall back to the
+rem flat path for older layouts.
+set SO64=
+if exist "export\%BUILD%\android\obj\obj\android-64\libApplicationMain.so" set SO64=export\%BUILD%\android\obj\obj\android-64\libApplicationMain.so
+if "%SO64%"=="" if exist "export\%BUILD%\android\obj\libApplicationMain-64.so" set SO64=export\%BUILD%\android\obj\libApplicationMain-64.so
+if "%SO64%"=="" (
+    echo [gen_linemap] no arm64 .so found.
+    echo Run "haxelib run lime build android -DHXCPP_DEBUG_LINK_AND_STRIP" first.
     exit /b 1
 )
 
 echo [gen_linemap] arm64-v8a
-python tools\gen_linemap.py "export\%BUILD%\android\obj\libApplicationMain-64.so" "assets\linemap\arm64-v8a.bin" || exit /b 1
+python tools\gen_linemap.py "%SO64%" "assets\linemap\arm64-v8a.bin" || exit /b 1
 
-if exist "export\%BUILD%\android\obj\libApplicationMain-v7.so" (
+set SO7=
+if exist "export\%BUILD%\android\obj\obj\android-v7\libApplicationMain.so" set SO7=export\%BUILD%\android\obj\obj\android-v7\libApplicationMain.so
+if "%SO7%"=="" if exist "export\%BUILD%\android\obj\libApplicationMain-v7.so" set SO7=export\%BUILD%\android\obj\libApplicationMain-v7.so
+if not "%SO7%"=="" (
     echo [gen_linemap] armeabi-v7a
-    python tools\gen_linemap.py "export\%BUILD%\android\obj\libApplicationMain-v7.so" "assets\linemap\armeabi-v7a.bin" || exit /b 1
+    python tools\gen_linemap.py "%SO7%" "assets\linemap\armeabi-v7a.bin" || exit /b 1
 )
 
 echo.
