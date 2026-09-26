@@ -1,5 +1,76 @@
 [
 	{
+		"nameKey": "option.storageType",
+		"defaultName": "Storage Type",
+		"descKey": "option.storageType.desc",
+		"defaultDesc": "Choose how the game accesses storage.\nEXTERNAL_DATA (default, safest) → /Android/data/<package>/files\nEXTERNAL (legacy) → /storage/emulated/0/.<game>\nEXTERNAL_OBB → /Android/obb/<package>\nEXTERNAL_MEDIA → /Android/media/<package>\n\nIf the selected path is not accessible, the game will automatically fall back to a working type.",
+		"variable": "storageType",
+		"type": "string",
+		"defaultValue": "EXTERNAL_DATA",
+		"options": [
+			"EXTERNAL_DATA",
+			"EXTERNAL",
+			"EXTERNAL_OBB",
+			"EXTERNAL_MEDIA"
+		],
+		"platform": "mobile",
+		"onChange": "onChangeStorageType"
+	},
+	{
+		"nameKey": "option.autoExtractAssets",
+		"defaultName": "Auto-Extract Assets",
+		"descKey": "option.autoExtractAssets.desc",
+		"defaultDesc": "If enabled, the game will automatically extract necessary assets from the APK on first launch.",
+		"variable": "autoExtractAssets",
+		"type": "bool",
+		"defaultValue": true,
+		"platform": "mobile"
+	},
+	{
+		"nameKey": "option.showStorageRootWarning",
+		"defaultName": "Storage Location Warning",
+		"descKey": "option.showStorageRootWarning.desc",
+		"defaultDesc": "Warn once at launch when the game's data is not kept on the public root directory (/storage/emulated/0/.<game>), where mods, saves and the file manager can see it.",
+		"variable": "showStorageRootWarning",
+		"type": "bool",
+		"defaultValue": true,
+		"platform": "mobile"
+	},
+	{
+		"nameKey": "option.touchControls",
+		"defaultName": "Touch Support",
+		"descKey": "option.touchControls.desc",
+		"defaultDesc": "Bring the Android mobile controls (virtual pad / hitbox) to PC, usable with mouse or touchscreen.\nMode and layout can be changed in the Touch Controls menu.",
+		"variable": "touchControls",
+		"type": "bool",
+		"defaultValue": false,
+		"platform": "desktop"
+	},
+	{
+		"nameKey": "option.touchSwipe",
+		"defaultName": "Touch/Swipe Gestures",
+		"descKey": "option.touchSwipe.desc",
+		"defaultDesc": "If enabled, you can swipe/scroll by dragging with the mouse or touching the screen.\nDisable if you prefer standard click-only navigation.",
+		"variable": "touchSwipeEnabled",
+		"type": "bool",
+		"defaultValue": true,
+		"onChange": "onChangeTouchSwipe"
+	},
+	{
+		"nameKey": "option.mobileCAlpha",
+		"defaultName": "Mobile Controls Opacity",
+		"descKey": "option.mobileCAlpha.desc",
+		"defaultDesc": "How transparent the virtual pad buttons are when not pressed.",
+		"variable": "mobileCAlpha",
+		"type": "percent",
+		"defaultValue": 0.6,
+		"minValue": 0.1,
+		"maxValue": 1,
+		"changeValue": 0.01,
+		"decimals": 2,
+		"scrollSpeed": 0.5
+	},
+	{
 		"nameKey": "option.hitboxExtraToggle",
 		"defaultName": "Hitbox Extra Buttons",
 		"descKey": "option.hitboxExtraToggle.desc",
@@ -16,7 +87,10 @@
 		"variable": "hitboxExtraPos",
 		"type": "string",
 		"defaultValue": "Bottom",
-		"options": ["Bottom", "Top"]
+		"options": [
+			"Bottom",
+			"Top"
+		]
 	},
 	{
 		"nameKey": "option.hitboxPressAlpha",
@@ -40,40 +114,5 @@
 		"variable": "hitboxBorder",
 		"type": "bool",
 		"defaultValue": true
-	},
-	{
-		"nameKey": "option.mobileCAlpha",
-		"defaultName": "Mobile Controls Opacity",
-		"descKey": "option.mobileCAlpha.desc",
-		"defaultDesc": "How transparent the virtual pad buttons are when not pressed.",
-		"variable": "mobileCAlpha",
-		"type": "percent",
-		"defaultValue": 0.6,
-		"minValue": 0.1,
-		"maxValue": 1,
-		"changeValue": 0.01,
-		"decimals": 2,
-		"scrollSpeed": 0.5
-	},
-	{
-		"nameKey": "option.autoExtractAssets",
-		"defaultName": "Auto-Extract Assets",
-		"descKey": "option.autoExtractAssets.desc",
-		"defaultDesc": "If enabled, the game will automatically extract necessary assets from the APK on first launch.",
-		"variable": "autoExtractAssets",
-		"type": "bool",
-		"defaultValue": true,
-		"platform": "mobile"
-	},
-	{
-		"nameKey": "option.storageType",
-		"defaultName": "Storage Type",
-		"descKey": "option.storageType.desc",
-		"defaultDesc": "Choose how the game accesses storage.\nEXTERNAL_DATA (default, safest) → /Android/data/<package>/files\nEXTERNAL (legacy) → /storage/emulated/0/.<game>\nEXTERNAL_OBB → /Android/obb/<package>\nEXTERNAL_MEDIA → /Android/media/<package>\n\nIf the selected path is not accessible, the game will automatically fall back to a working type.",
-		"variable": "storageType",
-		"type": "string",
-		"defaultValue": "EXTERNAL_DATA",
-		"options": ["EXTERNAL_DATA", "EXTERNAL", "EXTERNAL_OBB", "EXTERNAL_MEDIA"],
-		"platform": "mobile"
 	}
 ]

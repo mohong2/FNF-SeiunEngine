@@ -9,52 +9,6 @@
 		"defaultValue": false
 	},
 	{
-		"nameKey": "option.compatEngine",
-		"defaultName": "Engine Compatibility",
-		"descKey": "option.compatEngine.desc",
-		"defaultDesc": "Choose which Psych Engine version's mod API/UI to emulate.\nAuto keeps the previous behavior (0.6.3, or 0.7.3 if the old compatibility toggle was on).\nNote-related callbacks (onSpawnNote, goodNoteHit, note splash...) adapt automatically.",
-		"variable": "compatEngine",
-		"type": "string",
-		"defaultValue": "Auto",
-		"options": [
-			"Auto",
-			"0.6.3",
-			"0.7.3",
-			"1.0.4"
-		]
-	},
-	{
-		"nameKey": "option.hscriptErrorHandling",
-		"defaultName": "Hscript's Error Handling",
-		"descKey": "option.hscriptErrorHandling.desc",
-		"defaultDesc": "If selected, Hscript will handle errors the same way as LUA, which may have some impact on Hscript.",
-		"variable": "hscriptErrorHandling",
-		"type": "bool",
-		"defaultValue": true
-	},
-	{
-		"nameKey": "option.ignoreErrorLoopScripts",
-		"defaultName": "Ignore Error-Loop Scripts",
-		"descKey": "option.ignoreErrorLoopScripts.desc",
-		"defaultDesc": "If a Lua/HScript keeps throwing errors every frame, ignore that script\nonce it reaches the error limit instead of spamming errors non-stop.",
-		"variable": "ignoreErrorLoopScripts",
-		"type": "bool",
-		"defaultValue": true
-	},
-	{
-		"nameKey": "option.scriptErrorLimit",
-		"defaultName": "Script Error Limit",
-		"descKey": "option.scriptErrorLimit.desc",
-		"defaultDesc": "How many consecutive errors a script may throw before it is ignored.",
-		"variable": "scriptErrorLimit",
-		"type": "int",
-		"defaultValue": 50,
-		"scrollSpeed": 10,
-		"minValue": 10,
-		"maxValue": 1000,
-		"displayFormat": "%v"
-	},
-	{
 		"nameKey": "option.downScroll",
 		"defaultName": "Downscroll",
 		"descKey": "option.downScroll.desc",
@@ -78,24 +32,6 @@
 		"descKey": "option.keyboardDisplay.desc",
 		"defaultDesc": "If checked, Feedback the key you pressed",
 		"variable": "keyboardDisplay",
-		"type": "bool",
-		"defaultValue": false
-	},
-	{
-		"nameKey": "option.saveReplayData",
-		"defaultName": "Save Replay Data",
-		"descKey": "option.saveReplayData.desc",
-		"defaultDesc": "If checked, the game will record your inputs and save them with your score.\nThis allows you to watch replays later.",
-		"variable": "saveReplayData",
-		"type": "bool",
-		"defaultValue": true
-	},
-	{
-		"nameKey": "option.lastNoteAnimation",
-		"defaultName": "Last Note Animation",
-		"descKey": "option.lastNoteAnimation.desc",
-		"defaultDesc": "If checked, character animation will only use the last pressed note's direction when multiple notes are hit simultaneously, reducing visual twitching.",
-		"variable": "lastNoteAnimation",
 		"type": "bool",
 		"defaultValue": false
 	},
@@ -127,6 +63,24 @@
 		"defaultValue": false
 	},
 	{
+		"nameKey": "option.lastNoteAnimation",
+		"defaultName": "Last Note Animation",
+		"descKey": "option.lastNoteAnimation.desc",
+		"defaultDesc": "If checked, character animation will only use the last pressed note's direction when multiple notes are hit simultaneously, reducing visual twitching.",
+		"variable": "lastNoteAnimation",
+		"type": "bool",
+		"defaultValue": false
+	},
+	{
+		"nameKey": "option.saveReplayData",
+		"defaultName": "Save Replay Data",
+		"descKey": "option.saveReplayData.desc",
+		"defaultDesc": "If checked, the game will record your inputs and save them with your score.\nThis allows you to watch replays later.",
+		"variable": "saveReplayData",
+		"type": "bool",
+		"defaultValue": true
+	},
+	{
 		"nameKey": "option.trackAlpha",
 		"defaultName": "Note Underlay Opacity",
 		"descKey": "option.trackAlpha.desc",
@@ -134,43 +88,20 @@
 		"variable": "trackAlpha",
 		"type": "percent",
 		"defaultValue": 0,
-		"scrollSpeed": 2.0,
-		"minValue": 0.0,
+		"scrollSpeed": 2,
+		"minValue": 0,
 		"maxValue": 1,
 		"changeValue": 0.1,
 		"decimals": 1
 	},
 	{
-		"nameKey": "option.hitsoundVolume",
-		"defaultName": "Hitsound Volume",
-		"descKey": "option.hitsoundVolume.desc",
-		"defaultDesc": "Funny notes does \"Tick!\" when you hit them.",
-		"variable": "hitsoundVolume",
-		"type": "percent",
-		"defaultValue": 0,
-		"scrollSpeed": 1.6,
-		"minValue": 0.0,
-		"maxValue": 1,
-		"changeValue": 0.1,
-		"decimals": 1,
-		"onChange": "onChangeGameplayHitsoundVolume"
-	},
-	{
-		"nameKey": "option.hitsound",
-		"defaultName": "Hitsound",
-		"descKey": "option.hitsound.desc",
-		"defaultDesc": "Select which sound plays when you hit a note.\nThe list comes from data/hitsoundList.txt, so you can add your own\nby appending a name to that txt and putting the sound file in sounds/hitsounds/.",
-		"variable": "hitsound",
-		"type": "string",
-		"defaultValue": "osu!mania",
-		"options": [
-			"none",
-			"osu!mania",
-			"daveandbambi",
-			"snap",
-			"clap"
-		],
-		"onChange": "onChangeHitsound"
+		"nameKey": "option.sustainsAsOneNote",
+		"defaultName": "Sustains as One Note",
+		"descKey": "option.sustainsAsOneNote.desc",
+		"defaultDesc": "If checked, Hold Notes can't be pressed if you miss,\nand count as a single Hit/Miss.\nUncheck this if you prefer the old Input System.",
+		"variable": "guitarHeroSustains",
+		"type": "bool",
+		"defaultValue": false
 	},
 	{
 		"nameKey": "option.ratingOffset",
@@ -279,14 +210,5 @@
 		"minValue": 3,
 		"maxValue": 500,
 		"onChange": "onChangeBadWindow"
-	},
-	{
-		"nameKey": "option.sustainsAsOneNote",
-		"defaultName": "Sustains as One Note",
-		"descKey": "option.sustainsAsOneNote.desc",
-		"defaultDesc": "If checked, Hold Notes can't be pressed if you miss,\nand count as a single Hit/Miss.\nUncheck this if you prefer the old Input System.",
-		"variable": "guitarHeroSustains",
-		"type": "bool",
-		"defaultValue": false
 	}
 ]

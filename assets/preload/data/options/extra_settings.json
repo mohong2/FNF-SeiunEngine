@@ -1,14 +1,49 @@
 [
 	{
-		"nameKey": "option.language",
-		"defaultName": "Language",
-		"descKey": "option.language.desc",
-		"defaultDesc": "Select the game display language.",
-		"variable": "language",
+		"nameKey": "option.compatEngine",
+		"defaultName": "Engine Compatibility",
+		"descKey": "option.compatEngine.desc",
+		"defaultDesc": "Choose which Psych Engine version's mod API/UI to emulate.\nAuto keeps the previous behavior (0.6.3, or 0.7.3 if the old compatibility toggle was on).\nNote-related callbacks (onSpawnNote, goodNoteHit, note splash...) adapt automatically.",
+		"variable": "compatEngine",
 		"type": "string",
-		"defaultValue": "English",
-		"options": ["English", "ChineseSimplified", "ChineseTraditional"],
-		"onChange": "onChangeLanguage"
+		"defaultValue": "Auto",
+		"options": [
+			"Auto",
+			"0.6.3",
+			"0.7.3",
+			"1.0.4"
+		]
+	},
+	{
+		"nameKey": "option.hscriptErrorHandling",
+		"defaultName": "Hscript's Error Handling",
+		"descKey": "option.hscriptErrorHandling.desc",
+		"defaultDesc": "If selected, Hscript will handle errors the same way as LUA, which may have some impact on Hscript.",
+		"variable": "hscriptErrorHandling",
+		"type": "bool",
+		"defaultValue": true
+	},
+	{
+		"nameKey": "option.ignoreErrorLoopScripts",
+		"defaultName": "Ignore Error-Loop Scripts",
+		"descKey": "option.ignoreErrorLoopScripts.desc",
+		"defaultDesc": "If a Lua/HScript keeps throwing errors every frame, ignore that script\nonce it reaches the error limit instead of spamming errors non-stop.",
+		"variable": "ignoreErrorLoopScripts",
+		"type": "bool",
+		"defaultValue": true
+	},
+	{
+		"nameKey": "option.scriptErrorLimit",
+		"defaultName": "Script Error Limit",
+		"descKey": "option.scriptErrorLimit.desc",
+		"defaultDesc": "How many consecutive errors a script may throw before it is ignored.",
+		"variable": "scriptErrorLimit",
+		"type": "int",
+		"defaultValue": 50,
+		"scrollSpeed": 10,
+		"minValue": 10,
+		"maxValue": 1000,
+		"displayFormat": "%v"
 	},
 	{
 		"nameKey": "option.luattf",
@@ -18,34 +53,10 @@
 		"variable": "luattf",
 		"type": "string",
 		"defaultValue": "English",
-		"options": ["Default TTF", "Language TTF"]
-	},
-	{
-		"nameKey": "option.opponentfe",
-		"defaultName": "Bot flickering effect",
-		"descKey": "option.opponentfe.desc",
-		"defaultDesc": "If unchecked, the flickering effect will be canceled after the Bot hits.",
-		"variable": "opponentfe",
-		"type": "bool",
-		"defaultValue": true
-	},
-	{
-		"nameKey": "option.sidehud",
-		"defaultName": "Side HUD",
-		"descKey": "option.sidehud.desc",
-		"defaultDesc": "If this is not checked, values such as sick and good on the left side of the game will not be displayed",
-		"variable": "sidehud",
-		"type": "bool",
-		"defaultValue": true
-	},
-	{
-		"nameKey": "option.oldmodsmenu",
-		"defaultName": "OLD Mods Menu",
-		"descKey": "option.oldmodsmenu.desc",
-		"defaultDesc": "If checked, the old mods menu will be used instead of the new one",
-		"variable": "oldmodsmenu",
-		"type": "bool",
-		"defaultValue": false
+		"options": [
+			"Default TTF",
+			"Language TTF"
+		]
 	},
 	{
 		"nameKey": "option.newchartingstate",
@@ -84,55 +95,13 @@
 		"variable": "traceConsoleLevel",
 		"type": "string",
 		"defaultValue": "DEBUG",
-		"options": ["DEBUG", "INFO", "WARN", "ERROR"],
+		"options": [
+			"DEBUG",
+			"INFO",
+			"WARN",
+			"ERROR"
+		],
 		"onChange": "onChangeTraceConsoleLevel",
 		"platform": "desktop"
-	},
-	{
-		"nameKey": "option.touchSwipe",
-		"defaultName": "Touch/Swipe Gestures",
-		"descKey": "option.touchSwipe.desc",
-		"defaultDesc": "If enabled, you can swipe/scroll by dragging with the mouse or touching the screen.\nDisable if you prefer standard click-only navigation.",
-		"variable": "touchSwipeEnabled",
-		"type": "bool",
-		"defaultValue": true,
-		"onChange": "onChangeTouchSwipe"
-	},
-	{
-		"nameKey": "option.touchControls",
-		"defaultName": "Touch Support",
-		"descKey": "option.touchControls.desc",
-		"defaultDesc": "Bring the Android mobile controls (virtual pad / hitbox) to PC, usable with mouse or touchscreen.\nMode and layout can be changed in the Touch Controls menu.",
-		"variable": "touchControls",
-		"type": "bool",
-		"defaultValue": false,
-		"platform": "desktop"
-	},
-	{
-		"nameKey": "option.oldPauseMenu",
-		"defaultName": "Old Pause Menu",
-		"descKey": "option.oldPauseMenu.desc",
-		"defaultDesc": "If checked, the old 0.6.3-style pause menu will be used instead of the new acrylic one.",
-		"variable": "oldPauseMenu",
-		"type": "bool",
-		"defaultValue": false
-	},
-	{
-		"nameKey": "option.seiuMenuFx",
-		"defaultName": "Seiun Menu Effects",
-		"descKey": "option.seiuMenuFx.desc",
-		"defaultDesc": "If enabled, the menus get extra glowing auroras, particles and beat-synced pulses. Disable for a cleaner look.",
-		"variable": "seiuMenuFx",
-		"type": "bool",
-		"defaultValue": true
-	},
-	{
-		"nameKey": "option.freeplayAutoPreview",
-		"defaultName": "Freeplay Auto Music",
-		"descKey": "option.freeplayAutoPreview.desc",
-		"defaultDesc": "If enabled, Freeplay automatically plays the background music of the selected song.",
-		"variable": "freeplayAutoPreview",
-		"type": "bool",
-		"defaultValue": false
 	}
 ]

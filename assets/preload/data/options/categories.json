@@ -1,17 +1,43 @@
 [
 	{
-		"id": "notecolor",
-		"nameKey": "option.notecolor",
-		"defaultName": "Note Colors",
-		"type": "substate",
-		"substateClass": "options.NotesSubState"
+		"id": "general",
+		"nameKey": "option.general",
+		"defaultName": "General",
+		"type": "settings",
+		"optionsFile": "general",
+		"rpcTitleKey": "option.generalSettings.rctitle"
 	},
 	{
-		"id": "notecolor_rgb",
-		"nameKey": "option.notecolor_rgb",
-		"defaultName": "Note Colors (0.7.3)",
-		"type": "substate",
-		"substateClass": "options.NotesSubStateNew"
+		"id": "gameplay",
+		"nameKey": "option.gameplay",
+		"defaultName": "Gameplay",
+		"type": "settings",
+		"optionsFile": "gameplay",
+		"rpcTitleKey": "option.gameplaySettings.rctitle"
+	},
+	{
+		"id": "visuals",
+		"nameKey": "option.visuals",
+		"defaultName": "Visuals and UI",
+		"type": "settings",
+		"optionsFile": "visuals",
+		"rpcTitleKey": "option.graphicsSettingsMenu.rctitle"
+	},
+	{
+		"id": "graphics",
+		"nameKey": "option.graphics",
+		"defaultName": "Graphics",
+		"type": "settings",
+		"optionsFile": "graphics",
+		"rpcTitleKey": "option.graphicsSettingsMenu.rctitle"
+	},
+	{
+		"id": "audio",
+		"nameKey": "option.audio",
+		"defaultName": "Audio",
+		"type": "settings",
+		"optionsFile": "audio",
+		"rpcTitleKey": "option.audioSettings.rctitle"
 	},
 	{
 		"id": "controls",
@@ -28,43 +54,18 @@
 		"stateClass": "options.NoteOffsetState"
 	},
 	{
-		"id": "graphics",
-		"nameKey": "option.graphics",
-		"defaultName": "Graphics",
-		"type": "settings",
-		"optionsFile": "graphics",
-		"rpcTitleKey": "option.graphicsSettingsMenu.rctitle"
-	},
-	{
-		"id": "visuals",
-		"nameKey": "option.visuals",
-		"defaultName": "Visuals and UI",
-		"type": "settings",
-		"optionsFile": "visuals",
-		"rpcTitleKey": "option.graphicsSettingsMenu.rctitle"
-	},
-	{
-		"id": "gameplay",
-		"nameKey": "option.gameplay",
-		"defaultName": "Gameplay",
-		"type": "settings",
-		"optionsFile": "gameplay",
-		"rpcTitleKey": "option.gameplaySettings.rctitle"
-	},
-	{
-		"id": "backup",
-		"nameKey": "option.backup",
-		"defaultName": "Backup & Restore",
+		"id": "notecolor",
+		"nameKey": "option.notecolor",
+		"defaultName": "Note Colors",
 		"type": "substate",
-		"substateClass": "options.BackupSettingsSubState"
+		"substateClass": "options.NotesSubState"
 	},
 	{
-		"id": "extra_settings",
-		"nameKey": "option.extra_settings",
-		"defaultName": "Extra Setting",
-		"type": "settings",
-		"optionsFile": "extra_settings",
-		"rpcTitleKey": "option.extrasettings.rctitle"
+		"id": "notecolor_rgb",
+		"nameKey": "option.notecolor_rgb",
+		"defaultName": "Note Colors (0.7.3)",
+		"type": "substate",
+		"substateClass": "options.NotesSubStateNew"
 	},
 	{
 		"id": "android_settings",
@@ -73,6 +74,21 @@
 		"type": "settings",
 		"optionsFile": "android_settings",
 		"rpcTitleKey": "option.androidSettings.rctitle"
+	},
+	{
+		"id": "extra_settings",
+		"nameKey": "option.advanced",
+		"defaultName": "Advanced",
+		"type": "settings",
+		"optionsFile": "extra_settings",
+		"rpcTitleKey": "option.extrasettings.rctitle"
+	},
+	{
+		"id": "backup",
+		"nameKey": "option.backup",
+		"defaultName": "Backup & Restore",
+		"type": "substate",
+		"substateClass": "options.BackupSettingsSubState"
 	},
 	{
 		"id": "touch_controls",

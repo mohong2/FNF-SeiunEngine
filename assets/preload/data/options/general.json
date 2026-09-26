@@ -1,0 +1,91 @@
+[
+	{
+		"nameKey": "option.language",
+		"defaultName": "Language",
+		"descKey": "option.language.desc",
+		"defaultDesc": "Select the game display language.",
+		"variable": "language",
+		"type": "string",
+		"defaultValue": "English",
+		"options": [
+			"English",
+			"ChineseSimplified",
+			"ChineseTraditional"
+		],
+		"onChange": "onChangeLanguage"
+	},
+	{
+		"nameKey": "option.checkForUpdates",
+		"defaultName": "Check for Updates",
+		"descKey": "option.checkForUpdates.desc",
+		"defaultDesc": "On Release builds, turn this on to check for updates when you start the game.",
+		"variable": "checkForUpdates",
+		"type": "bool",
+		"defaultValue": true,
+		"define": "CHECK_FOR_UPDATES"
+	},
+	{
+		"nameKey": "option.checkForPrereleases",
+		"defaultName": "Check for Prereleases",
+		"descKey": "option.checkForPrereleases.desc",
+		"defaultDesc": "Also check for prerelease or preview versions when looking for updates.",
+		"variable": "checkForPrereleases",
+		"type": "bool",
+		"defaultValue": false,
+		"define": "CHECK_FOR_UPDATES"
+	},
+	{
+		"nameKey": "option.freeplayAutoPreview",
+		"defaultName": "Freeplay Auto Music",
+		"descKey": "option.freeplayAutoPreview.desc",
+		"defaultDesc": "If enabled, Freeplay automatically plays the background music of the selected song.",
+		"variable": "freeplayAutoPreview",
+		"type": "bool",
+		"defaultValue": false
+	},
+	{
+		"nameKey": "option.oldmodsmenu",
+		"defaultName": "OLD Mods Menu",
+		"descKey": "option.oldmodsmenu.desc",
+		"defaultDesc": "If checked, the old mods menu will be used instead of the new one",
+		"variable": "oldmodsmenu",
+		"type": "bool",
+		"defaultValue": false
+	},
+	{
+		"nameKey": "option.oldPauseMenu",
+		"defaultName": "Old Pause Menu",
+		"descKey": "option.oldPauseMenu.desc",
+		"defaultDesc": "If checked, the old 0.6.3-style pause menu will be used instead of the new acrylic one.",
+		"variable": "oldPauseMenu",
+		"type": "bool",
+		"defaultValue": false
+	},
+	{
+		"nameKey": "option.seiuMenuFx",
+		"defaultName": "Seiun Menu Effects",
+		"descKey": "option.seiuMenuFx.desc",
+		"defaultDesc": "If enabled, the menus get extra glowing auroras, particles and beat-synced pulses. Disable for a cleaner look.",
+		"variable": "seiuMenuFx",
+		"type": "bool",
+		"defaultValue": true
+	},
+	{
+		"nameKey": "option.sidehud",
+		"defaultName": "Side HUD",
+		"descKey": "option.sidehud.desc",
+		"defaultDesc": "If this is not checked, values such as sick and good on the left side of the game will not be displayed",
+		"variable": "sidehud",
+		"type": "bool",
+		"defaultValue": true
+	},
+	{
+		"nameKey": "option.opponentfe",
+		"defaultName": "Bot flickering effect",
+		"descKey": "option.opponentfe.desc",
+		"defaultDesc": "If unchecked, the flickering effect will be canceled after the Bot hits.",
+		"variable": "opponentfe",
+		"type": "bool",
+		"defaultValue": true
+	}
+]
