@@ -52,6 +52,10 @@ class VerifyCodeSubstate extends MusicBeatSubstate {
 		input.y = FlxG.height / 2 - input.height / 2;
 		input.scrollFactor.set();
 		add(input);
+		#if (TOUCH_CONTROLS || desktop)
+		addVirtualPad(NONE, B);
+		addPadCamera();
+		#end
     }
 
 	override function destroy() {
