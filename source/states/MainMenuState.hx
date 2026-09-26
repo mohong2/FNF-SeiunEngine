@@ -232,6 +232,13 @@ class MainMenuState extends SeiunMenuState
 			[FlxG.height - 44,  "Psych Engine v0.6.3+0.7.3+1.0.4 (Active: " + CompatEngine.current() + ")"],
 			[FlxG.height - 24,  "Friday Night Funkin' v" + fnfGameVersion]
 		];
+		#if ONLINE_ALLOWED
+		// SeiunOnline shares the version block with the engine rows: ExtraKeys and Seiun Engine
+		// move up one slot so the online client version sits right below Seiun Engine.
+		versionLabels[0][0] = versionLabels[0][0] - 20;
+		versionLabels[1][0] = versionLabels[1][0] - 20;
+		versionLabels.insert(2, [FlxG.height - 64, "SeiunOnline v" + online.Protocol.VERSION + " (net v" + online.Protocol.NETWORK_VERSION + ")"]);
+		#end
 		if (TitleState.updateAvailable)
 			versionLabels.unshift([FlxG.height - 124, Language.get('MainMenu.updateAvailable', 'Update available: ') + TitleState.updateVersion]);
 		for (label in versionLabels)
