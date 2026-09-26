@@ -114,5 +114,15 @@
 		"variable": "hitboxBorder",
 		"type": "bool",
 		"defaultValue": true
+	},
+	{
+		"nameKey": "option.showWatermark",
+		"defaultName": "Version Watermark",
+		"descKey": "option.showWatermark.desc",
+		"defaultDesc": "Show a small version + build watermark in the bottom-right corner of the menus.\nHidden automatically while you are playing a song; it never takes any input.",
+		"variable": "showWatermark",
+		"type": "bool",
+		"defaultValue": true,
+		"onChange": "onChangeShowWatermark"
 	}
 ]

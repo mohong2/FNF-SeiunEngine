@@ -32,6 +32,14 @@
 		"rpcTitleKey": "option.graphicsSettingsMenu.rctitle"
 	},
 	{
+		"id": "note_optimization",
+		"nameKey": "option.note_optimization",
+		"defaultName": "Note Optimisation",
+		"type": "settings",
+		"optionsFile": "note_optimization",
+		"rpcTitleKey": "option.noteOptimization.rctitle"
+	},
+	{
 		"id": "audio",
 		"nameKey": "option.audio",
 		"defaultName": "Audio",

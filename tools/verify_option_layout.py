@@ -12,6 +12,12 @@ Read-only. Fails (exit 1) when
 BASELINE_VARIABLES is the 87 options that existed before the settings were
 re-ordered; keeping it frozen here is what makes "no option was dropped or
 duplicated by the reshuffle" a checkable statement instead of a claim.
+
+NOTE_OPTIMISATION_VARIABLES pins the note-optimisation page to exactly the five
+extreme-chart switches the user asked for: lowQuality, cacheOnGPU, gfxLruCache,
+gfxRuntimeRepack, gfxCpuRelease, asyncImageLoading, clearImageCache,
+globalAntialiasing, shaders, disableGC, separateUpdateDraw, framerate and
+drawFramerate must stay on the graphics page.
 """
 import json
 import os
@@ -22,8 +28,14 @@ OPTIONS_DIR = os.path.join(ROOT, 'assets', 'preload', 'data', 'options')
 LANG_DIR = os.path.join(ROOT, 'assets', 'lang')
 LANGUAGES = ['English', 'ChineseSimplified', 'ChineseTraditional']
 
-# Options added after the reshuffle on purpose (the A5 storage-location warning toggle).
-EXPECTED_NEW_VARIABLES = {'showStorageRootWarning'}
+# Options added after the reshuffle on purpose: the A5 storage-location warning
+# toggle, the "show the note-optimisation notice again" action row and the
+# bottom-right version watermark toggle.
+EXPECTED_NEW_VARIABLES = {'showStorageRootWarning', 'showNoteOptimizationNotice', 'showWatermark'}
+
+# The only five switches that belong to the note-optimisation page (plus action rows).
+NOTE_OPTIMISATION_VARIABLES = {'perfMode', 'turboMode', 'limitNotes', 'fastSort', 'bulkSkip'}
+NOTE_OPTIMISATION_ACTIONS = {'showNoteOptimizationNotice'}
 
 BASELINE_VARIABLES = {
     # general
@@ -55,9 +67,9 @@ BASELINE_VARIABLES = {
 }
 
 EXPECTED_CATEGORY_ORDER = [
-    'general', 'gameplay', 'visuals', 'graphics', 'audio', 'controls', 'adjust',
-    'notecolor', 'notecolor_rgb', 'android_settings', 'extra_settings', 'backup',
-    'touch_controls',
+    'general', 'gameplay', 'visuals', 'graphics', 'note_optimization', 'audio',
+    'controls', 'adjust', 'notecolor', 'notecolor_rgb', 'android_settings',
+    'extra_settings', 'backup', 'touch_controls',
 ]
 
 failures = []
@@ -121,6 +133,25 @@ def main():
     general = [e['variable'] for e in pages.get('general', [])]
     if not general or general[0] != 'language':
         failures.append('language is not the first entry of the general page: %s' % general)
+
+    # The note-optimisation page must hold exactly the five extreme-chart switches.
+    # Action rows ("button") are allowed on top of them and are checked separately.
+    note_page = pages.get('note_optimization')
+    if note_page is None:
+        failures.append('note_optimization.json is missing')
+    else:
+        note_switches = {e['variable'] for e in note_page if e.get('type') != 'button'}
+        if note_switches != NOTE_OPTIMISATION_VARIABLES:
+            failures.append('note_optimization page holds %s, expected exactly %s'
+                            % (sorted(note_switches), sorted(NOTE_OPTIMISATION_VARIABLES)))
+        for entry in note_page:
+            if entry.get('type') == 'button' and entry['variable'] not in NOTE_OPTIMISATION_ACTIONS:
+                failures.append('unexpected action row %s on the note_optimisation page' % entry['variable'])
+        for variable in sorted(NOTE_OPTIMISATION_VARIABLES):
+            owner = seen.get(variable)
+            if owner is not None and owner != 'note_optimization':
+                failures.append('%s must live on the note_optimization page, found in %s'
+                                % (variable, owner))
 
     notes.append('pages: %s' % ', '.join('%s=%d' % (p, len(pages[p])) for p in sorted(pages)))
     notes.append('unique variables: %d (baseline %d + %d new)'
