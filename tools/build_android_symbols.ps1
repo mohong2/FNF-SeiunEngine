@@ -73,7 +73,8 @@ function Invoke-Lime {
 # with the real table between the two builds.
 function Get-LimeArgs {
     $a = New-Object System.Collections.Generic.List[string]
-    $a.Add('build'); $a.Add('android')
+    # See build_windows_symbols.ps1: never let lime guess the project file.
+    $a.Add('build'); $a.Add((Join-Path $root 'Project.xml')); $a.Add('android')
     if ($Arch) { $a.Add($Arch) }
     $a.Add('-DHXCPP_DEBUG_LINK_AND_STRIP')
     $a.Add('-DCRASH_LINEMAP')

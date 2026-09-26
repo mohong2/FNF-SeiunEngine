@@ -18,12 +18,12 @@ jobs:
           - runner: macos-15-intel
             target: macos-x64
             rebuild: haxelib run lime rebuild mac -64 -release -Dlime-sdl3
-            build: haxelib run lime build mac --app-version="$APP_VERSION-$GITHUB_RUN_ID"
+            build: haxelib run lime build "$GITHUB_WORKSPACE/Project.xml" mac --app-version="$APP_VERSION-$GITHUB_RUN_ID"
             artifact: SeiunEngine-mac-x64
           - runner: macos-14
             target: macos-arm64
             rebuild: haxelib run lime rebuild mac -arm64 -release -Dlime-sdl3
-            build: haxelib run lime build mac -arm64 --app-version="$APP_VERSION-$GITHUB_RUN_ID"
+            build: haxelib run lime build "$GITHUB_WORKSPACE/Project.xml" mac -arm64 --app-version="$APP_VERSION-$GITHUB_RUN_ID"
             artifact: SeiunEngine-mac-arm64
             experimental: true
     runs-on: ${{ matrix.runner }}

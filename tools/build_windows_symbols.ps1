@@ -109,7 +109,10 @@ function Invoke-Lime {
 function Get-BuildArgs {
     param([switch]$WithDebug)
     $a = New-Object System.Collections.Generic.List[string]
-    $a.Add('build'); $a.Add('windows')
+    # Pass the project file explicitly: lime's auto-detection scans *.xml in the working
+    # directory and can pick a non-project file (the CI .hxcpp-config.xml), which then fails
+    # with 'You must have a "project.xml" file' on case-sensitive filesystems.
+    $a.Add('build'); $a.Add((Join-Path $root 'Project.xml')); $a.Add('windows')
     if ($WithDebug) { $a.Add('-DHXCPP_DEBUG_LINK') }
     $a.Add('-DCRASH_LINEMAP')
     if ($AppVersion) { $a.Add("--app-version=$AppVersion") }

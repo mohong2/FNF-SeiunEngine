@@ -57,7 +57,8 @@ runs:
         mkdir -p "$CACHE_DIR"
         EXAMPLE="$GITHUB_WORKSPACE/.haxelib/hxcpp/git/toolchain/example.hxcpp_config.xml"
         EXAMPLE="${EXAMPLE//\\//}"
-        CONFIG="$GITHUB_WORKSPACE/.hxcpp-config.xml"
+        # Keep the config OUT of the workspace root (see build-desktop/action.yml).
+        CONFIG="$RUNNER_TEMP/.hxcpp-config.xml"
         CONFIG="${CONFIG//\\//}"
         awk -v cache="$CACHE_DIR" '/<section id="vars">/ { print; printf "  <set name=\"HXCPP_COMPILE_CACHE\" value=\"%s\" />\n", cache; print "  <set name=\"HXCPP_CACHE_MB\" value=\"4000\" />"; next } 1' "$EXAMPLE" > "$CONFIG"
         echo "HXCPP_CONFIG=$CONFIG" >> "$GITHUB_ENV"
@@ -115,7 +116,7 @@ runs:
 
     - name: Compile iOS (device, arm64)
       shell: bash
-      run: haxelib run lime build ios -arm64 --app-version="$APP_VERSION-${{ github.run_id }}"
+      run: haxelib run lime build "$GITHUB_WORKSPACE/Project.xml" ios -arm64 --app-version="$APP_VERSION-${{ github.run_id }}"
 
     - name: Package IPA
       shell: bash

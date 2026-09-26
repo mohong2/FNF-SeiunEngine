@@ -107,7 +107,10 @@ runs:
         mkdir -p "$CACHE_DIR"
         EXAMPLE="$GITHUB_WORKSPACE/.haxelib/hxcpp/git/toolchain/example.hxcpp_config.xml"
         EXAMPLE="${EXAMPLE//\\//}"
-        CONFIG="$GITHUB_WORKSPACE/.hxcpp-config.xml"
+        # Keep the config OUT of the workspace root: lime's project auto-detection scans *.xml
+        # in the working directory, and a second xml sitting next to Project.xml can hijack it
+        # (lime then reports 'You must have a "project.xml" file'). RUNNER_TEMP is outside the repo.
+        CONFIG="$RUNNER_TEMP/.hxcpp-config.xml"
         CONFIG="${CONFIG//\\//}"
         awk -v cache="$CACHE_DIR" '/<section id="vars">/ { print; printf "  <set name=\"HXCPP_COMPILE_CACHE\" value=\"%s\" />\n", cache; print "  <set name=\"HXCPP_CACHE_MB\" value=\"4000\" />"; next } 1' "$EXAMPLE" > "$CONFIG"
         echo "HXCPP_CONFIG=$CONFIG" >> "$GITHUB_ENV"

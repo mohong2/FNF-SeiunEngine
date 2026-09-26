@@ -86,7 +86,9 @@ runs:
         New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
         $example = "$env:GITHUB_WORKSPACE\.haxelib\hxcpp\git\toolchain\example.hxcpp_config.xml"
         $example = $example -replace '\\','/'
-        $config = "$env:GITHUB_WORKSPACE\.hxcpp-config.xml"
+        # Keep the config OUT of the workspace root (see build-desktop/action.yml): a stray xml
+        # next to Project.xml can hijack lime's project auto-detection.
+        $config = "$env:RUNNER_TEMP\.hxcpp-config.xml"
         $config = $config -replace '\\','/'
         $content = Get-Content -Raw $example
         $content = $content -replace '(?s)(<section id="vars">)', "`$1`n  <set name=""HXCPP_COMPILE_CACHE"" value=""$cacheDir"" />`n  <set name=""HXCPP_CACHE_MB"" value=""4000"" />"

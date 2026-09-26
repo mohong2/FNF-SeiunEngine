@@ -38,7 +38,7 @@ jobs:
         with:
           target: linux
           rebuild: haxelib run lime rebuild linux -64 -release -Dlime-sdl3
-          build: haxelib run lime build linux --app-version="$APP_VERSION-$GITHUB_RUN_ID"
+          build: haxelib run lime build "$GITHUB_WORKSPACE/Project.xml" linux --app-version="$APP_VERSION-$GITHUB_RUN_ID"
           artifact: SeiunEngine-linux-x64
           path: export/release/linux/bin
           gh-pat: ${{ secrets.GH_PAT }}
