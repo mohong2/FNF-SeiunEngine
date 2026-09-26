@@ -62,3 +62,13 @@ jobs:
           path: SeiunEngine-android-${{ matrix.abi }}-${{ env.APP_VERSION }}.apk
           if-no-files-found: error
           retention-days: 14
+
+      # The crash symbols for exactly this APK: the embedded linemap, the
+      # unstripped .so and the build fingerprints a report can be matched
+      # against (published separately, never inside the APK).
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: SeiunEngine-android-${{ matrix.abi }}-symbols
+          path: export/release/android/symbols
+          if-no-files-found: error
+          retention-days: 90

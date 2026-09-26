@@ -38,7 +38,8 @@ jobs:
         with:
           target: windows
           rebuild: haxelib run lime rebuild windows -64 -release -Dlime-sdl3
-          build: haxelib run lime build windows --app-version="$APP_VERSION-$GITHUB_RUN_ID"
+          build: |
+            pwsh -NoProfile -ExecutionPolicy Bypass -File tools/build_windows_symbols.ps1 -AppVersion "$APP_VERSION-$GITHUB_RUN_ID"
           artifact: SeiunEngine-windows-x64
           path: export/release/windows/bin
           gh-pat: ${{ secrets.GH_PAT }}

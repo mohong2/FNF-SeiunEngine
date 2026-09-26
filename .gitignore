@@ -26,6 +26,9 @@ export/*
 **/app/build/
 .DS_Store
 
+# Crash linemaps are generated per build (tools/build_*_symbols.ps1)
+assets/linemap/*.bin
+
 # SeiunEngine local-only artifacts (not for commit)
 server/build/
 # 服务端编译产物与运行日志（P6-2 起：server/bin、server/logs）

@@ -129,17 +129,19 @@ jobs:
 
           ### Crash debugging symbols
 
-          Official builds ship deliberately **without** full debug info (it would
-          grow the Windows exe from ~29.6 MB to ~47.1 MB), so the inline frames in a
-          crash report are export-table guesses and must be ignored. The
-          `crash-symbols/` files resolve a report's `Fault offset` to a real function.
-          Download the one matching the build the report came from:
+          Published builds embed a crash linemap, so a report's backtrace carries
+          `[src/File.cpp:123]` on its own - triage no longer depends on the
+          developer's local build matching the user's. The files under
+          `crash-symbols/` are the symbols for exactly the APK/exe in this release:
 
-          - `SeiunEngine-windows-x64-symbols.zip`
-          - `SeiunEngine-linux-x64-symbols.zip`
-          - `SeiunEngine-mac-x64-symbols.zip` / `SeiunEngine-mac-arm64-symbols.zip`
+          - `SeiunEngine-windows-x64-symbols.zip`  (ApplicationMain.map + windows-x64.bin + build-info.txt)
+          - `SeiunEngine-android-arm64-symbols.zip` / `SeiunEngine-android-armv7-symbols.zip`
+            (unstripped libApplicationMain.so + <abi>.bin + build-info.txt)
+          - `SeiunEngine-linux-x64-symbols.zip` / `SeiunEngine-mac-*-symbols.zip` (linker .map)
 
-          Then: `python tools/mapresolve.py ApplicationMain.map <fault offset>`
+          Match them to the report via the report's `Build:` line and the
+          `build-info.txt` of the matching zip. Offline fallback for desktop:
+          `python tools/mapresolve.py ApplicationMain.map <fault offset>`.
 
           Checksums are included in `SHA256SUMS.txt`.
           EOF
@@ -150,4 +152,6 @@ jobs:
           name: Alpha v${{ env.APP_VERSION }} (build ${{ env.RUN_ID }})
           prerelease: true
           body_path: release_body.md
-          files: dist/*
+          files: |
+            dist/*
+            dist/crash-symbols/*
