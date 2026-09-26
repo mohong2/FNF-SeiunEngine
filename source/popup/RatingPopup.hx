@@ -301,15 +301,14 @@ class RatingPopup
 	}
 
 	/**
-	 * Digits drawn under the rating icon, matching vanilla popUpScore() exactly: never more than 4,
-	 * so 12345 renders as "2345" (thousands / hundreds / tens / units). Without the cap a 9999 ->
-	 * 10000 step added a sprite, widened the row and pushed the COMBO word further right.
+	 * Digits drawn under the rating icon. Every digit is shown, so the popup never looks like it
+	 * wrapped back to 0 at a digit boundary (the vanilla-style 4-digit cap rendered 10000 as
+	 * "0000", 10001 as "0001", ...). The number row grows with the combo and the COMBO word
+	 * follows its right edge (maxX), which is the pre-existing behaviour of this engine.
 	 * combo < 10 is still hidden by the caller (PlayState keeps that on purpose).
 	 */
 	static function _splitDigits(n:Int):Array<Int>
 	{
-		if (n >= 10000)
-			return [Std.int(n / 1000) % 10, Std.int(n / 100) % 10, Std.int(n / 10) % 10, n % 10];
 		if (n == 0) return [0];
 		var d:Array<Int> = [];
 		while (n > 0) { d.push(n % 10); n = Math.floor(n / 10); }
