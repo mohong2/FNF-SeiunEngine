@@ -460,6 +460,16 @@ class CopyState extends MusicBeatState
 		FlxTransitionableState.skipNextTransIn = true;
 		FlxTransitionableState.skipNextTransOut = true;
 
+		// Once per cold start, after the assets are verified (so fonts and language exist)
+		// and before the title: the merged test-build / note-optimisation notice. It hands
+		// over to TitleState itself, mod state redirect included. Deliberately not persisted,
+		// because the notice is wanted on every launch rather than once per install.
+		if (TestBuildNoticeState.shouldShow())
+		{
+			FlxG.switchState(new TestBuildNoticeState());
+			return;
+		}
+
 		var next:FlxState = new TitleState();
 		#if MODS_ALLOWED
 		next = states.ModState.resolveState(next);

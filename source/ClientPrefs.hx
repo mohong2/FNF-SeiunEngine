@@ -138,6 +138,10 @@ import sys.io.Process;
 	public var gfxLruCache:Bool = true;
 	/** Placeholder state for the "clear image cache" action button: a button option must bind a field, but the action never reads it. */
 	public var clearImageCache:Bool = false;
+	/** Bottom-right version/build watermark. Hidden automatically while a song is playing; it never takes input. */
+	public var showWatermark:Bool = true;
+	/** Placeholder state for the "show the note-optimisation notice again" action row: a button option must bind a field, but the action never reads it. */
+	public var showNoteOptimizationNotice:Bool = false;
 	/** Trim transparent borders and repack large sheets at runtime on the main thread, with XML/dimension validation. */
 	public var gfxRuntimeRepack:Bool = true;
 	public var splashAlpha:Float = 0.6;

@@ -228,6 +228,8 @@ class OptionsState extends MusicBeatState
 			'onChangeTraceConsoleLevel'    => onChangeTraceConsoleLevel,
 			'onChangeTouchSwipe'           => onChangeTouchSwipe,
 			'onClearImageCache'            => onClearImageCache,
+			'onChangeShowWatermark'        => onChangeShowWatermark,
+			'onChangeShowNoteOptimizationNotice' => onChangeShowNoteOptimizationNotice,
 			'onChangeStorageType'          => onChangeStorageType,
 			'onChangeAutoExtractAssets'    => onChangeAutoExtractAssets,
 		];
@@ -1816,6 +1818,26 @@ class OptionsState extends MusicBeatState
 				.replace('{mb}', mbStr);
 		}
 		backend.Dialog.show(Language.get('option.clearImageCache.doneTitle', 'Image Cache'), msg, 'Info');
+	}
+
+	/** "Version watermark" toggle: the stage-level TextField follows the setting immediately. */
+	function onChangeShowWatermark()
+	{
+		backend.Watermark.refresh();
+	}
+
+	/**
+	 * "Show the notice again" action row on the note-optimisation page: re-display the merged
+	 * cold-start notice (test build + note-optimisation disclaimer) without a restart. The same
+	 * body builder the boot state uses, so the two can never drift apart.
+	 */
+	function onChangeShowNoteOptimizationNotice()
+	{
+		backend.Dialog.showCustom(
+			Language.get('TestBuildNotice.title', 'Before You Play'),
+			states.TestBuildNoticeState.noticeBody(),
+			[{name: Language.get('TestBuildNotice.continue', 'Continue'), callback: function() {}}],
+			false);
 	}
 
 	function syncDragToWheel()

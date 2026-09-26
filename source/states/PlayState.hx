@@ -693,6 +693,10 @@ class PlayState extends MusicBeatState
 
 	override public function create()
 	{
+		// The build watermark is a menu affordance: keep it off the playfield entirely.
+		// destroy() puts it back for the menus (the option toggle still wins).
+		backend.Watermark.setVisible(false);
+
 		// Entering play directly from the chart editor (or anywhere else)
 		// may leave the difficulty list empty — fall back to the defaults so
 		// difficulty displays never come out blank.
@@ -8968,6 +8972,9 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		return (stageBackdrop is LimoStage) ? cast stageBackdrop : null;
 
 	override function destroy() {
+		// Back to the menus: the watermark is visible again (ClientPrefs.data.showWatermark wins).
+		backend.Watermark.setVisible(true);
+
 		// Detach the song's completion callback before the state goes away (see _songMusic).
 		if (_songMusic != null) {
 			_songMusic.onComplete = null;

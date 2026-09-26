@@ -265,7 +265,19 @@ class Main extends Sprite
 		if (updateFramerate < 30) updateFramerate = framerate;
 		if (drawFramerate < 30) drawFramerate = framerate;
 
+		#if !mobile
+		// Desktop has no extraction step, so the merged cold-start notice (test build +
+		// note-optimisation disclaimer) is simply the first state. It hands over to
+		// TitleState itself and owns the same prefs bootstrap CopyState does on mobile.
+		if (states.TestBuildNoticeState.shouldShow())
+			initialState = states.TestBuildNoticeState;
+		#end
+
 		addChild(new FlxGame(gameWidth, gameHeight, initialState, zoom, updateFramerate, drawFramerate, skipSplash, startFullscreen));
+
+		// Bottom-right build watermark (openfl stage child): above every state and substate,
+		// no flixel camera, no input. Hidden while a song is playing.
+		backend.Watermark.install();
 
 #if ONLINE_ALLOWED
 			// Registers the two online plugins. Waiter is a
