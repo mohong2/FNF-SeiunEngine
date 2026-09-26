@@ -10,19 +10,28 @@ inputs:
 runs:
   using: composite
   steps:
+    # Every haxelib git dependency is public, so no PAT is required. The PAT path is kept for a
+    # future private dep, but it must never fail the job: a stale or expired token is detected
+    # here and removed again, because an invalid Authorization header would also break cloning
+    # the public repos.
     - name: Auth private haxelib deps
       shell: bash
       env:
         GH_PAT: ${{ inputs.gh-pat }}
       run: |
         GH_PAT="$(printf '%s' "$GH_PAT" | tr -d '\r\n')"
-        if [ -n "$GH_PAT" ]; then
-          B64="$(printf '%s' "x-access-token:${GH_PAT}" | base64 | tr -d '\r\n')"
-          git config --local --unset-all http.https://github.com/.extraheader || true
-          git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic ${B64}"
-          git ls-remote https://github.com/mohong2/flixel.git HEAD
+        if [ -z "$GH_PAT" ]; then
+          echo 'No GH_PAT: haxelib dependencies are public, continuing without auth.'
+          exit 0
+        fi
+        B64="$(printf '%s' "x-access-token:${GH_PAT}" | base64 | tr -d '\r\n')"
+        git config --local --unset-all http.https://github.com/.extraheader || true
+        git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic ${B64}"
+        if GIT_TERMINAL_PROMPT=0 git ls-remote https://github.com/mohong2/flixel.git HEAD >/dev/null 2>&1; then
+          echo 'git auth configured (GH_PAT works)'
         else
-          echo '::warning::GH_PAT not set - private deps will fail'
+          git config --global --unset-all http.https://github.com/.extraheader || true
+          echo '::warning::GH_PAT did not authenticate; dropped it and continuing (public deps need no auth).'
         fi
 
     - name: Install haxelib dependencies

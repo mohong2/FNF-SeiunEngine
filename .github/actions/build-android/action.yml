@@ -16,22 +16,36 @@ inputs:
 runs:
   using: composite
   steps:
+    # See build-desktop: public haxelib deps need no auth, and a bad token must never fail the
+    # job (it is dropped again so it cannot break the public clones).
     - name: Auth private haxelib deps
       shell: pwsh
       env:
         GH_PAT: ${{ inputs.gh-pat }}
       run: |
         $GH_PAT = $env:GH_PAT -replace "[\r\n]", ""
-        if ($GH_PAT) {
-          $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("x-access-token:$GH_PAT"))
-          git config --local --unset-all http.https://github.com/.extraheader 2>$null
-          git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $b64"
-          Write-Output 'git auth configured (GH_PAT found)'
-          git ls-remote https://github.com/mohong2/flixel.git HEAD
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-        } else {
-          Write-Output '::warning::GH_PAT not set - private deps will fail'
+        if (-not $GH_PAT) {
+          Write-Output 'No GH_PAT: haxelib dependencies are public, continuing without auth.'
+          exit 0
         }
+        $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("x-access-token:$GH_PAT"))
+        git config --local --unset-all http.https://github.com/.extraheader 2>$null
+        git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $b64"
+        # The probe must not be able to prompt, and a non-zero exit must not abort the step
+        # (pwsh 7.4 can turn a failed native command into a terminating error).
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        $env:GIT_TERMINAL_PROMPT = '0'
+        git ls-remote https://github.com/mohong2/flixel.git HEAD *> $null
+        $probeOk = ($LASTEXITCODE -eq 0)
+        $ErrorActionPreference = $prevEAP
+        if ($probeOk) {
+          Write-Output 'git auth configured (GH_PAT works)'
+        } else {
+          git config --global --unset-all http.https://github.com/.extraheader 2>$null
+          Write-Output '::warning::GH_PAT did not authenticate; dropped it and continuing (public deps need no auth).'
+        }
+        exit 0
 
     - name: Install Android SDK components
       shell: pwsh
