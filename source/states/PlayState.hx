@@ -282,6 +282,35 @@ class PlayState extends MusicBeatState
 	static inline var SPLASH_FRAME_BUDGET:Int = 16;
 	public static inline var MAX_SPLASH_ALIVE:Int = 256;
 	var _splashBudgetLeft:Int = SPLASH_FRAME_BUDGET;
+
+	// ---- F8 hit-cost probe: read-only diagnostics, never feeds back into gameplay ----
+	/**
+	 * Ring of the last PROBE_FRAMES frames, PROBE_STRIDE floats each. F8 dumps it to
+	 * ./crash/hitprobe.txt, so a 100k-NPS run can be compared before/after a change.
+	 */
+	static inline var PROBE_FRAMES:Int = 600;
+	static inline var PROBE_STRIDE:Int = 9;
+	static inline var PROBE_TOTAL:Int = 0;    // whole PlayState.update()
+	static inline var PROBE_BULK:Int = 1;     // bulkHitDueMaterialized()
+	static inline var PROBE_NOTES:Int = 2;    // per-object note update loop
+	static inline var PROBE_SORT:Int = 3;     // note sort
+	static inline var PROBE_PRESENT:Int = 4;  // flushHitPresentation()
+	static inline var PROBE_POPUP:Int = 5;    // ms inside RatingPopup.show()
+	static inline var PROBE_SHOWS:Int = 6;    // popup show() calls this frame
+	static inline var PROBE_MEMBERS:Int = 7;  // ratingPopup.container.length (stale-length canary)
+	static inline var PROBE_COMBO:Int = 8;
+
+	var _probeBuf:Array<Float> = null;
+	var _probeIdx:Int = 0;
+	var _probeFrames:Int = 0;
+	var _probeFrameStart:Float = 0;
+	var _probeBulkMs:Float = 0;
+	var _probeNotesMs:Float = 0;
+	var _probeSortMs:Float = 0;
+	var _probePresentMs:Float = 0;
+	var _probeTotalMs:Float = 0;
+	var _probePopupMs:Float = 0;
+	var _probeShows:Int = 0;
 	/** Once-per-lane-per-frame gates for botplay character sing animations / strum static resets (reset with strumsHit). */
 	var _botCharAnim:Array<Bool> = [false, false, false, false, false, false, false, false];
 	var _botStrumStatic:Array<Bool> = [false, false, false, false, false, false, false, false];
@@ -3129,6 +3158,112 @@ class PlayState extends MusicBeatState
 	}
 
 
+	/**
+	 * Single entry point for every rating / combo popup (per-object, merged-per-frame, Turbo opponent and online).
+	 * It also drops the per-call comboOffset copy and is the one place the F8 hit probe has to time.
+	 */
+	inline function showRatingPopup(target:RatingPopup, ratingKey:String, comboValue:Int, baseX:Float,
+		showRatingSprite:Bool, showComboNumSprite:Bool):Void
+	{
+		var t0:Float = haxe.Timer.stamp();
+		target.show(ratingKey, comboValue, playbackRate, baseX, ClientPrefs.data.hideHud,
+			showRatingSprite, showCombo, showComboNumSprite, ClientPrefs.data.comboOffset,
+			Conductor.crochet, ClientPrefs.data.comboStacking);
+		_probePopupMs += haxe.Timer.stamp() - t0;
+		_probeShows++;
+	}
+
+	/** Store this frame's slice in the F8 probe ring and clear the per-frame accumulators. */
+	function commitHitProbeFrame():Void
+	{
+		if (_probeBuf == null)
+			_probeBuf = [for (i in 0...(PROBE_FRAMES * PROBE_STRIDE)) 0.0];
+		var base:Int = _probeIdx * PROBE_STRIDE;
+		_probeBuf[base + PROBE_TOTAL] = _probeTotalMs;
+		_probeBuf[base + PROBE_BULK] = _probeBulkMs;
+		_probeBuf[base + PROBE_NOTES] = _probeNotesMs;
+		_probeBuf[base + PROBE_SORT] = _probeSortMs;
+		_probeBuf[base + PROBE_PRESENT] = _probePresentMs;
+		_probeBuf[base + PROBE_POPUP] = _probePopupMs;
+		_probeBuf[base + PROBE_SHOWS] = _probeShows;
+		_probeBuf[base + PROBE_MEMBERS] = (ratingPopup != null && ratingPopup.container != null) ? ratingPopup.container.length : -1;
+		_probeBuf[base + PROBE_COMBO] = combo;
+		_probeIdx = (_probeIdx + 1) % PROBE_FRAMES;
+		if (_probeFrames < PROBE_FRAMES) _probeFrames++;
+		_probePopupMs = 0;
+		_probeShows = 0;
+	}
+
+	/**
+	 * F8: write the last PROBE_FRAMES frames of hit-path timings to ./crash/hitprobe.txt.
+	 * The per-frame table is oldest-first, so whether the frame cost keeps growing with the hit
+	 * count is directly visible; the header carries the settings the run used.
+	 */
+	function dumpHitProbe():Void
+	{
+		#if sys
+		try
+		{
+			if (_probeFrames <= 0)
+			{
+				TraceManager.info('trace.playState.hitProbeEmpty', 'Hit probe: no frames recorded yet');
+				return;
+			}
+			var n:Int = (_probeFrames < PROBE_FRAMES) ? _probeFrames : PROBE_FRAMES;
+			var start:Int = (_probeFrames < PROBE_FRAMES) ? 0 : _probeIdx;
+			var fps:Int = 0;
+			try { if (Main.fpsVar != null) fps = Main.fpsVar.currentFPS; } catch (e:Dynamic) {}
+
+			var buf:StringBuf = new StringBuf();
+			buf.add('# SeiunEngine hit probe\n');
+			buf.add('# date=' + Date.now().toString() + '\n');
+			buf.add('# song=' + ((SONG != null) ? SONG.song : '?') + ' fps=' + fps + '\n');
+			buf.add('# perfMode=' + ClientPrefs.data.perfMode + ' turbo=' + turboModeActive
+				+ ' limitNotes=' + ClientPrefs.data.limitNotes + ' fastSort=' + ClientPrefs.data.fastSort
+				+ ' bulkSkip=' + ClientPrefs.data.bulkSkip + ' comboStacking=' + ClientPrefs.data.comboStacking + '\n');
+			buf.add('# frames=' + n + ' combo=' + combo + '\n');
+			buf.add('# columns: frame total bulk notes sort present popup shows members combo\n');
+
+			var names:Array<String> = ['total', 'bulk', 'notes', 'sort', 'present', 'popup', 'shows', 'members', 'combo'];
+			var sums:Array<Float> = [for (i in 0...PROBE_STRIDE) 0.0];
+			var maxs:Array<Float> = [for (i in 0...PROBE_STRIDE) 0.0];
+			for (f in 0...n)
+			{
+				var b:Int = ((start + f) % PROBE_FRAMES) * PROBE_STRIDE;
+				for (c in 0...PROBE_STRIDE)
+				{
+					var v:Float = _probeBuf[b + c];
+					sums[c] += v;
+					if (v > maxs[c]) maxs[c] = v;
+				}
+			}
+			for (c in 0...PROBE_STRIDE)
+				buf.add('# ' + names[c] + ' avg=' + _probeFmt(sums[c] / n) + ' max=' + _probeFmt(maxs[c]) + '\n');
+
+			buf.add('frame\ttotal\tbulk\tnotes\tsort\tpresent\tpopup\tshows\tmembers\tcombo\n');
+			for (f in 0...n)
+			{
+				var b:Int = ((start + f) % PROBE_FRAMES) * PROBE_STRIDE;
+				buf.add(Std.string(f));
+				for (c in 0...PROBE_STRIDE)
+					buf.add('\t' + _probeFmt(_probeBuf[b + c]));
+				buf.add('\n');
+			}
+
+			if (!FileSystem.exists('./crash/')) FileSystem.createDirectory('./crash/');
+			File.saveContent('./crash/hitprobe.txt', buf.toString());
+			TraceManager.info('trace.playState.hitProbe', 'Hit probe written to ./crash/hitprobe.txt (frames=' + n + ')');
+		}
+		catch (e:Dynamic) {}
+		#end
+	}
+
+	/** Fixed 3-decimal ms text for the probe dump (Haxe 4.2 has no StringTools.format). */
+	static inline function _probeFmt(v:Float):String
+	{
+		return Std.string(Math.round(v * 1000) / 1000);
+	}
+
 	function flushHitPresentation():Void
 	{
 		if (_scoreTextDirty)
@@ -3159,10 +3294,7 @@ class PlayState extends MusicBeatState
 		{
 			_popupPending = false;
 			showComboNum = (combo >= 10);
-			ratingPopup.show(_pendingRatingImage, combo, playbackRate, FlxG.width * 0.35,
-				ClientPrefs.data.hideHud, showRating, showCombo, showComboNum,
-				[for (v in ClientPrefs.data.comboOffset) Std.int(v)], Conductor.crochet,
-				ClientPrefs.data.comboStacking);
+			showRatingPopup(ratingPopup, _pendingRatingImage, combo, FlxG.width * 0.35, showRating, showComboNum);
 		}
 	}
 
@@ -4463,6 +4595,7 @@ class PlayState extends MusicBeatState
 			_splashBudgetLeft = 999999;
 		}
 		var _phaseT:Float = haxe.Timer.stamp();
+		_probeFrameStart = _phaseT;
 
 		#if ONLINE_ALLOWED
 		/*
@@ -4506,6 +4639,11 @@ class PlayState extends MusicBeatState
 		// Report the local health delta to the room, which accumulates it into Room.health and broadcasts it.
 		syncOnlineHealth();
 		#end
+
+		// F8: dump the last PROBE_FRAMES frames of hit-path timings to ./crash/hitprobe.txt.
+		// Deliberately outside the online guard: the 100k-NPS repro is a single-player run.
+		if (FlxG.keys.justPressed.F8)
+			dumpHitProbe();
 
 		/*if (FlxG.keys.justPressed.NINE)
 		{
@@ -4893,7 +5031,10 @@ class PlayState extends MusicBeatState
 				resetBotGateArrays();
 
 				_phaseT = haxe.Timer.stamp();
+				var _probeBulkT0:Float = _phaseT;
 				bulkHitDueMaterialized(); // batch-hit botplay's due materialised notes (merged per-hit call chain)
+				var _probeBulkEnd:Float = haxe.Timer.stamp();
+				_probeBulkMs = _probeBulkEnd - _probeBulkT0;
 				if (ClientPrefs.data.perfMode)
 				{
 					// Iterate the compact living list (O(living), no full member scan).
@@ -4975,7 +5116,9 @@ class PlayState extends MusicBeatState
 				// fasterNoteSort is safe for sustains too: it reorders only living, visible notes and leaves dead slots in place,
 				// so the draw order matches a full sort and dense sustain charts no longer fall back to an O(n log n) full sort.
 				var sortOrder:Int = ClientPrefs.data.downScroll ? FlxSort.ASCENDING : FlxSort.DESCENDING;
-				_phaseT = haxe.Timer.stamp();
+				var _probeNotesT:Float = haxe.Timer.stamp();
+				_probeNotesMs = _probeNotesT - _probeBulkEnd;
+				_phaseT = _probeNotesT;
 				if (ClientPrefs.data.fastSort)
 					fasterNoteSort(sortOrder);
 				else
@@ -5017,8 +5160,13 @@ class PlayState extends MusicBeatState
 
 		// Refresh the presentation once at frame end (score text / ms text / merged popup), then update the watch counters.
 		// Before onUpdatePost, so scripts reading the score/text in this frame's callbacks see the final values.
-		_phaseT = haxe.Timer.stamp();
+		var _probePresentT:Float = haxe.Timer.stamp();
+		_probeSortMs = _probePresentT - _phaseT;
+		_phaseT = _probePresentT;
 		flushHitPresentation();
+		_probePresentMs = haxe.Timer.stamp() - _probePresentT;
+		_probeTotalMs = _probePresentMs + _probePresentT - _probeFrameStart;
+		commitHitProbeFrame();
 
 		setOnScripts('cameraX', camFollowPos.x);
 		setOnScripts('cameraY', camFollowPos.y);
@@ -5980,10 +6128,7 @@ class PlayState extends MusicBeatState
 		{
 			_popupImmediateBudget--;
 			showComboNum = (combo >= 10);
-			ratingPopup.show(daRating.image, combo, playbackRate, FlxG.width * 0.35,
-				ClientPrefs.data.hideHud, showRating, showCombo, showComboNum,
-				[for (v in ClientPrefs.data.comboOffset) Std.int(v)], Conductor.crochet,
-				ClientPrefs.data.comboStacking);
+			showRatingPopup(ratingPopup, daRating.image, combo, FlxG.width * 0.35, showRating, showComboNum);
 		}
 		else
 		{
@@ -8149,10 +8294,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		if (_popupImmediateBudget <= 0) return;
 		_popupImmediateBudget--;
 		showComboNum = (combo >= 10);
-		ratingPopup.show('', combo, playbackRate, FlxG.width * 0.35,
-			ClientPrefs.data.hideHud, false, showCombo, showComboNum,
-			[for (v in ClientPrefs.data.comboOffset) Std.int(v)], Conductor.crochet,
-			ClientPrefs.data.comboStacking);
+		showRatingPopup(ratingPopup, '', combo, FlxG.width * 0.35, false, showComboNum);
 	}
 
 	function bulkSettleNote(d:PreloadedChartNote, acc:BulkAccumulator):Bool
@@ -10376,10 +10518,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		var comboValue:Int = (stats != null) ? stats.combo : 0;
 		var placement = getRatingOffset(forSID);
 
-		popup.show(ratingImage, comboValue, playbackRate, placement[0],
-			ClientPrefs.data.hideHud, showRating, showCombo, comboValue >= 10,
-			[for (v in ClientPrefs.data.comboOffset) Std.int(v)], Conductor.crochet,
-			ClientPrefs.data.comboStacking);
+		showRatingPopup(popup, ratingImage, comboValue, placement[0], showRating, comboValue >= 10);
 	}
 
 	/** Character animation tag for the given side / sid. */
