@@ -8,6 +8,8 @@
     the SELM linemap instead (tools/gen_linemap_msvc.py reads the PDB through
     dbghelp at build time, the PDB itself is not shipped).
 
+    Step 0 refreshes source/BuildInfo.hx from git + Project.xml (watermark id).
+
     Order matters, and the reason is address stability: the linemap must be
     generated from an image whose .text is identical to the shipped one. Adding
     the linemap asset adds a translation unit, so the *first* build must already
@@ -48,6 +50,13 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
+
+# Step 0: bake the git revision into source/BuildInfo.hx so the in-game watermark and the
+# cold-start notice identify the binary that is about to be built. The file is tracked; after
+# a release build restore the committed "unknown" placeholder with
+#   git checkout -- source/BuildInfo.hx
+& python (Join-Path $PSScriptRoot 'gen_buildinfo.py')
+if ($LASTEXITCODE -ne 0) { throw "gen_buildinfo.py failed (exit $LASTEXITCODE)" }
 
 $outDir = 'export\release\windows'
 $exe = Join-Path $outDir 'bin\SeiunEngine.exe'

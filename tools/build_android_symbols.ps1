@@ -4,6 +4,8 @@
     exactly that APK (crash report -> cpp file:line, no sidecar needed).
 
 .DESCRIPTION
+    Step 0 refreshes source/BuildInfo.hx from git + Project.xml (watermark id).
+
     A single lime build cannot embed the crash linemap: the .bin files do not
     exist yet when that build reads Project.xml. The pipeline is:
 
@@ -45,6 +47,13 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
+
+# Step 0: bake the git revision into source/BuildInfo.hx so the in-game watermark and the
+# cold-start notice identify the binary that is about to be built. The file is tracked; after
+# a release build restore the committed "unknown" placeholder with
+#   git checkout -- source/BuildInfo.hx
+& python (Join-Path $PSScriptRoot 'gen_buildinfo.py')
+if ($LASTEXITCODE -ne 0) { throw "gen_buildinfo.py failed (exit $LASTEXITCODE)" }
 
 $outDir = 'export\release\android'
 $symbolsDir = Join-Path $outDir 'symbols'
