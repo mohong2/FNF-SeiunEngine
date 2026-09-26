@@ -343,6 +343,10 @@ class OnlineOptionsState extends MusicBeatState {
 		add(items);
 
         changeSelection(0);
+		#if (TOUCH_CONTROLS || desktop)
+		addVirtualPad(UP_DOWN, A_B);
+		addPadCamera();
+		#end
     }
 
 	var mouseMoveTimeout = 0.0;
