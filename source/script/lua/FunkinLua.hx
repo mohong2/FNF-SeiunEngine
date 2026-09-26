@@ -5003,8 +5003,9 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 	var nilCallbacks:Map<String, Int> = null;
 	/** Bumped whenever script code ran in this state (its globals may have changed). */
 	var globalsEpoch:Int = 0;
-	/** True while this state is inside Lua.pcall (see probeStamp()). */
-	var executing:Bool = false;
+	/** Depth of Lua.pcall frames of this state (see probeStamp()); a counter, not a flag,
+	 * because a Haxe callback invoked from a chunk can re-enter call() on the same state. */
+	var luaExecDepth:Int = 0;
 	var foldedGlobals:Int = -1;
 	var foldedHScript:Int = -1;
 	var nilStamp:Int = 0;
@@ -5022,7 +5023,7 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 		var bridgeEpoch:Int = 0;
 		var bridgeBusy:Bool = false;
 		#end
-		if (executing || bridgeBusy) return -1;
+		if (luaExecDepth > 0 || bridgeBusy) return -1;
 		if (foldedGlobals != globalsEpoch || foldedHScript != bridgeEpoch)
 		{
 			foldedGlobals = globalsEpoch;
@@ -5111,9 +5112,15 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 			for (arg in args) Convert.toLua(lua, arg);
 			// While the chunk runs, engine callbacks it triggers can re-enter this same state,
 			// so probeStamp() reports -1 for that window.
-			executing = true;
-			var status:Int = Lua.pcall(lua, args.length, 1, 0);
-			executing = false;
+			luaExecDepth++;
+			var status:Int;
+			try {
+				status = Lua.pcall(lua, args.length, 1, 0);
+				luaExecDepth--;
+			} catch (e:Dynamic) {
+				luaExecDepth--;
+				throw e;
+			}
 			globalsEpoch++; // script code ran: it may have defined any global
 
 			// Checks if it's not successful, then show a error.
@@ -5141,8 +5148,7 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 			return result;
 		}
 		catch (e:Dynamic) {
-			executing = false;
-			globalsEpoch++; // a chunk that threw may still have written globals
+			globalsEpoch++; // an error path may still have written globals
 			if (!CompatEngine.compatMode()) {
 				trace(e);
 			} else {
