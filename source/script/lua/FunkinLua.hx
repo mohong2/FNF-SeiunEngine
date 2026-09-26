@@ -4025,6 +4025,7 @@ class FunkinLua {
 	 * then falls through to the next searcher).
 	 */
 	function resolveRequireModule(modName:String, roots:Array<String>, chunksName:String):Dynamic {
+		probeRequireResolves++; // F8 probe: a require() missed package.loaded and searched the filesystem
 		if (modName == null || modName.length == 0) return null;
 		// 路径穿越保护：Lua 标准 require 也不允许 ".."，这里直接拦截
 		// English: path-traversal guard — standard require also rejects ".."
@@ -4184,6 +4185,7 @@ class FunkinLua {
 	 * English: Resolve an import target file to its full path; null when not found.
 	 */
 	function resolveImportFile(path:String, roots:Array<String>):String {
+		probeImportResolves++; // F8 probe: import() always re-resolves and re-executes (include semantics)
 		if (path == null || path.length == 0) return null;
 		#if sys
 		// 以 .lua 结尾 / 绝对路径 / 带分隔符的路径 → 按文件路径解析；
@@ -4972,6 +4974,15 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 		}
 		return pattern;
 	}
+
+	/**
+	 * F8 probe counters: how many times the require / import resolvers actually had to search
+	 * the file system. A mod that calls import() (or a never-resolving require) inside a
+	 * per-frame callback shows up here at once, which separates "the callback body is slow"
+	 * from "the callback re-reads and re-compiles files every frame".
+	 */
+	public static var probeRequireResolves:Int = 0;
+	public static var probeImportResolves:Int = 0;
 
 	var lastCalledFunction:String = '';
 

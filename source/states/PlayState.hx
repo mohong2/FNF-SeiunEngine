@@ -289,7 +289,7 @@ class PlayState extends MusicBeatState
 	 * ./crash/hitprobe.txt, so a 100k-NPS run can be compared before/after a change.
 	 */
 	static inline var PROBE_FRAMES:Int = 600;
-	static inline var PROBE_STRIDE:Int = 9;
+	static inline var PROBE_STRIDE:Int = 13;
 	static inline var PROBE_TOTAL:Int = 0;    // whole PlayState.update()
 	static inline var PROBE_BULK:Int = 1;     // bulkHitDueMaterialized()
 	static inline var PROBE_NOTES:Int = 2;    // per-object note update loop
@@ -299,6 +299,15 @@ class PlayState extends MusicBeatState
 	static inline var PROBE_SHOWS:Int = 6;    // popup show() calls this frame
 	static inline var PROBE_MEMBERS:Int = 7;  // ratingPopup.container.length (stale-length canary)
 	static inline var PROBE_COMBO:Int = 8;
+	/** Per-frame script dispatch cost: the four fixed update() dispatch sites (onUpdate, the two
+	 * engine-variable sweeps, onUpdatePost). Per-hit callbacks are charged to notes/sort instead. */
+	static inline var PROBE_SCRIPT:Int = 9;
+	/** callOnLuas/callOnHScript/setOnLuas/setOnHScript entries this frame (one entry = one array sweep). */
+	static inline var PROBE_SWEEPS:Int = 10;
+	/** luaArray.length + hscriptArray.length, sampled once per frame. */
+	static inline var PROBE_SCOUNT:Int = 11;
+	/** require() filesystem misses + import() calls this frame (counted inside FunkinLua). */
+	static inline var PROBE_REQIMP:Int = 12;
 
 	var _probeBuf:Array<Float> = null;
 	var _probeIdx:Int = 0;
@@ -311,6 +320,9 @@ class PlayState extends MusicBeatState
 	var _probeTotalMs:Float = 0;
 	var _probePopupMs:Float = 0;
 	var _probeShows:Int = 0;
+	var _probeScriptMs:Float = 0;
+	var _probeSweeps:Int = 0;
+	var _probeReqImpPrev:Int = 0;
 	/** Once-per-lane-per-frame gates for botplay character sing animations / strum static resets (reset with strumsHit). */
 	var _botCharAnim:Array<Bool> = [false, false, false, false, false, false, false, false];
 	var _botStrumStatic:Array<Bool> = [false, false, false, false, false, false, false, false];
@@ -3188,10 +3200,18 @@ class PlayState extends MusicBeatState
 		_probeBuf[base + PROBE_SHOWS] = _probeShows;
 		_probeBuf[base + PROBE_MEMBERS] = (ratingPopup != null && ratingPopup.container != null) ? ratingPopup.container.length : -1;
 		_probeBuf[base + PROBE_COMBO] = combo;
+		_probeBuf[base + PROBE_SCRIPT] = _probeScriptMs;
+		_probeBuf[base + PROBE_SWEEPS] = _probeSweeps;
+		_probeBuf[base + PROBE_SCOUNT] = probeScriptCount();
+		var reqImp:Int = FunkinLua.probeRequireResolves + FunkinLua.probeImportResolves;
+		_probeBuf[base + PROBE_REQIMP] = reqImp - _probeReqImpPrev;
+		_probeReqImpPrev = reqImp;
 		_probeIdx = (_probeIdx + 1) % PROBE_FRAMES;
 		if (_probeFrames < PROBE_FRAMES) _probeFrames++;
 		_probePopupMs = 0;
 		_probeShows = 0;
+		_probeScriptMs = 0;
+		_probeSweeps = 0;
 	}
 
 	/**
@@ -3221,10 +3241,11 @@ class PlayState extends MusicBeatState
 			buf.add('# perfMode=' + ClientPrefs.data.perfMode + ' turbo=' + turboModeActive
 				+ ' limitNotes=' + ClientPrefs.data.limitNotes + ' fastSort=' + ClientPrefs.data.fastSort
 				+ ' bulkSkip=' + ClientPrefs.data.bulkSkip + ' comboStacking=' + ClientPrefs.data.comboStacking + '\n');
-			buf.add('# frames=' + n + ' combo=' + combo + '\n');
-			buf.add('# columns: frame total bulk notes sort present popup shows members combo\n');
+			buf.add('# frames=' + n + ' combo=' + combo + ' luaScripts=' + probeLuaScriptCount()
+				+ ' hscripts=' + probeHScriptCount() + '\n');
+			buf.add('# columns: frame total bulk notes sort present popup shows members combo script sweeps scount reqimp\n');
 
-			var names:Array<String> = ['total', 'bulk', 'notes', 'sort', 'present', 'popup', 'shows', 'members', 'combo'];
+			var names:Array<String> = ['total', 'bulk', 'notes', 'sort', 'present', 'popup', 'shows', 'members', 'combo', 'script', 'sweeps', 'scount', 'reqimp'];
 			var sums:Array<Float> = [for (i in 0...PROBE_STRIDE) 0.0];
 			var maxs:Array<Float> = [for (i in 0...PROBE_STRIDE) 0.0];
 			for (f in 0...n)
@@ -3240,7 +3261,7 @@ class PlayState extends MusicBeatState
 			for (c in 0...PROBE_STRIDE)
 				buf.add('# ' + names[c] + ' avg=' + _probeFmt(sums[c] / n) + ' max=' + _probeFmt(maxs[c]) + '\n');
 
-			buf.add('frame\ttotal\tbulk\tnotes\tsort\tpresent\tpopup\tshows\tmembers\tcombo\n');
+			buf.add('frame\ttotal\tbulk\tnotes\tsort\tpresent\tpopup\tshows\tmembers\tcombo\tscript\tsweeps\tscount\treqimp\n');
 			for (f in 0...n)
 			{
 				var b:Int = ((start + f) % PROBE_FRAMES) * PROBE_STRIDE;
@@ -3262,6 +3283,33 @@ class PlayState extends MusicBeatState
 	static inline function _probeFmt(v:Float):String
 	{
 		return Std.string(Math.round(v * 1000) / 1000);
+	}
+
+	/** Start/stop one fixed per-frame script dispatch slice (4 slices per frame; Timer.stamp is ~100ns). */
+	inline function _probeScriptT0():Float {
+		return haxe.Timer.stamp();
+	}
+	inline function _probeScriptT1(t0:Float):Void {
+		_probeScriptMs += haxe.Timer.stamp() - t0;
+	}
+
+	/** Script counts for the probe header / scount column (0 when the runtime is compiled out). */
+	function probeLuaScriptCount():Int {
+		#if LUA_ALLOWED
+		return luaArray != null ? luaArray.length : 0;
+		#else
+		return 0;
+		#end
+	}
+	function probeHScriptCount():Int {
+		#if HSCRIPT_ALLOWED
+		return hscriptArray != null ? hscriptArray.length : 0;
+		#else
+		return 0;
+		#end
+	}
+	inline function probeScriptCount():Int {
+		return probeLuaScriptCount() + probeHScriptCount();
 	}
 
 	function flushHitPresentation():Void
@@ -4649,7 +4697,9 @@ class PlayState extends MusicBeatState
 		{
 			iconP1.swapOldIcon();
 		}*/
+		var _probeScA:Float = _probeScriptT0();
 		callOnScripts('onUpdate', [elapsed]);
+		_probeScriptT1(_probeScA);
 
 		keyboardDisplay.dataUpdate(elapsed);
 		/*
@@ -4725,8 +4775,10 @@ class PlayState extends MusicBeatState
 			miss.text = Language.get("missesText", "Misses:") + songMisses;
 		}
 
-		setOnScripts('curDecStep', curDecStep);
-		setOnScripts('curDecBeat', curDecBeat);
+		// F8 probe + one sweep for both globals (same instant, same per-script order).
+		var _probeScB:Float = _probeScriptT0();
+		setOnScripts2('curDecStep', curDecStep, 'curDecBeat', curDecBeat);
+		_probeScriptT1(_probeScB);
 
 		if(botplayTxt.visible) {
 			botplaySine += 180 * elapsed;
@@ -5165,13 +5217,19 @@ class PlayState extends MusicBeatState
 		_phaseT = _probePresentT;
 		flushHitPresentation();
 		_probePresentMs = haxe.Timer.stamp() - _probePresentT;
-		_probeTotalMs = _probePresentMs + _probePresentT - _probeFrameStart;
-		commitHitProbeFrame();
 
-		setOnScripts('cameraX', camFollowPos.x);
-		setOnScripts('cameraY', camFollowPos.y);
-		setOnScripts('botPlay', cpuControlled);
+		// F8 probe + one sweep for the three globals (same instant, same per-script order).
+		var _probeScC:Float = _probeScriptT0();
+		setOnScripts3('cameraX', camFollowPos.x, 'cameraY', camFollowPos.y, 'botPlay', cpuControlled);
+		_probeScriptT1(_probeScC);
+
+		var _probeScD:Float = _probeScriptT0();
 		callOnScripts('onUpdatePost', [elapsed]);
+		_probeScriptT1(_probeScD);
+
+		// Commit after the script tail so this frame's total and script slices include it.
+		_probeTotalMs = haxe.Timer.stamp() - _probeFrameStart;
+		commitHitProbeFrame();
 	}
 	// Health icon updaters(like 073?)
 	public dynamic function updateIconsScale(elapsed:Float){
@@ -9373,11 +9431,20 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 	}
 
 
+	/**
+	 * Shared read-only argument arrays for the dispatch path. Nothing here is ever mutated: the
+	 * previous code allocated a fresh [] / [Function_Continue] on every callOnScripts and every
+	 * callOnHScript, which is pure frame garbage on dense charts.
+	 */
+	static final EMPTY_ARGS:Array<Dynamic> = [];
+	static final EMPTY_STRINGS:Array<String> = [];
+	static final CONTINUE_ONLY:Array<Dynamic> = [FunkinLua.Function_Continue];
+
 	public function callOnScripts(funcToCall:String, args:Array<Dynamic> = null, ignoreStops = false, exclusions:Array<String> = null, excludeValues:Array<Dynamic> = null):Dynamic {
 		var returnVal:Dynamic = FunkinLua.Function_Continue;
-		if(args == null) args = [];
-		if(exclusions == null) exclusions = [];
-		if(excludeValues == null) excludeValues = [FunkinLua.Function_Continue];
+		if(args == null) args = EMPTY_ARGS;
+		if(exclusions == null) exclusions = EMPTY_STRINGS;
+		if(excludeValues == null) excludeValues = CONTINUE_ONLY;
 
 		var result:Dynamic = callOnLuas(funcToCall, args, ignoreStops, exclusions, excludeValues);
 		if(result == null || excludeValues.contains(result)) result = callOnHScript(funcToCall, args, ignoreStops, exclusions, excludeValues);
@@ -9418,16 +9485,22 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		var returnVal:Dynamic = FunkinLua.Function_Continue;
 
 	#if HSCRIPT_ALLOWED
-		if(exclusions == null) exclusions = new Array();
-		if(excludeValues == null) excludeValues = new Array();
-		excludeValues.push(FunkinLua.Function_Continue);
-
+		_probeSweeps++;
+		// `exclusions` is dead here: the old code allocated it but never read it. Script-level
+		// exclusions are applied by callers that pass an already-filtered list.
+		// The old code also pushed Function_Continue into the caller's excludeValues array on every
+		// call (mutating an array it does not own); Continue is now tested explicitly, which gives
+		// the same result because a Continue return never overrides returnVal.
 		var len:Int = hscriptArray.length;
 		if (len < 1)
 			return returnVal;
 		for(i in 0...len) {
 			var script:HScript = hscriptArray[i];
-			if(script == null || script.closed || !script.exists(funcToCall))
+			// No script.exists() probe: HScript.call() resolves the name once and returns
+			// Function_Continue for an absent / not-a-function value - exactly what the old
+			// `!exists() -> continue` did. interpGet() cannot throw (null-guarded map lookups),
+			// so the exists()+call() pair only ever bought a second lookup.
+			if(script == null || script.closed)
 				continue;
 
 			var myValue:Dynamic = null;
@@ -9435,13 +9508,13 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 				myValue = script.call(funcToCall, args);
 				if(myValue == FunkinLua.Function_StopHScript || myValue == FunkinLua.Function_StopAll)
 				{
-					if(!excludeValues.contains(myValue) && !ignoreStops)
+					if(!_excludedBy(excludeValues, myValue) && !ignoreStops)
 					{
 						returnVal = myValue;
 						break;
 					}
 				}
-				else if(myValue != null && !excludeValues.contains(myValue))
+				else if(myValue != null && myValue != FunkinLua.Function_Continue && !_excludedBy(excludeValues, myValue))
 				{
 					returnVal = myValue;
 				}
@@ -9453,15 +9526,80 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		return returnVal;
 	}
 
-	public function setOnScripts(variable:String, arg:Dynamic, exclusions:Array<String> = null) {
-		if(exclusions == null) exclusions = [];
+		public function setOnScripts(variable:String, arg:Dynamic, exclusions:Array<String> = null) {
+		if(exclusions == null) exclusions = EMPTY_STRINGS;
 		setOnLuas(variable, arg, exclusions);
 		setOnHScript(variable, arg, exclusions);
 	}
 
+	/** Null-safe membership test for the dispatch exclusion lists (callers may omit them). */
+	static inline function _excludedBy(list:Array<Dynamic>, value:Dynamic):Bool
+		return list != null && list.contains(value);
+
+	/**
+	 * Push two engine globals per script in one sweep of each script list.
+	 * Only the interleaving between scripts changes: every script still receives the same
+	 * variables in the same order as two back-to-back setOnScripts() calls, and no script code
+	 * runs while the values are written (Lua setglobal / interp.variables.set only), so no
+	 * script can observe the difference. Use ONLY for variables that used to be pushed at the
+	 * same point of the frame - delaying a set past a callback would change what scripts read.
+	 */
+	function setOnScripts2(n1:String, v1:Dynamic, n2:String, v2:Dynamic):Void {
+		#if LUA_ALLOWED
+		_probeSweeps++;
+		if (luaArray != null)
+			for (script in luaArray)
+			{
+				script.set(n1, v1);
+				script.set(n2, v2);
+			}
+		#end
+		#if HSCRIPT_ALLOWED
+		_probeSweeps++;
+		HScript.setOnGlobalScript(n1, v1);
+		HScript.setOnGlobalScript(n2, v2);
+		if (hscriptArray != null)
+			for (script in hscriptArray)
+				if (!script.closed)
+				{
+					script.set(n1, v1);
+					script.set(n2, v2);
+				}
+		#end
+	}
+
+	/** Three-variable variant of setOnScripts2 (same reasoning). */
+	function setOnScripts3(n1:String, v1:Dynamic, n2:String, v2:Dynamic, n3:String, v3:Dynamic):Void {
+		#if LUA_ALLOWED
+		_probeSweeps++;
+		if (luaArray != null)
+			for (script in luaArray)
+			{
+				script.set(n1, v1);
+				script.set(n2, v2);
+				script.set(n3, v3);
+			}
+		#end
+		#if HSCRIPT_ALLOWED
+		_probeSweeps++;
+		HScript.setOnGlobalScript(n1, v1);
+		HScript.setOnGlobalScript(n2, v2);
+		HScript.setOnGlobalScript(n3, v3);
+		if (hscriptArray != null)
+			for (script in hscriptArray)
+				if (!script.closed)
+				{
+					script.set(n1, v1);
+					script.set(n2, v2);
+					script.set(n3, v3);
+				}
+		#end
+	}
+
 	override public function setOnLuas(variable:String, arg:Dynamic, exclusions:Array<String> = null) {
 		#if LUA_ALLOWED
-		if(exclusions == null) exclusions = [];
+		_probeSweeps++;
+		if(exclusions == null) exclusions = EMPTY_STRINGS;
 		for (script in luaArray) {
 			if(exclusions.contains(script.scriptName))
 				continue;
@@ -9473,7 +9611,8 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 
 	public function setOnHScript(variable:String, arg:Dynamic, exclusions:Array<String> = null) {
 		#if HSCRIPT_ALLOWED
-		if(exclusions == null) exclusions = [];
+		_probeSweeps++;
+		if(exclusions == null) exclusions = EMPTY_STRINGS;
 		HScript.setOnGlobalScript(variable, arg);
 		for (script in hscriptArray) {
 			if (!script.closed) {
@@ -9487,16 +9626,19 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 	override public function callOnLuas(funcToCall:String, args:Array<Dynamic> = null, ignoreStops = false, exclusions:Array<String> = null, excludeValues:Array<Dynamic> = null):Dynamic {
 		var returnVal:Dynamic = FunkinLua.Function_Continue;
 		#if LUA_ALLOWED
+		_probeSweeps++;
 		if (luaArray == null || luaArray.length == 0) return returnVal;
-		if(args == null) args = [];
-		if(exclusions == null) exclusions = [];
-		if(excludeValues == null) excludeValues = [FunkinLua.Function_Continue];
+		if(args == null) args = EMPTY_ARGS;
+		if(exclusions == null) exclusions = EMPTY_STRINGS;
+		if(excludeValues == null) excludeValues = CONTINUE_ONLY;
 
-		var arr:Array<FunkinLua> = [];
+		// Lazy: allocated only when a script closed itself while we were iterating (rare).
+		var arr:Array<FunkinLua> = null;
 		for (script in luaArray)
 		{
 			if(script.closed)
 			{
+				if (arr == null) arr = [];
 				arr.push(script);
 				continue;
 			}
@@ -9514,10 +9656,14 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 			if(myValue != null && !excludeValues.contains(myValue))
 				returnVal = myValue;
 
-			if(script.closed) arr.push(script);
+			if(script.closed)
+			{
+				if (arr == null) arr = [];
+				arr.push(script);
+			}
 		}
 
-		if(arr.length > 0)
+		if(arr != null)
 			for (script in arr)
 				luaArray.remove(script);
 		#end
@@ -9526,7 +9672,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 
 
 
-	function calculateResetTime():Float {
+function calculateResetTime():Float {
 		return (Conductor.stepCrochet * 1.5 / 1000) / playbackRate;
 	}
 
