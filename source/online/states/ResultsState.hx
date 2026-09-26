@@ -609,6 +609,10 @@ class ResultsState extends MusicBeatState {
 		var debugPoser = new online.objects.DebugPosHelper();
 		debugPoser.cameras = [camHUD];
 		add(debugPoser);
+		#if (TOUCH_CONTROLS || desktop)
+		addVirtualPad(NONE, A_B);
+		addPadCamera();
+		#end
     }
 
 	/** Engine language key -> "Label: " (trailing colon normalised away). */
