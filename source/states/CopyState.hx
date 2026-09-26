@@ -17,6 +17,7 @@ import mohong.TraceManager;
 import backend.Dialog;
 import flixel.addons.transition.FlxTransitionableState;
 import flixel.FlxSprite;
+import flixel.FlxState;
 import flixel.text.FlxText;
 import flixel.FlxG;
 import flixel.util.FlxColor;
@@ -437,13 +438,33 @@ class CopyState extends MusicBeatState
 
 	// -------------------------------------------------- Hand-over / warnings
 
+	/**
+	 * Leave the copy state through plain flixel rather than MusicBeatState.switchState.
+	 *
+	 * switchState() opens a CustomFadeTransition substate and installs its *static*
+	 * finishCallback; CustomFadeTransition.destroy() then calls that callback a second time
+	 * while FlxGame is already inside switchState(), and the fade-out substate is left open
+	 * until then. This hand-over is the only transition the engine performs while assets are
+	 * still warm from extraction, so the machinery is skipped here: the mod state redirect is
+	 * applied explicitly (TitleState also re-checks stateRedirects on its first update), and
+	 * no transition substate is created. The up-to-date path already skipped the fade for the
+	 * same reason.
+	 */
 	function handOver():Void
 	{
 		// The cold-start storage-location warning is raised by TitleState's normal flow, next
 		// to the engine's other boot dialogs: showing a native dialog from the very first
 		// state is one unknown too many for a startup path.
 		TraceManager.info('trace.copy.handOver', 'Assets ready; entering TitleState');
-		MusicBeatState.switchState(new TitleState());
+
+		FlxTransitionableState.skipNextTransIn = true;
+		FlxTransitionableState.skipNextTransOut = true;
+
+		var next:FlxState = new TitleState();
+		#if MODS_ALLOWED
+		next = states.ModState.resolveState(next);
+		#end
+		FlxG.switchState(next);
 	}
 
 	/** Auto-extraction is off but the assets are not usable: say so instead of hiding it. */
