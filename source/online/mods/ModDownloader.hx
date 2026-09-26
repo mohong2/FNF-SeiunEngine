@@ -32,7 +32,21 @@ class ModDownloader {
 	}
 	public var onStatus:DownloaderStatus->Void;
 
-	static var downloadDir:String = openfl.filesystem.File.applicationDirectory.nativePath + "/downloads/";
+	// Both directories are resolved on first use: touching `File.applicationDirectory` from a class
+	// static initializer runs during hxcpp boot, where lime's Android directory lookup hands a null
+	// JNI string to its string conversion and dereferences it (strlen(NULL), SIGSEGV). Android also
+	// has to write somewhere writable, so it uses the engine's storage directory.
+	static var downloadDir(get, never):String;
+	static function get_downloadDir():String return modDir() + "/downloads/";
+
+	static function modDir():String
+	{
+		#if android
+		return SUtil.getStorageDirectory();
+		#else
+		return openfl.filesystem.File.applicationDirectory.nativePath;
+		#end
+	}
 	var downloadPath:String;
 	var id:String;
 	public var url:String;
@@ -173,7 +187,9 @@ class ModDownloader {
 	 * or drag). Returns the new path, or null if the source is missing or the move failed.
 	 * Existing names are not overwritten; _1 / _2 ... is appended.
 	 */
-	public static var keptDir:String = openfl.filesystem.File.applicationDirectory.nativePath + '/downloaded_mods/';
+	// See `modDir`: resolved on first use so hxcpp boot never touches the asset directory.
+	public static var keptDir(get, never):String;
+	static function get_keptDir():String return modDir() + '/downloaded_mods/';
 
 	public static function keepPendingFile(path:String):String {
 		try {
