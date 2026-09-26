@@ -186,6 +186,12 @@ class TitleState extends MusicBeatState
 
 		ClientPrefs.loadPrefs();
 
+#if ACHIEVEMENTS_ALLOWED
+		// Load the achievement list before anything can unlock: a write that runs before this
+		// point replaces the saved list with the in-memory one and loses previous unlocks.
+		Achievements.load();
+#end
+
 #if ONLINE_ALLOWED
 		// Credentials are keyed by server-list entry now, so Auth reads the server list --
 			// which in turn seeds itself from the legacy address fields in ClientPrefs. The call is
