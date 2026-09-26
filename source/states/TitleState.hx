@@ -1,10 +1,5 @@
 package states;
 #if mobile
-import lime.utils.Assets as LimeAssets;
-import openfl.utils.Assets as OpenFLAssets;
-import flixel.addons.util.FlxAsyncLoop;
-import openfl.utils.ByteArray;
-import haxe.io.Path;
 #if sys
 import sys.io.File;
 import sys.FileSystem;
@@ -72,33 +67,6 @@ class TitleState extends MusicBeatState
 	public static var volumeUpKeys:Array<FlxKey> = [FlxKey.NUMPADPLUS, FlxKey.PLUS];
 
 	public static var initialized:Bool = false;
-
-	#if mobile
-	// CopyState related fields
-	public static var locatedFiles:Array<String> = [];
-	public static var maxLoopTimes:Int = 0;
-	public static final IGNORE_FOLDER_FILE_NAME:String = "ignore.txt";
-	public static final EXTRACTION_ASSET_ROOTS:Array<String> = ['assets', 'mods'];
-
-	public var copyLoadingImage:FlxSprite;
-	public var copyBottomBG:FlxSprite;
-	public var copyLoadedText:FlxText;
-	public var copyLoop:FlxAsyncLoop;
-
-	var copyLoopTimes:Int = 0;
-	var copyFailedFiles:Array<String> = [];
-	var copyFailedFilesStack:Array<String> = [];
-	var copyCanUpdate:Bool = true;
-	var isCopying:Bool = false;
-	var copyCompleted:Bool = false;
-
-	#if android
-	var extractionDone:Bool = false;
-	var extractionResult:Dynamic = null;
-	#end
-
-	private static final textFilesExtensions:Array<String> = ['ini', 'txt', 'xml', 'hxs', 'hx', 'lua', 'json', 'frag', 'vert'];
-	#end
 
 	var blackScreen:FlxSprite;
 	var credGroup:FlxGroup;
@@ -181,10 +149,17 @@ class TitleState extends MusicBeatState
 		swagShader = new ColorSwap();
 
 		// Load preferences BEFORE super.create() so MusicBeatState → Language.load()
-		// picks up the user's saved language preference.
-		FlxG.save.bind('funkin', 'ninjamuffin99');
+		// picks up the user's saved language preference. On mobile CopyState already
+		// loaded them (it needs autoExtractAssets/storageType), so this is a no-op there.
+		ClientPrefs.ensureLoaded();
 
-		ClientPrefs.loadPrefs();
+		#if sys
+		// Prefs are in memory now, so the storage root can finally be resolved against the
+		// player's saved storageType instead of the version-aware default; re-apply it so
+		// cwd, the crash directory and the linemap all agree. On mobile CopyState already
+		// did this and the cached resolution makes the call cheap.
+		SUtil.applyStorageDirectory();
+		#end
 
 #if ACHIEVEMENTS_ALLOWED
 		// Load the achievement list before anything can unlock: a write that runs before this
@@ -300,44 +275,10 @@ class TitleState extends MusicBeatState
 
 		FlxG.mouse.visible = false;
 
-		#if mobile
-		// Check if auto-extract is enabled in settings
-		if (ClientPrefs.data.autoExtractAssets)
-		{
-			locatedFiles = [];
-			maxLoopTimes = 0;
-			#if android
-			// Android: 原生 countMissingAssets() 是同步 JNI 全量扫 APK, 在低端
-			// 设备上会让首帧前卡死甚至 ANR (表现为"第一次能进, 第二次进不去")。
-			// 这里改成只读 .extract_version 版本标记快速判断; 真正需要补文件时
-			// 才进复制界面, 而实际复制由 extension-androidtools 在后台线程完成。
-			if (androidExtractionUpToDate())
-				continueNormalFlow();
-			else
-				initCopyState(false);
-			#else
-			checkExistingFiles();
-
-			if (maxLoopTimes > 0)
-			{
-				// Need to copy files, show copy UI
-				initCopyState();
-			}
-			else
-			{
-				// No files to copy, continue normal flow
-				continueNormalFlow();
-			}
-			#end
-		}
-		else
-		{
-			// Auto-extract disabled, skip straight to normal flow
-			continueNormalFlow();
-		}
-		#else
+		// Asset extraction and readiness verification live in CopyState, which is the
+		// first mobile state and hands over only once the storage root is verified. No
+		// input path may switch states from here.
 		continueNormalFlow();
-		#end
 	}
 
 	#if CHECK_FOR_UPDATES
@@ -393,324 +334,6 @@ class TitleState extends MusicBeatState
 		}
 
 		GitHubAPI.getReleases(owner, repo, 100, 1, onData, onError);
-	}
-	#end
-
-		#if mobile
-	/** @param showNotice Android 快速校验路径不弹"缺文件"对话框, 避免每次启动骚扰。 */
-	function initCopyState(?showNotice:Bool = true):Void
-	{
-		isCopying = true;
-		copyLoadedText = null;
-		copyLoop = null;
-		copyLoopTimes = 0;
-		copyFailedFiles = [];
-		copyFailedFilesStack = [];
-		copyCanUpdate = true;
-		copyCompleted = false;
-		#if android
-		extractionDone = false;
-		extractionResult = null;
-		#end
-
-		if (showNotice)
-		{
-			SUtil.showPopUp(
-				Language.get("TitleState.extractNotice", "Seems like you have some missing files that are necessary to run the game\nPress OK to begin the copy process"),
-				Language.get("TitleState.extractTitle", "Notice!"));
-		}
-
-		add(new FlxSprite(0, 0).makeGraphic(FlxG.width, FlxG.height, 0xffcaff4d));
-
-		copyLoadingImage = new FlxSprite(0, 0, Paths.image('funkay'));
-		copyLoadingImage.setGraphicSize(0, FlxG.height);
-		copyLoadingImage.updateHitbox();
-		copyLoadingImage.screenCenter();
-		add(copyLoadingImage);
-
-		copyBottomBG = new FlxSprite(0, FlxG.height - 26).makeGraphic(FlxG.width, 26, 0xFF000000);
-		copyBottomBG.alpha = 0.6;
-		add(copyBottomBG);
-
-		copyLoadedText = new FlxText(copyBottomBG.x, copyBottomBG.y + 4, FlxG.width, '', 16);
-		copyLoadedText.setFormat(Paths.languageFont(), 16, FlxColor.WHITE, CENTER);
-		add(copyLoadedText);
-
-		#if android
-		// Streamed natively from the APK on a background thread (no OOM, atomic
-		// writes, resume after crashes, progress via listener).
-		startNativeExtraction();
-		#else
-		var ticks:Int = 15;
-		if (maxLoopTimes <= 15)
-			ticks = 1;
-
-		copyLoop = new FlxAsyncLoop(maxLoopTimes, copyAsset, ticks);
-		add(copyLoop);
-		copyLoop.start();
-		#end
-	}
-
-	#if android
-	function startNativeExtraction():Void
-	{
-		var listener = new android.Tools.ExtractionListener();
-		listener.progressHandler = function(file:String, done:Int, total:Int)
-		{
-			if (copyLoadedText != null)
-				copyLoadedText.text = (total > 0) ? '$done/$total' : 'Completed!';
-		};
-		listener.completeHandler = function(resultJson:String)
-		{
-			extractionResult = null;
-			try
-			{
-				if (resultJson != null && resultJson.length > 0)
-					extractionResult = Json.parse(resultJson);
-			}
-			catch (e:Dynamic) {}
-			extractionDone = true;
-		};
-
-		android.Tools.extractAssets(EXTRACTION_ASSET_ROOTS, SUtil.getStorageDirectory(), listener);
-	}
-
-	function handleNativeExtractionFinished():Void
-	{
-		copyCanUpdate = false;
-
-		if (extractionResult != null)
-		{
-			var failures:Array<Dynamic> = Reflect.field(extractionResult, 'failures');
-			if (failures != null)
-			{
-				for (f in failures)
-				{
-					var file:String = Reflect.field(f, 'file');
-					var error:String = Reflect.field(f, 'error');
-					copyFailedFiles.push('$file ($error)');
-					copyFailedFilesStack.push('$file -> $error');
-				}
-			}
-		}
-
-		if (copyFailedFiles.length > 0)
-		{
-			SUtil.showPopUp(copyFailedFiles.join('\n'), 'Failed To Copy ${copyFailedFiles.length} File.');
-			if (!FileSystem.exists('logs'))
-				FileSystem.createDirectory('logs');
-			File.saveContent('logs/' + Date.now().toString().replace(' ', '-').replace(':', "'") + '-CopyState' + '.txt', copyFailedFilesStack.join('\n'));
-		}
-		copyCompleted = true;
-		FlxG.sound.play(Paths.sound('confirmMenu'));
-
-		// Copy completed, proceed with normal flow
-		isCopying = false;
-		continueNormalFlow();
-	}
-	#end
-
-	#if android
-	/**
-		快速判断上一次启动是否已经完整解压过当前版本资源。
-		原生 .extract_version 内容为 "versionCode|versionName"; 标记存在且
-		版本名匹配就直接放行, 不再同步遍历整个 APK (解决部分设备第二次
-		启动时 countMissingAssets() 阻塞造成 ANR/黑屏的问题)。
-	**/
-	function androidExtractionUpToDate():Bool
-	{
-		try
-		{
-			var root:String = SUtil.getStorageDirectory();
-			var marker:String = root + '.extract_version';
-			if (!FileSystem.exists(marker))
-				return false;
-			// 至少确认关键资源目录已落盘, 防止用户手动删除 assets/ 后
-			// 仅凭标记误判为"已就绪"。
-			if (!FileSystem.exists(root + 'assets') || !FileSystem.isDirectory(root + 'assets'))
-				return false;
-			if (FileSystem.exists(root + 'assets/assets') || FileSystem.exists(root + 'assets/mods'))
-				return false;
-			var stored:String = File.getContent(marker).trim();
-			var version:String = null;
-			try
-			{
-				var meta:Dynamic = Application.current.meta;
-				if (meta != null)
-					version = meta.get('version');
-			}
-			catch (e:Dynamic) {}
-			if (version == null || version.length == 0)
-				version = MainMenuState.psychEngineVersion;
-			if (version == null || version.length == 0)
-				return false;
-			return stored == version || stored.indexOf('|' + version) >= 0;
-		}
-		catch (e:Dynamic)
-		{
-			return false;
-		}
-	}
-	#end
-
-	function checkExistingFiles():Void
-	{
-		#if android
-		// Native scan: enumerates the real APK assets and stats the filesystem
-		// directly — no OpenFL asset-cache dependency, no per-file Haxe overhead,
-		// consistent behavior across every Android version.
-		maxLoopTimes = android.Tools.countMissingAssets(EXTRACTION_ASSET_ROOTS, SUtil.getStorageDirectory());
-		#else
-		locatedFiles = OpenFLAssets.list();
-
-		// Normalize paths: strip library prefixes (e.g. "extension-androidtools:assets/..." -> "assets/...")
-		var normalized:Array<String> = [];
-		for (file in locatedFiles)
-		{
-			var idx = file.indexOf(':');
-			var cleanPath = (idx >= 0) ? file.substr(idx + 1) : file;
-			if (cleanPath.startsWith('assets/') || cleanPath.startsWith('mods/'))
-			{
-
-				for (rootName in ['assets', 'mods'])
-				{
-					var doubled:String = rootName + '/' + rootName + '/';
-					if (cleanPath.startsWith(doubled))
-					{
-						cleanPath = cleanPath.substr(rootName.length + 1);
-						break;
-					}
-				}
-				if (!normalized.contains(cleanPath))
-					normalized.push(cleanPath);
-			}
-		}
-		locatedFiles = normalized;
-
-		var filesToRemove:Array<String> = [];
-
-		for (file in locatedFiles)
-		{
-			// Skip embedded assets (they don't need filesystem extraction)
-			if (file.startsWith("assets/embed/"))
-			{
-				filesToRemove.push(file);
-				continue;
-			}
-
-			// Check if file already exists on filesystem, or if an ignore marker exists
-			var ignoreFile = Path.join([Path.directory(file), IGNORE_FOLDER_FILE_NAME]);
-			if (FileSystem.exists(file) || OpenFLAssets.exists(ignoreFile))
-			{
-				filesToRemove.push(file);
-			}
-		}
-
-		for (file in filesToRemove)
-			locatedFiles.remove(file);
-
-		maxLoopTimes = locatedFiles.length;
-		#end
-	}
-
-	function copyAsset():Void
-	{
-		if (copyLoopTimes >= locatedFiles.length) return;
-		var file = locatedFiles[copyLoopTimes];
-		copyLoopTimes++;
-		if (file.startsWith("assets/embed/"))
-		{
-			return;
-		}
-		if (!FileSystem.exists(file))
-		{
-			var directory = Path.directory(file);
-			if (!FileSystem.exists(directory))
-				SUtil.mkDirs(directory);
-			try
-			{
-				var resolved = getCopyFile(file);
-				if (OpenFLAssets.exists(resolved))
-				{
-					if (textFilesExtensions.contains(Path.extension(file)))
-						createContentFromInternal(file);
-					else
-						File.saveBytes(file, getFileBytes(resolved));
-				}
-				else
-				{
-					copyFailedFiles.push(file + " (File Doesn't Exist)");
-					copyFailedFilesStack.push('Asset $file does not exist.');
-				}
-			}
-			catch (e:haxe.Exception)
-			{
-				copyFailedFiles.push('$file (${e.message})');
-				copyFailedFilesStack.push('$file (${e.stack})');
-			}
-		}
-	}
-
-	function createContentFromInternal(file:String):Void
-	{
-		var fileName = Path.withoutDirectory(file);
-		var directory = Path.directory(file);
-		try
-		{
-			var fileData:String = OpenFLAssets.getText(getCopyFile(file));
-			if (fileData == null)
-				fileData = '';
-			if (!FileSystem.exists(directory))
-				SUtil.mkDirs(directory);
-			File.saveContent(Path.join([directory, fileName]), fileData);
-		}
-		catch (e:haxe.Exception)
-		{
-			copyFailedFiles.push('${getCopyFile(file)} (${e.message})');
-			copyFailedFilesStack.push('${getCopyFile(file)} (${e.stack})');
-		}
-	}
-
-	function getFileBytes(file:String):ByteArray
-	{
-		switch (Path.extension(file).toLowerCase())
-		{
-			case 'otf' | 'ttf':
-				return ByteArray.fromFile(file);
-			default:
-				try
-				{
-					return OpenFLAssets.getBytes(file);
-				}
-				catch (e:Dynamic)
-				{
-					try
-					{
-						return LimeAssets.getBytes(file);
-					}
-					catch (e2:Dynamic)
-					{
-						var libraryPath = getCopyFile(file);
-						return OpenFLAssets.getBytes(libraryPath);
-					}
-				}
-		}
-	}
-
-	static function getCopyFile(file:String):String
-	{
-		if(OpenFLAssets.exists(file)) return file;
-
-		@:privateAccess
-		for(library in LimeAssets.libraries.keys()){
-			if(OpenFLAssets.exists('$library:$file') && library != 'default')
-				return '$library:$file';
-		}
-
-		if(LimeAssets.exists(file))
-			return file;
-
-		return file;
 	}
 	#end
 
@@ -1083,54 +706,6 @@ class TitleState extends MusicBeatState
 		#end
 		#if HSCRIPT_ALLOWED
 		callOnHscript('onUpdate', [elapsed]);
-		#end
-
-		#if mobile
-		if (isCopying)
-		{
-			#if android
-			if (extractionDone && copyCanUpdate)
-			{
-				handleNativeExtractionFinished();
-				return;
-			}
-			#else
-			if (copyLoop != null)
-			{
-				if (copyLoop.finished && copyCanUpdate)
-				{
-					if (copyFailedFiles.length > 0)
-					{
-						SUtil.showPopUp(copyFailedFiles.join('\n'), 'Failed To Copy ${copyFailedFiles.length} File.');
-						if (!FileSystem.exists('logs'))
-							FileSystem.createDirectory('logs');
-						File.saveContent('logs/' + Date.now().toString().replace(' ', '-').replace(':', "'") + '-CopyState' + '.txt', copyFailedFilesStack.join('\n'));
-					}
-					copyCanUpdate = false;
-					copyCompleted = true;
-					FlxG.sound.play(Paths.sound('confirmMenu'));
-
-					// Copy completed, proceed with normal flow
-					isCopying = false;
-					continueNormalFlow();
-					return;
-				}
-
-				if (maxLoopTimes == 0)
-					copyLoadedText.text = "Completed!";
-				else
-					copyLoadedText.text = '$copyLoopTimes/$maxLoopTimes';
-			}
-			#end
-			#if LUA_ALLOWED
-			callOnLuas('onUpdatePost', [elapsed]);
-			#end
-			#if HSCRIPT_ALLOWED
-			callOnHscript('onUpdatePost', [elapsed]);
-			#end
-			super.update(elapsed);
-			return;
-		}
 		#end
 
 		if (FlxG.sound.music != null)

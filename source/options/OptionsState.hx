@@ -77,6 +77,31 @@ class OptionsState extends MusicBeatState
 	}
 
 	static var curSelected:Int = 0;
+
+	/** Settings page to open as soon as this state is ready (set before switching to it). */
+	public static var openPageOnEnter:String = null;
+
+	/**
+	 * Jump straight to a settings page from outside (e.g. the storage-location warning).
+	 * Reuses the running instance when there is one, otherwise opens the state and lets
+	 * update() consume openPageOnEnter once everything is built.
+	 */
+	public static function openPageNow(id:String):Void
+	{
+		openPageOnEnter = id;
+
+		var current:Dynamic = FlxG.state;
+		if (Std.isOfType(current, OptionsState))
+		{
+			openPageOnEnter = null;
+			var state:OptionsState = cast current;
+			state.openSelectedCategory(id);
+			return;
+		}
+
+		backend.MusicBeatState.switchState(new OptionsState());
+	}
+
 	public static var onPlayState:Bool = false;
 	#if ONLINE_ALLOWED
 	// When set, pressing BACK returns into the online RoomState instead of the main menu. Set by
@@ -167,6 +192,10 @@ class OptionsState extends MusicBeatState
 		addVirtualPad(UP_DOWN, A_B_C);
 		#end
 
+		// Warn about a non-root storage location on the way in too, in case the boot warning
+		// was already dismissed or never reached (idempotent per cold start).
+		SUtil.checkStorageRootWarning();
+
 		OptionLoader.reloadAll(); // hot‑reload on every entry
 
 		super.create();
@@ -199,6 +228,8 @@ class OptionsState extends MusicBeatState
 			'onChangeTraceConsoleLevel'    => onChangeTraceConsoleLevel,
 			'onChangeTouchSwipe'           => onChangeTouchSwipe,
 			'onClearImageCache'            => onClearImageCache,
+			'onChangeStorageType'          => onChangeStorageType,
+			'onChangeAutoExtractAssets'    => onChangeAutoExtractAssets,
 		];
 		OptionLoader.setCallbacks(callbacks);
 	}
@@ -208,6 +239,15 @@ class OptionsState extends MusicBeatState
 		super.update(elapsed);
 
 		if (transitioning) return;
+
+		// Deferred jump requested before this state existed (storage-location warning).
+		if (openPageOnEnter != null)
+		{
+			var page:String = openPageOnEnter;
+			openPageOnEnter = null;
+			openSelectedCategory(page);
+			return;
+		}
 
 		switch (currentMode)
 		{
@@ -348,6 +388,9 @@ class OptionsState extends MusicBeatState
 
 			#if !TOUCH_CONTROLS
 			{
+				// Hover only emphasises: it must not move the selection, scroll the list or drag
+				// the >/< cursor along with the pointer. Selecting and opening happen on click.
+				var hovered:Int = -1;
 				for (i in 0...catGrpOptions.length)
 				{
 					var item = catGrpOptions.members[i];
@@ -355,57 +398,71 @@ class OptionsState extends MusicBeatState
 
 					if (FlxG.mouse.overlaps(item, FlxG.camera))
 					{
-						if (curSelected != i)
-						{
-							curSelected = i;
-							targetScrollOffset = -(i * itemSpacing);
-							updateCategoryPreview();
-							for (j in 0...catGrpOptions.length)
-							{
-								var other = catGrpOptions.members[j];
-								if (other != null) other.alpha = (j == curSelected) ? 1.0 : 0.6;
-							}
-							catSelectorLeft.x = item.x - 63;
-							catSelectorLeft.y = item.y;
-							catSelectorRight.x = item.x + item.width + 15;
-							catSelectorRight.y = item.y;
-						}
-						if (FlxG.mouse.justPressed && !(virtualPad != null && virtualPad.isMouseOverAnyButton()))
-							openSelectedCategory(optionIds[curSelected]);
+						hovered = i;
 						break;
+					}
+				}
+
+				if (hovered >= 0)
+				{
+					// Multiply the distance fade computed above so items scrolling in/out of
+					// view keep fading instead of snapping to full opacity.
+					for (j in 0...catGrpOptions.length)
+					{
+						var other = catGrpOptions.members[j];
+						if (other == null || !other.visible) continue;
+						if (j != hovered)
+							other.alpha *= 0.6;
+					}
+
+					if (FlxG.mouse.justPressed && !(virtualPad != null && virtualPad.isMouseOverAnyButton()))
+					{
+						if (curSelected != hovered)
+						{
+							curSelected = hovered;
+							targetScrollOffset = -(hovered * itemSpacing);
+							updateCategoryPreview();
+						}
+						openSelectedCategory(optionIds[curSelected]);
 					}
 				}
 			}
 			#else
-			if ((FlxG.mouse.justPressed && !(virtualPad != null && virtualPad.isMouseOverAnyButton())) || (FlxG.touches.list.length > 0 && FlxG.touches.list[0].justReleased))
 			{
-				for (i in 0...catGrpOptions.length)
-				{
-					var item = catGrpOptions.members[i];
-					if (item == null || !item.visible) continue;
+				// Touch: one tap on a row selects *and* opens it. Mouse and touch share a single
+				// trigger flag so they cannot both fire for the same gesture in one frame.
+				var tapped:Bool = FlxG.mouse.justPressed;
+				for (touch in FlxG.touches.list)
+					if (touch.justPressed || touch.justReleased) tapped = true;
 
-					if (FlxG.mouse.overlaps(item, FlxG.camera)
-						#if TOUCH_CONTROLS || (FlxG.touches.list.length > 0 && FlxG.touches.list[0].overlaps(item)) #end)
+				if (tapped && !(virtualPad != null && virtualPad.isMouseOverAnyButton()))
+				{
+					for (i in 0...catGrpOptions.length)
 					{
+						var item = catGrpOptions.members[i];
+						if (item == null || !item.visible) continue;
+
+						var hit:Bool = FlxG.mouse.overlaps(item, FlxG.camera);
+						if (!hit)
+						{
+							for (touch in FlxG.touches.list)
+							{
+								if (touch.overlaps(item))
+								{
+									hit = true;
+									break;
+								}
+							}
+						}
+						if (!hit) continue;
+
 						if (curSelected != i)
 						{
 							curSelected = i;
 							targetScrollOffset = -(i * itemSpacing);
 							updateCategoryPreview();
-							for (j in 0...catGrpOptions.length)
-							{
-								var other = catGrpOptions.members[j];
-								if (other != null) other.alpha = (j == curSelected) ? 1.0 : 0.6;
-							}
-							catSelectorLeft.x = item.x - 63;
-							catSelectorLeft.y = item.y;
-							catSelectorRight.x = item.x + item.width + 15;
-							catSelectorRight.y = item.y;
 						}
-						else
-						{
-							openSelectedCategory(optionIds[curSelected]);
-						}
+						openSelectedCategory(optionIds[curSelected]);
 						break;
 					}
 				}
@@ -1677,6 +1734,66 @@ class OptionsState extends MusicBeatState
 	function onChangeTouchSwipe()
 	{
 		syncDragToWheel();
+	}
+
+	/**
+	 * The storage type decides where the process working directory, the extracted assets and
+	 * the native crash directory live. Changing it therefore has to invalidate the cached
+	 * resolution and make sure the new root gets populated: otherwise the next launch reads a
+	 * directory that was never extracted into, which is the "settings shows nothing at all"
+	 * failure.
+	 */
+	function onChangeStorageType()
+	{
+		ClientPrefs.saveSettings();
+		SUtil.invalidateStorageCache();
+
+		var resolved:String = SUtil.getStorageDirectory(true);
+		mohong.TraceManager.info('trace.options.storageTypeChanged',
+			'Storage type {} now resolves to {}', [ClientPrefs.data.storageType, resolved]);
+
+		// A new choice deserves a fresh warning if it is still not the public root.
+		SUtil.resetRootWarningForSession();
+		SUtil.checkStorageRootWarning();
+
+		#if mobile
+		if (isOnRootStorageType())
+		{
+			backend.Dialog.showYesNo(
+				Language.get('option.storageType.movedTitle', 'Storage Changed'),
+				Language.get('option.storageType.movedBody',
+					'The assets have not been extracted into the new location yet.\n\n'
+					+ 'Extract them now (this can take a few minutes), or let the next launch do it.'),
+				function() reextractNow(),
+				function() {});
+		}
+		#end
+	}
+
+	#if mobile
+	/** Whether the *selected* type is the public root one; used only to word the prompt. */
+	function isOnRootStorageType():Bool
+	{
+		#if android
+		return ClientPrefs.data.storageType == 'EXTERNAL';
+		#else
+		return false;
+		#end
+	}
+
+	/** Run the blocking extraction pass for the new root immediately. */
+	function reextractNow():Void
+	{
+		backend.MusicBeatState.switchState(new states.CopyState());
+	}
+	#end
+
+	/** Auto-extraction changed; nothing to do beyond persisting, but keep the callback explicit. */
+	function onChangeAutoExtractAssets()
+	{
+		ClientPrefs.saveSettings();
+		mohong.TraceManager.info('trace.options.autoExtractChanged',
+			'Auto-extract assets is now {}', [ClientPrefs.data.autoExtractAssets]);
 	}
 
 	/** "Clear image cache" action: releases every unreferenced cached image and reports back in a popup. */

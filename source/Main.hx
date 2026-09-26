@@ -52,7 +52,15 @@ class Main extends Sprite
 	var gameWidth:Int = 1280; // Width of the game in pixels (might be less / more in actual pixels depending on your zoom).
 	var gameHeight:Int = 720; 
 	// Height of the game in pixels (might be less / more in actual pixels depending on your zoom).
+	#if mobile
+	// Mobile must verify/extract the bundled assets before anything else runs, so the boot
+	// starts in a blocking state that hands over to TitleState itself. Desktop has no
+	// extraction step and keeps starting directly in TitleState.
+	// Fully qualified: CopyState only exists on mobile, and Main.hx sits in the root package.
+	var initialState:Class<FlxState> = states.CopyState;
+	#else
 	var initialState:Class<FlxState> = TitleState; // The FlxState the game starts with.
+	#end
 	#if !android
 	var zoom:Float = 1; // If -1, zoom is automatically calculated to fit the window dimensions.
 	#else
@@ -157,10 +165,12 @@ class Main extends Sprite
 		backend.SeiunOverlay.maybeAutoShow();
 		#end
 		#if sys
-		Sys.setCwd(SUtil.getStorageDirectory());
-		// Native crash logs must land in the writable storage dir; on Android the
-		// process cwd can't be relied on before this point.
-		NativeCrash.setCrashDir(SUtil.getStorageDirectory() + "crash/");
+		// One entry point for the process cwd, the native crash directory and the crash
+		// linemap: they must never resolve the storage root independently. ClientPrefs is
+		// not loaded yet here, so this uses the version-aware default type; CopyState (and
+		// TitleState on desktop) re-applies the directory once the player's saved
+		// storageType is actually in memory.
+		SUtil.applyStorageDirectory();
 		#end
 		
 		super();
@@ -235,7 +245,7 @@ class Main extends Sprite
 		#if windows
 		linemapLib = haxe.io.Path.withoutDirectory(Sys.programPath());
 		#end
-		NativeCrash.loadLinemap(SUtil.getStorageDirectory(), linemapLib);
+		SUtil.applyStorageDirectory(false, linemapLib);
 		#end
 
 		// Wire ClientPrefs framerate/drawFramerate into FlxGame (was 60/60).

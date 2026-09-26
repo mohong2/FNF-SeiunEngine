@@ -204,6 +204,11 @@ import sys.io.Process;
 	// Android storage type (empty = auto-detect)
 	public var storageType:String = "";
 
+	// Warn once per cold start when the game's data is not on the public root directory
+	// (/storage/emulated/0/.<game>). Turned off by the dialog's "Don't show again" action and
+	// turned back on from Android Settings.
+	public var showStorageRootWarning:Bool = true;
+
 	// Lua / HScript error loop protection: ignore a script file after too many consecutive errors.
 	public var ignoreErrorLoopScripts:Bool = true;
 	public var scriptErrorLimit:Int = 50;
@@ -782,6 +787,21 @@ class ClientPrefs {
 		FlxG.log.add("Settings saved!");
 	}
 
+
+	/**
+	 * Bind the save file and load preferences exactly once per process.
+	 *
+	 * Every boot state (CopyState then TitleState) needs ClientPrefs, and the storage root
+	 * must be resolved *after* prefs are in memory: resolving it before loadPrefs() uses the
+	 * version-aware default, and a later re-resolve left Sys.getCwd() pointing at a
+	 * different directory than SUtil.getStorageDirectory().
+	 */
+	public static function ensureLoaded():Void
+	{
+		if (prefsLoaded) return;
+		FlxG.save.bind('funkin', 'ninjamuffin99');
+		loadPrefs();
+	}
 
 	public static function loadPrefs() {
 		if (data == null) data = {};

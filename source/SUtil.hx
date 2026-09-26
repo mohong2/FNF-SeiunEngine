@@ -22,6 +22,9 @@ using StringTools;
  */
 class SUtil
 {
+	/** Bumped whenever the resolved storage root changes. Diagnostics only. */
+	public static var storageRevision:Int = 0;
+
 	#if android
 	static var cachedStorageType:String = null;
 	static var cachedStoragePath:String = '';
@@ -380,6 +383,207 @@ class SUtil
 	}
 	#end
 	#end
+
+	#if sys
+	/**
+	 * Drop the cached storage resolution so the next getStorageDirectory() call re-reads
+	 * ClientPrefs.data.storageType. A player changing the storage type must call this and
+	 * then applyStorageDirectory(); otherwise the process working directory keeps pointing
+	 * at the old root while asset extraction, the crash directory and OptionLoader disagree.
+	 */
+	public static function invalidateStorageCache():Void
+	{
+		#if android
+		cachedStorageType = null;
+		cachedStoragePath = '';
+		#end
+	}
+
+	/**
+	 * Resolve the storage root and make every consumer agree on it: the process working
+	 * directory (OptionLoader, Language, "modsList.txt", "crash/"), the native crash
+	 * directory and the crash linemap.
+	 *
+	 * Why this exists: getStorageDirectory() is first called from Main.new(), before
+	 * ClientPrefs has loaded, so it resolves against the version-aware *default* type. As
+	 * soon as the player's saved storageType reaches ClientPrefs the next call re-resolves
+	 * to a different directory -- but Sys.setCwd() had already been done and was never
+	 * repeated, so cwd and the resolved root could point at two different folders. The
+	 * default flips between EXTERNAL and EXTERNAL_DATA depending on the Android
+	 * "All files access" grant, so on real devices the two really do diverge.
+	 *
+	 * @param force re-resolve even when the cached type still matches.
+	 * @param linemapLib module name the native crash linemap is registered for.
+	 */
+	public static function applyStorageDirectory(?force:Bool = false, ?linemapLib:String = 'libApplicationMain'):String
+	{
+		var root:String = getStorageDirectory(force);
+
+		#if android
+		// Diagnostics: a root that moves during one boot is exactly the bug this guards against.
+		if (cachedStoragePath != root)
+			storageRevision++;
+		#end
+
+		try
+		{
+			Sys.setCwd(root);
+		}
+		catch (e:Dynamic)
+		{
+			CoolUtil.traceMsg('trace.storage.cwdFailed', 'Could not use {} as the working directory ({})', [root, e]);
+		}
+
+		backend.NativeCrash.setCrashDir(root + 'crash/');
+		#if (android || windows)
+		backend.NativeCrash.loadLinemap(root, linemapLib);
+		#end
+
+		mohong.TraceManager.info('trace.storage.applied', 'Storage root {} (type {}, revision {})',
+			[root, ClientPrefs.data.storageType, storageRevision]);
+
+		return root;
+	}
+
+	#if android
+	/** The public "0 root" location the player's file manager shows at the top: /storage/emulated/0/.<game>. */
+	public static function getRootStorageDirectory():String
+	{
+		try
+		{
+			var file:String = lime.app.Application.current.meta.get('file');
+			if (file == null || file.length == 0)
+				return null;
+			return haxe.io.Path.addTrailingSlash(AndroidEnvironment.getExternalStorageDirectory() + '/.' + file);
+		}
+		catch (e:Dynamic)
+		{
+			return null;
+		}
+	}
+
+	/**
+	 * True only when the game's data really lands on the public "0 root" directory, i.e.
+	 * storageType is EXTERNAL *and* no fallback moved the resolved path somewhere else.
+	 * Any other outcome (/Android/data, /Android/obb, /Android/media, internal storage)
+	 * hides mods, saves and the file manager from the player.
+	 */
+	public static function isOnRootStorage():Bool
+	{
+		if (ClientPrefs.data.storageType != 'EXTERNAL')
+			return false;
+
+		var expected:String = getRootStorageDirectory();
+		if (expected == null)
+			return false;
+
+		return normalizeStoragePath(getStorageDirectory()) == normalizeStoragePath(expected);
+	}
+
+	/** Forward slashes and a single trailing slash, so two spellings of one root compare equal. */
+	public static function normalizeStoragePath(path:String):String
+	{
+		if (path == null)
+			return '';
+		return haxe.io.Path.addTrailingSlash(path.split('\\').join('/'));
+	}
+
+	/**
+	 * Every storage root worth probing for built-in assets, most preferred first. Used as
+	 * the fallback chain when the current cwd has no copy of a bundled file: a storage type
+	 * change or a fallback can leave the assets behind in a root the engine no longer uses.
+	 */
+	public static function getStorageCandidateRoots():Array<String>
+	{
+		var roots:Array<String> = [];
+		var preferred:String = ClientPrefs.data.storageType;
+		if (preferred == null || preferred.length == 0)
+			preferred = getDefaultStorageType();
+
+		var order:Array<String> = [preferred, 'EXTERNAL_DATA', 'EXTERNAL', 'INTERNAL', 'EXTERNAL_OBB', 'EXTERNAL_MEDIA'];
+		var seen:Map<String, Bool> = new Map();
+		for (type in order)
+		{
+			if (seen.exists(type)) continue;
+			seen.set(type, true);
+			try
+			{
+				var path:String = normalizeStoragePath(StorageType.fromStr(type));
+				if (path == null || path.length <= 1 || roots.indexOf(path) >= 0) continue;
+				roots.push(path);
+			}
+			catch (e:Dynamic) {}
+		}
+		return roots;
+	}
+	#end
+
+	#if android
+	/** The storage-location warning is shown at most once per cold start. */
+	static var rootWarningShownThisBoot:Bool = false;
+
+	/**
+	 * Warn once per cold start when the data does not live on the public "0 root" directory:
+	 * the file manager, mods and saves cannot see it there, and extraction plus the settings
+	 * menu are the first things that break.
+	 */
+	public static function checkStorageRootWarning():Void
+	{
+		if (rootWarningShownThisBoot) return;
+		if (!ClientPrefs.data.showStorageRootWarning) return;
+
+		// The resolved path decides, not the selected type: the fallback chain can land
+		// somewhere else entirely, and that is exactly what the player needs to see.
+		if (isOnRootStorage()) return;
+
+		rootWarningShownThisBoot = true;
+
+		var actual:String = getStorageDirectory();
+		var body:String = Language.get('Storage.rootWarning.body',
+			"The game's data is not stored on the public root directory.\n\n"
+			+ 'The file manager, mods and saves cannot find it.\n\n'
+			+ 'Selected type: {type}\nActually in use: {path}')
+			.replace('{type}', ClientPrefs.data.storageType)
+			.replace('{path}', actual);
+
+		mohong.TraceManager.info('trace.storage.nonRootWarning',
+			'Storage root {} (type {}) is not the public root; warning shown.', [actual, ClientPrefs.data.storageType]);
+
+		backend.Dialog.showCustom(
+			Language.get('Storage.rootWarning.title', 'Storage Location Warning'),
+			body,
+			[
+				{name: Language.get('Storage.rootWarning.openSettings', 'Open Settings'), callback: openStorageSettings},
+				{name: Language.get('Storage.rootWarning.dismiss', "Don't show again"), callback: dismissStorageRootWarning}
+			],
+			true);
+	}
+
+	/** Let the warning appear again after the storage type changed within this session. */
+	public static function resetRootWarningForSession():Void
+	{
+		rootWarningShownThisBoot = false;
+	}
+
+	static function dismissStorageRootWarning():Void
+	{
+		ClientPrefs.data.showStorageRootWarning = false;
+		ClientPrefs.saveSettings();
+		mohong.TraceManager.info('trace.storage.rootWarningDismissed', 'Storage root warning disabled by the player.');
+	}
+
+	static function openStorageSettings():Void
+	{
+		options.OptionsState.openPageNow('android_settings');
+	}
+	#else
+	/** No-op off Android: every other platform keeps its data next to the app already. */
+	public static function checkStorageRootWarning():Void {}
+
+	public static function resetRootWarningForSession():Void {}
+	#end
+	#end
+
 	public static function showPopUp(message:String, title:String):Void
 	{
 		backend.Dialog.show(title, message);

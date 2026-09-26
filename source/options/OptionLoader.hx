@@ -10,6 +10,7 @@ import mohong.TraceManager;
 import Language;
 import ClientPrefs;
 import Paths;
+import SUtil;
 import backend.CompatEngine;
 #if (desktop && cpp && windows)
 import mohong.Windows;
@@ -141,18 +142,212 @@ class OptionLoader
 		};
 	}
 
+	/**
+	 * Base directories that may hold the built-in option files, most preferred first.
+	 * Sys.getCwd() is only ever set once at startup, so it can disagree with the resolved
+	 * storage root; probing every candidate keeps a readable copy from being ignored.
+	 */
+	static function builtinBaseDirs():Array<String>
+	{
+		var dirs:Array<String> = [];
+		#if sys
+		var cwdDir:String = Sys.getCwd() + BUILTIN_OPTIONS_DIR;
+		dirs.push(cwdDir);
+		#if android
+		for (root in SUtil.getStorageCandidateRoots())
+		{
+			var dir:String = root + BUILTIN_OPTIONS_DIR;
+			if (dirs.indexOf(dir) < 0) dirs.push(dir);
+		}
+		#end
+		#end
+		return dirs;
+	}
+
+	/** Read a built-in option JSON from the first candidate root that has it. */
+	static function readBuiltinJson(fileName:String):String
+	{
+		#if sys
+		var cwdDir:String = Sys.getCwd() + BUILTIN_OPTIONS_DIR;
+		for (baseDir in builtinBaseDirs())
+		{
+			var path:String = baseDir + fileName;
+			try
+			{
+				if (!FileSystem.exists(path)) continue;
+				var text:String = File.getContent(path);
+				if (text == null || text.length == 0) continue;
+
+				if (baseDir != cwdDir)
+					TraceManager.warn('trace.options.builtinFallbackRoot',
+						'Built-in options read from a fallback storage root: {}', [path]);
+				return text;
+			}
+			catch (e:Dynamic)
+			{
+				TraceManager.warn('trace.options.builtinReadError', 'Could not read {}: {}', [path, e]);
+			}
+		}
+		#end
+		return null;
+	}
+
+	/** The APK-embedded copy of a built-in option JSON (readable before any extraction). */
+	static function embeddedBuiltinJson(fileName:String):String
+	{
+		try
+		{
+			var assetPath:String = BUILTIN_OPTIONS_DIR + fileName;
+			if (lime.utils.Assets.exists(assetPath, TEXT))
+				return lime.utils.Assets.getText(assetPath);
+		}
+		catch (e:Dynamic) {}
+		return null;
+	}
+
+	/** Parse an option JSON out of the embedded assets. */
+	static function loadEmbeddedOptions(fileName:String, target:Array<Option>, ?extraCallbacks:Map<String, Void->Void>):Bool
+	{
+		var json:String = embeddedBuiltinJson(fileName);
+		if (json == null)
+			return false;
+
+		try
+		{
+			var defs:Array<OptionDef> = Json.parse(json);
+			for (def in defs)
+			{
+				def.modSource = null;
+				var opt:Option = createOptionFromDef(def, extraCallbacks);
+				if (opt != null) target.push(opt);
+			}
+			TraceManager.warn('trace.options.builtinEmbedded',
+				'Options for {} came from the APK assets: no extracted copy was readable.', [fileName]);
+			return true;
+		}
+		catch (e:Dynamic)
+		{
+			TraceManager.warn('trace.options.builtinEmbeddedError', 'Could not parse embedded {}: {}', [fileName, e]);
+			return false;
+		}
+	}
+
+	/**
+	 * Code-built minimum category list, used when neither the disk copy nor the embedded
+	 * copy is readable. The player must always be able to reach the language and storage
+	 * settings, because those are what repairs a broken extraction.
+	 */
+	static function builtinFallbackCategories():Array<OptionCategoryDef>
+	{
+		var list:Array<OptionCategoryDef> = [];
+
+		var add = function(id:String, nameKey:String, defaultName:String, optionsFile:String, ?platform:String)
+		{
+			list.push({
+				id: id,
+				nameKey: nameKey,
+				defaultName: defaultName,
+				type: 'settings',
+				optionsFile: optionsFile,
+				modSource: null,
+				platform: platform
+			});
+		};
+
+		add('general', 'option.general', 'General', 'general');
+		add('gameplay', 'option.gameplay', 'Gameplay', 'gameplay');
+		add('visuals', 'option.visuals', 'Visuals and UI', 'visuals');
+		add('graphics', 'option.graphics', 'Graphics', 'graphics');
+		add('extra_settings', 'option.advanced', 'Advanced', 'extra_settings');
+		#if mobile
+		add('android_settings', 'option.android_settings', 'Android Settings', 'android_settings', 'mobile');
+		#end
+
+		TraceManager.warn('trace.options.categoriesFallback',
+			'Category list was empty; using the built-in minimum of {} categories.', [list.length]);
+		return list;
+	}
+
+	/**
+	 * Code-built minimum content for the pages that must never be empty: the language picker
+	 * and the storage / auto-extract pair are exactly what a player needs to repair a bad
+	 * extraction, so they are always offered.
+	 */
+	static function builtinFallbackOptions(fileName:String, target:Array<Option>, ?extraCallbacks:Map<String, Void->Void>):Void
+	{
+		var defs:Array<OptionDef> = [];
+
+		switch (fileName)
+		{
+			case 'general':
+				defs.push({
+					nameKey: 'option.language',
+					defaultName: 'Language',
+					descKey: 'option.language.desc',
+					defaultDesc: 'Change the language of the game.',
+					variable: 'language',
+					type: 'string',
+					defaultValue: 'English',
+					options: ['English'],
+					onChange: 'onChangeLanguage'
+				});
+			#if mobile
+			case 'android_settings':
+				defs.push({
+					nameKey: 'option.autoExtractAssets',
+					defaultName: 'Auto-Extract Assets',
+					descKey: 'option.autoExtractAssets.desc',
+					defaultDesc: 'If enabled, the game extracts the necessary assets from the APK on first launch.',
+					variable: 'autoExtractAssets',
+					type: 'bool',
+					defaultValue: true,
+					platform: 'mobile',
+					onChange: 'onChangeAutoExtractAssets'
+				});
+				defs.push({
+					nameKey: 'option.storageType',
+					defaultName: 'Storage Type',
+					descKey: 'option.storageType.desc',
+					defaultDesc: 'Choose how the game accesses storage.',
+					variable: 'storageType',
+					type: 'string',
+					defaultValue: 'EXTERNAL_DATA',
+					options: ['EXTERNAL_DATA', 'EXTERNAL', 'EXTERNAL_OBB', 'EXTERNAL_MEDIA'],
+					platform: 'mobile',
+					onChange: 'onChangeStorageType'
+				});
+			#end
+		}
+
+		if (defs.length == 0)
+			return;
+
+		for (def in defs)
+		{
+			var opt:Option = createOptionFromDef(def, extraCallbacks);
+			if (opt != null) target.push(opt);
+		}
+		TraceManager.warn('trace.options.builtinFallbackOptions',
+			'Page {} had no readable definition; using the built-in minimum.', [fileName]);
+	}
+
 	/** Reload categories from all sources. */
 	public static function reloadCategories():Void
 	{
 		_cachedCategories = [];
 
-		var builtinPath = #if sys Sys.getCwd() + BUILTIN_OPTIONS_DIR + 'categories.json' #else BUILTIN_OPTIONS_DIR + 'categories.json' #end;
-		#if sys
-		if (FileSystem.exists(builtinPath))
+		// Read the definitions from disk first (so an extracted copy or a mod edit wins),
+		// then from the APK-embedded copy, then from a code-built minimum. Reading only
+		// Sys.getCwd() left the entire settings menu empty whenever the process cwd and the
+		// asset extraction root disagreed -- the "not a single option" bug.
+		var json:String = readBuiltinJson('categories.json');
+		if (json == null)
+			json = embeddedBuiltinJson('categories.json');
+
+		if (json != null)
 		{
 			try
 			{
-				var json = File.getContent(builtinPath);
 				var parsed:Array<OptionCategoryDef> = Json.parse(json);
 				for (cat in parsed)
 				{
@@ -165,25 +360,11 @@ class OptionLoader
 				TraceManager.error('trace.options.categoriesLoadError', 'Failed to load builtin categories: {}', [e]);
 			}
 		}
-		#else
-		if (lime.utils.Assets.exists(builtinPath, TEXT))
+		else
 		{
-			try
-			{
-				var json = lime.utils.Assets.getText(builtinPath);
-				var parsed:Array<OptionCategoryDef> = Json.parse(json);
-				for (cat in parsed)
-				{
-					cat.modSource = null;
-					_cachedCategories.push(cat);
-				}
-			}
-			catch (e:Dynamic)
-			{
-				TraceManager.error('trace.options.categoriesLoadError', 'Failed to load builtin categories: {}', [e]);
-			}
+			TraceManager.warn('trace.options.categoriesUnreadable',
+				'categories.json is readable neither on disk nor in the APK; using the built-in minimum.');
 		}
-		#end
 
 		#if MODS_ALLOWED
 		var globalMods = Paths.getGlobalMods();
@@ -214,6 +395,11 @@ class OptionLoader
 			}
 		}
 		#end
+
+		// Never hand an empty list to the UI: a player whose resources are unreadable must
+		// still reach the language and storage pages that repair the situation.
+		if (_cachedCategories.length == 0)
+			_cachedCategories = builtinFallbackCategories();
 	}
 
 	/** Load options for a category (supports dir/file/.patch). */
@@ -238,8 +424,25 @@ class OptionLoader
 		}
 		else
 		{
-			var builtinBaseDir = #if sys Sys.getCwd() + BUILTIN_OPTIONS_DIR #else BUILTIN_OPTIONS_DIR #end;
-			loadOptionsFromBase(builtinBaseDir, fileName, optionsArray, extraCallbacks, null, true);
+			#if sys
+			// Probe every candidate root: the cwd is only set once at startup while the
+			// resolved storage root can differ from it, so a readable copy must not be missed.
+			for (baseDir in builtinBaseDirs())
+			{
+				loadOptionsFromBase(baseDir, fileName, optionsArray, extraCallbacks, null, true);
+				if (optionsArray.length > 0)
+					break;
+			}
+			#else
+			loadOptionsFromBase(BUILTIN_OPTIONS_DIR, fileName, optionsArray, extraCallbacks, null, true);
+			#end
+
+			if (optionsArray.length == 0)
+				loadEmbeddedOptions(fileName, optionsArray, extraCallbacks);
+
+			if (optionsArray.length == 0)
+				builtinFallbackOptions(fileName, optionsArray, extraCallbacks);
+
 			postProcessOptions(optionsArray, fileName);
 
 			#if MODS_ALLOWED
