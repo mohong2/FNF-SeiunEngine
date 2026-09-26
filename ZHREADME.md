@@ -55,6 +55,7 @@ lime build windows
 - 桌面构建默认启用局域网联机（主菜单 → 联机）。
 - 离线构建：`art\build_x64_offline.bat`（`-D SEIUN_NO_ONLINE`），不编译联机代码、不发起任何网络请求。
 - 专用服务器：`server\start_server.bat`，详见 `docs/online-usage.md` 与 `docs/multiplayer-protocol.md`。
+- 联机菜单 UI / 房间协议模型**移植 / 参照**自 [Funkin-Psych-Online](https://github.com/Snirozu/Funkin-Psych-Online)（Snirozu，Apache-2.0），本仓库内为自研 Haxe 实现；完整署名见 [`NOTICE`](NOTICE) 与「制作人员」。
 
 ## 制作人员
 
@@ -99,6 +100,12 @@ lime build windows
 本引擎的 Mod 系统参考了 Codename Engine 的 Mod 格式（`pack.json`、`stateReplacements`/`substateReplacements`、谱面导入导出）。  
 SeiunEngine **不是** Codename Engine 的分支，本仓库**不包含** Codename Engine 的任何源代码。  
 Codename Engine 自身的条款请参阅 [Codename Engine 仓库](https://github.com/CodenameCrew/CodenameEngine)。
+
+### Funkin-Psych-Online（[Snirozu](https://github.com/Snirozu/Funkin-Psych-Online)）
+
+本引擎的联机菜单 UI、房间 / 协议模型与服务端房间语义**移植 / 参照**自 Funkin-Psych-Online 及其配套的 Funkin-Online-Server，二者以 Apache License 2.0 发布。  
+本仓库内的联机实现是 SeiunEngine 自研的 Haxe 代码，**不包含**上述仓库的任何 TypeScript / Node 源码。  
+完整署名见 [NOTICE](NOTICE)。
 
 ## License
 

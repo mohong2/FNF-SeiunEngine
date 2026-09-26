@@ -130,6 +130,12 @@ This engine's mod system follows Codename Engine's mod format (`pack.json`, `sta
 SeiunEngine is **not** a fork of Codename Engine and contains **no Codename Engine source code**.  
 Please refer to the [Codename Engine repository](https://github.com/CodenameCrew/CodenameEngine) for their own terms.
 
+### Funkin-Psych-Online ([Snirozu](https://github.com/Snirozu/Funkin-Psych-Online))
+
+The online menu UI, the room / protocol model and the server-side room semantics were ported from / modelled after Funkin-Psych-Online and its companion Funkin-Online-Server, distributed under the Apache License, Version 2.0.  
+The online slice bundled with this engine is SeiunEngine's own Haxe implementation — **no TypeScript or Node source** from those repositories is included.  
+See [NOTICE](NOTICE) for the full attribution.
+
 ## License
 
 See LICENSE (Psych Engine's open source license).
