@@ -601,6 +601,10 @@ class RoomState extends MusicBeatState /*#if interpret implements interpret.Inte
 		GameClient.send("status", "In the Lobby");
 
 		registerMessages();
+		#if (TOUCH_CONTROLS || desktop)
+		addVirtualPad(LEFT_FULL, A_B);
+		addPadCamera();
+		#end
 	}
 
 	var hasStage:Bool = false;
