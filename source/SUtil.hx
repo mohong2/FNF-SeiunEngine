@@ -395,20 +395,17 @@ enum abstract StorageType(String) from String to String
 	{
 		final packageName = lime.app.Application.current.meta.get('packageName');
 		final file = lime.app.Application.current.meta.get('file');
-		
-		final EXTERNAL_DATA = AndroidContext.getExternalFilesDir();
-		final EXTERNAL_OBB = AndroidContext.getObbDir();
-		final EXTERNAL_MEDIA = AndroidEnvironment.getExternalStorageDirectory() + '/Android/media/' + packageName;
-		final EXTERNAL = AndroidEnvironment.getExternalStorageDirectory() + '/.' + file;
-		final INTERNAL = AndroidContext.getFilesDir();
 
+		// Only the selected branch runs, and no JNI string argument is null: a null Haxe String
+		// crashes inside lime's JNI marshalling (NewStringUTF on a null C string), while Java's
+		// getExternalFilesDir("") resolves to the same directory as getExternalFilesDir(null).
 		return switch (str)
 		{
-			case "EXTERNAL_DATA": EXTERNAL_DATA;
-			case "EXTERNAL_OBB": EXTERNAL_OBB;
-			case "EXTERNAL_MEDIA": EXTERNAL_MEDIA;
-			case "EXTERNAL": EXTERNAL;
-			case "INTERNAL": INTERNAL;
+			case "EXTERNAL_DATA": AndroidContext.getExternalFilesDir('');
+			case "EXTERNAL_OBB": AndroidContext.getObbDir();
+			case "EXTERNAL_MEDIA": AndroidEnvironment.getExternalStorageDirectory() + '/Android/media/' + packageName;
+			case "EXTERNAL": AndroidEnvironment.getExternalStorageDirectory() + '/.' + file;
+			case "INTERNAL": AndroidContext.getFilesDir();
 			default: SUtil.getExternalDirectory(str) + '.' + file;
 		}
 	}
@@ -417,20 +414,14 @@ enum abstract StorageType(String) from String to String
 	{
 		final packageName = lime.app.Application.current.meta.get('packageName');
 		final file = lime.app.Application.current.meta.get('file');
-		
-		final EXTERNAL_DATA = forcedPath + 'Android/data/' + packageName + '/files';
-		final EXTERNAL_OBB = forcedPath + 'Android/obb/' + packageName;
-		final EXTERNAL_MEDIA = forcedPath + 'Android/media/' + packageName;
-		final EXTERNAL = forcedPath + '.' + file;
-		final INTERNAL = AndroidContext.getFilesDir();
 
 		return switch (str)
 		{
-			case "EXTERNAL_DATA": EXTERNAL_DATA;
-			case "EXTERNAL_OBB": EXTERNAL_OBB;
-			case "EXTERNAL_MEDIA": EXTERNAL_MEDIA;
-			case "EXTERNAL": EXTERNAL;
-			case "INTERNAL": INTERNAL;
+			case "EXTERNAL_DATA": forcedPath + 'Android/data/' + packageName + '/files';
+			case "EXTERNAL_OBB": forcedPath + 'Android/obb/' + packageName;
+			case "EXTERNAL_MEDIA": forcedPath + 'Android/media/' + packageName;
+			case "EXTERNAL": forcedPath + '.' + file;
+			case "INTERNAL": AndroidContext.getFilesDir();
 			default: SUtil.getExternalDirectory(str) + '.' + file;
 		}
 	}
