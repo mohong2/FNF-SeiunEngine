@@ -208,6 +208,10 @@ class RoomSettingsSubstate extends MusicBeatSubstate {
 		add(items);
 
 		GameClient.send("status", "In the Room Settings");
+		#if (TOUCH_CONTROLS || desktop)
+		addVirtualPad(UP_DOWN, A_B);
+		addPadCamera();
+		#end
 	}
 
 	function updateItems() {
