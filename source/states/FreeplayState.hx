@@ -7,6 +7,14 @@ import substates.ScoreHistorySubstate;
 import substates.ModSelectSubstate;
 
 import flixel.ui.FlxBar;
+#if ONLINE_ALLOWED
+// Only the `LockInSprite`/`Heart` helpers added at the bottom of this file under
+// ONLINE_ALLOWED need this type; importing it inside the guard keeps the macro-off
+// module imports (and therefore the macro-off build) unchanged.
+import flixel.system.FlxAssets.FlxGraphicAsset;
+// Needed for online song selection sync and for returning to the room from Freeplay.
+import online.GameClient;
+#end
 import flixel.effects.FlxFlicker;
 import flixel.group.FlxGroup.FlxTypedGroup;
 import flixel.FlxCamera;
@@ -940,6 +948,15 @@ class FreeplayState extends SeiunMenuState
 			}
 			new FlxTimer().start(0.42, function(tmr:FlxTimer)
 			{
+				#if ONLINE_ALLOWED
+				// While online and connected, leaving Freeplay returns to the room screen instead of
+				// the main menu (early return below).
+				if (GameClient.isConnected())
+				{
+					MenuFX.menuSwitch(new online.states.RoomState());
+					return;
+				}
+				#end
 				MenuFX.menuSwitch(new MainMenuState());
 			});
 			}
@@ -1072,6 +1089,18 @@ class FreeplayState extends SeiunMenuState
 		}
 		else if (accepted && canInput && !isShowingError)
 		{
+			#if ONLINE_ALLOWED
+			// While online, selecting a song in Freeplay only syncs the song/mod to the room
+			// (server RoomLogic.hx "setSong" handler) instead of entering local PlayState.
+			// The freeplay ACCEPT handler is diverted before the local song-entry path below.
+			// `GameClient.isConnected()` is a runtime condition and cannot be used in `#if`, so a runtime
+			// flag wraps the local song-entry logic; with the macro off the block disappears.
+			var onlineBlocked:Bool = GameClient.isConnected();
+			if (onlineBlocked)
+				sendOnlineSong();
+			if (!onlineBlocked)
+			{
+			#end
 			PlayState.replayMode = false;
 			var selectedSong:Alphabet = grpSongs.members[curSelected];
 			var icon:HealthIcon = iconArray[curSelected]; 
@@ -1172,6 +1201,9 @@ class FreeplayState extends SeiunMenuState
 				});
 			}
 			trace(poop);
+			#if ONLINE_ALLOWED
+			}
+			#end
 		}
 		else if(#if (TOUCH_CONTROLS || desktop) (virtualPad != null && virtualPad.buttonY.justPressed) ||#end controls.RESET)
 		{
@@ -1593,6 +1625,35 @@ class FreeplayState extends SeiunMenuState
 		FlxG.sound.music.pitch = playbackRate;
 		if (vocals != null) vocals.pitch = playbackRate;
 	}
+
+	#if ONLINE_ALLOWED
+	/**
+	 * Applies the room's `songspeed` gameplay setting to the freeplay/lobby BGM.
+	 * `online/states/RoomState.hx` calls it when the host changes that setting, so the local
+	 * lobby/room music follows the host.
+	 *
+	 * The speed is resolved through `PlayState.songSpeed` / `playbackRate`
+	 * (`PlayState.set_playbackRate`, `source/states/PlayState.hx:1995`, which sets
+	 * `FlxAnimationController.globalSpeed` as a side effect this helper must not duplicate).
+	 * `ClientPrefs.getGameplaySetting(name)` takes an optional default.
+	 * Only a single `vocals` track is handled because the freeplay state holds one; there is no
+	 * separate opponent-vocals track to keep in sync.
+	 * Guarded by ONLINE_ALLOWED because only the online room flow calls it.
+	 */
+	public static function updateFreeplayMusicPitch()
+	{
+		// `getGameplaySetting` returns `Dynamic`; on static targets a `Dynamic` that holds null cannot
+		// be implicitly read into a non-nullable `Float`, so it is read as `Null<Float>` first.
+		var setting:Null<Float> = ClientPrefs.getGameplaySetting('songspeed', 1);
+		var rate:Float = (setting != null && !Math.isNaN(setting) && setting > 0) ? setting : 1;
+
+		for (v in [FlxG.sound.music, vocals])
+		{
+			if (v == null) continue;
+			v.pitch = rate;
+		}
+	}
+	#end
 	
 	public function pausePreview()
 	{
@@ -1739,6 +1800,70 @@ class FreeplayState extends SeiunMenuState
 		instance = null;
         super.destroy();
     }
+
+	#if ONLINE_ALLOWED
+	/**
+	 * Sends the song selected in Freeplay to the online room.
+	 *
+	 * Called from the freeplay ACCEPT handler (`selectedItem == 0`) while the client is
+	 * connected; it builds the payload and calls `GameClient.send("setSong", data)`.
+	 * The data shape matches `applySong` in the server's `RoomLogic.hx`:
+	 *   `[songLowercase, formattedChart, diff, md5, modDir, modUrl, diffList]`
+	 *
+	 * When a mod has no valid URL, the mod is still sent and the situation is reported through
+	 * `Alert` (other players receive the URL).
+	 *
+	 * The chart hash is wrapped in `ShitUtil.tempSwitchMod` before hashing: without that step
+	 * `Song.loadRawSong()` throws `Missing file:` for mod songs and `setSong` is never sent.
+	 *
+	 * Only the song metadata is broadcast; the audio itself is transferred separately.
+	 */
+	function sendOnlineSong():Void {
+		var songData = getCurrentSong();
+		var songLowercase:String = Paths.formatToSongPath(songData.songName);
+		var poop:String = Highscore.formatSong(songLowercase, curDifficulty);
+
+		var modDir:String = songData.folder;
+		if (modDir == null)
+			modDir = "";
+
+		var modUrl:String = online.mods.OnlineMods.getModURL(modDir);
+
+		try {
+			// The chart hash is built after switching `Mods.currentModDirectory` to the song's mod.
+			// Without it
+			// `Paths.modsJson()` inside `Song.loadRawSong()` only looks in the base directory
+			// (`assets/data/<song>/`), so mod songs throw `Missing file:` and the catch below
+			// swallows it -- `setSong` is never sent and the room `song` stays at its default.
+			// `ShitUtil.tempSwitchMod` adds this step (restored on the way out, so Freeplay's
+			// later `currentModDirectory` is unchanged). `songData.folder` is the song's mod:
+			// `WeekData.setDirectoryFromWeek()` (`WeekData.hx:263-268`) sets it to
+			// `leWeek.folder` before `addSong()`, and `SongMetadata.folder` records that value.
+			var chartMd5:String = "";
+			online.util.ShitUtil.tempSwitchMod(modDir, function () {
+				chartMd5 = Song.hashRawSong(poop, songLowercase);
+			});
+
+			var data:Array<Dynamic> = [
+				songLowercase,
+				poop,
+				curDifficulty,
+				chartMd5,
+				modDir,
+				modUrl,
+				backend.Difficulty.list
+			];
+			trace(data);
+			GameClient.send("setSong", data);
+			online.gui.Alert.alert("Room song set to:\n" + songLowercase + " (" + poop + ")"
+				+ (modDir != "" ? "\nMod: " + modDir + (modUrl == null || modUrl == "" ? "\n(WARNING: this mod has no URL, others can't download it)" : "") : ""));
+		}
+		catch (e:Dynamic) {
+			trace('ERROR! $e');
+			online.gui.Alert.alert("Couldn't set the room song!", Std.string(e));
+		}
+	}
+	#end
 }
 
 class SongMetadata
@@ -1761,3 +1886,62 @@ class SongMetadata
 		this.modFolder = (modFolder != null && modFolder.length > 0) ? modFolder : this.folder;
 	}
 }
+
+#if ONLINE_ALLOWED
+	/**
+	 * Two small helper classes used by the "favourite skins" overlay:
+	 * `class Heart extends LockInSprite` / `class LockInSprite extends FlxSprite`.
+	 * The only consumer is `online/states/SkinsState.hx`, which does
+	 * `selState.grpIconsOverlay.recycle(Heart)` in its `renderCallback`
+	 * (`source/online/states/SkinsState.hx:659`).
+	 *
+	 * `Paths.image('heart')` resolves to `assets/shared/images/heart.png`, an asset that only these
+	 * helper classes use.
+	 *
+	 * The overlay only appears for a *favourited* skin and the surrounding menu is part of the
+	 * mod-download/GameBanana flow, which cannot be exercised offline; the path therefore stays
+	 * unverified at runtime. Guarded by ONLINE_ALLOWED because nothing else declares these
+	 * helper classes.
+	 */
+class Heart extends LockInSprite {
+	public function new(?target:FlxSprite) {
+		super(target, Paths.image('heart'));
+	}
+}
+
+class LockInSprite extends FlxSprite {
+	public var target(default, set):FlxSprite;
+
+	public function new(target:FlxSprite, ?asset:FlxGraphicAsset) {
+		super(0, 0, asset);
+
+		this.target = target;
+	}
+
+	public var copyScaling:Bool = true;
+
+	override function update(elapsed) {
+		super.update(elapsed);
+
+		if (target == null || !target.alive) {
+			kill();
+			return;
+		}
+
+		x = target.x;
+		y = target.y;
+		alpha = target.alpha;
+		if (copyScaling) {
+			scale.x = target.scale.x;
+			scale.y = target.scale.y;
+		}
+		visible = target.active && target.visible;
+	}
+
+	function set_target(v:FlxSprite) {
+		target = v;
+		revive();
+		return target;
+	}
+}
+#end

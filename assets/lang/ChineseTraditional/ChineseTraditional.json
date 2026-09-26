@@ -1,6 +1,8 @@
 {
     
     "ttf" : "vcrcn",
+    "ResetScore.prompt": "重設分數：",
+    "NoteOffset.beatHit": "節拍命中！",
     "FlxSoundTray.volume.text": "音量",
     "FlashingState.warning": "嘿，看這,這個Mod可能有億點點閃光特效，眼睛瞎了別找作者\n按空格鍵當作沒看到這條警告，別怪我沒提醒你，瞎了概不負責\nHey, watch out!\nThis Mod contains some flashing lights!\nPress ENTER to disable them now or go to Options Menu.\nPress ESCAPE to ignore this message.\nYou've been warned!",
     "OutdatedState.text": "你當前運行的 Seiun Engine 版本過舊：{current}\n最新版本：{latest}\n\n按 ENTER / A 開啟下載頁面。\n按 ESCAPE / B 仍然繼續。\n\n感謝使用 Seiun Engine！",

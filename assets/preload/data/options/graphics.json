@@ -38,6 +38,42 @@
 		"defaultValue": false
 	},
 	{
+		"nameKey": "option.asyncImageLoading",
+		"defaultName": "Async Image Loading",
+		"descKey": "option.asyncImageLoading.desc",
+		"defaultDesc": "When entering a song, shows a loading screen and decodes character sheets on background threads in parallel\nwith real progress. Turn off to load synchronously without the loading screen.",
+		"variable": "asyncImageLoading",
+		"type": "bool",
+		"defaultValue": true
+	},
+	{
+		"nameKey": "option.gfxLruCache",
+		"defaultName": "Texture Reuse Cache (LRU)",
+		"descKey": "option.gfxLruCache.desc",
+		"defaultDesc": "Keeps decoded big textures (VRAM budget ~1.5GB) after leaving a song, so replaying the same song\nskips decoding entirely. Pixel-identical; turning off flushes the cache immediately.",
+		"variable": "gfxLruCache",
+		"type": "bool",
+		"defaultValue": true
+	},
+	{
+		"nameKey": "option.gfxRuntimeRepack",
+		"defaultName": "Runtime Texture Repack",
+		"descKey": "option.gfxRuntimeRepack.desc",
+		"defaultDesc": "While preloading, trims fully transparent borders off big character sheets (>=2048px)\nin memory and packs frames tightly, shrinking VRAM and upload time.\nPixel-identical rendering; original files are never modified.",
+		"variable": "gfxRuntimeRepack",
+		"type": "bool",
+		"defaultValue": true
+	},
+	{
+		"nameKey": "option.gfxCpuRelease",
+		"defaultName": "Big Texture RAM Release",
+		"descKey": "option.gfxCpuRelease.desc",
+		"defaultDesc": "During play, frees CPU-side copies of large textures (>=2048px) once they are uploaded to the GPU.\nRendering is pixel-identical; saves a lot of RAM on songs with big character sheets.",
+		"variable": "gfxCpuRelease",
+		"type": "bool",
+		"defaultValue": true
+	},
+	{
 		"nameKey": "option.clearImageCache",
 		"defaultName": "Clear Image Cache",
 		"descKey": "option.clearImageCache.desc",
@@ -46,6 +82,15 @@
 		"type": "button",
 		"defaultValue": false,
 		"onChange": "onClearImageCache"
+	},
+	{
+		"nameKey": "option.disableGC",
+		"defaultName": "Disable GC During Song",
+		"descKey": "option.disableGC.desc",
+		"defaultDesc": "Disables hxcpp garbage collection while playing.\nTrades memory for stable frame time (H-Slice style).\nRe-enabled automatically when leaving the song. Use with care.",
+		"variable": "disableGC",
+		"type": "bool",
+		"defaultValue": false
 	},
 	{
 		"nameKey": "option.separateUpdateDraw",
@@ -91,7 +136,11 @@
 		"variable": "windowedmode",
 		"type": "string",
 		"defaultValue": "windowed",
-		"options": ["windowed", "fullscreen", "borderless"],
+		"options": [
+			"windowed",
+			"fullscreen",
+			"borderless"
+		],
 		"onChange": "onChangeWindowMode",
 		"platform": "desktop"
 	},
@@ -125,7 +174,13 @@
 		"variable": "closeAnimStyle",
 		"type": "string",
 		"defaultValue": "squeeze",
-		"options": ["off", "squeeze", "zoom", "drop", "slide"],
+		"options": [
+			"off",
+			"squeeze",
+			"zoom",
+			"drop",
+			"slide"
+		],
 		"platform": "desktop"
 	},
 	{
@@ -135,106 +190,12 @@
 		"defaultDesc": "How fast the close animation plays. 1.0x is the default speed; higher values play faster.",
 		"variable": "closeAnimSpeed",
 		"type": "float",
-		"defaultValue": 1.0,
+		"defaultValue": 1,
 		"minValue": 0.5,
-		"maxValue": 3.0,
+		"maxValue": 3,
 		"changeValue": 0.25,
 		"decimals": 2,
 		"scrollSpeed": 0.8,
 		"platform": "desktop"
-	},
-	{
-		"nameKey": "option.turboMode",
-		"defaultName": "Turbo Mode",
-		"descKey": "option.turboMode.desc",
-		"defaultDesc": "Ultimate extreme-chart switch. When ON, botplay is forced and locked, high-density note sections use precomputed aggregation plus data-level bulk settlement instead of materializing tens of thousands of sprites. When OFF, everything is exactly the stock behavior.",
-		"variable": "turboMode",
-		"type": "bool",
-		"defaultValue": false
-	},
-	{
-		"nameKey": "option.perfMode",
-		"defaultName": "Performance Mode",
-		"descKey": "option.perfMode.desc",
-		"defaultDesc": "Master switch for extreme-chart optimizations (bulk skip, popup/splash\nmerging, spawn budgets). When off, gameplay is identical to the stock engine;\nonly enable it for absurd-NPS charts.",
-		"variable": "perfMode",
-		"type": "bool",
-		"defaultValue": false
-	},
-	{
-		"nameKey": "option.bulkSkip",
-		"defaultName": "Bulk Skip Old Notes",
-		"descKey": "option.bulkSkip.desc",
-		"defaultDesc": "H-Slice style bulk skipping of already expired chart notes.\nAvoids spawn->instant miss churn on extreme NPS charts.\nRequires Performance Mode; auto-disabled while Lua/HScript/replay/online is active.",
-		"variable": "bulkSkip",
-		"type": "bool",
-		"defaultValue": false
-	},
-	{
-		"nameKey": "option.fastSort",
-		"defaultName": "Fast Note Sorting",
-		"descKey": "option.fastSort.desc",
-		"defaultDesc": "H-Slice style faster sort: only visible/alive notes are sorted every frame.\nImproves frame time on dense charts; turn off if a mod depends on the full group order.",
-		"variable": "fastSort",
-		"type": "bool",
-		"defaultValue": false
-	},
-	{
-		"nameKey": "option.limitNotes",
-		"defaultName": "Max Simultaneous Notes",
-		"descKey": "option.limitNotes.desc",
-		"defaultDesc": "Maximum materialized notes at once. 0 means unlimited (only for high-end machines).\nHigher values render more notes but cost more CPU/GPU and memory.",
-		"variable": "limitNotes",
-		"type": "int",
-		"defaultValue": 0,
-		"minValue": 0,
-		"maxValue": 100000,
-		"scrollSpeed": 50,
-		"displayFormat": "%v"
-	},
-	{
-		"nameKey": "option.disableGC",
-		"defaultName": "Disable GC During Song",
-		"descKey": "option.disableGC.desc",
-		"defaultDesc": "Disables hxcpp garbage collection while playing.\nTrades memory for stable frame time (H-Slice style).\nRe-enabled automatically when leaving the song. Use with care.",
-		"variable": "disableGC",
-		"type": "bool",
-		"defaultValue": false
-	},
-	{
-		"nameKey": "option.gfxCpuRelease",
-		"defaultName": "Big Texture RAM Release",
-		"descKey": "option.gfxCpuRelease.desc",
-		"defaultDesc": "During play, frees CPU-side copies of large textures (>=2048px) once they are uploaded to the GPU.\nRendering is pixel-identical; saves a lot of RAM on songs with big character sheets.",
-		"variable": "gfxCpuRelease",
-		"type": "bool",
-		"defaultValue": true
-	},
-	{
-		"nameKey": "option.asyncImageLoading",
-		"defaultName": "Async Image Loading",
-		"descKey": "option.asyncImageLoading.desc",
-		"defaultDesc": "When entering a song, shows a loading screen and decodes character sheets on background threads in parallel\nwith real progress. Turn off to load synchronously without the loading screen.",
-		"variable": "asyncImageLoading",
-		"type": "bool",
-		"defaultValue": true
-	},
-	{
-		"nameKey": "option.gfxLruCache",
-		"defaultName": "Texture Reuse Cache (LRU)",
-		"descKey": "option.gfxLruCache.desc",
-		"defaultDesc": "Keeps decoded big textures (VRAM budget ~1.5GB) after leaving a song, so replaying the same song\nskips decoding entirely. Pixel-identical; turning off flushes the cache immediately.",
-		"variable": "gfxLruCache",
-		"type": "bool",
-		"defaultValue": true
-	},
-	{
-		"nameKey": "option.gfxRuntimeRepack",
-		"defaultName": "Runtime Texture Repack",
-		"descKey": "option.gfxRuntimeRepack.desc",
-		"defaultDesc": "While preloading, trims fully transparent borders off big character sheets (>=2048px)\nin memory and packs frames tightly, shrinking VRAM and upload time.\nPixel-identical rendering; original files are never modified.",
-		"variable": "gfxRuntimeRepack",
-		"type": "bool",
-		"defaultValue": true
 	}
 ]

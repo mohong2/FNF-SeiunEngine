@@ -120,30 +120,18 @@ class Achievements {
 		if(_originalLength < 0) init();
 
 		if(FlxG.save.data != null) {
-			if(FlxG.save.data.achievementsUnlocked != null)
-				achievementsUnlocked = FlxG.save.data.achievementsUnlocked;
-
-			var savedMap:Map<String, Float> = cast FlxG.save.data.achievementsVariables;
-			if(savedMap != null)
-			{
-				for (key => value in savedMap)
-				{
-					variables.set(key, value);
-				}
-			}
+			AchievementSave.load(FlxG.save.data, achievementsUnlocked, variables);
 			_firstLoad = false;
 		}
 
-		// 同步旧版 achievementsMap
-		achievementsMap.clear();
-		for (key in achievementsUnlocked)
-			achievementsMap.set(key, true);
+		// achievementsMap is only a view over achievementsUnlocked
+		AchievementSave.rebuildMap(achievementsUnlocked, achievementsMap);
 	}
 
 	public static function save():Void
 	{
-		FlxG.save.data.achievementsUnlocked = achievementsUnlocked;
-		FlxG.save.data.achievementsVariables = variables;
+		if (FlxG.save.data == null) return;
+		AchievementSave.save(FlxG.save.data, achievementsUnlocked, achievementsMap, variables);
 	}
 
 	public static function getScore(name:String):Float
@@ -293,9 +281,6 @@ class Achievements {
 	public static function loadAchievements():Void {
 		load();
 		if(FlxG.save.data != null) {
-			if(FlxG.save.data.achievementsMap != null) {
-				achievementsMap = FlxG.save.data.achievementsMap;
-			}
 			if(henchmenDeath == 0 && FlxG.save.data.henchmenDeath != null) {
 				henchmenDeath = FlxG.save.data.henchmenDeath;
 			}
@@ -304,14 +289,24 @@ class Achievements {
 
 	public static function unlockAchievement(name:String):Void {
 		if(!achievements.exists(name)) {
-			// 旧版只有 achievementsMap 时也允许直接解锁
+			// legacy callers may unlock a name that has no 0.7.3 entry yet
 			achievementsMap.set(name, true);
 			if(!achievementsUnlocked.contains(name)) achievementsUnlocked.push(name);
 			FlxG.log.add('Completed achievement "' + name +'"');
 			FlxG.sound.play(Paths.sound('confirmMenu'), 0.7);
+			save();
+			FlxG.save.flush();
 			return;
 		}
 		unlock(name, true);
+	}
+
+	/** Records an unlock whose popup the caller starts itself; persists immediately. */
+	public static function markUnlocked(name:String):Bool {
+		if (!AchievementSave.record(achievementsUnlocked, achievementsMap, name)) return false;
+		save();
+		FlxG.save.flush();
+		return true;
 	}
 
 	public static function isAchievementUnlocked(name:String):Bool {

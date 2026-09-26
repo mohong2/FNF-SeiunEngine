@@ -1,0 +1,923 @@
+package online.states;
+
+import online.substates.SelectDownloadSubstate.SelectDownloads;
+import online.network.FunkinNetwork;
+import online.network.FunkinNetwork.PEOMod;
+import lime.system.Clipboard;
+import openfl.events.KeyboardEvent;
+import flixel.math.FlxRect;
+import haxe.io.Bytes;
+import lime.net.HTTPRequest;
+import lime.net.HTTPRequestMethod;
+import openfl.display.BitmapData;
+import flixel.graphics.FlxGraphic;
+import online.mods.GameBanana.GBSub;
+import flixel.group.FlxGroup;
+import online.util.OnlineLang;
+
+// Haxe 4.2.5 does not resolve fields injected via `@:publicFields` from other modules, so
+// `ModProvider.PEO` / `ModProvider.GB` would be module-private ("Cannot access private field
+// PEO/GB" at every use site). Spell out `public` on the two constants instead.
+@:publicFields
+abstract ModProvider(String) from String to String {
+	public static inline var PEO = 'peo';
+	public static inline var GB = 'gb';
+}
+
+#if lumod
+@:build(lumod.LuaScriptClass.build())
+#end
+class DownloaderState extends MusicBeatState {
+	var items:FlxTypedSpriteGroup<ModItem>;
+	var itemsY:Int = FlxG.height - (3 * 190) - 50;
+	var providerIcons:FlxTypedSpriteGroup<ProviderIcon>;
+	public static var curSelected:Int = 0;
+	public static var modProvider:ModProvider = ModProvider.PEO;
+	var page:Int = 1;
+	var searchBg:FlxSprite;
+	var searchPlaceholder:FlxText;
+	var searchInput:InputText;
+	var pageInfo:FlxText;
+	
+	//var showVerified = false;
+	// public static var verified:Array<Float> = [
+	// 	305075,
+	// 	358364,
+	// 	360477,
+	// 	387484,
+	// 	377938,
+	// 	398737,
+	// 	411524,
+	// 	418767
+	// ];
+
+	var initQuery:String = '';
+
+	public function new(?query:String = '', ?provider:ModProvider) {
+		super();
+
+		initQuery = query;
+		if (provider != null)
+			modProvider = provider;
+	}
+	
+	override function create() {
+		curSelected = 0;
+		
+		super.create();
+
+		FlxG.mouse.visible = true;
+
+		#if DISCORD_ALLOWED
+		DiscordClient.changePresence("Browsing mods.", null, null, false);
+		#end
+
+		GameClient.send("status", "Browsing mods.");
+
+		var bg:FlxSprite = new FlxSprite().loadGraphic(Paths.image('menuDesat'));
+		bg.color = 0xff46463b;
+		bg.updateHitbox();
+		bg.screenCenter();
+		bg.antialiasing = ClientPrefs.data.globalAntialiasing;
+		bg.scrollFactor.set(0, 0);
+		add(bg);
+
+		var lines:FlxSprite = new FlxSprite().loadGraphic(Paths.image('coolLines'));
+		lines.updateHitbox();
+		lines.screenCenter();
+		lines.antialiasing = ClientPrefs.data.globalAntialiasing;
+		lines.scrollFactor.set(0, 0);
+		add(lines);
+
+		items = new FlxTypedSpriteGroup<ModItem>();
+		add(items);
+
+		searchBg = new FlxSprite();
+		searchBg.makeGraphic(800, 60, FlxColor.BLACK);
+		searchBg.screenCenter(X);
+		searchBg.y = itemsY / 2 - searchBg.height / 2;
+		searchBg.alpha = 0.6;
+		add(searchBg);
+
+		searchPlaceholder = new FlxText();
+		searchPlaceholder.text = OnlineLang.L('dl.search', 'Search mods here // Enter a URL to download...');
+		searchPlaceholder.setFormat(OnlineLang.font(), 20, FlxColor.WHITE, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
+		searchPlaceholder.alpha = 0.6;
+		searchPlaceholder.x = searchBg.x + 20;
+		searchPlaceholder.y = searchBg.y + searchBg.height / 2 - searchPlaceholder.height / 2;
+		add(searchPlaceholder);
+
+		searchInput = new InputText(0, 0, Std.int(searchBg.width - 40), text -> {
+			if (StringTools.startsWith(searchInput.text, "https://")) {
+				if (StringTools.startsWith(searchInput.text, "https://gamebanana.com/mods/")) {
+					openModDownloads(Std.parseFloat(searchInput.text.substr("https://gamebanana.com/mods/".length)));
+					return;
+				}
+				OnlineMods.downloadMod(searchInput.text, true);
+				searchInput.text = "";
+			}
+			else
+				loadNextPage(true);
+		});
+		searchInput.setFormat(OnlineLang.font(), 20, FlxColor.WHITE, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
+		searchInput.setPosition(searchPlaceholder.x, searchPlaceholder.y);
+		searchInput.text = initQuery;
+		add(searchInput);
+
+		providerIcons = new FlxTypedSpriteGroup<ProviderIcon>();
+		add(providerIcons);
+
+		final providers:Array<ModProvider> = [ModProvider.PEO, ModProvider.GB];
+		for (provider in providers) {
+			var provIcon = new ProviderIcon(provider);
+			provIcon.x += providerIcons.width + (providerIcons.length > 0 ? 10 : 0);
+			providerIcons.add(provIcon);
+		}
+
+		providerIcons.x = (searchBg.x + searchBg.width + FlxG.width) / 2 - providerIcons.width / 2;
+		providerIcons.y = (searchBg.y + searchBg.height + searchBg.y) / 2 - providerIcons.height / 2;
+
+		pageInfo = new FlxText(0, 0, FlxG.width);
+		pageInfo.text = '< ' + OnlineLang.L('dl.page', 'Page ') + '${page} >';
+		pageInfo.setFormat(OnlineLang.font(), 20, FlxColor.WHITE, CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
+		pageInfo.y = FlxG.height - pageInfo.height - 30;
+		add(pageInfo);
+
+		var pageTip1 = new FlxText(20, 0, FlxG.width, OnlineLang.L('dl.prevPage', 'Q - Go to previous page'));
+		pageTip1.setFormat(OnlineLang.font(), 20, FlxColor.WHITE, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
+		pageTip1.y = pageInfo.y;
+		pageTip1.alpha = 0.6;
+		add(pageTip1);
+
+		var pageTip2 = new FlxText(-20, 0, FlxG.width, OnlineLang.L('dl.nextPage', 'E - Go to next page'));
+		pageTip2.setFormat(OnlineLang.font(), 20, FlxColor.WHITE, RIGHT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
+		pageTip2.y = pageInfo.y;
+		pageTip2.alpha = pageTip1.alpha;
+		add(pageTip2);
+
+		FlxG.sound.music.fadeIn(1, 1, 0.5);
+
+		updateModProvider();
+		loadNextPage(true);
+    }
+
+	function updateModProvider() {
+		final providerTitle = switch (modProvider) {
+			case ModProvider.GB:
+				'GameBanana';
+			case ModProvider.PEO:
+				'SeiunEngine Network';
+			default:
+				'unknown';
+		};
+
+		searchPlaceholder.text = OnlineLang.L('dl.searchOn', 'Search mods on ') + '${providerTitle}' + OnlineLang.L('dl.searchOnTail', ' // Enter a Mod URL...');
+	}
+
+	var _newPage:Int = 0;
+	function loadNextPage(?value:Int = 0, ?newSearch:Bool = false) {
+		if (page + value < 1) {
+			return;
+		}
+
+		LoadingScreen.toggle(true);
+
+		var query = "";
+		var order:String = null;
+		var collection:String = null;
+		var category:String = null;
+		for (word in searchInput.text.split(" ")) {
+			if (word.startsWith("sort:"))
+				order = word.substr("sort:".length);
+			else if (word.startsWith("collection:"))
+				collection = word.substr("collection:".length);
+			else if (word.startsWith("category:"))
+				category = word.substr("category:".length);
+			else
+				query += word + " ";
+		}
+		query = query.trim() == "" ? null : query.trim();
+		
+		_newPage = page + value;
+		if (newSearch) {
+			_newPage = 1;
+		}
+
+		if (modProvider == ModProvider.GB) {
+			if (collection != null) {
+				GameBanana.listCollection(collection, _newPage, onLoadModsGB);
+			}
+			else if (category != null) {
+				GameBanana.listCategory(category, _newPage, onLoadModsGB);
+			}
+			else {
+				GameBanana.searchMods(query, _newPage, order, onLoadModsGB);
+			}
+		}
+		else {
+			Thread.run(() -> {
+				var mods = FunkinNetwork.searchMods(query, _newPage - 1, order);
+				if (mods == null)
+					Waiter.put(() -> {
+						onLoadModsPEO(null, 'No Mods Found.');
+					});
+
+				Waiter.put(() -> {
+					onLoadModsPEO(mods, null);
+				});
+			});
+		}
+	}
+
+	function onLoadModsGB(mods:Array<GBSub>, err:Dynamic) {
+		LoadingScreen.toggle(false);
+
+		if (destroyed)
+			return;
+
+		if (mods == null)
+			err = OnlineLang.L('dl.modsNotFound', 'Mods not found!');
+
+		if (err != null) {
+			pageInfo.text = OnlineLang.L('dl.error', 'Error: ') + err;
+			return;
+		}
+
+		page = _newPage;
+		pageInfo.text = '< ' + OnlineLang.L('dl.page', 'Page ') + '${page} >';
+
+		loadModsGB(mods);
+	}
+
+	function onLoadModsPEO(mods:Array<PEOMod>, err:Dynamic) {
+		LoadingScreen.toggle(false);
+
+		if (destroyed)
+			return;
+
+		if (mods == null)
+			err = OnlineLang.L('dl.modsNotFound', 'Mods not found!');
+
+		if (err != null) {
+			pageInfo.text = OnlineLang.L('dl.error', 'Error: ') + err;
+			return;
+		}
+
+		page = _newPage;
+		pageInfo.text = '< ' + OnlineLang.L('dl.page', 'Page ') + '${page} >';
+
+		loadModsPEO(mods);
+	}
+
+	function changeSelection(value:Int) {
+		curSelected += value;
+
+		if (curSelected >= items.length) {
+			curSelected = items.length - 1;
+		}
+		else if (curSelected < 0) {
+			curSelected = 0;
+		}
+	}
+
+    override function update(elapsed:Float) {
+		if (!searchInput.hasFocus) {
+			if (controls.BACK #if android || FlxG.android.justReleased.BACK #end) {
+				FlxG.sound.music.volume = 1;
+				// Flixel 5.6+ `FlxG.switchState` accepts a `NextState` lambda; this Flixel 4.11 build
+				// takes an FlxState, so the ternary is resolved first (same evaluation point).
+				FlxG.switchState(GameClient.isConnected() ? new RoomState() : new OnlineState());
+				FlxG.sound.play(Paths.sound('cancelMenu'));
+				LoadingScreen.loading = false;
+			}
+
+			for (provIcon in providerIcons) {
+				provIcon.alpha = provIcon.provider == modProvider ? 0.8 : 0.5;
+
+				if (FlxG.mouse.overlaps(provIcon)) {
+					provIcon.alpha = 1.0;
+
+					if (FlxG.mouse.justPressed && !LoadingScreen.loading) {
+						modProvider = provIcon.provider;
+						updateModProvider();
+						loadNextPage(true);
+					}
+				}
+			}
+
+			if (!LoadingScreen.loading) {
+				if (FlxG.mouse.wheel == 1 || FlxG.keys.justPressed.Q) {
+					loadNextPage(-1);
+				}
+				if (FlxG.mouse.wheel == -1 || FlxG.keys.justPressed.E) {
+					loadNextPage(1);
+				}
+
+				if (FlxG.keys.justPressed.TAB) {
+					modProvider = modProvider == ModProvider.GB ? ModProvider.PEO : ModProvider.GB;
+					updateModProvider();
+					loadNextPage(true);
+				}
+				
+				if (controls.UI_RIGHT_P) {
+					changeSelection(1);
+				}
+				if (controls.UI_LEFT_P) {
+					changeSelection(-1);
+				}
+				if (controls.UI_UP_P) {
+					if (curSelected - 5 < 0) {
+						curSelected = -1;
+					}
+					else {
+						changeSelection(-5);
+					}
+				}
+				if (controls.UI_DOWN_P) {
+					changeSelection(5);
+				}
+
+				if (FlxG.mouse.justMoved || FlxG.mouse.justPressed) {
+					curSelected = -2;
+
+					if (FlxG.mouse.overlaps(searchBg)) {
+						curSelected = -1;
+					}
+				}
+			}
+		}
+
+		searchPlaceholder.visible = searchInput.text.length <= 0;
+
+		super.update(elapsed);
+
+		if (!searchInput.hasFocus && !LoadingScreen.loading) {
+			if (curSelected == -1)
+				searchBg.alpha = 0.8;
+			else
+				searchBg.alpha = 0.6;
+
+			if (controls.ACCEPT || FlxG.mouse.justPressed) {
+				if (curSelected == -1) {
+					searchInput.hasFocus = true;
+				}
+				else if (curSelected >= 0 && items.length - 1 >= curSelected) {
+					if (FlxG.mouse.justPressed) {
+						if (FlxG.mouse.overlaps(items.members[curSelected].dlBg)) {
+							openModDownloads(items.members[curSelected].mod.id);
+						}
+						else if (FlxG.mouse.overlaps(items.members[curSelected].linkBg)) {
+							RequestSubstate.requestURL(items.members[curSelected].mod.url, "The following button redirects to:", true);
+						}
+					}
+					else {
+						openModDownloads(items.members[curSelected].mod.id);
+					}
+				}
+			}
+		}
+    }
+
+	function openModDownloads(modId:Dynamic) {
+		if (modId == 479714) {
+			FlxG.openURL('https://www.youtube.com/watch?v=WC_mHIBCHDo');
+			return;
+		}
+
+		LoadingScreen.toggle(true);
+		if (modProvider == ModProvider.GB) {
+			GameBanana.getModDownloads(modId, (downloads, err) -> {
+				LoadingScreen.toggle(false);
+
+				if (err != null) {
+					Alert.alert(OnlineLang.L('dl.fetchFailed', 'Fetching downloads failed!'), err);
+					return;
+				}
+
+				if (downloads._bIsTrashed || downloads._bIsWithheld) {
+					Alert.alert(OnlineLang.L('dl.fetchFailed', 'Fetching downloads failed!'), OnlineLang.L('dl.modDeleted', 'That mod is deleted!'));
+					return;
+				}
+
+				var dls:SelectDownloads = {
+					mainFiles: [],
+					altFiles: []
+				};
+
+				if (downloads._aFiles != null && downloads._aFiles.length > 0)
+					for (dl in downloads._aFiles) {
+						dls.mainFiles.push({
+							name: dl._sFile,
+							description: dl._sDescription,
+							url: dl._sDownloadUrl,
+							size: dl._nFilesize,
+						});
+					}
+
+				if (downloads._aAlternateFileSources != null && downloads._aAlternateFileSources.length > 0)
+					for (dl in downloads._aAlternateFileSources) {
+						dls.mainFiles.push({
+							name: dl.url,
+							description: dl.description,
+							url: dl.url,
+						});
+					}
+
+				openSubState(new SelectDownloadSubstate(dls));
+			});
+		}
+		else {
+			Thread.run(() -> {
+				var mod = FunkinNetwork.fetchMod(modId);
+				if (mod != null) {
+					Waiter.put(() -> {
+						LoadingScreen.toggle(false);
+
+						if (mod.downloads == null || mod.downloads.length == 0) {
+							Alert.alert(OnlineLang.L('dl.fetchFailed', 'Fetching downloads failed!'), OnlineLang.L('dl.modDeleted', 'That mod is deleted!'));
+							return;
+						}
+
+						var dls:SelectDownloads = {
+							mainFiles: [],
+							altFiles: []
+						};
+						for (dl in mod.downloads) {
+							var downloadName = dl.id.substring(dl.modID.length + 1);
+        					var downloadTitle = downloadName.toUpperCase();
+							dls.mainFiles.push({
+								name: downloadTitle,
+								description: '',
+								url: FunkinNetwork.client.getURL('/mod/' + dl.modID + '/dl/' + downloadName),
+								size: dl.size,
+							});
+						}
+
+						openSubState(new SelectDownloadSubstate(dls));
+					});
+					return;
+				}
+
+				Waiter.put(() -> {
+					Alert.alert(OnlineLang.L('dl.fetchFailed', 'Fetching downloads failed!'));
+				});
+			});
+		}
+	}
+
+	function loadModsGB(mods:Array<GBSub>) {
+		items.clear();
+		curSelected = 0;
+
+		final SPACING_X:Int = 250;
+		final ROWS = 5;
+
+		var i:Int = 0;
+		for (mod in mods) {
+			if (mod._sModelName != "Mod" || (mod._aGame != null && mod._aGame._idRow != 8694)) {
+				continue;
+			}
+
+			var thumbnails:Array<Thumbnail> = [];
+
+			var firstThumb = mod._aPreviewMedia._aImages.shift();
+			for (image in mod._aPreviewMedia._aImages) {
+				thumbnails.push({
+					url: image._sBaseUrl + "/" + image._sFile,
+					width: 220,
+					height: 125
+				});
+			}
+
+			if (mod._idRow == 505754) {
+				thumbnails.push({
+					url: 'https://i.pinimg.com/474x/1d/81/e0/1d81e065de302045e5d8709bef235ac4.jpg',
+					width: 220,
+					height: 125
+				});
+			}
+
+			var item = new ModItem({
+				url: mod._sProfileUrl,
+				id: mod._idRow,
+				name: mod._sName,
+				likes: mod._nLikeCount,
+				category: mod._aRootCategory._sName,
+				categoryIconURL: mod._aRootCategory._sIconUrl,
+				thumbnail: {
+					url: firstThumb._sBaseUrl + "/" + firstThumb._sFile220,
+					width: firstThumb._wFile220,
+					height: firstThumb._hFile220
+				},
+				thumbnails: thumbnails
+			});
+
+			item.x = Math.floor(i % ROWS) * SPACING_X;
+			item.y = Math.floor(i / ROWS) * 190;
+			item.ID = i;
+			items.add(item);
+
+			i++;
+		}
+
+		if (i == 0) {
+			pageInfo.text = OnlineLang.L('dl.noMods', 'No mods found!');
+		}
+
+		// buggy mess for some reaosn
+		// items.screenCenter(X);
+
+		items.x = (FlxG.width - SPACING_X * (ROWS - 1) - ModItem.FRAME_WIDTH) / 2;
+		items.y = itemsY;
+	}
+
+	function loadModsPEO(mods:Array<PEOMod>) {
+
+		// VERY IMPORTANT for later -- flixel call destroy() on non-added objects to the state
+		// so that can cause crashes on Waiter.put() because of if (exists) that only works properly on added objects
+		for (item in items) { item.destroy(); }
+		items.clear();
+		
+		curSelected = 0;
+
+		final SPACING_X:Int = 250;
+		final ROWS = 5;
+
+		var i:Int = 0;
+		for (mod in mods) {
+			var thumbnails:Array<Thumbnail> = [];
+
+			var firstThumbURL = null;
+			for (url in mod.images) {
+				if (firstThumbURL == null) {
+					firstThumbURL = url;
+				}
+				thumbnails.push({
+					url: url,
+					width: 220,
+					height: 125
+				});
+			}
+
+			var item = new ModItem({
+				url: FunkinNetwork.client.getURL('mod/${mod.id}'),
+				id: mod.id,
+				name: mod.title,
+				likes: mod.favoritedCount,
+				category: null,
+				categoryIconURL: null,
+				thumbnail: {
+					url: firstThumbURL,
+					width: -1,
+					height: -1
+				},
+				thumbnails: thumbnails
+			});
+
+			item.x = Math.floor(i % ROWS) * SPACING_X;
+			item.y = Math.floor(i / ROWS) * 190;
+			item.ID = i;
+			items.add(item);
+
+			i++;
+		}
+
+		if (i == 0) {
+			pageInfo.text = OnlineLang.L('dl.noMods', 'No mods found!');
+		}
+
+		// buggy mess for some reaosn
+		// items.screenCenter(X);
+
+		items.x = (FlxG.width - SPACING_X * (ROWS - 1) - ModItem.FRAME_WIDTH) / 2;
+		items.y = itemsY;
+	}
+}
+
+class ModItem extends FlxSpriteGroup {
+	public var mod:ModInfo;
+
+	public var bg:FlxSprite;
+	public var dlBg:FlxSprite;
+	var dl:FlxSprite;
+	public var linkBg:FlxSprite;
+	var link:FlxSprite;
+	var thumb:FlxSprite;
+
+	public var selected = false;
+
+	public static var FRAME_WIDTH:Int = 220;
+
+	public function new(mod:ModInfo) {
+		this.mod = mod;
+		super();
+
+		bg = new FlxSprite();
+		bg.makeGraphic(FRAME_WIDTH, 170, FlxColor.BLACK);
+		bg.alpha = 0.5;
+		add(bg);
+
+		thumb = new FlxSprite();
+		thumb.clipRect = new FlxRect(0, 0, FRAME_WIDTH, 125);
+		thumb.makeGraphic(FRAME_WIDTH, 125, FlxColor.BLACK);
+		add(thumb);
+
+		loadScreenshot(0);
+
+		if (mod.category != null) {
+			var categoryNameBg = new FlxSprite();
+			categoryNameBg.makeGraphic(1, 1, FlxColor.BLACK);
+			categoryNameBg.alpha = 0.7;
+			categoryNameBg.visible = false;
+			add(categoryNameBg);
+
+			var categoryName = new FlxText(5, 5, 0, mod.category);
+			categoryName.setFormat(OnlineLang.font(), 15, FlxColor.WHITE, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
+			categoryName.visible = false;
+			add(categoryName);
+
+			var category = new FlxSprite();
+			category.visible = false;
+			add(category);
+
+			getImage(mod.categoryIconURL, (bytes, err) -> {
+				if (!exists)
+					return;
+
+				categoryName.visible = true;
+				categoryNameBg.visible = true;
+
+				// The old `err == null || bytes == null` guard was also true on failure (bytes == null)
+				// and called BitmapData.fromBytes(null); match the positive checks used by loadScreenshot.
+				if (err == null && bytes != null) {
+					category.loadGraphic(FlxGraphic.fromBitmapData(BitmapData.fromBytes(bytes)));
+					category.antialiasing = ClientPrefs.data.globalAntialiasing;
+					category.x = bg.x + bg.width - category.width; // bg.x is needed for some reason
+					category.visible = true;
+					if (categoryName.width > bg.width - category.frameWidth - 15)
+						categoryName.fieldWidth = bg.width - category.frameWidth - 15;
+				}
+				else if (categoryName.width > bg.width - 15) {
+					categoryName.fieldWidth = bg.width - 15;
+				}
+				categoryNameBg.scale.set(categoryName.width + 5, categoryName.height + 5);
+				categoryNameBg.updateHitbox();
+				categoryNameBg.setPosition(categoryName.x, categoryName.y);
+			});
+		}
+
+		// Missing mod.name would draw the literal "null" on the card.
+		var name = new FlxText(0, thumb.clipRect.height, bg.width, mod.name != null ? mod.name : '');
+		name.setFormat(OnlineLang.font(), 15, FlxColor.WHITE, CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
+		add(name);
+
+		var detailsBg = new FlxSprite();
+		detailsBg.makeGraphic(1, 1, FlxColor.BLACK);
+		detailsBg.alpha = 0.7;
+		add(detailsBg);
+
+		var like = new FlxSprite();
+		like.loadGraphic(Paths.image("like"));
+		add(like);
+
+		var likes = new FlxText(0, 0, 0, (mod.likes == null ? 0 : mod.likes) + "");
+		likes.setFormat(OnlineLang.font(), 20, FlxColor.WHITE, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
+		add(likes);
+
+		detailsBg.scale.set(like.width + 5 + likes.width + 15, likes.height + 10);
+		detailsBg.updateHitbox();
+		detailsBg.x = bg.width - detailsBg.width - 5;
+		detailsBg.y = thumb.clipRect.height - detailsBg.height - 5;
+
+		like.setPosition(detailsBg.x + (15 / 2), detailsBg.y + detailsBg.height / 2 - like.height / 2);
+		likes.setPosition(like.x + like.width + 5, detailsBg.y + 5);
+
+		dlBg = new FlxSprite(5);
+		dlBg.makeGraphic(1, 1, FlxColor.BLACK);
+		dlBg.alpha = 0.6;
+		add(dlBg);
+
+		dl = new FlxSprite();
+		dl.loadGraphic(Paths.image("dl"));
+		add(dl);
+		
+		dlBg.scale.set(dl.width + 20, dl.height + 20);
+		dlBg.updateHitbox();
+		dlBg.y = thumb.clipRect.height - dlBg.height - 5;
+
+		dl.x = dlBg.x + 10;
+		dl.y = dlBg.y + 10;
+
+		
+		linkBg = new FlxSprite(dlBg.x + dlBg.width + 5);
+		linkBg.makeGraphic(1, 1, FlxColor.BLACK);
+		linkBg.alpha = 0.6;
+		add(linkBg);
+
+		link = new FlxSprite();
+		link.loadGraphic(Paths.image("gbLink"));
+		add(link);
+
+		linkBg.scale.set(link.width + 20, link.height + 20);
+		linkBg.updateHitbox();
+		linkBg.y = thumb.clipRect.height - linkBg.height - 5;
+
+		dl.visible = false;
+		dlBg.visible = false;
+		link.visible = false;
+		linkBg.visible = false;
+
+		link.x = linkBg.x + 10;
+		link.y = linkBg.y + 10;
+	}
+	
+	public var curScreenshot = -1;
+	var holdTime = 0.;
+	var loadingScreenshot = true;
+	var prevSelected = false;
+	override function update(elapsed) {
+		super.update(elapsed);
+
+		if ((FlxG.mouse.justPressed || FlxG.mouse.justMoved) && FlxG.mouse.overlaps(bg)) {
+			DownloaderState.curSelected = ID;
+		}
+
+		selected = DownloaderState.curSelected == ID;
+
+		if (!ClientPrefs.data.lowQuality) {
+			if (FlxG.mouse.overlaps(dlBg))
+				dl.scale.set(FlxMath.lerp(dl.scale.x, 1.25, elapsed * 10), FlxMath.lerp(dl.scale.y, 1.25, elapsed * 10));
+			else
+				dl.scale.set(FlxMath.lerp(dl.scale.x, 1, elapsed * 10), FlxMath.lerp(dl.scale.y, 1, elapsed * 10));
+
+			if (FlxG.mouse.overlaps(linkBg))
+				link.scale.set(FlxMath.lerp(link.scale.x, 1.25, elapsed * 10), FlxMath.lerp(link.scale.y, 1.25, elapsed * 10));
+			else
+				link.scale.set(FlxMath.lerp(link.scale.x, 1, elapsed * 10), FlxMath.lerp(link.scale.y, 1, elapsed * 10));
+
+			if (!selected || loadingScreenshot)
+				holdTime = 0;
+			else
+				holdTime += elapsed;
+
+			if (!loadingScreenshot) {
+				if (holdTime >= 1) {
+					loadScreenshot(curScreenshot + 1);
+				}
+			}
+		}
+
+		if (prevSelected != selected) {
+			dl.visible = selected;
+			dlBg.visible = dl.visible;
+			link.visible = selected;
+			linkBg.visible = link.visible;
+
+			if (!ClientPrefs.data.lowQuality && !selected) {
+				loadScreenshot(0);
+			}
+		}
+		
+		prevSelected = selected;
+	}
+
+	function loadScreenshot(index:Int) {
+		if (index >= mod.thumbnails.length + 1 /* with first thumbnail */) {
+			index = 0;
+		}
+
+		holdTime = 0;
+		if (index != curScreenshot) {
+			loadingScreenshot = true;
+			if (index == 0) {
+				getImage(mod.thumbnail.url, (bytes, err) -> {
+					if (!exists)
+						return;
+
+					if (err != null || bytes == null) {
+						loadingScreenshot = false;
+						return;
+					}
+
+					if (mod.thumbnail.width != -1 && mod.thumbnail.height != -1) {
+						thumb.clipRect = new FlxRect(0, 0, FRAME_WIDTH, 125);
+					}
+					else {
+						thumb.clipRect = null;
+					}
+
+					thumb.loadGraphic(FlxGraphic.fromBitmapData(BitmapData.fromBytes(bytes), false, null, false));
+					thumb.antialiasing = ClientPrefs.data.globalAntialiasing;
+					if (mod.thumbnail.width != -1 && mod.thumbnail.height != -1) {
+						if (mod.thumbnail.height < thumb.clipRect.height) {
+							thumb.setGraphicSize(Std.int(mod.thumbnail.width), Std.int(thumb.clipRect.height));
+						}
+						else {
+							thumb.setGraphicSize(Std.int(mod.thumbnail.width), Std.int(mod.thumbnail.height));
+						}
+					}
+					else {
+						thumb.setGraphicSize(Std.int(FRAME_WIDTH), Std.int(125));
+					}
+					thumb.updateHitbox();
+
+					loadingScreenshot = false;
+				});
+			}
+			else {
+				getImage(mod.thumbnails[index - 1].url, (bytes, err) -> {
+					if (!exists)
+						return;
+					if (err != null || !selected || bytes == null) {
+						loadingScreenshot = false;
+						return;
+					}
+
+					thumb.clipRect = null;
+
+					thumb.loadGraphic(FlxGraphic.fromBitmapData(BitmapData.fromBytes(bytes), false, null, false));
+					thumb.antialiasing = ClientPrefs.data.globalAntialiasing;
+					thumb.setGraphicSize(Std.int(FRAME_WIDTH), Std.int(125));
+					thumb.updateHitbox();
+
+					loadingScreenshot = false;
+				});
+			}
+		}
+		curScreenshot = index;
+	}
+
+	public static function getImage(url:String, response:(bytes:Bytes, err:Dynamic) -> Void) {
+		if (url == null)
+			return;
+		
+		// On cpp, sys.Http (haxe.Http) routes empty / non-http(s) URLs to onError("Invalid URL") and
+		// connection failures to its own catch, both of which crash natively (0xC0000005 in
+		// sys.Http.customRequest's catch block). Pre-validate the URL and use lime.net.HTTPRequest,
+		// whose native implementation handles the error paths safely.
+		var trimmed = StringTools.trim(url);
+		if (trimmed == "" || (!StringTools.startsWith(trimmed, "http://") && !StringTools.startsWith(trimmed, "https://"))) {
+			response(null, "Invalid URL");
+			return;
+		}
+
+		try {
+			var req = new HTTPRequest<Bytes>(trimmed);
+			req.method = GET;
+			req.followRedirects = true;
+			req.timeout = 15000;
+			req.userAgent = "SeiunEngine-DownloaderState/0.1";
+			req.load().onComplete(function(bytes:Bytes) {
+				Waiter.put(() -> response(bytes, null));
+			}).onError(function(err:Dynamic) {
+				Waiter.put(() -> response(null, err));
+			});
+		}
+		catch (e:Dynamic) {
+			response(null, e);
+		}
+	}
+}
+
+typedef ModInfo = {
+	var url:String;
+	var id:Dynamic;
+	var category:String;
+	var likes:Null<Float>;
+	var name:String;
+
+	var categoryIconURL:String;
+	var thumbnail:Thumbnail;
+	var thumbnails:Array<Thumbnail>;
+}
+
+typedef Thumbnail = {
+	var url:String;
+	var width:Float;
+	var height:Float;
+} 
+
+class ProviderIcon extends FlxSpriteGroup {
+	public var provider:ModProvider;
+
+	var icon:FlxSprite;
+	var bg:FlxSprite;
+
+	public function new(provider:ModProvider, size:Int = 50) {
+		super();
+
+		this.provider = provider;
+
+		bg = new FlxSprite();
+		bg.makeGraphic(size, size, 0xE3000000);
+		add(bg);
+
+		icon = new FlxSprite();
+		icon.loadGraphic(Paths.image('provider_' + provider));
+		icon.setGraphicSize(Std.int(size * 0.8), Std.int(size * 0.8));
+		icon.updateHitbox();
+		icon.x = bg.width / 2 - icon.width / 2;
+		icon.y = bg.height / 2 - icon.height / 2;
+		add(icon);
+	}
+}

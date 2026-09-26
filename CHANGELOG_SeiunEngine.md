@@ -366,6 +366,41 @@
 
 ---
 
+### 2026年9月12日（0.2.2）
+
+#### 崩溃排查链路（本次重点）
+
+- **修好了"崩溃日志查不出东西"的根因**。9 月 5 日之后所有 `crash/native_crash_*.txt` 里的堆栈都变成了 `<sprintf>+0x20413` 这种鬼东西，一度让人以为是随机的内存损坏。实际原因有三个，串在一起：
+  1. `Project.xml` 里的 `HXCPP_DEBUG_LINK` 从加上那天起就是**注释状态**，链接器拿不到 `/DEBUG`，exe 里没有 CodeView（RSDS）记录；
+  2. 没有 RSDS，dbghelp 无法按 GUID 把 exe 和 PDB 配对，只能退化成读 PE 导出表 —— 而整个 exe 只有 179 个导出，恰好有个 `sprintf`，于是它后面 132KB 内的所有地址都被标成了 `<sprintf>+0x...`；
+  3. `obj/ApplicationMain.pdb` 停留在 8 月 30 日，而 exe 每次改动都会重新链接，符号与代码早已不同步。
+- **正式构建改为产出 `.map` 符号表**（`HXCPP_MAP_FILE=ApplicationMain.map`）。这是本次的关键取舍：`HXCPP_DEBUG_LINK` 会让 MSVC 把调试目录数据写进映像，Windows exe 体积从 29.6 MB 涨到 47.1 MB —— 对正式发布不可接受。而 `.map` 是链接器另出的文本文件，**exe 体积一字节不变**，却带着每个函数的精确地址，足够把报告里的 `Fault offset` 还原成真实函数名。实测 exe 为 29,649,408 字节，与改动前一致；`.map` 44 MB（压缩后 4.7 MB）。
+- **崩溃报告新增构建指纹**：报告头现在会写 `Build:`（exe/pdb 的尺寸、mtime，以及 exe 头尾各 64KB 的 FNV-1a 哈希）、`Main module:`、`Main module stamp: TimeDateStamp=...`、`Matching PDB:` 是否存在，以及最关键的 `Symbols: SymType=...`。有了 `SymType`，报告自己就会声明符号是否可信 —— `SymType=0 (SymNone)` 时内联的帧名一律不可信，只能拿 `Fault offset` 去查 `.map`。这些信息对 SEH 与 SIGABRT 两条路径都会写入，并且放在磁盘写入的第一阶段，即使后面 dbghelp 自己崩了也留得下来。
+- **新增两件排查工具**：`tools/mapresolve.py`（读 `.map` 把偏移解析成函数名，支持批量扫 crash 目录）与 `tools/symbolize-crash.ps1`（一键封装：自动定位 `.map`、先打印每份报告的构建指纹、再批量解析）。
+
+#### CI：发布构建产出调试符号
+
+- 桌面端三个构建（Windows / Linux / macOS）现在各自产出一个**独立的 `*-symbols` artifact**（保留 90 天），内容是 `.map` 加一份使用说明。
+- 发布打包时符号包被单独分流到 Release 的 `crash-symbols/*.zip`，**绝不会混进玩家下载的游戏压缩包里** —— 游戏 zip 内仍然只有纯游戏文件。
+- 故意**不收集 PDB**：正式构建链接器不跑 `/DEBUG`，`obj/` 里那个 PDB 是旧构建遗留的，带上只会让人拿去解析然后得到完全错误的函数名。
+
+#### 修掉三个已确证的崩溃源
+
+- **空窗口句柄导致的 native 空指针解引用**（`NativeWindow.close()` 清空了 `handle` 却没清 `context`，渲染循环继续对 NULL 调 `ContextFlip()`）。这条与 8 月 28–30 日的崩溃特征精确吻合：报告里 `param[1]` 恰好是 `0x8` / `0x10` / `0x30`，也就是结构体成员偏移量 —— `this == nullptr` 的签名；8 月 30 日那天 19:35 / 19:36 / 19:37 / 19:47 / 20:00 连续崩了 5 次且寄存器状态几乎一致，是确定性路径而非随机损坏。
+- **SDL3 的 `SDL_GetBasePath()` 被错误 `SDL_free`**：SDL3 里这个返回值是 SDL 内部的进程级静态缓存，只由 `SDL_Quit` 释放。迁移时只补了个 `(void*)` 强转，导致第二次调用读已释放内存、退出时必然 double free。
+- **strum 组越界取 `members[idx]`**：hxcpp 的 release 构建下越界读返回 `null` 而不是崩溃，随后解引用直接 AV。这一类在本项目已经崩过两次并手工补过，还有 9 处未加保护。顺带修掉空组时 `strumIdx %= members.length` 的除零。
+
+#### 说明
+
+- 「更新与渲染分离」这条怀疑方向经核查**不成立**：`RenderThread` 是空壳（多线程渲染早已移除），`drawWrapper` 在 `Main.hx` 与 `ClientPrefs.hx` 中都被置空，渲染始终在单线程主循环里。真正的 update/draw 重排发生在 lime 的原生帧循环，不在 flixel。
+- 相机特效完成回调里销毁相机后无保护解引用 `flashSprite` 的问题也一并修了。
+- 完整的排查记录（含证据、代码位置与取舍理由）见 `docs/CRASH_ROOTCAUSE_20260912.md`。
+- ⚠ **lime / flixel 两处补丁必须上游化到 `mohong2/lime` 与 `mohong2/flixel`**，否则 CI 重新克隆依赖后，打出来的包又会带上这两个缺陷。
+
+（2026-09-12，日志还是 AI 代笔。）
+
+---
+
 ### 鸣谢
 
 感谢所有参与测试的人员，你们的宝贵反馈是推动引擎不断完善的重要力量。
@@ -736,11 +771,46 @@ Bundled regression harness (temp/touch-fix-test/TouchFixTest.hx): replicates the
 
 ---
 
+### September 12, 2026 (0.2.2)
+
+#### Crash diagnostics (the focus of this round)
+
+- **Fixed the root cause of "crash logs tell us nothing".** Every `crash/native_crash_*.txt` after September 5 showed frames like `<sprintf>+0x20413`, which looked like random memory corruption. Three things had gone wrong at once:
+  1. `HXCPP_DEBUG_LINK` in `Project.xml` had been **commented out** since the day it was added, so the linker never received `/DEBUG` and the exe carried no CodeView (RSDS) record.
+  2. Without RSDS, dbghelp cannot pair the exe with a PDB by GUID and degrades to reading the PE export table — the exe exports only 179 symbols, one of which happens to be `sprintf`, so every address within 132 KB after it was labelled `<sprintf>+0x...`.
+  3. `obj/ApplicationMain.pdb` was stuck at August 30 while the exe is relinked on every change, so the symbols no longer described the code.
+- **Official builds now emit a `.map` symbol table** (`HXCPP_MAP_FILE=ApplicationMain.map`). This is the key trade-off: `HXCPP_DEBUG_LINK` makes MSVC write debug directory data into the image, growing the Windows exe from 29.6 MB to 47.1 MB — unacceptable for a release. The `.map` is a separate text file produced by the linker, **costs the exe exactly zero bytes**, and still carries every function's exact address, which is enough to turn a report's `Fault offset` back into a real function name. Measured exe: 29,649,408 bytes, identical to before; `.map`: 44 MB (4.7 MB zipped).
+- **Crash reports now carry a build fingerprint**: `Build:` (exe/pdb size, mtime, plus an FNV-1a hash of the first and last 64 KB of the exe), `Main module:`, `Main module stamp: TimeDateStamp=...`, whether `Matching PDB:` exists, and most importantly `Symbols: SymType=...`. With `SymType` the report states for itself whether its symbols can be trusted — when it says `SymType=0 (SymNone)` the inline frame names are meaningless and only the `Fault offset` is usable, against the matching `.map`. This lands on both the SEH and SIGABRT paths and is written in the first disk phase, so it survives even if dbghelp later faults.
+- **Two new triage tools**: `tools/mapresolve.py` (resolves offsets to function names from a `.map`, can scan a whole crash directory) and `tools/symbolize-crash.ps1` (one-shot wrapper: finds the `.map`, prints each report's build fingerprint first, then resolves in bulk).
+
+#### CI: release builds now publish debug symbols
+
+- All three desktop builds (Windows / Linux / macOS) produce a **separate `*-symbols` artifact** (90-day retention) containing the `.map` plus a usage note.
+- Release packaging routes symbol artifacts into `crash-symbols/*.zip` on the GitHub Release, so they are **never mixed into the game archive players download** — the game zip still contains game files only.
+- PDBs are deliberately **not** collected: with `HXCPP_DEBUG_LINK` off the linker never regenerates one, and the stale `.pdb` left in `obj/` would only mislead anyone who tried to resolve against it.
+
+#### Three confirmed crash sources fixed
+
+- **Null window handle causing a native null-pointer dereference** (`NativeWindow.close()` nulls `handle` but leaves `context` set, so the render loop keeps calling `ContextFlip()` on NULL). This matches the August 28–30 crashes exactly: the reports show `param[1]` values of `0x8` / `0x10` / `0x30` — struct member offsets, the signature of `this == nullptr` — and on August 30 it crashed five times in a row (19:35 / 19:36 / 19:37 / 19:47 / 20:00) with near-identical registers, i.e. a deterministic path rather than random corruption.
+- **`SDL_GetBasePath()` freed with `SDL_free`**: in SDL3 that return value is a process-static cache owned by SDL and released only by `SDL_Quit`. The migration added a `(void*)` cast but kept the free, giving a use-after-free on the next call and a guaranteed double free at exit.
+- **Out-of-bounds `members[idx]` on the strum group**: hxcpp's release builds return `null` for an out-of-bounds read instead of trapping, and the following dereference is an instant AV. This class had already crashed here twice and been hand-patched; nine more sites were still unguarded. The accompanying modulo-by-zero on an empty group (`strumIdx %= members.length`) is fixed too.
+
+#### Notes
+
+- The "update/render separation" theory was checked and **does not hold**: `RenderThread` is a stub (multi-threaded rendering was removed long ago) and `drawWrapper` is nulled in both `Main.hx` and `ClientPrefs.hx`, so rendering has always been single-threaded. The real update/draw rescheduling lives in lime's native frame loop, not in flixel.
+- Also fixed: a camera could be destroyed from inside its own effect completion callback and then have `flashSprite` dereferenced unguarded.
+- The full investigation (evidence, code locations, and the reasoning behind each trade-off) is in `docs/CRASH_ROOTCAUSE_20260912.md`.
+- ⚠ **The lime and flixel patches must be upstreamed to `mohong2/lime` and `mohong2/flixel`**, otherwise CI re-clones the dependencies and ships those two defects again.
+
+(2026-09-12, changelog written by AI as usual.)
+
+---
+
 ### Acknowledgments
 
 A huge thank you to all testers — your feedback has been invaluable in shaping SeiunEngine into what it is today.
 
 ---
 
-*本日志覆盖 SeiunEngine 自 6.19 至 8.30 全部主要变动。*
-*This changelog covers all significant changes from June 19 to August 30, 2026.*
+*本日志覆盖 SeiunEngine 自 6.19 至 9.12 全部主要变动。*
+*This changelog covers all significant changes from June 19 to September 12, 2026.*

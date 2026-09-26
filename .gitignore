@@ -26,9 +26,23 @@ export/*
 **/app/build/
 .DS_Store
 
+# Crash linemaps are generated per build (tools/build_*_symbols.ps1)
+assets/linemap/*.bin
+
 # SeiunEngine local-only artifacts (not for commit)
 server/build/
+# 服务端编译产物与运行日志（P6-2 起：server/bin、server/logs）
+server/bin/*
+!server/bin/.gitkeep
+server/logs/*
+!server/logs/.gitkeep
+# P6-4：本地 JSON 存储（账号 / 排行榜 / 评论）是运行时数据，不进仓库
+server/data/
 temp/
 server_data/
 seiun_online_profile.json
 turbo_cache/
+
+# Python bytecode caches (tools/*.py)
+__pycache__/
+*.pyc

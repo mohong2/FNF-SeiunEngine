@@ -1,3 +1,10 @@
+> ⚠️ **已废弃 / DEPRECATED（2026-09-12）**
+>
+> 本文描述的「内置局域网托管 / 端口 2567 / 管理面板 2568 / `seiun_online_profile.json`」
+> 均属**旧版联机实现**，已在 commit `8ab3200` 中整体拆除；文中「`ONLINE_ALLOWED` 只在
+> desktop 构建默认定义」与 `Project.xml` 实际（该 define 处于注释状态）亦不符。
+> 保留仅为历史记录，将在新实现落地后重写。
+
 # SeiunEngine 联机使用说明
 
 ## 内置局域网托管（默认，Minecraft 式）

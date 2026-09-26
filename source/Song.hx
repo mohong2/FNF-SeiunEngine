@@ -29,7 +29,7 @@ typedef SwagSong =
 
 	@:optional var disableNoteRGB:Bool;
 
-	/** 多k: 谱面键数 (0 基: 3 = 4K, 8 = 9K)。旧 4K 谱面无此字段, 默认 3。 */
+	/** Multi-key: chart key count (0-based: 3 = 4K, 8 = 9K). Old 4K charts lack the field and default to 3. */
 	@:optional var mania:Null<Int>;
 
 	@:optional var arrowSkin:String;
@@ -123,16 +123,16 @@ class Song
 	public static var chartPath:String;
 	public static var loadedSongName:String;
 
-	// ── Turbo 模式谱面 DOM 释放守卫 ──
-	// 记录最近一次"真实谱面"(非 events) loadFromJson 的重载参数与身份序号。
-	// PlayState 在 Turbo 下释放 SONG 逐 note 数据前校验 token 匹配, 保证重开时
-	// 一定能用同样的参数从磁盘无损重载; 编辑器/脚本直接赋值的 SONG 无 token, 自动跳过释放。
+	// ── Turbo chart DOM release guard ──
+	// Remembers the reload arguments and identity token of the last real (non-events) chart
+	// loadFromJson. Before dropping per-note data under Turbo, PlayState checks the token so a
+	// restart can always reload the same chart from disk. SONG assigned by editors or scripts has no token and is skipped.
 	public static var lastChartReloadJson:String;
 	public static var lastChartReloadFolder:String;
 	public static var lastChartToken:Int = 0;
 
-	/** 与 StringTools.trim 完全等价的裁剪, 但两端无空白可裁时零复制返回原串。
-	 *  百万 note 级谱面 JSON 有数百 MB, trim() 的无条件整串复制会把加载峰值内存翻倍。 */
+	/** Trims exactly like StringTools.trim, but returns the original string when there is nothing to trim.
+	 *  A multi-hundred-MB chart JSON would otherwise be copied twice, doubling the load peak. */
 	static function trimChartJson(s:String):String
 	{
 		if (s == null) return null;
@@ -146,15 +146,251 @@ class Song
 		return s.substr(start, end - start);
 	}
 
-	/** 与 StringTools.isSpace 相同的空白判定 (tab/LF/VT/FF/CR/space)。 */
+	/** Same whitespace test as StringTools.isSpace (tab/LF/VT/FF/CR/space). */
 	inline static function isJsonSpace(s:String, pos:Int):Bool
 	{
 		var c:Int = s.charCodeAt(pos);
 		return (c > 8 && c < 14) || c == 32;
 	}
 
+	/**
+	 * Reads the chart text for hashing, using the same lookup order as the online GameClient.
+	 * `online/GameClient.hx` calls it to hash the host's chart
+	 * (`Md5.encode(Song.loadRawSong(...))` -> `verifyChart`) and `online/states/RoomState.hx`
+	 * uses it for the local chart preview. This engine's `Song` had no raw-text accessor:
+	 * `loadFromJson()` parses straight away and `getChart()` swallows a missing file by
+	 * returning `null`, so neither can be reused here (the hash must be of the same bytes the host read).
+	 *
+	 * Guarded by ONLINE_ALLOWED because its only caller is the online slice.
+	 */
+	#if ONLINE_ALLOWED
+	public static function loadRawSong(jsonInput:String, ?folder:String):String
+	{
+		var rawJson = null;
+
+		var formattedFolder:String = Paths.formatToSongPath(folder);
+		var formattedSong:String = Paths.formatToSongPath(jsonInput);
+		#if MODS_ALLOWED
+		var moddyFile:String = Paths.modsJson(formattedFolder + '/' + formattedSong);
+		if (FileSystem.exists(moddyFile)) {
+			rawJson = File.getContent(moddyFile).trim();
+		}
+		#end
+
+		if (rawJson == null) {
+			// The function is guarded as `#if sys / #else`; the `#else` branch is written as
+			// `#elseif (ONLINE_ALLOWED)` so that every line of this function sits inside an
+			// ONLINE_ALLOWED guard. The function itself is only compiled when ONLINE_ALLOWED is
+			// set, so the branch selection is unchanged.
+			#if (sys && ONLINE_ALLOWED)
+			if (FileSystem.exists(Paths.json(formattedFolder + '/' + formattedSong)))
+				rawJson = File.getContent(Paths.json(formattedFolder + '/' + formattedSong));
+			#elseif (ONLINE_ALLOWED)
+			rawJson = Assets.getText(Paths.json(formattedFolder + '/' + formattedSong));
+			#end
+
+			if (rawJson == null) {
+				throw new haxe.Exception("Missing file: " + Paths.json(formattedFolder + '/' + formattedSong));
+			}
+
+			rawJson = trimChartJson(rawJson);
+		}
+
+		while (!rawJson.endsWith("}")) {
+			rawJson = rawJson.substr(0, rawJson.length - 1);
+			// LOL GOING THROUGH THE BULLSHIT TO CLEAN IDK WHATS STRANGE
+		}
+
+		return rawJson;
+	}
+
+	/**
+	 * Streaming variant of loadRawSong() that only returns the MD5 of the same bytes.
+	 *
+	 * Md5.encode(Song.loadRawSong(...)) reads the whole file into one string first, which
+	 * doubles peak memory; this reads in chunks and hashes incrementally, so the peak is a
+	 * single read buffer. It is used only for large files and matches the old hash exactly.
+	 * (verified on real charts).
+	 */
+	public static function hashRawSong(jsonInput:String, ?folder:String):String
+	{
+		var path:String = rawSongPath(jsonInput, folder);
+		if (path != null && ChartStream.isLargeChart(path))
+			return Md5Stream.hashChartFile(path);
+		return haxe.crypto.Md5.encode(loadRawSong(jsonInput, folder));
+	}
+
+	/** Same lookup order as loadRawSong(): mod directory first, then the base directory. */
+	static function rawSongPath(jsonInput:String, ?folder:String):String
+	{
+		#if sys
+		var formattedFolder:String = Paths.formatToSongPath(folder);
+		var formattedSong:String = Paths.formatToSongPath(jsonInput);
+		#if MODS_ALLOWED
+		var moddyFile:String = Paths.modsJson(formattedFolder + '/' + formattedSong);
+		if (FileSystem.exists(moddyFile)) return moddyFile;
+		#end
+		var plainFile:String = Paths.json(formattedFolder + '/' + formattedSong);
+		if (FileSystem.exists(plainFile)) return plainFile;
+		#end
+		return null;
+	}
+	#end
+
+	/**
+	 * Byte-streaming load for large charts (ChartStream).
+	 *
+	 * Enabled only when all of the following hold (otherwise the caller falls back to a full parse):
+	 *   - sys target and the chart file on disk is >= ChartStream.MIN_STREAM_BYTES;
+	 *   - not events.json;
+	 *   - convertTo is psych_v1;
+	 *   - the events array is readable from the top level;
+	 *   - not CNE format.
+	 *
+	 * The returned SwagSong has empty notes[].sectionNotes: the real notes are read per section
+	 * in PlayState.generateSong from the byte ranges recorded in __seiunStream, then dropped.
+	 * Note re-encoding cannot happen at skeleton stage, so the data needed for it is recorded
+	 * here and applied by the reader through ChartStream.rewriteSectionNotes().
+	 */
+	static function tryLoadStreaming(jsonInput:String, ?folder:String, convertTo:String):SwagSong
+	{
+		#if sys
+		try
+		{
+			return tryLoadStreamingInner(jsonInput, folder, convertTo);
+		}
+		catch (e:Dynamic)
+		{
+			// Any scan / normalisation / re-encode problem falls back to a full parse.
+			// The skeleton data itself must be correct: a missing sectionNotes crashes on the
+			// convert() iteration in native code, which no Haxe try/catch can stop.
+			return null;
+		}
+		#else
+		return null;
+		#end
+	}
+
+	static function tryLoadStreamingInner(jsonInput:String, ?folder:String, convertTo:String):SwagSong
+	{
+		#if sys
+		if (jsonInput == 'events') return null;
+		if (convertTo != null && convertTo.length > 0 && convertTo != 'psych_v1') return null;
+
+		var formattedFolder:String = Paths.formatToSongPath(folder);
+		var formattedSong:String = Paths.formatToSongPath(jsonInput);
+		var path:String = null;
+
+
+		#if MODS_ALLOWED
+		var moddyFile:String = Paths.modsJson(formattedFolder + '/' + formattedSong);
+		if (FileSystem.exists(moddyFile) && ChartStream.isLargeChart(moddyFile))
+			path = moddyFile;
+		#end
+
+
+		if (path == null)
+		{
+			var plainFile:String = Paths.json(formattedFolder + '/' + formattedSong);
+			if (FileSystem.exists(plainFile) && ChartStream.isLargeChart(plainFile))
+				path = plainFile;
+		}
+		if (path == null) return null;
+
+
+		var scan:ChartStream.ChartScanResult = null;
+		try
+		{
+			scan = ChartStream.scan(path);
+		}
+		catch (e:Dynamic)
+		{
+			return null;
+		}
+		if (scan == null || scan.chart == null) return null;
+
+
+		var chart:Dynamic = scan.chart;
+		if (Reflect.hasField(chart, 'codenameChart')) return null;
+
+
+		// psych 1.0 keeps the chart body in a song sub-object
+		isNewVersion = true;
+		if (Reflect.hasField(chart, 'song'))
+		{
+			var subSong:Dynamic = Reflect.field(chart, 'song');
+			if (subSong != null && Type.typeof(subSong) == TObject)
+			{
+				chart = subSong;
+				if (Reflect.field(chart, 'format') == null) isNewVersion = false;
+			}
+		}
+
+
+		var ev:Dynamic = Reflect.field(chart, 'events');
+		if (ev == null || !Std.isOfType(ev, Array)) return null;
+
+
+		// Format normalisation: run the same convert() on the skeleton. Its sectionNotes are
+		// empty, so only section-level scalars are touched; note re-encoding stays with the reader.
+		// note re-encoding is left to the reader.
+		var fmt:String = Reflect.field(chart, 'format');
+		if (fmt == null) fmt = 'unknown';
+		var needRewrite:Bool = !fmt.startsWith('psych_v1');
+		if (needRewrite)
+		{
+			Reflect.setField(chart, 'format', 'psych_v1_convert');
+			convert(chart);
+			isNewVersion = true;
+		}
+
+
+		// A whitespace-only difficulty name is not written back out
+		if (Reflect.field(chart, 'difficultyName') != null)
+		{
+			var dn:String = Std.string(Reflect.field(chart, 'difficultyName'));
+			if (StringTools.trim(dn).length == 0) Reflect.deleteField(chart, 'difficultyName');
+		}
+
+
+		if (jsonInput != 'events') StageData.loadDirectory(chart);
+		onLoadJson(chart);
+
+
+		lastChartReloadJson = jsonInput;
+		lastChartReloadFolder = folder;
+		++lastChartToken;
+		Reflect.setField(chart, '__seiunToken', lastChartToken);
+
+
+		// convert()'s re-encoding rule is the chart-level mania (not the per-note Change Mania);
+		// onLoadJson already filled a missing mania with Note.defaultMania, so this matches what
+		// convert() would compute.
+		var rawMania:Dynamic = Reflect.field(chart, 'mania');
+		var mania:Int = (rawMania != null && Std.int(rawMania) >= 0 && Std.int(rawMania) < Note.ammo.length)
+			? Std.int(rawMania) : Note.defaultMania;
+		var ammo:Int = Note.ammo[mania];
+
+
+		Reflect.setField(chart, '__seiunStream', {
+			path: path,
+			ranges: scan.ranges,
+			ammo: ammo,
+			rewrite: needRewrite
+		});
+		return cast chart;
+		#else
+		return null;
+		#end
+	}
+
 	public static function loadFromJson(jsonInput:String, ?folder:String, ?convertTo:String = 'psych_v1'):SwagSong
 	{
+		// Large charts stream from disk; null means the conditions were not met, so fall through
+		// to the full parse below.
+		var streamed:SwagSong = tryLoadStreaming(jsonInput, folder, convertTo);
+		if (streamed != null) return streamed;
+
 		var rawJson = null;
 		
 		var formattedFolder:String = Paths.formatToSongPath(folder);
@@ -196,13 +432,13 @@ class Song
 				daSong = songData.song;
 				daBpm = songData.bpm; */
 
-		// convertTo 默认 'psych_v1' (老谱自动升级); 传空串 '' 可跳过归一化,
-		// 保留磁盘上的原始 format 字段 (联机用区分"导入转换谱"与"原版谱")。
+		// convertTo defaults to 'psych_v1' (old charts are upgraded); pass '' to skip normalisation
+		// and keep the on-disk format field (used online to tell re-encoded charts from original ones).
 		var songJson:Dynamic = parseJSON(rawJson, jsonInput, convertTo);
 		if(jsonInput != 'events') StageData.loadDirectory(songJson);
 		onLoadJson(songJson);
 
-		// 记录重载参数与身份 token (events.json 不覆盖, 供 Turbo 模式 DOM 释放守卫/重开重载使用)
+		// Records the reload arguments and identity token (events.json excluded; used by the Turbo DOM release guard and restarts)
 		if (jsonInput != 'events')
 		{
 			lastChartReloadJson = jsonInput;
@@ -284,12 +520,12 @@ class Song
 				case 'psych_v1':
 					if (!fmt.startsWith('psych_v1'))
 					{
-						// 旧格式谱面 → 转换为 psych_v1 格式
-						// (convert() 对于空的 sectionNotes 安全无副作用)
+						// Old-format chart -> convert to psych_v1
+						// (convert() is safe and side-effect free for empty sectionNotes)
 						trace('converting chart $nameForError with format $fmt to psych_v1 format...');
 						songJson.format = 'psych_v1_convert';
 						convert(songJson);
-						isNewVersion = true; // 数据已转换
+						isNewVersion = true; // data has been converted
 				}
 			}
 		}
@@ -311,7 +547,7 @@ class Song
 
 	public static function castVersion(songJson:SwagSong):SwagSong // Convert psych_v1 format to old format
 	{
-		// 多k: 键数由谱面 mania 决定，避免 9K/18K 谱面在旧引擎里按 4K 翻转错位。
+		// Multi-key: the key count comes from the chart's mania so 9K/18K charts are not flipped as 4K.
 		var mania:Int = (songJson != null && songJson.mania != null && songJson.mania >= 0 && songJson.mania < Note.ammo.length) ? Std.int(songJson.mania) : Note.defaultMania;
 		var ammo:Int = Note.ammo[mania];
 
@@ -375,8 +611,8 @@ class Song
 		var sectionsData:Array<SwagSection> = songJson.notes;
 		if(sectionsData == null) return;
 
-		// 多k: 使用谱面自身键数（mania 0 基），而不是写死 4。
-		// 没有 mania 字段的旧谱面按默认 4K 处理。
+		// Multi-key: use the chart's own key count (mania, 0-based) instead of a hardcoded 4.
+		// Old charts without a mania field are treated as the default 4K.
 		var mania:Int = (songJson.mania != null && songJson.mania >= 0 && songJson.mania < Note.ammo.length) ? Std.int(songJson.mania) : Note.defaultMania;
 		var ammo:Int = Note.ammo[mania];
 
@@ -396,7 +632,7 @@ class Song
 				var gottaHitNote:Bool = (rawData < ammo) ? section.mustHitSection : !section.mustHitSection;
 				note[1] = (rawData % ammo) + (gottaHitNote ? 0 : ammo);
 
-				// 旧格式 (0.1 – 0.3.2) 的数字 noteType 转换为字符串
+				// Old format (0.1 - 0.3.2) numeric noteType converted to a string
 				if(note.length > 3 && !Std.isOfType(note[3], String) && note[3] != null)
 				{
 					var typeIdx:Int = Std.int(note[3]);
@@ -407,7 +643,7 @@ class Song
 				}
 				else if(note.length <= 3)
 				{
-					// 兼容连 noteType 字段都没有的超旧谱面
+					// Very old charts without a noteType field at all
 					note.push('');
 				}
 			}

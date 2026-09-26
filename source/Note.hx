@@ -1303,4 +1303,57 @@ class Note extends FlxSprite {
         }
         if(tooLate && !inEditor && alpha > 0.3) alpha = 0.3;
     }
+
+    // ==================== Online additions (appended at the end of the class) ====================
+    #if ONLINE_ALLOWED
+    /**
+     * `Note.maniaKeys` is "how many keys does the *current chart* use".
+     * This engine models multi-key differently: `PlayState.mania` is a 0-based index into
+     * `Note.ammo`, `Note.ammo[mania]` is the key count (ammo[3] == 4), and each Note carries its
+     * own `mania` snapshot so "Change Mania" events can mix key counts inside one chart.
+     *
+     * `maniaKeys` is therefore exposed as a READ-ONLY property derived from `PlayState.mania`,
+     * which keeps one source of truth and is exactly what the single consumer needs:
+     *   * online/ChartAnalyzer.hx uses `Note.maniaKeys` to split raw chart notes into lanes
+     *     (`note[1] % Note.maniaKeys`) and to interpret the opponent/player side offset.
+     * No setter side effects are needed: lane colours here come from
+     * `EKData.letterColorIndex` / `EKData.getLaneColorSwap`.
+     *
+     *
+     * Deliberately appended at the END of the class: every line inserted above an existing member
+     * shifts the source line numbers Haxe embeds in HXDLIN()/HX_LOCAL_STACK_FRAME(), which would
+     * change the generated C++ even with the macro off. Keeping this block line-for-line stable
+     * has the same reason.
+     */
+    public static var maniaKeys(get, never):Int;
+    static function get_maniaKeys():Int {
+        return ammo[EKData.clampMania(PlayState.mania)];
+    }
+
+    /**
+     * Building a `new Note(0, 0)` just to read `hitCausesMiss` is far too heavy in this
+     * engine: `Note` construction builds ColorSwap + RGBShaderReference + an animation, and the
+     * setter's 'Hurt Note' branch calls `reloadNote('HURT')`, i.e. it would decode note textures
+     * just to answer one boolean.
+     * boolean.
+     *
+     * The engine decides `hitCausesMiss` in exactly one place -- its own chart parser:
+     *   PlayState.generateSong(): `var isHurt:Bool = (noteType == 'Hurt Note');`
+     * so this helper is the same predicate without the allocation. Keep the two in sync if the
+     * engine ever grows more miss-causing note types.
+     */
+    public static function chartNoteTypeCausesMiss(noteType:String):Bool {
+        return noteType == 'Hurt Note';
+    }
+
+    /**
+     * Counts how many remote opponents have driven this note and gates the per-session
+     * `opponentNoteHitSID` path through `countOpponents()`.
+     * Appended inside the existing ONLINE_ALLOWED block at the end of the class so the macro-off
+     * translation unit is unchanged.
+     * The value stays 0 in a single-player run, where no remote opponent drives notes.
+     */
+    public var hits:Int = 0;
+    #end
+    // ====================================================================================================
 }

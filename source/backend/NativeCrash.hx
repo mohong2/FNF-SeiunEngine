@@ -8,6 +8,7 @@ import mohong.TraceManager;
 #if sys
 import sys.FileSystem;
 import sys.io.File;
+import sys.io.FileSeek;
 #end
 
 /**
@@ -86,6 +87,91 @@ class NativeCrash
 	}
 
 	/**
+	 * Build fingerprint, written into every native crash report.
+	 *
+	 * A report is only resolvable if it can be tied to the exe/PDB pair that
+	 * produced it: the "Fault offset" values only mean something relative to one
+	 * specific link. Reports used to carry no build identity, so a log could
+	 * silently outlive several relinks and end up symbolized against the wrong
+	 * PDB (which yields plausible-looking but completely wrong function names).
+	 *
+	 * Records exe and PDB size + mtime, plus a cheap content hash so two builds
+	 * that differ only in a rebuild timestamp are still distinguishable.
+	 */
+	public static function setBuildInfo():Void
+	{
+		#if (cpp && sys)
+		try
+		{
+			var parts:Array<String> = [];
+
+			for (name in ['SeiunEngine.exe', 'ApplicationMain.exe', 'MohongEngine.exe'])
+			{
+				if (!FileSystem.exists(name)) continue;
+				var st = FileSystem.stat(name);
+				parts.push(name + '=' + st.size + 'B@' + Std.string(Std.int(st.mtime.getTime() / 1000)) + 's#' + fnv1aFile(name));
+				break;
+			}
+
+			for (name in ['SeiunEngine.pdb', 'ApplicationMain.pdb', 'ApplicationMain.map'])
+			{
+				if (!FileSystem.exists(name)) continue;
+				var st = FileSystem.stat(name);
+				parts.push(name + '=' + st.size + 'B@' + Std.string(Std.int(st.mtime.getTime() / 1000)) + 's');
+			}
+
+			if (parts.length == 0) return;
+			untyped __cpp__('::seiun_set_build_info({0}.__CStr())', parts.join(' | '));
+		}
+		catch (e:Dynamic) {}
+		#end
+	}
+
+	/** FNV-1a over the first/last 64KB of a file: cheap, stable build discriminator. */
+	static function fnv1aFile(path:String):String
+	{
+		try
+		{
+			var input = sys.io.File.read(path, true);
+			var h:Int = 0x811C9DC5;
+			var chunk:Int = 65536;
+			for (round in 0...2)
+			{
+				if (round == 1)
+				{
+					var size = FileSystem.stat(path).size;
+					if (size <= chunk * 2) break;
+					input.seek(size - chunk, SeekBegin);
+				}
+				var bytes = input.read(chunk);
+				for (i in 0...bytes.length)
+				{
+					h ^= bytes.get(i);
+					h = (h * 0x01000193) & 0xFFFFFFFF;
+				}
+			}
+			input.close();
+			return StringTools.hex(h, 8);
+		}
+		catch (e:Dynamic)
+		{
+			return '?';
+		}
+	}
+
+	/** FNV-1a over arbitrary bytes; same constants as fnv1aFile above. */
+	static function fnv1aBytes(bytes:Bytes):String
+	{
+		var h:Int = 0x811C9DC5;
+		for (i in 0...bytes.length)
+		{
+			h ^= bytes.get(i);
+			h = (h * 0x01000193) & 0xFFFFFFFF;
+		}
+		return StringTools.hex(h, 8);
+	}
+
+	/**
 	 * Current engine situation (state / song / GL errors). Refreshed every few
 	 * seconds by SystemDiag so a native crash report shows the exact gameplay
 	 * context even though the process died below the Haxe layer.
@@ -111,7 +197,7 @@ class NativeCrash
 	 * Load the crash linemap for this build's ABI (exact cpp file:line at
 	 * crash time). Sources, in priority order:
 	 *   1. <storage>/linemap/<abi>.bin      (adb push, no APK changes)
-	 *   2. embedded asset assets/linemap/<abi>.bin (needs -DCRASH_LINEMAP)
+	 *   2. embedded asset assets/linemap/<abi>.bin (resident in Project.xml)
 	 * Generated from the unstripped .so by tools/gen_linemap.py.
 	 */
 	public static function loadLinemap(storageDir:String, libName:String = 'libApplicationMain'):Void
@@ -137,7 +223,7 @@ class NativeCrash
 		catch (e:Dynamic) {}
 		#end
 
-		// 2) embedded asset (opt-in via -DCRASH_LINEMAP in Project.xml)
+		// 2) embedded asset (resident in Project.xml; regenerated per build by the symbol scripts)
 		try
 		{
 			var assetPath:String = 'assets/linemap/' + abi + '.bin';
@@ -163,6 +249,10 @@ class NativeCrash
 			// operator-> reaches Array_obj::Pointer() for the raw uchar storage.
 			untyped __cpp__('::seiun_set_linemap((const void*){0}->Pointer(), (unsigned int){1}, {2}.__CStr())',
 				bytes.getData(), bytes.length, libName);
+			// Record which linemap produced this report's file:line frames, so a
+			// report can be matched to the exact table shipped with its build.
+			untyped __cpp__('::seiun_append_build_info({0}.__CStr())',
+				'linemap=' + getCpuAbi() + ':' + bytes.length + 'B#' + fnv1aBytes(bytes));
 		}
 		catch (e:Dynamic)
 		{

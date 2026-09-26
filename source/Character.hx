@@ -87,6 +87,74 @@ class Character extends FlxSprite
 	public var healthColorArray:Array<Int> = [255, 0, 0];
 
 	public static var DEFAULT_CHARACTER:String = 'bf'; //In case a character is missing, it will use BF on its place
+
+	#if ONLINE_ALLOWED
+	// ─── Online support: members the online code needs ──────────────────────────
+	// These members are declared only for the online code; the lobby layout, skins and
+	// chart analysis read them. Everything is guarded by ONLINE_ALLOWED so the
+	// macro-off build is untouched.
+	//
+	// Members added below:
+	//   ox                  -- horizontal sort/offset slot used by the lobby layout.
+	//   loadFailed          -- set when the character json could not be loaded.
+	//   noAnimationBullshit -- lets the lobby drive animations itself.
+	//   noHoldBullshit      -- same idea for hold notes.
+	// -------------------------------------------------------------------------
+	/** Horizontal sort/offset slot used by the online lobby character layout. */
+	public var ox:Int = 0;
+	/** Set when the character json could not be loaded. */
+	public var loadFailed:Bool = false;
+	/** True while `playAnim` plays an animation whose name ends in "miss". */
+	public var isMissing:Bool = false;
+	/** When true, `update()` skips the idle/dance state machine entirely so the lobby can
+	 *  drive animations through `playAnim`. */
+	public var noAnimationBullshit:Bool = false;
+	/** Same as above for hold notes. */
+	public var noHoldBullshit:Bool = false;
+
+	/**
+	 * Reads and parses a character json WITHOUT constructing the character.
+	 * The engine's `new()` does the same lookup inline (source/Character.hx:108-131); this static
+	 * helper exposes it separately because `online.states.SkinsState` needs the file's data before
+	 * or without building the sprite.
+	 * Falls back to `DEFAULT_CHARACTER` unless `nullOnFail` is set.
+	 */
+	public static function getCharacterFile(character:String, ?instance:Character, ?nullOnFail:Bool = false):CharacterFile {
+		var characterPath:String = 'characters/' + character + '.json';
+
+		#if MODS_ALLOWED
+		var path:String = Paths.modFolders(characterPath);
+		if (!FileSystem.exists(path)) {
+			path = Paths.getPreloadPath(characterPath);
+		}
+
+		if (!FileSystem.exists(path))
+		#else
+		var path:String = Paths.getPreloadPath(characterPath);
+		if (!Assets.exists(path))
+		#end
+		{
+			if (instance != null)
+				instance.loadFailed = true;
+			if (nullOnFail)
+				return null;
+			path = Paths.getPreloadPath('characters/' + DEFAULT_CHARACTER + '.json'); // If a character couldn't be found, change him to BF just to prevent a crash
+		}
+
+		#if MODS_ALLOWED
+		var rawJson = File.getContent(path);
+		#else
+		var rawJson = Assets.getText(path);
+		#end
+
+		return cast Json.parse(rawJson);
+	}
+
+	/** True when `AnimName` has an entry in `animOffsets`. */
+	public function animExists(AnimName:String) {
+		return animOffsets.exists(AnimName);
+	}
+	#end
 	public function new(x:Float, y:Float, ?character:String = 'bf', ?isPlayer:Bool = false)
 	{
 		super(x, y);
@@ -338,6 +406,16 @@ class Character extends FlxSprite
 
 	override function update(elapsed:Float)
 	{
+		#if ONLINE_ALLOWED
+		// Short-circuits the idle/dance state machine when the online lobby wants to drive
+		// animations itself, leaving the animation control to the lobby. Guarded so the
+		// macro-off build is byte-for-byte unchanged.
+		if (noAnimationBullshit) {
+			super.update(elapsed);
+			return;
+		}
+		#end
+
 		#if flxanimate
 		if (isAnimateAtlas && atlas != null && atlas.anim != null) atlas.update(elapsed);
 		#end
@@ -440,6 +518,15 @@ class Character extends FlxSprite
 			if (animation == null) return;
 			animation.play(AnimName, Force, Reversed, Frame);
 		}
+
+		#if ONLINE_ALLOWED
+		// Records whether the animation just played is a miss animation; the online lobby reads
+		// `isMissing`.
+		// `specialAnim` is deliberately NOT cleared here: this engine's `specialAnim` state machine
+		// (set for hey/cheer) is different and clearing it here would change single-player behaviour
+		// inside the same build.
+		isMissing = AnimName.endsWith("miss");
+		#end
 		_lastPlayedAnimation = AnimName;
 		specialAnim = false;
 
@@ -639,6 +726,28 @@ class Character extends FlxSprite
 	{
 		atlas = FlxDestroyUtil.destroy(atlas);
 		super.destroy();
+	}
+	#end
+
+	#if ONLINE_ALLOWED
+	/**
+	 * The room's per-player "noteHold" callback writes it on the remote player's character;
+	 * the setter echoes the LOCAL player's own hold state back to the room.
+	 *
+	 * The setter condition is `PlayState.isCharacterPlayer(this)`, i.e. the same
+	 * `playsAsBF() ? boyfriend : dad` definition as the `self` check. `online.GameClient.send()`
+	 * is a no-op while disconnected.
+	 * Guarded and appended at the very end of the class body so the macro-off build is
+	 * unchanged.
+	 * unchanged.
+	 */
+	public var noteHold(default, set):Bool = false;
+
+	function set_noteHold(v:Bool):Bool {
+		if (online.GameClient.isConnected() && PlayState.isCharacterPlayer(this) && noteHold != v)
+			online.GameClient.send("noteHold", v);
+
+		return noteHold = v;
 	}
 	#end
 }

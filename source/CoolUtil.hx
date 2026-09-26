@@ -125,6 +125,23 @@ class CoolUtil
 
 		return daList;
 	}
+	#if ONLINE_ALLOWED
+	/**
+	 * Converts a Colyseus `ArraySchema<T>` into a plain `Array<T>`. The online `RoomState` receives
+	 * the room's difficulty list as an `ArraySchema<String>` while `Difficulty.list` is a plain
+	 * `Array<String>`.
+	 *
+	 * It lives here (rather than inline in `RoomState`) for reuse; the parameter type is the only
+	 * reason the function needs the online guard on this engine's side.
+	 */
+	public static function asta<T>(arr:io.colyseus.serializer.schema.types.ArraySchema<T>) {
+		var haxArr = [];
+		for (i => thing in arr.items) {
+			haxArr[i] = thing;
+		}
+		return haxArr;
+	}
+	#end
 	public static function floorDecimal(value:Float, decimals:Int):Float
 	{
 		if(decimals < 1)

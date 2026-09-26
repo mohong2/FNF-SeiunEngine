@@ -53,10 +53,21 @@ jobs:
           set -euo pipefail
           rm -rf dist
           mkdir -p dist
+          mkdir -p dist/crash-symbols
           cd release
           for d in */; do
             d="${d%/}"
             [ -d "$d" ] || continue
+
+            # Crash symbol artifacts ship as separate downloads, never inside the
+            # game zip (the .map alone is tens of MB and only needed for triage).
+            case "$d" in
+              *-symbols)
+                zip -r "../dist/crash-symbols/${d}.zip" "$d"
+                continue
+                ;;
+            esac
+
             mobile=0
             for f in "$d"/*.apk "$d"/*.ipa; do
               if [ -f "$f" ]; then
@@ -70,11 +81,15 @@ jobs:
           done
           cd ../dist
           shopt -s nullglob
+          if [ -z "$(ls -A crash-symbols 2>/dev/null)" ]; then
+            rmdir crash-symbols 2>/dev/null || true
+          fi
           files=(*.apk *.ipa *.zip)
           if [ "${#files[@]}" -gt 0 ]; then
             sha256sum "${files[@]}" > SHA256SUMS.txt
           fi
           ls -la
+          ls -la crash-symbols 2>/dev/null || true
 
       - name: Prepare release body
         env:
@@ -112,6 +127,22 @@ jobs:
           - Android (APK)
           - iOS Device (IPA)
 
+          ### Crash debugging symbols
+
+          Published builds embed a crash linemap, so a report's backtrace carries
+          `[src/File.cpp:123]` on its own - triage no longer depends on the
+          developer's local build matching the user's. The files under
+          `crash-symbols/` are the symbols for exactly the APK/exe in this release:
+
+          - `SeiunEngine-windows-x64-symbols.zip`  (ApplicationMain.map + windows-x64.bin + build-info.txt)
+          - `SeiunEngine-android-arm64-symbols.zip` / `SeiunEngine-android-armv7-symbols.zip`
+            (unstripped libApplicationMain.so + <abi>.bin + build-info.txt)
+          - `SeiunEngine-linux-x64-symbols.zip` / `SeiunEngine-mac-*-symbols.zip` (linker .map)
+
+          Match them to the report via the report's `Build:` line and the
+          `build-info.txt` of the matching zip. Offline fallback for desktop:
+          `python tools/mapresolve.py ApplicationMain.map <fault offset>`.
+
           Checksums are included in `SHA256SUMS.txt`.
           EOF
 
@@ -121,4 +152,6 @@ jobs:
           name: Alpha v${{ env.APP_VERSION }} (build ${{ env.RUN_ID }})
           prerelease: true
           body_path: release_body.md
-          files: dist/*
+          files: |
+            dist/*
+            dist/crash-symbols/*

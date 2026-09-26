@@ -30,7 +30,7 @@ class NoteOffsetState extends MusicBeatState
 	var timeBarBG:FlxSprite;
 	var timeBar:FlxBar;
 	var timeTxt:FlxText;
-	var beatText:Alphabet;
+	var beatText:FlxTextMenuItem;
 	var beatTween:FlxTween;
 
 	var changeModeText:FlxText;
@@ -155,9 +155,9 @@ class NoteOffsetState extends MusicBeatState
 
 		// Note delay stuff
 		
-		beatText = new Alphabet(0, 0, 'Beat Hit!', true);
-		beatText.scaleX = 0.6;
-		beatText.scaleY = 0.6;
+		beatText = new FlxTextMenuItem(0, 0, Language.get('NoteOffset.beatHit', 'Beat Hit!'), 48); beatText.isMenuItem = false;
+		beatText.scale.x = 0.6;
+		beatText.scale.y = 0.6;
 		beatText.x += 260;
 		beatText.alpha = 0;
 		beatText.acceleration.y = 250;

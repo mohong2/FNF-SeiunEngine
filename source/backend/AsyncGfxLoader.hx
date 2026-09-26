@@ -263,34 +263,47 @@ class AsyncGfxLoader
 			Thread.create(function() {
 				while (true)
 				{
-					var job:GfxJob = null;
-					mutex.acquire();
-					if (queue.length > 0)
-						job = queue.shift();
-					mutex.release();
-
-					if (job == null)
-					{
-						Sys.sleep(0.004);
-						continue;
-					}
-
-					var bytes:haxe.io.Bytes = null;
+					// Any exception thrown by the user closure passed to `sys.thread.Thread.create` is
+					// **rethrown** by `sys.thread.HaxeThread`'s framework closure into `hxThreadFunc`;
+					// haxe/hxcpp has no global uncaught handler, so the process dies (crash report Exception
+					// code 0xE06D7363, a C++ throw with hxThreadFunc at the stack bottom). This catch keeps the
+					// worker running after a dropped job instead of taking the whole game down.
 					try
 					{
-						bytes = File.getBytes(job.filePath);
+						var job:GfxJob = null;
+						mutex.acquire();
+						if (queue.length > 0)
+							job = queue.shift();
+						mutex.release();
+
+						if (job == null)
+						{
+							Sys.sleep(0.004);
+							continue;
+						}
+
+						var bytes:haxe.io.Bytes = null;
+						try
+						{
+							bytes = File.getBytes(job.filePath);
+						}
+						catch (e:Dynamic)
+						{
+							try TraceManager.warn('trace.asyncGfx.readFail',
+								'AsyncGfxLoader read failed for {}: {}', [job.filePath, e]) catch (_:Dynamic) {}
+							bytes = null;
+						}
+
+						mutex.acquire();
+						if (job.gen == generation)
+							pendingResults.set(job.cacheKey, {bytes: bytes, filePath: job.filePath, gen: job.gen});
+						mutex.release();
 					}
 					catch (e:Dynamic)
 					{
-						TraceManager.warn('trace.asyncGfx.readFail',
-							'AsyncGfxLoader read failed for {}: {}', [job.filePath, e]);
-						bytes = null;
+						try TraceManager.warn('trace.asyncGfx.workerFail',
+							'AsyncGfxLoader worker error: {}', [Std.string(e)]) catch (_:Dynamic) {}
 					}
-
-					mutex.acquire();
-					if (job.gen == generation)
-						pendingResults.set(job.cacheKey, {bytes: bytes, filePath: job.filePath, gen: job.gen});
-					mutex.release();
 				}
 			});
 		}

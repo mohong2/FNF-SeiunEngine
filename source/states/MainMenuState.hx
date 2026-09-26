@@ -28,10 +28,6 @@ import sys.FileSystem;
 import sys.io.File;
 #end
 
-#if ONLINE_ALLOWED
-import online.states.OnlineState;
-#end
-
 using StringTools;
 
 class MainMenuState extends SeiunMenuState
@@ -40,7 +36,6 @@ class MainMenuState extends SeiunMenuState
 	public static var psychEngineVersion:String = '0.6.4';
 	public static var fnfGameVersion:String = '0.2.7.1';
 	public static var extrakeysVersion:String = '0.4.6';
-	public static var seiunOnlineVersion:String = #if ONLINE_ALLOWED '1.0' #else 'offline' #end;
 
 	public static var curSelected:Int = 0;
 
@@ -51,11 +46,11 @@ class MainMenuState extends SeiunMenuState
 	public var optionShit:Array<String> = [
 		'story_mode',
 		'freeplay',
+		#if ONLINE_ALLOWED 'online', #end
 		#if MODS_ALLOWED 'mods', #end
 		#if ACHIEVEMENTS_ALLOWED 'awards', #end
 		'credits',
 		#if !switch 'donate', #end
-		#if ONLINE_ALLOWED 'online', #end
 		'options'
 	];
 
@@ -93,7 +88,7 @@ class MainMenuState extends SeiunMenuState
 				if (v != null && Std.string(v).length > 0) return Std.string(v);
 			}
 		} catch (e:Dynamic) {}
-		return '0.2.1hotfix';
+		return '0.2.2preonline1';
 	}
 
 	override function create()
@@ -232,12 +227,18 @@ class MainMenuState extends SeiunMenuState
 		var versionRightEdge:Int = FlxG.width - 10;
 		// (y, label) pairs, listed top-to-bottom as they appear on screen
 		var versionLabels:Array<Array<Dynamic>> = [
-			[FlxG.height - 104, "Seiun Online v" + seiunOnlineVersion],
 			[FlxG.height - 84,  "ExtraKeys v" + extrakeysVersion],
 			[FlxG.height - 64,  "Seiun Engine v" + seiunengineVersion],
 			[FlxG.height - 44,  "Psych Engine v0.6.3+0.7.3+1.0.4 (Active: " + CompatEngine.current() + ")"],
 			[FlxG.height - 24,  "Friday Night Funkin' v" + fnfGameVersion]
 		];
+		#if ONLINE_ALLOWED
+		// SeiunOnline shares the version block with the engine rows: ExtraKeys and Seiun Engine
+		// move up one slot so the online client version sits right below Seiun Engine.
+		versionLabels[0][0] = versionLabels[0][0] - 20;
+		versionLabels[1][0] = versionLabels[1][0] - 20;
+		versionLabels.insert(2, [FlxG.height - 64, "SeiunOnline v" + online.Protocol.VERSION + " (net v" + online.Protocol.NETWORK_VERSION + ")"]);
+		#end
 		if (TitleState.updateAvailable)
 			versionLabels.unshift([FlxG.height - 124, Language.get('MainMenu.updateAvailable', 'Update available: ') + TitleState.updateVersion]);
 		for (label in versionLabels)
@@ -309,7 +310,7 @@ class MainMenuState extends SeiunMenuState
 		if (leDate.getDay() == 5 && leDate.getHours() >= 18) {
 			var achieveID:Int = Achievements.getAchievementIndex('friday_night_play');
 			if(!Achievements.isAchievementUnlocked(Achievements.achievementsStuff[achieveID][2])) { //It's a friday night. WEEEEEEEEEEEEEEEEEE
-				Achievements.achievementsMap.set(Achievements.achievementsStuff[achieveID][2], true);
+				Achievements.markUnlocked(Achievements.achievementsStuff[achieveID][2]);
 				giveAchievement();
 				ClientPrefs.saveSettings();
 			}
@@ -503,6 +504,10 @@ class MainMenuState extends SeiunMenuState
 										MenuFX.menuSwitch(new StoryMenuState());
 									case 'freeplay':
 										MenuFX.menuSwitch(new FreeplayState());
+									#if ONLINE_ALLOWED
+									case 'online':
+										MenuFX.menuSwitch(new online.states.OnlineState());
+									#end
 									#if MODS_ALLOWED
 									case 'mods':
 										if(!ClientPrefs.data.oldmodsmenu)
@@ -514,17 +519,15 @@ class MainMenuState extends SeiunMenuState
 										MenuFX.menuSwitch(new AchievementsMenuState());
 									case 'credits':
 										MenuFX.menuSwitch(new CreditsState());
-									case 'online':
-										#if ONLINE_ALLOWED
-										MenuFX.menuSwitch(new OnlineState());
-										#else
-										MenuFX.menuSwitch(new MainMenuState());
-										#end
 									case 'options':
 										// Options uses the standard transition so its
 										// images/UI settle in reliably on first entry.
 										MusicBeatState.switchState(new options.OptionsState());
 										OptionsState.onPlayState = false;
+										#if ONLINE_ALLOWED
+										// Mirrors source MainMenuState.hx:365
+										OptionsState.onOnlineRoom = false;
+										#end
 								}
 							});
 						}

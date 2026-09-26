@@ -164,27 +164,9 @@ class GameplayChangersSubstate extends MusicBeatSubstate
 	}
 
 
-	#if ONLINE_ALLOWED
-	var onlineBlocked:Bool = false;
-	var blockTimer:Float = 0;
-	#end
-
 	public function new()
 	{
 		super();
-
-		#if ONLINE_ALLOWED
-		if (PlayState.seiunOnline || online.client.OnlineSession.active)
-		{
-			onlineBlocked = true;
-			var warn:FlxText = new FlxText(0, FlxG.height / 2 - 30, FlxG.width,
-				Language.get('online.gameplayChangersBlocked', '联机对局中无法修改这些选项'), 22);
-			warn.setFormat(Paths.languageFont(), 22, FlxColor.fromRGB(255, 210, 120), CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
-			warn.scrollFactor.set();
-			add(warn);
-			return;
-		}
-		#end
 
 		var bg:FlxSprite = new FlxSprite().makeGraphic(FlxG.width, FlxG.height, FlxColor.BLACK);
 		bg.alpha = 0.6;
@@ -247,15 +229,6 @@ class GameplayChangersSubstate extends MusicBeatSubstate
 
 	override function update(elapsed:Float)
 	{
-		#if ONLINE_ALLOWED
-		if (onlineBlocked)
-		{
-			blockTimer += elapsed;
-			if (blockTimer >= 1.2 || controls.ACCEPT || controls.BACK)
-				close();
-			return;
-		}
-		#end
 		// --- Touch input ---
 		if (FlxG.mouse.wheel != 0)
 		{

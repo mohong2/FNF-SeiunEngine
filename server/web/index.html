@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SeiunEngine Server</title>
+<!-- Absolute paths: opening /console without a trailing slash would resolve
+     relative hrefs to /style.css and /app.js, which the server does not serve. -->
+<link rel="stylesheet" href="/console/style.css">
+</head>
+<body>
+<div id="login" class="login hidden">
+  <div class="login-card">
+    <div class="login-brand"><span class="logo">◎</span><div><b>SeiunEngine Server</b><small>控制台登录 Console sign-in</small></div></div>
+    <div class="tabs">
+      <button class="tab active" data-tab="email">邮箱 + 验证码 Email + code</button>
+      <button class="tab" data-tab="token">id / token</button>
+    </div>
+    <div id="tab-email" class="tabpane">
+      <label>邮箱 Email</label>
+      <input id="login-email" type="email" placeholder="admin@example.com" autocomplete="username">
+      <div class="row">
+        <button id="btn-send-code" class="btn">发送验证码 Send code</button>
+        <input id="login-code" placeholder="6 位验证码 6-digit code" inputmode="numeric">
+      </div>
+      <button id="btn-login-code" class="btn primary wide">登录 Sign in</button>
+      <p class="hint">验证码只有配了 <code>--smtp-*</code> 才会邮件发送；否则写在
+        <code>&lt;data-dir&gt;/mail.log</code>（默认 <code>server/data/mail.log</code>，每行
+        <code>时间 &lt;Tab&gt; 邮箱 &lt;Tab&gt; 验证码</code>，取该邮箱最后一行）。</p>
+      <p class="hint">只有服务端 <code>--admin-email</code> 指定的那个账号能进控制台，其它账号会回 401。</p>
+    </div>
+    <div id="tab-token" class="tabpane hidden">
+      <label>账号 id Account id</label>
+      <input id="login-id" placeholder="a1">
+      <label>token</label>
+      <input id="login-token" placeholder="登录返回的 token token returned by login">
+      <button id="btn-login-token" class="btn primary wide">使用凭据登录 Sign in with credentials</button>
+      <p class="hint">token 来自游戏内登录或 <code>POST /api/auth/login</code>（响应里的 <code>id</code> /
+        <code>token</code>）；页面不保存明文密码（本地没有密码）。同样要求该账号是服务端的
+        <code>--admin-email</code>。</p>
+    </div>
+    <p id="login-msg" class="login-msg"></p>
+  </div>
+</div>
+
+<div id="app" class="app hidden">
+  <header class="topbar">
+    <div class="brand" data-route="overview"><span class="logo">◎</span><b>SeiunEngine Server</b></div>
+    <nav class="topnav">
+      <a data-route="overview">概览 Overview</a>
+      <a data-route="rooms">房间 Rooms</a>
+      <a data-route="players">玩家 Players</a>
+      <a data-route="accounts">数据 Data</a>
+      <a data-route="config">配置 Config</a>
+      <a data-route="logs">日志 Logs</a>
+      <a data-route="about">关于 About</a>
+    </nav>
+    <div class="topright">
+      <div class="search"><input id="global-search" placeholder="搜索当前列表… Search this list…"><kbd>Ctrl K</kbd></div>
+      <button id="btn-bell" class="icon-btn" title="通知">🔔<span id="bell-count" class="badge hidden">0</span></button>
+      <div class="me" id="me-chip"><span class="avatar" id="me-avatar">?</span><span id="me-name">-</span></div>
+    </div>
+  </header>
+
+  <div class="body">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="content" id="content"></main>
+    <aside class="rail" id="rail"></aside>
+  </div>
+
+  <div id="bell-panel" class="panel hidden"></div>
+  <div id="toasts" class="toasts"></div>
+</div>
+
+<script src="/console/app.js" defer></script>
+</body>
+</html>

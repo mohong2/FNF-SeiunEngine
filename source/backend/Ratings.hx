@@ -5,27 +5,27 @@ import CoolUtil;
 import Paths;
 
 /**
- * LeatherEngine 移植: 判定手感工具类。
- * - getRating: 根据 judgementTimings 判定 marvelouse/sick/good/bad/shit
- * - timingPresets.txt: 预设判定窗口 (Leather / Psych-Kade / FNF)
- * - syncWindows: 将 judgementTimings 同步到 Psych 的 ClientPrefs 窗口字段,
- *   保证 Psych 评分 / 回放 / 结果界面全部使用同一套判定。
+ * Judgement-window helpers.
+ * - getRating: maps a ms difference to marvelouse/sick/good/bad/shit
+ * - timingPresets.txt: preset judgement windows (Leather / Psych-Kade / FNF)
+ * - syncWindows: copies judgementTimings into the ClientPrefs window fields so rating,
+ *   replay and the results screen all use one set of windows.
  */
 class Ratings
 {
 	private static var scores:Array<Dynamic> = [['marvelous', 400], ['sick', 350], ['good', 200], ['bad', 50], ['shit', -150]];
 
-	/** 根据毫秒差返回判定名 ('marvelous' / 'sick' / 'good' / 'bad' / 'shit') */
+	/** Returns the judgement name for a ms difference ('marvelous' / 'sick' / 'good' / 'bad' / 'shit'). */
 	public static function getRating(time:Float):String
 	{
 		var judges:Array<Int> = ClientPrefs.data.judgementTimings;
 		if (judges == null || judges.length < 4)
 			judges = [25, 50, 70, 100];
 
-		// 万级 NPS 降阶: 原实现每次命中都分配 Array<Array<Dynamic>> 字面量再逐项
-		// 比较 (GC 压力 + Dynamic 装箱); 判定逻辑是纯窗口比较, 展开为直接判断即可,
-		// 结果与原实现完全一致:
-		//   marvelous(需开启) → sick → good → bad 依次取第一个命中的窗口, 否则 shit。
+		// Dense-chart optimization: the original allocated a nested array literal and compared
+		// entries on every hit (GC pressure + Dynamic boxing). The logic is a plain window
+		// comparison, so it is inlined here with identical results:
+		//   marvelous (when enabled) -> sick -> good -> bad, first match wins, otherwise shit.
 		if (ClientPrefs.data.marvelousRatings && time <= judges[0])
 			return "marvelous";
 		if (time <= judges[1])
@@ -37,7 +37,7 @@ class Ratings
 		return "shit";
 	}
 
-	/** 旧实现的等价展开 (保留给需要对照语义的场景)。 */
+	/** Equivalent inline form of the original implementation, kept for reference. */
 	static function getRatingLegacy(time:Float):String
 	{
 		var judges:Array<Int> = ClientPrefs.data.judgementTimings;
@@ -82,8 +82,8 @@ class Ratings
 	}
 
 	/**
-	 * 根据判定窗口反查预设名, 匹配不到则返回 "Custom"。
-	 * 用于回放/成绩历史中显示判定类型。
+	 * Looks up the preset name for a set of judgement windows; returns "Custom" when nothing matches.
+	 * Used by replay and the score history to label the judgement type.
 	 */
 	public static function presetNameForTimings(timings:Array<Int>):String
 	{
@@ -121,7 +121,7 @@ class Ratings
 			presets.push(values[0]);
 		}
 
-		// 兜底: txt 缺失或损坏时至少保留 Leather Engine 预设
+		// Fallback: keep at least the Leather Engine preset when the txt file is missing or damaged
 		if (presets.length == 0)
 		{
 			timingPresets.set("Leather Engine", [25, 50, 70, 100]);
@@ -130,9 +130,9 @@ class Ratings
 	}
 
 	/**
-	 * 将 judgementTimings [marvelous, sick, good, bad] 同步到
-	 * ClientPrefs 的 marvelousWindow / sickWindow / goodWindow / badWindow。
-	 * Psych 的 Rating / 回放 / 结果界面都读取这些窗口字段。
+	 * Copies judgementTimings [marvelous, sick, good, bad] into
+	 * ClientPrefs' marvelousWindow / sickWindow / goodWindow / badWindow.
+	 * The rating, replay and results screens all read those window fields.
 	 */
 	public static function syncWindows():Void
 	{

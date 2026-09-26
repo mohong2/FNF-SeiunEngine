@@ -10,32 +10,32 @@ import sys.FileSystem;
 using StringTools;
 
 /**
- * 多k(extra keys) 数据层。
- * 移植自 Psych Engine 0.6.3 第三方多k版本 (EK extra keys)，
- * 但 Note 纹理按需求复用原版 4 个 Note (left/down/up/right)，
- * 颜色通过 0.6.3 自带 ColorSwap 着色器(色相偏移+饱和度+亮度)从基底色推导。
+ * Extra-keys data layer.
+ * Extra-keys data layer.
+ * Note textures reuse the four stock notes (left/down/up/right); lane colours are derived from
+ * the base colours through the ColorSwap shader (hue shift + saturation + brightness).
  *
- * mania 均为 0 基索引 (0 = 1K, 3 = 4K, 8 = 9K, 17 = 18K)。
+ * mania is a zero-based index (0 = 1K, 3 = 4K, 8 = 9K, 17 = 18K).
  *
- * 软编码: 可在 assets/data/extraKeys/extraKeys.json (或 mods/<mod>/data/extraKeys/extraKeys.json)
- * 中覆盖 scales/gridSizes/splashScales/pixelScales/lessX/separator/offsetX/restPosition/noteColors。
+ * Soft-coded: assets/data/extraKeys/extraKeys.json (or mods/<mod>/data/extraKeys/extraKeys.json)
+ * can override scales/gridSizes/splashScales/pixelScales/lessX/separator/offsetX/restPosition/noteColors.
  */
 class EKData
 {
-	/** 每 k 值的 键位字母 / 角色动作 / 轨道动作 / 像素帧索引。 1K~9K 采用 EK 原数据，>9K 循环 9K。 */
+	/** Per key count: key letters / character animations / strum animations / pixel frame indices. */
 	public static var keysShit:Map<Int, Map<String, Dynamic>> = buildKeysShit();
 
-	/** 每 k 值轨道数 (mania + 1)。 */
+	/** Lane count per key count (mania + 1). */
 	public static var ammo:Array<Int> = [for (i in 0...18) i + 1];
 
 	public static var minMania:Int = 0;
-	public static var maxMania:Int = 17; // key 值 = 该值 + 1
+	public static var maxMania:Int = 17; // key count = this + 1
 	public static var defaultMania:Int = 3; // 4K
 
-	/** 编辑器最多直接显示的轨道数；>9K 时编辑器会缩小格子/分页展示。 */
+	/** Most lanes the editor renders directly; above 9K it shrinks the cells and paginates. */
 	public static var editorMaxMania:Int = 17;
 
-	// ---- 布局数据 (来自 EK) ----
+	// ---- layout data ----
 	public static var scales:Array<Float> = [
 		0.9, // 1k
 		0.85, // 2k
@@ -204,8 +204,8 @@ class EKData
 		0.32 // 18k
 	];
 
-	// ---- Note 颜色 (0.6.3 近似色) ----
-	/** 0.6.3 原版 4 个 Note 的基底色。 */
+	// ---- note colours ----
+	/** Base colours of the four stock notes. */
 	public static var baseNoteColors:Array<Array<Int>> = [
 		[194, 75, 153], // left
 		[0, 255, 255], // down
@@ -214,7 +214,7 @@ class EKData
 	];
 
 	/**
-	 * 多k颜色表 (0.6.3 多k版原始配色, 每个扩展轨道独立一色, 不是基底镜像):
+	 * Multi-key colour table (each extended lane gets its own colour, not a mirror of the base):
 	 * 0 left / 1 down / 2 up / 3 right / 4 space / 5 leftex1 / 6 downex1 / 7 upex1 / 8 rightex1
 	 */
 	public static var noteColors:Array<Array<Int>> = [
@@ -229,7 +229,7 @@ class EKData
 		[0, 51, 255] // rightex1     blue
 	];
 
-	/** 字母 -> 颜色索引 (0-8)。J~R 循环映射回 A~I。 */
+	/** Letter -> colour index (0-8). J~R map back onto A~I cyclically. */
 	public static var letterColorIndex:Map<String, Int> = [
 		'A' => 0,
 		'B' => 1,
@@ -251,7 +251,7 @@ class EKData
 		'R' => 8
 	];
 
-	/** 字母 -> 复用的 0.6.3 基底 Note 纹理索引 (0=left, 1=down, 2=up, 3=right)。 */
+	/** Letter -> reused base note texture index (0=left, 1=down, 2=up, 3=right). */
 	public static var letterBaseTexture:Map<String, Int> = [
 		'A' => 0,
 		'B' => 1,
@@ -373,7 +373,7 @@ class EKData
 		return mania;
 	}
 
-	/** 获取某 k 值某轨道的字母。 */
+	/** Letter of a lane for a given key count. */
 	public static function getLetter(mania:Int, lane:Int):String
 	{
 		var m:Int = clampMania(mania);
@@ -384,22 +384,22 @@ class EKData
 	}
 
 	/**
-	 * 多k: 计算某时间点在给定事件列表下应生效的键数 (0 基)。
-	 * 取该时间之前 (含等于) 最近一次 Change Mania 事件的 k 值;
-	 * 事件 value1 为 1 基键数 (9 = 9K), 内部 mania 为 0 基。
-	 * events 结构: [[strumTime, [[name, value1, value2], ...]], ...]
+	 * Multi-key: key count (zero based) in effect at a time, for a given event list.
+	 * Uses the most recent Change Mania event at or before that time;
+	 * event value1 is 1-based (9 = 9K) while the internal mania is 0-based.
+	 * events shape: [[strumTime, [[name, value1, value2], ...]], ...]
 	 */
-	/** ── Change Mania 时间线缓存 (谱面批量加载专用, 见 maniaTimelineBuild) ── */
+	/** Change Mania timeline cache (bulk chart loading; see maniaTimelineBuild). */
 	private static var _mtEvents:Array<Dynamic> = null;
 	private static var _mtBase:Int = -1;
 	private static var _mtTimes:Array<Float> = [];
 	private static var _mtManias:Array<Int> = [];
 
 	/**
-	 * 预构建 "Change Mania" 事件时间线: 谱面加载循环开始前调用一次。
-	 * 之后每条 Note 用 maniaAtTimeCached 做一次二分查找即可,
-	 * 替代原先每条 Note 全事件扫描 (O(Notes×Events), 万级 Note + 事件多的谱面
-	 * 在加载阶段会冻结数秒)。events 引用与 base 一并校验, 防止跨谱面脏缓存。
+	 * Pre-builds the Change Mania event timeline: call once before the chart load loop.
+	 * Every note then does one binary search through maniaAtTimeCached,
+	 * replacing the per-note event scan (O(notes x events), which froze for seconds on dense charts).
+	 * The events reference is validated with the base to prevent a stale cross-chart cache.
 	 */
 	public static function maniaTimelineBuild(events:Array<Dynamic>, baseMania:Int):Void
 	{
@@ -438,7 +438,7 @@ class EKData
 		var total:Int = rawTimes.length;
 		if (total == 0) return;
 
-		// 按 (时间, 数组顺序) 排序; 同一时刻保留数组靠后者 (与原实现语义一致)
+		// Sort by (time, array order); the later entry wins at equal times, matching the original semantics
 		var order:Array<Int> = [for (i in 0...total) i];
 		order.sort(function(a:Int, b:Int):Int {
 			if (rawTimes[a] != rawTimes[b]) return rawTimes[a] < rawTimes[b] ? -1 : 1;
@@ -459,8 +459,8 @@ class EKData
 	}
 
 	/**
-	 * 谱面加载循环专用: 必须先对同一 events 数组 maniaTimelineBuild 过。
-	 * 无 Change Mania 事件时 O(1); 有事件时二分查找 O(log M)。
+	 * Chart-load loop only: maniaTimelineBuild must have run on the same events array.
+	 * O(1) without Change Mania events; a binary search O(log M) otherwise.
 	 */
 	public static function maniaAtTimeCached(time:Float):Int
 	{
@@ -483,7 +483,7 @@ class EKData
 		return (idx < 0) ? _mtBase : _mtManias[idx];
 	}
 
-	/** 缓存是否指向给定 events 数组 (供调用方自检/调试)。 */
+	/** Whether the cache points at the given events array (caller self-check / debugging). */
 	public static function maniaTimelineMatches(events:Array<Dynamic>):Bool
 	{
 		return _mtEvents == events;
@@ -498,7 +498,7 @@ class EKData
 		{
 			if (event == null || event[0] == null || event[1] == null) continue;
 			var evTime:Float = Std.parseFloat(Std.string(event[0]));
-			if (Math.isNaN(evTime) || evTime > time) continue; // 只看该时间点之前的事件
+			if (Math.isNaN(evTime) || evTime > time) continue; // only events before this time
 			var subEvents:Array<Dynamic> = cast event[1];
 			if (subEvents == null) continue;
 			for (subEvent in subEvents)
@@ -508,7 +508,7 @@ class EKData
 				var newMania:Null<Int> = Std.parseInt(Std.string(subEvent[1]));
 				if (newMania != null && !Math.isNaN(newMania) && evTime >= lastEvTime)
 				{
-					// 取时间最新的事件 (数组顺序无关); 同一时刻取数组靠后者
+					// Latest event wins (array order aside); at equal times the later entry wins
 					result = clampMania(newMania - 1);
 					lastEvTime = evTime;
 				}
@@ -518,10 +518,10 @@ class EKData
 	}
 
 	/**
-	 * 多k: 把一条 raw Note 数据从 oldMania 编码转换为 newMania 编码 (顺序映射)。
-	 * - side (玩家/对手) 始终保持;
-	 * - lane 按新 k 取模 (4K->9K 时旧 0~3 轨保持原轨道, 新增轨道留空)。
-	 * 事件 Note (raw < 0) 原样返回。
+	 * Multi-key: re-encodes one raw note from oldMania to newMania (order mapping).
+ * - side (player/opponent) is preserved;
+ * - lane is taken modulo the new key count (4K->9K keeps lanes 0~3 and leaves new lanes empty).
+ * Event notes (raw < 0) are returned unchanged.
 	 */
 	public static function convertRawData(raw:Int, oldMania:Int, newMania:Int):Int
 	{
@@ -535,7 +535,7 @@ class EKData
 		return side * newAmmo + (lane % newAmmo);
 	}
 
-	/** 多k: 深拷贝事件列表 (用于事件编辑前后对比, 不共享内部数组)。 */
+	/** Multi-key: deep-copies the event list (event-edit diffing; no shared inner arrays). */
 	public static function deepCopyEvents(events:Array<Dynamic>):Array<Dynamic>
 	{
 		if (events == null) return null;
@@ -558,7 +558,7 @@ class EKData
 		return ret;
 	}
 
-	/** 获取某轨道的角色动作后缀 (LEFT/DOWN/UP/RIGHT/SPACE...)。 */
+	/** Character animation suffix for a lane (LEFT/DOWN/UP/RIGHT/SPACE...). */
 	public static function getAnim(mania:Int, lane:Int):String
 	{
 		var m:Int = clampMania(mania);
@@ -568,7 +568,7 @@ class EKData
 		return anims[lane];
 	}
 
-	/** 获取某轨道的 strum 动作 (LEFT/DOWN/UP/RIGHT/SPACE...)。 */
+	/** Strum animation for a lane (LEFT/DOWN/UP/RIGHT/SPACE...). */
 	public static function getStrumAnim(mania:Int, lane:Int):String
 	{
 		var m:Int = clampMania(mania);
@@ -578,13 +578,13 @@ class EKData
 		return strums[lane];
 	}
 
-	/** 复用的基底 Note 纹理索引 (0-3)。 */
+	/** Reused base note texture index (0-3). */
 	public static function getBaseTexture(mania:Int, lane:Int):Int
 	{
 		return letterBaseTexture.get(getLetter(mania, lane));
 	}
 
-	/** 轨道目标颜色 (RGB)。 */
+	/** Target lane colour (RGB). */
 	public static function getLaneColor(mania:Int, lane:Int):Array<Int>
 	{
 		var idx:Int = letterColorIndex.get(getLetter(mania, lane));
@@ -593,8 +593,8 @@ class EKData
 	}
 
 	/**
-	 * 计算某轨道相对基底纹理的 ColorSwap 值。
-	 * @return [hue(0~1 偏移), saturation(0~1 偏移), brightness(乘数偏移, 语义同 arrowHSV 的 /100)]
+	 * ColorSwap values for a lane relative to its base texture.
+	 * @return [hue (0~1 shift), saturation (0~1 shift), brightness (multiplier shift, same /100 semantics as arrowHSV)]
 	 */
 	public static function getLaneColorSwap(mania:Int, lane:Int):Array<Float>
 	{
@@ -639,8 +639,8 @@ class EKData
 	static var _loaded:Bool = false;
 
 	/**
-	 * 软编码: 从 data/extraKeys/extraKeys.json 读取覆盖项。
-	 * 支持覆盖: scales, gridSizes, splashScales, pixelScales, lessX, separator,
+	 * Soft-coded overrides read from data/extraKeys/extraKeys.json.
+	 * Overridable: scales, gridSizes, splashScales, pixelScales, lessX, separator,
 	 * offsetX, restPosition, noteColors, baseNoteColors。
 	 */
 	public static function loadConfig():Void
@@ -673,7 +673,7 @@ class EKData
 		}
 		catch (e:Dynamic)
 		{
-			// 配置错误不阻塞游戏
+			// A bad config must not stop the game
 		}
 		#end
 	}
@@ -696,8 +696,8 @@ class EKData
 }
 
 /**
- * 键位选项表 (移植自 EK 0.6.3, 修正了 17K 的笔误)。
- * 供 ControlsSubState 渲染与 PlayState 读取键位。
+ * Key binding table.
+ * Rendered by ControlsSubState and read by PlayState for key bindings.
  */
 class Keybinds
 {

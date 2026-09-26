@@ -1,0 +1,61 @@
+[
+	{
+		"nameKey": "option.noteOptimizationNotice",
+		"defaultName": "Show the Notice Again",
+		"descKey": "option.noteOptimizationNotice.desc",
+		"defaultDesc": "Show the note-optimisation disclaimer again without restarting the game.",
+		"variable": "showNoteOptimizationNotice",
+		"type": "button",
+		"defaultValue": false,
+		"onChange": "onChangeShowNoteOptimizationNotice"
+	},
+	{
+		"nameKey": "option.perfMode",
+		"defaultName": "Performance Mode",
+		"descKey": "option.perfMode.desc",
+		"defaultDesc": "Master switch for extreme-chart optimizations (bulk skip, popup/splash\nmerging, spawn budgets). When off, gameplay is identical to the stock engine;\nonly enable it for absurd-NPS charts.",
+		"variable": "perfMode",
+		"type": "bool",
+		"defaultValue": false
+	},
+	{
+		"nameKey": "option.turboMode",
+		"defaultName": "Turbo Mode",
+		"descKey": "option.turboMode.desc",
+		"defaultDesc": "Ultimate extreme-chart switch. When ON, botplay is forced and locked, high-density note sections use precomputed aggregation plus data-level bulk settlement instead of materializing tens of thousands of sprites. When OFF, everything is exactly the stock behavior.",
+		"variable": "turboMode",
+		"type": "bool",
+		"defaultValue": false
+	},
+	{
+		"nameKey": "option.limitNotes",
+		"defaultName": "Max Simultaneous Notes",
+		"descKey": "option.limitNotes.desc",
+		"defaultDesc": "Maximum materialized notes at once. 0 means unlimited (only for high-end machines).\nHigher values render more notes but cost more CPU/GPU and memory.",
+		"variable": "limitNotes",
+		"type": "int",
+		"defaultValue": 0,
+		"minValue": 0,
+		"maxValue": 100000,
+		"scrollSpeed": 50,
+		"displayFormat": "%v"
+	},
+	{
+		"nameKey": "option.fastSort",
+		"defaultName": "Fast Note Sorting",
+		"descKey": "option.fastSort.desc",
+		"defaultDesc": "H-Slice style faster sort: only visible/alive notes are sorted every frame.\nImproves frame time on dense charts; turn off if a mod depends on the full group order.",
+		"variable": "fastSort",
+		"type": "bool",
+		"defaultValue": false
+	},
+	{
+		"nameKey": "option.bulkSkip",
+		"defaultName": "Bulk Skip Old Notes",
+		"descKey": "option.bulkSkip.desc",
+		"defaultDesc": "H-Slice style bulk skipping of already expired chart notes.\nAvoids spawn->instant miss churn on extreme NPS charts.\nRequires Performance Mode; auto-disabled while Lua/HScript/replay/online is active.",
+		"variable": "bulkSkip",
+		"type": "bool",
+		"defaultValue": false
+	}
+]

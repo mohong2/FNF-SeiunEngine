@@ -1,6 +1,9 @@
 Seiun Engine (FNF-SeiunEngine)
 ==============================
 
+Author and maintainer: mo_hong
+  https://github.com/mohong2/FNF-SeiunEngine
+
 Seiun Engine is a fork of Friday Night Funkin' - Psych Engine (0.6.3),
 distributed under the Apache License, Version 2.0 (see LICENSE).
 
@@ -19,5 +22,13 @@ Codename Engine (design attribution, no source code included)
   team (https://github.com/CodenameCrew/CodenameEngine).
   This project is NOT a fork of Codename Engine and does not
   distribute Codename Engine source code.
+
+Funkin-Psych-Online (online slice reference)
+  The online menu UI, the room/protocol model and the server-side room
+  semantics were ported from / modelled after Funkin-Psych-Online and its
+  companion Funkin-Online-Server (https://github.com/Snirozu/Funkin-Psych-Online),
+  distributed under the Apache License, Version 2.0.
+  The bundled online slice is this project's own Haxe implementation; no
+  TypeScript or Node source from those repositories is distributed here.
 
 See README.md / ZHREADME.md for the full credits list.

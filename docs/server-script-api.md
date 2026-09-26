@@ -1,3 +1,9 @@
+> ⚠️ **已废弃 / DEPRECATED（2026-09-12）**
+>
+> `online.server.SeiunServer` 等对象属于**旧版联机实现**，已在 commit `8ab3200` 中整体拆除。
+> 新服务端为 Haxe 重写的 Colyseus 协议服务端，脚本 API 尚未设计。
+> 保留仅为历史记录。
+
 # SeiunEngine 服务端 HScript API
 
 服务端脚本放在 `server/scripts/` 或 `mods/server/`，扩展名 `.hx` 或 `.hscript`。

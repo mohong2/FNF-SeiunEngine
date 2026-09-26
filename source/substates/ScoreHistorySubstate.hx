@@ -109,7 +109,7 @@ class ScoreHistorySubstate extends MusicBeatSubstate
 		this.difficulty = difficulty;
 		try
 		{
-			// getHistory 现在只读对应歌曲/难度子目录, 无需全量扫描
+			// getHistory now reads only the song/difficulty subdirectory, so no full scan is needed
 			entries = Allscore.getHistory(songName, difficulty);
 		}
 		catch(e:Dynamic)
@@ -213,7 +213,7 @@ class ScoreHistorySubstate extends MusicBeatSubstate
 	function createRoundedPanel(x:Float, y:Float, width:Int, height:Int, color:FlxColor):FlxSprite
 	{
 		#if android
-		// 部分安卓设备上 FlxSpriteUtil.drawRoundRect 配合透明背景会导致崩溃，使用纯色矩形替代
+		// On some Android devices FlxSpriteUtil.drawRoundRect with a transparent background crashes, so a plain rect is used
 		var panel = new FlxSprite(x, y).makeGraphic(width, height, color);
 		panel.alpha = 0.72;
 		return panel;
@@ -578,12 +578,10 @@ class ScoreHistorySubstate extends MusicBeatSubstate
 
 		if (e.details != null && e.details.length >= 24)
 		{
-			// LeatherEngine 移植: 判定类型 (预设名或 Custom), 老记录从窗口反查
 			var judgeType:String = (e.details.length > 26 && e.details[26] != null)
 				? Std.string(e.details[26])
 				: '';
 			var judgeStr = "";
-			// LeatherEngine 移植: 有 judgementTimings (details[24]) 时优先展示 4 档窗口
 			if (e.details.length > 24 && e.details[24] != null)
 			{
 				var timings:Array<Dynamic> = e.details[24];
@@ -603,7 +601,7 @@ class ScoreHistorySubstate extends MusicBeatSubstate
 				judgeType = Language.get("ScoreHistorySubstate.custom", "Custom");
 			rows2.push(mk(Language.get("ScoreHistorySubstate.judgeWindows", "Judge Type / Win"), judgeType + " (" + judgeStr + ")", FlxColor.fromRGB(180, 180, 200)));
 
-			// osu! 尾判: 显示该成绩是否开启尾判 (老记录没有字段则跳过)
+			// osu! tail judgement: whether this score had it enabled (skipped for old records)
 			if (e.details.length > 27 && e.details[27] != null)
 			{
 				var tailOn:Bool = (e.details[27] == true || Std.string(e.details[27]).toLowerCase() == 'true');
@@ -728,7 +726,6 @@ class ScoreHistorySubstate extends MusicBeatSubstate
 		var hasMarvelous = ClientPrefs.data.marvelousRatings;
 		var safeZoneOffset:Float = (ClientPrefs.data.safeFrames / 60) * 1000;
 
-		// LeatherEngine 移植: 优先使用该成绩记录实际使用的判定窗口 (details[24])
 		if (e.details != null && e.details.length > 24 && e.details[24] != null)
 		{
 			var recTimings:Array<Dynamic> = e.details[24];
@@ -796,7 +793,6 @@ class ScoreHistorySubstate extends MusicBeatSubstate
 			gfx.moveTo(0, drawH * 0.5);
 			gfx.lineTo(drawW, drawH * 0.5);
 
-			// marvelous window lines (LeatherEngine 移植)
 			if (hasMarvelous && marvelousWindow <= sickWindow)
 			{
 				gfx.lineStyle(2, 0x7FFFD700);
@@ -911,7 +907,7 @@ class ScoreHistorySubstate extends MusicBeatSubstate
 		try
 		{
 			#if sys
-			// 将存储的 replay 数据转回 FrameSave 并写入临时文件
+			// Convert the stored replay data back to FrameSave and write a temp file
 			var frames:Array<FrameSave> = [];
 			if (entry.replayData != null)
 			{
@@ -919,7 +915,7 @@ class ScoreHistorySubstate extends MusicBeatSubstate
 			}
 			Replay.dbgLog('[DEBUG-rpl] playReplay frames=' + frames.length + ' song=' + entry.songName + ' diff=' + entry.difficulty);
 
-			// 构造 StateRecord
+			// Build the StateRecord
 			var details:Array<Dynamic> = entry.details;
 			var stateRecord:StateRecord = {
 				songName: Paths.formatToSongPath(entry.songName),
@@ -950,19 +946,18 @@ class ScoreHistorySubstate extends MusicBeatSubstate
 				goodWindow: details != null && details.length > 21 ? details[21] : 90,
 				badWindow: details != null && details.length > 22 ? details[22] : 135,
 				safeFrames: details != null && details.length > 23 ? details[23] : 10,
-				// LeatherEngine 移植: 从成绩详情恢复判定手感 (与结果界面一致)
 				judgementTimings: details != null && details.length > 24 && details[24] != null ? details[24] : null,
 				judgementPreset: details != null && details.length > 26 && details[26] != null ? details[26] : null,
 				marvelousRatings: details != null && details.length > 25 && details[25] != null ? details[25] : null,
 				marvelousWindow: details != null && details.length > 30 && details[30] != null ? details[30] : null,
-				// osu! 尾判 / 判定相关手感: 从成绩详情强制还原
+				// osu! tail judgement / judgement feel: force-restored from the score details
 				//osuTailJudgement: details != null && details.length > 27 && details[27] != null ? details[27] : null,
 				ratingOffset: details != null && details.length > 28 && details[28] != null ? details[28] : null,
 				guitarHeroSustains: details != null && details.length > 29 && details[29] != null ? details[29] : null,
 				replayVersion: 2
 			};
 
-			// 写入临时回放文件
+			// Write the temporary replay file
 			var tempDir:String = CoolUtil.getReplayTempDir();
 			SUtil.mkDirs(tempDir);
 			var tempPath:String = tempDir + 'replay_temp.rsd';
@@ -978,8 +973,8 @@ class ScoreHistorySubstate extends MusicBeatSubstate
 			var songLowercase:String = Paths.formatToSongPath(entry.songName);
 			var poop:String = Highscore.formatSong(songLowercase, entry.difficulty);
 
-			// 成绩/回放先按存档里的 mod 目录定位；旧存档没有 folder 时，
-			// 退回当前 Freeplay 选中歌曲的 mod 目录（与 Freeplay 加载谱面的方式一致）。
+			// Locate by the mod folder stored with the score/replay first; old saves have no folder and
+			// fall back to the mod directory of the song currently selected in Freeplay.
 			var modFolder:String = entry.folder != null ? entry.folder : '';
 			var hasFolder:Bool = entry.folder != null;
 			if (!hasFolder && FreeplayState.instance != null)
@@ -987,8 +982,8 @@ class ScoreHistorySubstate extends MusicBeatSubstate
 				var songData = FreeplayState.instance.getCurrentSong();
 				if (songData != null)
 				{
-					// modFolder 是建列表时从 WeekData 显式传入的模组目录，
-					// 比 folder（创建瞬间的 Paths.currentModDirectory）更可靠。
+					// modFolder is passed explicitly from WeekData when the list is built and is more
+					// reliable than folder (Paths.currentModDirectory at creation time).
 					modFolder = (songData.modFolder != null && songData.modFolder.length > 0)
 						? songData.modFolder
 						: (songData.folder != null ? songData.folder : '');
@@ -1005,14 +1000,14 @@ class ScoreHistorySubstate extends MusicBeatSubstate
 			}
 			catch (e:Dynamic)
 			{
-				// 谱面缺失/损坏: 明确提示而不是笼统失败 (回放必须依赖本地谱面才能生成音符)
+				// Missing / damaged chart: report it instead of failing vaguely (a replay needs the local chart)
 				Paths.currentModDirectory = prevModDir;
 				PlayState.replayMode = false;
 				Replay.dbgLog('[DEBUG-rpl] playReplay chart missing/corrupt: ' + Std.string(e));
 				CoolUtil.traceMsg('trace.scoreHistory.playReplay', 'Cannot play replay: chart file not found or corrupted ({}).', [poop]);
 				return;
 			}
-			// 成功后不还原 prevModDir：PlayState 需要继续用该 mod 目录解析音频/图片。
+			// prevModDir is intentionally not restored: PlayState still resolves audio/images through that mod folder.
 			Replay.dbgLog('[DEBUG-rpl] playReplay loaded song=' + (PlayState.SONG != null ? PlayState.SONG.song : 'NULL'));
 			PlayState.changedDifficulty = false;
 			restoreBackdrop();

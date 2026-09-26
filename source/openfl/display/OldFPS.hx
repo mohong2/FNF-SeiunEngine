@@ -14,45 +14,45 @@ import openfl.Lib;
 #end
 
 /**
-	OldFPS — 移植自 PsychEngine 0.6.3 原版简约 FPS 样式。
-	基于 TextField，所有属性均可直接修改，供 hscript 随时读写。
-**/
+	OldFPS -- minimal on-screen FPS display.
+	Built on TextField; every property is directly readable and writable from hscript.
+*/
 #if !openfl_debug
 @:fileXml('tags="haxe,release"')
 @:noDebug
 #end
 class OldFPS extends TextField
 {
-	/** 当前帧率 (FPS) — 可在 hscript 中直接读取 **/
+	/** Current frames per second -- directly readable from hscript. **/
 	public var currentFPS(default, null):Int;
 
-	/** 是否显示内存占用 **/
+	/** Whether memory usage is shown. **/
 	public var showMemory:Bool = true;
-	/** 是否显示 DrawCalls **/
+	/** Whether DrawCalls are shown. **/
 	public var showDrawCalls:Bool = true;
-	/** 内存警告阈值 (MB)，超过时变色 **/
+	/** Memory warning threshold in MB; the text changes colour above it. **/
 	public var warningMemory:Float = 3000;
-	/** 正常文字颜色 **/
+	/** Normal text colour. **/
 	public var colorNormal:Int = 0xFFFFFFFF;
-	/** 警告文字颜色 **/
+	/** Warning text colour. **/
 	public var colorWarning:Int = 0xFFFF0000;
-	/** 字体大小 **/
+	/** Font size. **/
 	public var fontSize:Int = 14;
-	/** 字体名称 **/
+	/** Font name. **/
 	public var fontName:String = "_sans";
-	/** 显示位置 X **/
+	/** X position. **/
 	public var displayX:Float;
-	/** 显示位置 Y **/
+	/** Y position. **/
 	public var displayY:Float;
 
-	/** 是否使用平滑帧率（与旧版一致） **/
+	/** Whether FPS smoothing is used (same as the old display). **/
 	public var smoothFPS:Bool = true;
-	/** 文字透明度 **/
+	/** Text alpha. **/
 	public var textAlpha:Float = 1.0;
 
-	/** 强制显示的文字（不为 null 时替代正常 FPS 显示，供 hscript 操控） **/
+	/** Forced text; when not null it replaces the normal FPS readout (hscript-controlled). **/
 	public var forceText:Null<String> = null;
-	/** 强制文字颜色（不为 null 时替代正常颜色） **/
+	/** Forced text colour; when not null it replaces the normal colour. **/
 	public var forceColor:Null<Int> = null;
 
 	@:noCompletion private var cacheCount:Int;
@@ -89,13 +89,13 @@ class OldFPS extends TextField
 		#end
 	}
 
-	/** 强制刷新显示下一帧 **/
+	/** Forces the next frame to refresh the readout. **/
 	public function forceRefresh():Void
 	{
 		cacheCount = -1;
 	}
 
-	/** 更新位置到 displayX/displayY **/
+	/** Moves the readout to displayX/displayY. **/
 	public function syncPosition():Void
 	{
 		x = displayX;
@@ -123,7 +123,7 @@ class OldFPS extends TextField
 
 		if (currentCount != cacheCount)
 		{
-			// 如果 hscript 设了 forceText，显示强制文字而不是真实 FPS
+			// When hscript sets forceText, show that text instead of the real FPS
 			if (forceText != null)
 			{
 				text = forceText;

@@ -1,5 +1,7 @@
 {
     "ttf" : "vcr",
+    "ResetScore.prompt": "Reset the score of",
+    "NoteOffset.beatHit": "Beat Hit!",
     "FlxSoundTray.volume.text": "VOLUME",
     "FlashingState.warning": "Hey, watch out!\nThis Mod contains some flashing lights!\nPress ENTER to disable them now or go to Options Menu.\nPress ESCAPE to ignore this message.\nYou've been warned!",
     "OutdatedState.text": "You are running an outdated version of Seiun Engine ({current}).\nLatest version: {latest}\n\nPress ENTER / A to open the download page.\nPress ESCAPE / B to continue anyway.\n\nThank you for using the Engine!",

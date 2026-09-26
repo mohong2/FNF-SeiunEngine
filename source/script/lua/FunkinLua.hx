@@ -3864,6 +3864,18 @@ class FunkinLua {
 			#end
 		});
 
+		// ── Online Lua API ──
+		// `online.backend.OnlineScriptFunctions.implement(this);` registers 18 online Lua callbacks
+		// plus the `online` / `localPlay` / `leftSide` globals. FunkinLua has no `*Functions`
+		// classes, so the call site below is placed after the last callback registration and
+		// before the script's dofile: top-level script code may read those globals or call the
+		// online API directly, so a later call site would mean they were never wired up.
+		// Keeping it here also means the globals exist for the whole script body.
+		// The call itself is compiled only when ONLINE_ALLOWED is defined.
+		#if ONLINE_ALLOWED
+		online.backend.OnlineScriptFunctions.implement(this);
+		#end
+
 		try{
 			var result:Dynamic = LuaL.dofile(lua, script);
 			var resultStr:String = Lua.tostring(lua, result);
@@ -4013,6 +4025,7 @@ class FunkinLua {
 	 * then falls through to the next searcher).
 	 */
 	function resolveRequireModule(modName:String, roots:Array<String>, chunksName:String):Dynamic {
+		probeRequireResolves++; // F8 probe: a require() missed package.loaded and searched the filesystem
 		if (modName == null || modName.length == 0) return null;
 		// 路径穿越保护：Lua 标准 require 也不允许 ".."，这里直接拦截
 		// English: path-traversal guard — standard require also rejects ".."
@@ -4172,6 +4185,7 @@ class FunkinLua {
 	 * English: Resolve an import target file to its full path; null when not found.
 	 */
 	function resolveImportFile(path:String, roots:Array<String>):String {
+		probeImportResolves++; // F8 probe: import() always re-resolves and re-executes (include semantics)
 		if (path == null || path.length == 0) return null;
 		#if sys
 		// 以 .lua 结尾 / 绝对路径 / 带分隔符的路径 → 按文件路径解析；
@@ -4234,6 +4248,7 @@ class FunkinLua {
 	public function addLocalCallback(name:String, myFunction:Dynamic) {
     callbacks.set(name, myFunction);
     #if LUA_ALLOWED
+    if (nilCallbacks != null) nilCallbacks.remove(name); // see nilCallbacks
     Lua_helper.add_callback(lua, name, myFunction); 
     #end
 }
@@ -4961,6 +4976,70 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 		return pattern;
 	}
 
+	/**
+	 * F8 probe counters: how many times the require / import resolvers actually had to search
+	 * the file system. A mod that calls import() (or a never-resolving require) inside a
+	 * per-frame callback shows up here at once, which separates "the callback body is slow"
+	 * from "the callback re-reads and re-compiles files every frame".
+	 */
+	public static var probeRequireResolves:Int = 0;
+	public static var probeImportResolves:Int = 0;
+
+	/**
+	 * Negative callback cache for call(). A global name is remembered as "nil at stamp S" and
+	 * the getglobal/type/pop probe is skipped while the stamp is still S. The stamp survives
+	 * only as long as nothing could have defined that global:
+	 *   - globalsEpoch advances after every pcall (this Lua state ran script code),
+	 *   - HScript.codeEpoch advances whenever any HScript runs or has a variable written
+	 *     (HScript code is the only route into LuaApi, which writes Lua globals directly and is
+	 *     deliberately untouched this round),
+	 *   - probeStamp() refuses to hand out a stamp while this state (or any HScript) is
+	 *     executing, so a re-entrant dispatch from inside a chunk can never read a stale entry,
+	 *   - set() / addLocalCallback() drop the entry for the exact name they write.
+	 * Only nil is cached on purpose: a non-nil, non-function global must keep running the
+	 * "attempt to call a X value" error path on every call, or the visible script error
+	 * text/loop protection would change.
+	 */
+	var nilCallbacks:Map<String, Int> = null;
+	/** Bumped whenever script code ran in this state (its globals may have changed). */
+	var globalsEpoch:Int = 0;
+	/** Depth of Lua.pcall frames of this state (see probeStamp()); a counter, not a flag,
+	 * because a Haxe callback invoked from a chunk can re-enter call() on the same state. */
+	var luaExecDepth:Int = 0;
+	var foldedGlobals:Int = -1;
+	var foldedHScript:Int = -1;
+	var nilStamp:Int = 0;
+
+	/**
+	 * Stamp to compare against nilCallbacks entries, or -1 when nothing may be cached/read.
+	 * A changed stamp means every cached "this callback is nil" observation may be stale.
+	 */
+	inline function probeStamp():Int
+	{
+		#if HSCRIPT_ALLOWED
+		var bridgeEpoch:Int = script.hscript.HScript.codeEpoch;
+		var bridgeBusy:Bool = script.hscript.HScript.execDepth > 0;
+		#else
+		var bridgeEpoch:Int = 0;
+		var bridgeBusy:Bool = false;
+		#end
+		if (luaExecDepth > 0 || bridgeBusy) return -1;
+		if (foldedGlobals != globalsEpoch || foldedHScript != bridgeEpoch)
+		{
+			foldedGlobals = globalsEpoch;
+			foldedHScript = bridgeEpoch;
+			nilStamp++;
+		}
+		// Long-session guard: the stamp only has to differ from every stored value. Resetting it
+		// together with the map keeps that true without any overflow reasoning.
+		if (nilStamp >= 0x20000000)
+		{
+			nilStamp = 0;
+			if (nilCallbacks != null) nilCallbacks.clear();
+		}
+		return nilStamp;
+	}
+
 	var lastCalledFunction:String = '';
 
 	/**
@@ -4991,6 +5070,15 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 		try {
 			if(lua == null) return Function_Continue;
 
+			// Negative callback cache (see nilCallbacks): skip the whole probe when this exact
+			// global was already observed to be nil and nothing could have defined it since.
+			var stamp:Int = probeStamp();
+			if (stamp >= 0 && nilCallbacks != null)
+			{
+				var seen:Null<Int> = nilCallbacks.get(func);
+				if (seen != null && seen == stamp) return Function_Continue;
+			}
+
 			Lua.getglobal(lua, func);
 			var type:Int = Lua.type(lua, -1);
 
@@ -5009,12 +5097,31 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 					if (registerError()) { Lua.pop(lua, 1); return Function_Continue; }
 				}
 
+				// Only "absent" is cached; a non-nil, non-function value must keep hitting the
+				// error path above on every call.
+				if (type <= Lua.LUA_TNIL && stamp >= 0)
+				{
+					if (nilCallbacks == null) nilCallbacks = new Map();
+					nilCallbacks.set(func, stamp);
+				}
+
 				Lua.pop(lua, 1);
 				return Function_Continue;
 			}
 
 			for (arg in args) Convert.toLua(lua, arg);
-			var status:Int = Lua.pcall(lua, args.length, 1, 0);
+			// While the chunk runs, engine callbacks it triggers can re-enter this same state,
+			// so probeStamp() reports -1 for that window.
+			luaExecDepth++;
+			var status:Int;
+			try {
+				status = Lua.pcall(lua, args.length, 1, 0);
+				luaExecDepth--;
+			} catch (e:Dynamic) {
+				luaExecDepth--;
+				throw e;
+			}
+			globalsEpoch++; // script code ran: it may have defined any global
 
 			// Checks if it's not successful, then show a error.
 			if (status != Lua.LUA_OK) {
@@ -5041,6 +5148,7 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 			return result;
 		}
 		catch (e:Dynamic) {
+			globalsEpoch++; // an error path may still have written globals
 			if (!CompatEngine.compatMode()) {
 				trace(e);
 			} else {
@@ -5123,9 +5231,9 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 			return;
 		}
 
-		// Haxe 类实例（Controls/State 等）无法被 Lua 直接使用，Convert 会打印
-		// "Haxe value ... not supported" 并 push nil。这里静默走同一逻辑：
-		// 不产生噪音日志，也不会让脚本拿到半成品对象。
+		// Writing a global can turn a cached "absent" into a real callback.
+		if (nilCallbacks != null) nilCallbacks.remove(variable);
+
 		var oldEnableUnsupportedTraces:Bool = Convert.enableUnsupportedTraces;
 		Convert.enableUnsupportedTraces = false;
 		Convert.toLua(lua, data);

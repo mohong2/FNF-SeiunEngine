@@ -16,7 +16,9 @@
 		"variable": "noteSkin",
 		"type": "string",
 		"defaultValue": "Default",
-		"options": ["Default"],
+		"options": [
+			"Default"
+		],
 		"compat": "0.7.3+"
 	},
 	{
@@ -27,7 +29,10 @@
 		"variable": "noteStyle",
 		"type": "string",
 		"defaultValue": "Old",
-		"options": ["Old", "New"]
+		"options": [
+			"Old",
+			"New"
+		]
 	},
 	{
 		"nameKey": "option.noteRGBMode",
@@ -37,7 +42,11 @@
 		"variable": "noteRGBMode",
 		"type": "string",
 		"defaultValue": "Chart",
-		"options": ["Chart", "On", "Off"]
+		"options": [
+			"Chart",
+			"On",
+			"Off"
+		]
 	},
 	{
 		"nameKey": "option.splashSkin",
@@ -47,44 +56,18 @@
 		"variable": "splashSkin",
 		"type": "string",
 		"defaultValue": "Psych",
-		"options": ["Psych"]
+		"options": [
+			"Psych"
+		]
 	},
 	{
-		"nameKey": "option.hideHud",
-		"defaultName": "Hide HUD",
-		"descKey": "option.hideHud.desc",
-		"defaultDesc": "If checked, hides most HUD elements.",
-		"variable": "hideHud",
+		"nameKey": "option.comboStacking",
+		"defaultName": "Combo Stacking",
+		"descKey": "option.comboStacking.desc",
+		"defaultDesc": "If unchecked, Ratings and Combo won't stack, saving on System Memory and making them easier to read",
+		"variable": "comboStacking",
 		"type": "bool",
 		"defaultValue": false
-	},
-	{
-		"nameKey": "option.timeBarType",
-		"defaultName": "Time Bar Type",
-		"descKey": "option.timeBarType.desc",
-		"defaultDesc": "What should the Time Bar display?",
-		"variable": "timeBarType",
-		"type": "string",
-		"defaultValue": "Time Left",
-		"options": ["Time Left", "Time Elapsed", "Song Name", "Disabled"]
-	},
-	{
-		"nameKey": "option.flashing",
-		"defaultName": "Flashing Lights",
-		"descKey": "option.flashing.desc",
-		"defaultDesc": "Uncheck this if you're sensitive to flashing lights!",
-		"variable": "flashing",
-		"type": "bool",
-		"defaultValue": true
-	},
-	{
-		"nameKey": "option.camZooms",
-		"defaultName": "Camera Zooms",
-		"descKey": "option.camZooms.desc",
-		"defaultDesc": "If unchecked, the camera won't zoom in on a beat hit.",
-		"variable": "camZooms",
-		"type": "bool",
-		"defaultValue": true
 	},
 	{
 		"nameKey": "option.scoreZoom",
@@ -104,10 +87,52 @@
 		"type": "percent",
 		"defaultValue": 1,
 		"scrollSpeed": 1.6,
-		"minValue": 0.0,
+		"minValue": 0,
 		"maxValue": 1,
 		"changeValue": 0.1,
 		"decimals": 1
+	},
+	{
+		"nameKey": "option.timeBarType",
+		"defaultName": "Time Bar Type",
+		"descKey": "option.timeBarType.desc",
+		"defaultDesc": "What should the Time Bar display?",
+		"variable": "timeBarType",
+		"type": "string",
+		"defaultValue": "Time Left",
+		"options": [
+			"Time Left",
+			"Time Elapsed",
+			"Song Name",
+			"Disabled"
+		]
+	},
+	{
+		"nameKey": "option.hideHud",
+		"defaultName": "Hide HUD",
+		"descKey": "option.hideHud.desc",
+		"defaultDesc": "If checked, hides most HUD elements.",
+		"variable": "hideHud",
+		"type": "bool",
+		"defaultValue": false
+	},
+	{
+		"nameKey": "option.showFP",
+		"defaultName": "Show Funkin Points Counter",
+		"descKey": "option.showFP.desc",
+		"defaultDesc": "If checked, the current FP count will be shown in the score text, can be toggled in-game with F7",
+		"variable": "showFP",
+		"type": "bool",
+		"defaultValue": false
+	},
+	{
+		"nameKey": "option.newFPPreview",
+		"defaultName": "FP V5 Preview",
+		"descKey": "option.newFPPreview.desc",
+		"defaultDesc": "If enabled, new FP algorithm will be shown in the Counter",
+		"variable": "newFPPreview",
+		"type": "bool",
+		"defaultValue": false
 	},
 	{
 		"nameKey": "option.showFPS",
@@ -120,43 +145,21 @@
 		"onChange": "onChangeFPSCounter"
 	},
 	{
-		"nameKey": "option.pauseMusic",
-		"defaultName": "Pause Screen Song",
-		"descKey": "option.pauseMusic.desc",
-		"defaultDesc": "What song do you prefer for the Pause Screen?",
-		"variable": "pauseMusic",
-		"type": "string",
-		"defaultValue": "Tea Time",
-		"options": ["None", "Breakfast", "Tea Time"],
-		"onChange": "onChangePauseMusic"
+		"nameKey": "option.flashing",
+		"defaultName": "Flashing Lights",
+		"descKey": "option.flashing.desc",
+		"defaultDesc": "Uncheck this if you're sensitive to flashing lights!",
+		"variable": "flashing",
+		"type": "bool",
+		"defaultValue": true
 	},
 	{
-		"nameKey": "option.checkForUpdates",
-		"defaultName": "Check for Updates",
-		"descKey": "option.checkForUpdates.desc",
-		"defaultDesc": "On Release builds, turn this on to check for updates when you start the game.",
-		"variable": "checkForUpdates",
+		"nameKey": "option.camZooms",
+		"defaultName": "Camera Zooms",
+		"descKey": "option.camZooms.desc",
+		"defaultDesc": "If unchecked, the camera won't zoom in on a beat hit.",
+		"variable": "camZooms",
 		"type": "bool",
-		"defaultValue": true,
-		"define": "CHECK_FOR_UPDATES"
-	},
-	{
-		"nameKey": "option.checkForPrereleases",
-		"defaultName": "Check for Prereleases",
-		"descKey": "option.checkForPrereleases.desc",
-		"defaultDesc": "Also check for prerelease or preview versions when looking for updates.",
-		"variable": "checkForPrereleases",
-		"type": "bool",
-		"defaultValue": false,
-		"define": "CHECK_FOR_UPDATES"
-	},
-	{
-		"nameKey": "option.comboStacking",
-		"defaultName": "Combo Stacking",
-		"descKey": "option.comboStacking.desc",
-		"defaultDesc": "If unchecked, Ratings and Combo won't stack, saving on System Memory and making them easier to read",
-		"variable": "comboStacking",
-		"type": "bool",
-		"defaultValue": false
+		"defaultValue": true
 	}
 ]

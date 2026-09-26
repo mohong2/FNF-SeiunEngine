@@ -7894,7 +7894,7 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 		}
 	}
 
-	// Ported from the old chart editor
+	// Waveform cache (shared with the old chart editor).
 	var wavData:Array<Array<Array<Float>>> = [[[0], [0]], [[0], [0]]];
 	function updateWaveform() {
 		#if (lime_cffi && !macro)
@@ -8194,7 +8194,7 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 		return val != null ? val : 4;
 	}
 
-	// ---- Safe JSON loading with difficulty detection (ported from ChartingState) ----
+	// ---- Safe JSON loading with difficulty detection ----
 
 	function loadJsonWithDifficulty(songLowercase:String):Void
 	{

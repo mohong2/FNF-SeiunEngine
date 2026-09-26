@@ -138,6 +138,90 @@ runs:
       shell: bash
       run: ${{ inputs.build }}
 
+    - name: Collect crash symbols
+      shell: bash
+      # Windows already ships a matching symbol bundle from
+      # tools/build_windows_symbols.ps1 (embedded crash linemap + .map +
+      # build-info.txt). This step only fills the gap for the targets that have
+      # none yet: it copies the linker .map, which maps every function's exact
+      # RVA so a report's "Fault offset" still resolves offline.
+      # The .map is a separate download - never inside the game package - and a
+      # PDB is never published.
+      run: |
+        set -euo pipefail
+        TARGET="${{ inputs.target }}"
+        case "$TARGET" in
+          windows) OUT="export/release/windows" ;;
+          linux)   OUT="export/release/linux" ;;
+          *)       OUT="export/release/macos" ;;
+        esac
+
+        mkdir -p "$OUT/symbols"
+        found=0
+        # Only the .map: with HXCPP_DEBUG_LINK off the linker never runs /DEBUG,
+        # so no PDB is regenerated and whatever .pdb sits in obj/ belongs to some
+        # older build. Shipping it would actively mislead - resolve against the map.
+        for f in "$OUT"/obj/ApplicationMain.map; do
+          if [ -e "$f" ]; then
+            cp -R "$f" "$OUT/symbols/"
+            found=1
+            echo "collected: $f"
+          fi
+        done
+
+        if [ "$found" -eq 0 ]; then
+          echo "::warning::No symbol files found for $TARGET - crash reports will not be symbolizable"
+          exit 0
+        fi
+
+        # Shim so `python tools/mapresolve.py <map> <offset>` works with the
+        # published layout (the CI collector is named after the target).
+        if [ -f "$OUT/symbols/ApplicationMain.map" ]; then
+          cat > "$OUT/symbols/README.txt" <<'EOF'
+        SeiunEngine crash symbol files
+        ==============================
+
+        These files map a crash report's "Fault offset" back to a real function.
+
+        Windows builds additionally ship windows-x64.bin (the crash linemap that is
+        embedded in the published exe) and build-info.txt - see
+        tools/build_windows_symbols.ps1. With those, the backtrace inside the report
+        already carries cpp file:line, and the .map below is only a fallback.
+
+        How to use
+        ----------
+        1. Get crash/native_crash_*.txt from the affected user.
+        2. Confirm the report is from THIS build: its "Main module stamp:
+           TimeDateStamp=0x..." line must match the TimeDateStamp of the exe these
+           symbols were produced with. Symbols only resolve against their own build.
+        3. Resolve the offsets (the report may contain several, from the backtrace):
+
+             python tools/mapresolve.py ApplicationMain.map 0x1340289 0x133429A
+
+           or point it straight at a crash directory:
+
+             python tools/mapresolve.py --crash-dir <crash dir> ApplicationMain.map
+
+        4. Read the nearest preceding function and the +0x offset. Frames whose
+           offset is implausibly large (hundreds of KB) are not reliable: release
+           builds do not list every function in the map.
+
+        The native "Symbols:" line in the report refers to dbghelp pairing the exe
+        with a PDB; release builds do not ship one, so it says SymType=0. That is
+        expected and no longer matters: the [file:line] annotations come from the
+        embedded linemap. Use the .map only for frames the linemap does not cover.
+
+        A real .pdb is intentionally NEVER published (it is ~50 MB). The linemap is
+        generated from a PDB during the build (tools/build_windows_symbols.ps1,
+        tools/gen_linemap_msvc.py) and that PDB stays in obj/ - the published exe
+        carries the compressed address->line table instead.
+        EOF
+          echo "wrote $OUT/symbols/README.txt"
+        fi
+
+        du -sh "$OUT/symbols" || true
+        ls -la "$OUT/symbols"
+
     - name: Ad-hoc codesign macOS app
       if: startsWith(inputs.target, 'macos')
       shell: bash

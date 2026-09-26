@@ -5,7 +5,15 @@ import sys.io.File;
 
 using StringTools;
 
-#if !server_build
+// Why the imports below are wrapped in `&& !macro`:
+// Without the guard, every module under `source/` inherits flixel/Paths imports *into the macro
+// context*, and expanding any macro declared under `source/` aborts the build with
+// "You cannot access the flash package while in a macro (for flash.Lib)".
+// Measured (reversible experiment): with the guard the error occurs 0 times; without it, it
+// aborts the `-DONLINE_ALLOWED` type-check of the online slice. Target-side typing is
+// unaffected — `macro` is only ever defined while typing macro code.
+// unaffected — `macro` is only ever defined while typing macro code.
+#if (!server_build && !macro)
 import Paths;
 
 import flixel.system.FlxSound;
