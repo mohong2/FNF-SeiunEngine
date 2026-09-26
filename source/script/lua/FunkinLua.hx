@@ -3864,6 +3864,18 @@ class FunkinLua {
 			#end
 		});
 
+		// ── Online Lua API ──
+		// `online.backend.OnlineScriptFunctions.implement(this);` registers 18 online Lua callbacks
+		// plus the `online` / `localPlay` / `leftSide` globals. FunkinLua has no `*Functions`
+		// classes, so the call site below is placed after the last callback registration and
+		// before the script's dofile: top-level script code may read those globals or call the
+		// online API directly, so a later call site would mean they were never wired up.
+		// Keeping it here also means the globals exist for the whole script body.
+		// The call itself is compiled only when ONLINE_ALLOWED is defined.
+		#if ONLINE_ALLOWED
+		online.backend.OnlineScriptFunctions.implement(this);
+		#end
+
 		try{
 			var result:Dynamic = LuaL.dofile(lua, script);
 			var resultStr:String = Lua.tostring(lua, result);

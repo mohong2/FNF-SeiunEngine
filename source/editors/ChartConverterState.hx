@@ -38,13 +38,6 @@ class ChartConverterState extends MusicBeatState
 	var offsetStepper:PsychUINumericStepper;
 	var outputModeGrp:PsychUIRadioGroup;
 	var _direction:Int = 0; // 0 = osu! -> Malody, 1 = Malody -> osu!
-	#if ONLINE_ALLOWED
-	/** 从联机选歌页进入时, 返回也回到联机选歌, 避免会话泄漏到离线流程。 */
-	public static var returnToOnlineSongSelect:Bool = false;
-	/** 最近一次转换写入 mods/data 的谱面 (联机选歌自动选中回填用)。 */
-	public static var lastConvertedSong:String = null;
-	public static var lastConvertedDiff:String = null;
-	#end
 
 	override function create()
 	{
@@ -136,15 +129,6 @@ class ChartConverterState extends MusicBeatState
 			Language.get('chartConverter_back', 'Back'),
 			function()
 			{
-				#if ONLINE_ALLOWED
-				if (returnToOnlineSongSelect)
-				{
-					returnToOnlineSongSelect = false;
-					// 联机选歌已改为 Substate: 回到大厅, 打开选歌 Substate 时会自动选中刚转换的谱面
-					MusicBeatState.switchState(new online.states.OnlineRoomState());
-					return;
-				}
-				#end
 				MusicBeatState.switchState(new MasterEditorMenu());
 			}, 160, 40);
 		backBtn.screenCenter(X);
@@ -240,19 +224,6 @@ class ChartConverterState extends MusicBeatState
 			showStatus(Language.get('chartConverter_done_pack', 'Done! Converted %s chart(s), package: %s'),
 				[Std.string(result.count), result.archive]);
 
-		#if ONLINE_ALLOWED
-		if (returnToOnlineSongSelect && result != null && result.songName != null)
-		{
-			lastConvertedSong = result.songName;
-			lastConvertedDiff = result.songDiff;
-			// 短暂展示完成信息后自动回到联机大厅, 打开选歌 Substate 时自动选中刚转换的谱面
-			new flixel.util.FlxTimer().start(1.5, function(_)
-			{
-				returnToOnlineSongSelect = false;
-				MusicBeatState.switchState(new online.states.OnlineRoomState());
-			});
-		}
-		#end
 		#else
 		showError(Language.get('chartConverter_html5_unsupported', 'Chart conversion requires a desktop build.'));
 		#end
@@ -369,8 +340,6 @@ class ChartConverterState extends MusicBeatState
 		var writeLoose:Bool = (mode != 0);
 		var doPack:Bool = (mode != 1);
 		var packEntries:Array<Dynamic> = []; // {fileName, data} 用于打包 .mcz/.osz
-		var firstModSong:String = null; // 首个写入 mods/data 的谱面 (联机选歌自动选中回填用)
-		var firstModDiff:String = null;
 		for (chart in chartList)
 		{
 			if (chart == null) continue;
@@ -466,50 +435,6 @@ class ChartConverterState extends MusicBeatState
 			var baseName:String = safeTitle + ' [' + safeVersion + ']';
 			var safeBaseName:String = OsuMalodyConvert.sanitizePackageFileName(baseName);
 
-			#if ONLINE_ALLOWED
-			// ---- 联机可加载副本：写入 mods/data 与 mods/songs，模组同步会分发给其他玩家 ----
-			// 布局与原版一致: mods/data/<songPath>/<songPath>-<diff>.json (默认难度 = <songPath>.json),
-			// 这样 Song.loadFromJson(Highscore.formatSong(...)) 能命中, 双端哈希一致。
-			try
-			{
-				var modFolder:String = Paths.formatToSongPath(safeTitle);
-				var modDiff:String = Paths.formatToSongPath(safeVersion);
-				var modDataDir:String = "mods/data/" + modFolder;
-				var modSongDir:String = "mods/songs/" + modFolder;
-				ensureDirs(modDataDir);
-				ensureDirs(modSongDir);
-				if (firstModSong == null)
-				{
-					firstModSong = modFolder;
-					firstModDiff = modDiff;
-				}
-				song.song = safeTitle;
-				song.difficultyName = safeVersion;
-				var modFileBase:String = (modDiff == Paths.formatToSongPath(CoolUtil.defaultDifficulty)) ? modFolder : modFolder + "-" + modDiff;
-				File.saveContent(modDataDir + "/" + modFileBase + ".json", haxe.Json.stringify(song));
-				if (audioBytes != null && audioOutName != null && audioOutName.length > 0)
-				{
-					var ext:String = audioOutName.substr(audioOutName.lastIndexOf('.') + 1).toLowerCase();
-					if (ext == "ogg" || ext == "mp3" || ext == "wav" || ext == "m4a")
-						File.saveBytes(modSongDir + "/Inst." + ext, audioBytes);
-				}
-				else if (audioOutName != null && audioOutName.length > 0 && !isPackage)
-				{
-					var adj:String = OsuMalodyConvert.findAdjacentAudio(srcPath, audioName);
-					if (adj != null)
-					{
-						var ext:String = audioOutName.substr(audioOutName.lastIndexOf('.') + 1).toLowerCase();
-						if (ext == "ogg" || ext == "mp3" || ext == "wav" || ext == "m4a")
-							File.copy(adj, modSongDir + "/Inst." + ext);
-					}
-				}
-			}
-			catch (e:Dynamic)
-			{
-				showStatus("写入联机模组副本失败: " + Std.string(e));
-			}
-			#end
-
 			var chartText:String;
 			var chartExt:String;
 			if (format == 0) { chartText = OsuMalodyConvert.psychToMalody(song, 0, audioOutName, bgOutName); chartExt = '.mc'; }
@@ -563,21 +488,9 @@ class ChartConverterState extends MusicBeatState
 		}
 		else
 			archivePath = outDir;
-		return {count: count, archive: archivePath, songName: firstModSong, songDiff: firstModDiff};
+		return {count: count, archive: archivePath};
 		#else
 		return null;
-		#end
-	}
-
-	function ensureDirs(path:String):Void
-	{
-		#if sys
-		if (path == null || path.length == 0 || sys.FileSystem.exists(path))
-			return;
-		var parent:String = haxe.io.Path.directory(path);
-		if (parent != null && parent.length > 0 && parent != path)
-			ensureDirs(parent);
-		try { sys.FileSystem.createDirectory(path); } catch (e:Dynamic) {}
 		#end
 	}
 
@@ -610,16 +523,6 @@ class ChartConverterState extends MusicBeatState
 		showStatus(Language.get('chartConverter_error', 'Error: %s'), [msg]);
 		TraceManager.error('trace.editor.exception', 'Exception: {}', [msg]);
 	}
-
-	#if ONLINE_ALLOWED
-	override function update(elapsed:Float)
-	{
-		super.update(elapsed);
-		// Keep network heartbeat active when entering chart converter from online lobby to prevent timeout disconnect.
-		if (online.client.GameClient.instance != null)
-			online.client.GameClient.instance.update(elapsed);
-	}
-	#end
 
 	override function destroy()
 	{

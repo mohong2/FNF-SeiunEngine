@@ -19,7 +19,18 @@ enum Alignment
 	RIGHT;
 }
 
+// `class Alphabet extends FlxSpriteGroup implements Scrollable`, added because the online slice
+// relies on it (`online/substates/SoFunkinSubstate.hx` assigns an `Alphabet` to a
+// `Scrollable`-typed local, and `online/objects/*` uses it). The interface is added here
+// **inside the online guard** so the macro-off declaration (and therefore the macro-off build)
+// is byte-identical. The class already has every member the interface requires:
+// `targetY`/`distancePerItem`/`startPosition`/`snapToPosition()`/
+// `changeX`/`changeY`/`isMenuItem`/`scaleX`/`scaleY`/`text`, and `width`/`height`/`cameras` come
+// from `FlxSpriteGroup`.
 class Alphabet extends FlxSpriteGroup
+#if ONLINE_ALLOWED
+implements Scrollable
+#end
 {
 	public var text(default, set):String;
 	public var bold:Bool = false;

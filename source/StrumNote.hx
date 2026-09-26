@@ -12,11 +12,11 @@ using StringTools;
 class StrumNote extends FlxSprite
 {
 	private var colorSwap:ColorSwap;
-	/** 0.7.3/1.0.4 兼容: 三色 RGB 引用 (懒挂载, 脚本修改才接管; 回退到 colorSwap)。 */
+	/** 0.7.3/1.0.4 compatibility: RGB reference (lazy; falls back to colorSwap until a script changes it). */
 	public var rgbShader:RGBShaderReference = null;
-	/** 0.7.3 兼容: useRGBShader 开关 (static 动画不染色)。 */
+	/** 0.7.3 compatibility: useRGBShader toggle (static animations stay unshaded). */
 	public var useRGBShader:Bool = true;
-	/** 当前材质是否为 0.7.3 白底图集 (noteSkins/*) → 用 RGB 着色器染色。 */
+	/** True when the texture is a 0.7.3 white note atlas (noteSkins/*) and should be tinted by the RGB shader. */
 	public var useRgbColor:Bool = false;
 	public var resetAnim:Float = 0;
 	private var noteData:Int = 0;
@@ -24,7 +24,7 @@ class StrumNote extends FlxSprite
 	public var downScroll:Bool = false;//plan on doing scroll directions soon -bb
 	public var sustainReduce:Bool = true;
 
-	/** 多k: 该 strum 所在轨道 (0 ~ ammo-1)。 */
+	/** Multi-key: lane of this strum (0 ~ ammo-1). */
 	public var lane(default, null):Int = 0;
 
 	public var animationArray:Array<String> = ['static', 'pressed', 'confirm'];
@@ -70,7 +70,7 @@ class StrumNote extends FlxSprite
 		return value;
 	}
 
-	/** SPACE strum 动作映射到 UP (用户要求: Space key 换用 up key)。 */
+	/** SPACE strums reuse the UP animation. */
 	inline static function strumToBase(strumAnim:String):String
 	{
 		return (strumAnim == 'SPACE') ? 'UP' : strumAnim;
@@ -82,26 +82,26 @@ class StrumNote extends FlxSprite
 		lane = leData;
 		super(x, y);
 
-		// 0.6.3 图集的 strum 动画按方向命名 (arrowLEFT / left press / left confirm),
-		// SPACE 轨道复用 up 方向
+		// The 0.6.3 atlas names strum animations by direction (arrowLEFT / left press / left confirm);
+		// the SPACE lane reuses the up direction.
 		animationArray[0] = strumToBase(EKData.getStrumAnim(PlayState.mania, leData));
 		animationArray[1] = animationArray[0].toLowerCase();
 		animationArray[2] = animationArray[1];
 
-		// 跟随"旧版/新版 Note"设置 (Old=flat NOTE_assets, New=noteSkins/NOTE_assets)
+		// Follows the Old/New note style setting (Old = flat NOTE_assets, New = noteSkins/NOTE_assets).
 		var skin:String = Note.defaultNoteSkin;
 		if(PlayState.SONG != null && PlayState.SONG.arrowSkin != null && PlayState.SONG.arrowSkin.length > 1)
 			skin = PlayState.SONG.arrowSkin;
-		// 多k: 统一使用原版 ColorSwap (保证着色器生效); 自定义皮肤不自动染色
+		// Multi-key: always use the stock ColorSwap so the shader stays active; custom skins are not tinted automatically.
 		colorSwap = new ColorSwap();
 		shader = colorSwap.shader;
-		// 0.7.3/1.0.4 兼容: 懒挂载 RGB 引用; static 动画保持原始材质,
-		// 只有脚本修改 rgbShader 时才接管 (回退到 colorSwap)。
+		// 0.7.3/1.0.4 compatibility: the RGB reference is lazy. Static animations keep the original
+		// texture; it takes over only once a script changes rgbShader (falling back to colorSwap).
 		rgbShader = new RGBShaderReference(this, Note.initializeGlobalRGBShader(leData));
 		rgbShader.fallbackShader = colorSwap.shader;
 		rgbShader.enabled = false;
-		// 编辑器/测试环境 (PlayState.instance == null) 始终跟随谱面 disableNoteRGB,
-		// 玩家 noteRGBMode 只在真实游玩时生效。
+		// In the editor / test environment (PlayState.instance == null) the chart's disableNoteRGB
+		// always applies; the player's noteRGBMode only matters during real gameplay.
 		var chartDisabled:Bool = (PlayState.SONG != null && PlayState.SONG.disableNoteRGB);
 		if (PlayState.instance == null ? chartDisabled : ClientPrefs.noteRGBDisabled(chartDisabled))
 		{
@@ -117,10 +117,10 @@ class StrumNote extends FlxSprite
 		var lastAnim:String = null;
 		if(animation.curAnim != null) lastAnim = animation.curAnim.name;
 
-		// 0.7.3+ 自由换皮肤: 用户选择的 noteSkin 追加到材质名末尾 (仅当文件存在时)。
-		// 与 Note.reloadNote 一致: 先试直接拼接 (旧版 NOTE_assets-<skin> /
-		// 新版 noteSkins/NOTE_assets-<skin>), 旧版材质绝不回退到 noteSkins/*,
-		// 否则会把旧版 Note 风格强行切回新版材质。
+		// Note skin selection: append the chosen noteSkin to the texture name when the file exists.
+		// Same order as Note.reloadNote: try the direct suffix first (legacy NOTE_assets-<skin> /
+		// new noteSkins/NOTE_assets-<skin>). A legacy texture never falls back to noteSkins/*,
+		// which would force the legacy style onto the new atlas.
 		var loadSkin:String = (texture != null) ? texture : Note.defaultNoteSkin;
 		var skinPostfix:String = Note.getNoteSkinPostfix();
 		if (skinPostfix.length > 0)
@@ -165,7 +165,7 @@ class StrumNote extends FlxSprite
 		}
 		updateHitbox();
 
-		// 0.7.3 材质兼容: noteSkins/* 白底图集用 RGB 着色器染色, 否则回退 ColorSwap
+		// 0.7.3 atlases: noteSkins/* white textures are tinted by the RGB shader, otherwise ColorSwap.
 		useRgbColor = (loadSkin != null && loadSkin.startsWith('noteSkins/'));
 		if (rgbShader != null)
 		{
@@ -179,8 +179,8 @@ class StrumNote extends FlxSprite
 	public function postAddedToGroup() {
 		playAnim('static');
 		/**
-		 * 多k 定位 (移植自 EK 0.6.3):
-		 * 1K~3K 按宽度排, 4K 按 swagWidth, 5K+ 按 (width - lessX), 再加 xtra/50/玩家半屏/减 restPosition
+		 * Multi-key positioning:
+		 * 1K-3K are laid out by width, 4K by swagWidth, 5K+ by (width - lessX), plus xtra/50/screen half minus restPosition.
 		 **/
 		switch (PlayState.mania)
 		{
@@ -214,14 +214,14 @@ class StrumNote extends FlxSprite
 		centerOffsets();
 		centerOrigin();
 		if (useRgbColor) {
-			// 0.7.3 材质: static 显示原始白底, press/confirm 用 RGB 色板染色
+			// 0.7.3 atlas: 'static' shows the raw white texture, press/confirm are tinted by the RGB palette.
 			rgbShader.enabled = (animation.curAnim != null && animation.curAnim.name != 'static');
 		} else if(animation.curAnim == null || animation.curAnim.name == 'static') {
 			colorSwap.hue = 0;
 			colorSwap.saturation = 0;
 			colorSwap.brightness = 0;
 		} else {
-			// 按轨道颜色 (基底纹理色 + 目标色差值 + 用户 arrowHSV 偏移)
+			// Lane colour (base texture colour + target delta + the user's arrowHSV offset).
 			applyLaneColor();
 
 			if(animation.curAnim.name == 'confirm' && !PlayState.isPixelStage) {
@@ -230,7 +230,7 @@ class StrumNote extends FlxSprite
 		}
 	}
 
-	/** 按轨道颜色设置 ColorSwap (与 Note 一致)。 */
+	/** Applies the lane colour to ColorSwap (same as Note). */
 	public function applyLaneColor():Void
 	{
 		if (colorSwap == null) return;

@@ -66,6 +66,21 @@ class Main extends Sprite
 	public static var useOldFPS:Bool = false;
 	public static var useOldPause:Null<Bool> = null;
 	public static var originalVolume:Float = -1;
+	#if ONLINE_ALLOWED
+	// Constants the online client slice needs; this engine's Main.hx declares them here.
+	// The value is this engine's own handshake version and the magic strings live in
+	// online/Protocol.hx.
+	//
+	// This block intentionally keeps its line count stable so the macro-off product stays a
+	// plain byte comparison; guarded by ONLINE_ALLOWED so that build is untouched.
+	public static final CLIENT_PROTOCOL:Float = 1;
+	// The social / network-room handshake version, sent by online/NetworkClient.hx.
+	// Same as above: this engine's own counter; the matching magic lives in
+	// online/Protocol.hx.
+	//
+	public static final NETWORK_PROTOCOL:Float = 1;
+	public static var repoHost:String = '';
+	#end
 	static var backgroundDimInitialized:Bool = false;
 	// Windows 关闭动画状态（仅 Windows 目标使用）
 	static var allowWindowClose:Bool = false;
@@ -86,6 +101,24 @@ class Main extends Sprite
 			Sys.setCwd(resourcesDir);
 		#end
 		Lib.current.addChild(new Main());
+#if ONLINE_ALLOWED
+			// The LoadingScreen overlay must exist before anything calls LoadingScreen.toggle(),
+			// otherwise instance stays null and the toggle writes through a null pointer -- the
+			// native ACCESS_VIOLATION seen when opening the Online "Find" screen
+			// (LoadingScreen.toggle +0x29, write fault, RAX=0).
+			// Adding it after Main keeps the overlay on top of the game sprite, which is what
+			// moving the game sprite to index 0 would achieve; the overlay is a sibling on
+			// Lib.current, so draw order is what puts it above.
+		Lib.current.addChild(new online.gui.LoadingScreen());
+			// The network sidebar shell. It also lives on Lib.current, so it
+		// outlives state changes and draws over the game; the Alert overlay stays above it.
+		Lib.current.addChild(new online.gui.sidebar.SideUI());
+			// The Alert overlay must also be created. Without it Alert.instance stays null and
+			// every Alert.alert() writes through null (Alert.alert calls instance.addChild).
+			// Crash map-located to ?alert@Alert_obj@@ +0x143, called from an OnlineOptionsState
+			// closure (online/gui/Alert.hx:159).
+		Lib.current.addChild(new online.gui.Alert());
+#end
 		#if desktop
 		applyWindowMode();
 		Windows.enableDarkMode();
@@ -218,6 +251,17 @@ class Main extends Sprite
 
 		addChild(new FlxGame(gameWidth, gameHeight, initialState, zoom, updateFramerate, drawFramerate, skipSplash, startFullscreen));
 
+#if ONLINE_ALLOWED
+			// Registers the two online plugins. Waiter is a
+		// FlxBasic that drains the message queues every frame -- every online onMessage handler
+		// ends in Waiter.put/putPersist (startSong, noteHit, state callbacks, sendPending ...),
+		// so without the plugin none of those callbacks ever run. DownloadAlerts must exist
+		// before any DownloadAlert is constructed: its constructor does
+		// DownloadAlerts.instance.addChild(this) (online/gui/DownloadAlert.hx:127).
+		FlxG.plugins.add(new online.backend.Waiter());
+		addChild(new online.gui.DownloadAlert.DownloadAlerts());
+#end
+
 		#if android
 		// SDL3 的 Android 返回键 keycode 与 FlxG.android 内置的旧 keycode 不同，
 		// 在这里做一次全局翻译，保证返回键暂停/退出菜单等逻辑继续生效。
@@ -289,7 +333,7 @@ class Main extends Sprite
 
 				// Full dump: error + stack + system/renderer info + recent logs.
 				var fullMsg:String = SystemDiag.buildCrashDump(msg, stack, states.CrashCatcherState.crashCount + 1);
-				fullMsg += "\nPlease report this error to the GitHub page: https://github.com/mohong2/FNF-SeiunEngine\n\n> Crash Handler written by: sqirra-rng ";
+				fullMsg += "\nPlease report this error to the GitHub page: https://github.com/mohong2/FNF-SeiunEngine\n\n> SeiunEngine by mo_hong · Crash Handler written by: sqirra-rng ";
 
 				#if sys
 				if (!sys.FileSystem.exists("./crash/"))
@@ -305,15 +349,6 @@ class Main extends Sprite
 				states.CrashCatcherState.lastCrashStack = stack;
 				states.CrashCatcherState.lastCrashPath = path;
 				states.CrashCatcherState.crashCount++;
-				#if ONLINE_ALLOWED
-				// 联机对局中崩溃: 非阻塞发送崩溃信号, 失败只写本地补报标记。
-				try
-				{
-					var stackHead:String = stack == null ? "" : stack.substr(0, 500);
-					online.client.CrashReporter.notifyCrash(msg, stackHead);
-				}
-				catch (crashNotifyError:Dynamic) {}
-				#end
 
 
 				// Show a native dialog first
@@ -433,10 +468,6 @@ class Main extends Sprite
 					return;
 				}
 			}
-			#if ONLINE_ALLOWED
-			// 关闭游戏时同步关闭内置托管服务器, 房间随房主退出而关闭。
-			online.server.EmbeddedServerRunner.stop();
-			#end
 
 
 			#if windows
@@ -788,7 +819,7 @@ class Main extends Sprite
 		dateNow = dateNow.replace(" ", "_");
 		dateNow = dateNow.replace(":", "'");
 
-		path = "./crash/" + "MohonghEngine_" + dateNow + ".txt";
+		path = "./crash/" + "SeiunEngine_" + dateNow + ".txt";
 
 		for (stackItem in callStack)
 		{
@@ -814,7 +845,7 @@ class Main extends Sprite
 
 		// Full dump: error + stack + system/renderer info + recent logs.
 		var fullMsg:String = SystemDiag.buildCrashDump(Std.string(e.error), stackLines, CrashCatcherState.crashCount + 1);
-		fullMsg += "\nPlease report this error to the GitHub page: https://github.com/mohong2/FNF-SeiunEngine\n\n> Crash Handler written by: sqirra-rng ";
+		fullMsg += "\nPlease report this error to the GitHub page: https://github.com/mohong2/FNF-SeiunEngine\n\n> SeiunEngine by mo_hong · Crash Handler written by: sqirra-rng ";
 
 		#if sys
 		if (!FileSystem.exists("./crash/"))
@@ -831,14 +862,6 @@ class Main extends Sprite
 		CrashCatcherState.lastCrashStack = stackLines;
 		CrashCatcherState.lastCrashPath = path;
 		CrashCatcherState.crashCount++;
-
-		#if ONLINE_ALLOWED
-		try
-		{
-			online.client.CrashReporter.notifyCrash(Std.string(e.error), stackLines);
-		}
-		catch (crashNotifyError:Dynamic) {}
-		#end
 
 
 		// Show a native dialog first to notify the user before entering recovery UI

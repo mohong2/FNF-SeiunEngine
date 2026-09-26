@@ -200,7 +200,7 @@ class Paths
 				purgeGraphicFromCaches(obj, key);
 			}
 		}
-		// System.gc() was here; removed (perf P0-3). It hitched every song
+		// System.gc() was here; removed. It hitched every song
 		// switch with a full sync collect. GC goes back to the default policy.
 	}
 
@@ -362,6 +362,10 @@ class Paths
 		return if (library == "preload" || library == "default") getPreloadPath(file); else getLibraryPathForce(file, library);
 	}
 
+	// Left module-private on purpose. `source/backend/NoteSkinData.hx` needs it, so the call site
+	// uses `@:privateAccess` (it is inside `#if ONLINE_ALLOWED`) rather than widening this
+	// declaration. Widening the visibility here would be an unguarded engine change to a shared
+	// engine file.
 	inline static function getLibraryPathForce(file:String, library:String)
 	{
 		var returnPath = '$library:assets/$library/$file';
@@ -484,9 +488,30 @@ class Paths
 		return voices;
 	}
 
-	static public function inst(song:String):Any
+	// `Paths.inst(song, songSuffix)` takes an optional difficulty suffix. This engine's `inst()`
+	// had no such parameter because its own `PlayState` resolves the variant track by another
+	// means, but the online slice (`online/states/RoomState.hx`, "host the currently selected
+	// song") computes the same suffix, so the parameter is added here.
+	//
+	// The extra suffix is applied by a helper that only exists under the guard, so the single
+	// `inst()` signature stays exactly as it was for the other 12 call sites and a macro-off
+	// build sees the same function unchanged.
+	// The suffix is only applied when it is non-null and non-empty.
+	#if ONLINE_ALLOWED
+	/** Appends the difficulty suffix that `Paths.inst(song, songSuffix)` accepts. */
+	static function applyInstSuffix(songKey:String, ?songSuffix:String):String {
+		if (songSuffix != null && songSuffix.length > 0)
+			return songKey + songSuffix;
+		return songKey;
+	}
+	#end
+
+	static public function inst(song:String, ?songSuffix:String = null):Any
 	{
 		var songKey:String = '${formatToSongPath(song)}/Inst';
+		#if ONLINE_ALLOWED
+		songKey = applyInstSuffix(songKey, songSuffix);
+		#end
 		// RAM-imported instrumental takes priority (session only)
 		if (ramInst.exists(songKey))
 			return ramInst.get(songKey);
@@ -1376,6 +1401,93 @@ class Paths
 			}
 		}
 		return list;
+	}
+	#end
+
+	#if ONLINE_ALLOWED
+	/** Last file `iconBitmap()` failed on, used to avoid repeating the same debug message. */
+	static var lastImageErrorFile:String = null;
+
+	/**
+	 * Decodes a freeplay icon eagerly and returns the `BitmapData` (or `null`).
+	 * The consumer (`online/substates/SoFunkinSubstate.hx`) keeps its `futureQueue` and still
+	 * decodes one icon per frame, so the per-frame cost profile is preserved; only the moment
+	 * at which decoding begins moves from a background thread to this call.
+	 *
+	 * **Haxe 4.2.5 has no `haxe.thread.Future`** (introduced in 4.3; the 4.2.5 std has no
+	 * `Future` anywhere -- verified by searching `C:\HaxeToolkit\haxe\std`), and the `Future` that
+	 * *is* reachable here is OpenFL's (`openfl.utils.Future`), a callback-based future with
+	 * neither `isComplete` nor `value`, so a deferred value cannot be reproduced.
+	 * The engine therefore cannot expose a Future-based API on this target.
+	 *
+	 * The returned value therefore comes from the three lookup branches below, each of which
+	 * returns the decoded bitmap directly when the requested file exists.
+	 *
+	 * Pairs with `bitmapToGraphic()` below. (Named `iconBitmap` rather than `asyncBitmap`
+	 * because it is synchronous: the caller gets the bitmap immediately.)
+	 *
+	 * Guarded by ONLINE_ALLOWED: the online slice is its only consumer.
+	 */
+	static public function iconBitmap(key:String, ?library:String = null, ?modDir:String):Null<BitmapData> {
+		var file:String = null;
+
+		#if MODS_ALLOWED
+		file = (modDir != null && modDir.length > 0) ? mods(modDir + '/images/' + key + '.png') : modsImages(key);
+		// return cached
+		if (currentTrackedAssets.exists(file))
+		{
+			localTrackedAssets.push(file);
+			return currentTrackedAssets.get(file).bitmap;
+		}
+		// found in the mods files
+		else if (FileSystem.exists(file))
+			return BitmapData.fromFile(file);
+		// load from assets
+		else
+		#end
+		{
+			file = getPath('images/$key.png', IMAGE, library);
+			if (currentTrackedAssets.exists(file))
+			{
+				localTrackedAssets.push(file);
+				return currentTrackedAssets.get(file).bitmap;
+			}
+			else if (OpenFlAssets.exists(file, IMAGE))
+				return OpenFlAssets.getBitmapData(file);
+		}
+
+		if (lastImageErrorFile != file && ClientPrefs.isDebug()) {
+			Sys.println('Paths.iconBitmap(): oh no its returning null NOOOO ($file)');
+			lastImageErrorFile = file;
+		}
+		return null;
+	}
+
+	/**
+	 * Registers an already-decoded `BitmapData` in the engine's graphic cache so that
+	 * `Paths.image()` and `FlxSprite.loadGraphic()` can reuse it. It is the pairing helper for
+	 * `iconBitmap()` above and is called from `online/substates/SoFunkinSubstate.hx:201`, which
+	 * installs the freshly decoded icon into the cache.
+	 *
+	 * Guarded by ONLINE_ALLOWED (only consumer is the online slice). The commented-out GPU-texture
+	 * fast path below is intentionally left disabled.
+	 */
+	static public function bitmapToGraphic(file:String, bitmap:BitmapData) {
+		localTrackedAssets.push(file);
+		// if (allowGPU /*&& ClientPrefs.data.cacheOnGPU*/)
+		// {
+		// 	var texture:RectangleTexture = FlxG.stage.context3D.createRectangleTexture(bitmap.width, bitmap.height, BGRA, true);
+		// 	texture.uploadFromBitmapData(bitmap);
+		// 	bitmap.image.data = null;
+		// 	bitmap.dispose();
+		// 	bitmap.disposeImage();
+		// 	bitmap = BitmapData.fromTexture(texture);
+		// }
+		var newGraphic:FlxGraphic = FlxGraphic.fromBitmapData(bitmap, false, file);
+		newGraphic.persist = true;
+		newGraphic.destroyOnNoUse = false;
+		currentTrackedAssets.set(file, newGraphic);
+		return newGraphic;
 	}
 	#end
 }

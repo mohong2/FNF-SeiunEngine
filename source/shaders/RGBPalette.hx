@@ -7,19 +7,16 @@ import flixel.util.FlxColor;
 import ClientPrefs;
 
 /**
- * RGBPalette — Psych Engine 0.7.3/1.0.4 的 Note 三色着色器。
+ * Flexible fallback behaviour:
+ *  - by default it does not take over a sprite's shader (note colours keep using colorSwap);
+ *  - the global palette is cloned and attached only when a mod script actually changes
+ *    rgbShader.r/g/b/mult, so scripts like `rgbShader.mult = 0` work out of the box;
+ *  - rgbShader.enabled = false falls back to the engine shader (fallbackShader) instead of
+ *    being set to null;
+ *  - attaching is refused while ClientPrefs.data.shaders is off, keeping rendering shader-free.
  *
- * 移植自 FNF-PsychEngine-EK-0.7.3 (多k 分支), 并按 SeiunEngine 需求做了
- * "灵活回退" 扩展:
- *  - 默认不接管精灵着色器 (本引擎继续走 colorSwap 的多k 轨道色);
- *  - 只有模组脚本真正修改 rgbShader.r/g/b/mult 时才克隆全局色板并挂载,
- *    保证 `rgbShader.mult = 0` 这类 0.7.3/1.0.4 脚本直接可用;
- *  - rgbShader.enabled = false 时回退到引擎默认着色器 (fallbackShader),
- *    而不是像原版那样直接置 null;
- *  - ClientPrefs.data.shaders 关闭时禁止挂载, 保持无着色器渲染。
- *
- * 全局色板按 (noteData + mania) 缓存, 同一轨道所有 Note 共享一份 uniform,
- * 避免每个 Note 各建一个 shader 的开销。
+ * The global palette is cached per (noteData + mania), so every note on a lane shares one
+ * uniform instead of building a shader each.
  */
 class RGBPalette
 {
@@ -67,8 +64,8 @@ class RGBPalette
 }
 
 /**
- * 精灵持有的 RGB 色板引用: 读写转发到共享色板, 首次修改时克隆,
- * 避免一个模组脚本改色影响整条轨道 (与 0.7.3/1.0.4 语义一致)。
+ * Reference held by a sprite: reads and writes go to the shared palette and the first write clones it,
+ * so one mod script cannot repaint a whole lane.
  */
 class RGBShaderReference
 {
@@ -78,22 +75,22 @@ class RGBShaderReference
 	public var mult(default, set):Float;
 	public var enabled(default, set):Bool = false;
 
-	/** 共享的全局色板 (同一轨道所有 Note 共享)。 */
+	/** Shared global palette (all notes on a lane share it). */
 	public var parent:RGBPalette;
 
 	private var _owner:FlxSprite;
 	private var _original:RGBPalette;
 
-	/** enabled=false 时回退到的着色器 (本引擎: colorSwap.shader; null = 无着色器)。 */
+	/** Shader used when enabled=false (this engine: colorSwap.shader; null = no shader). */
 	public var fallbackShader:FlxShader = null;
 
 	/**
-	 * 中性感知回退: 优先用 ColorSwap 引用解析 —— 中性色时不挂任何着色器
-	 * (万级 Note 合批关键), 非中性时才实例化其 GLSL 程序。
+	 * Neutral-aware fallback: resolved through the ColorSwap reference, so a neutral colour attaches no
+	 * shader at all (essential for batching thousands of notes) and its GLSL program is only built otherwise.
 	 */
 	public var fallbackColorSwap:ColorSwap = null;
 
-	/** SONG.disableNoteRGB 时禁止挂载 RGB 着色器。 */
+	/** Blocks the RGB shader while SONG.disableNoteRGB is set. */
 	public var forceDisabled:Bool = false;
 
 	public function new(owner:FlxSprite, ref:RGBPalette)
@@ -111,7 +108,7 @@ class RGBShaderReference
 		}
 	}
 
-	/** 复用对象时重新绑定到另一条轨道的共享色板 (池化 Note/换 k 值用)。 */
+	/** Rebinds a reused instance to another lane's shared palette (note pooling / mania changes). */
 	public function rebind(ref:RGBPalette):Void
 	{
 		parent = ref;
@@ -181,7 +178,7 @@ class RGBShaderReference
 		parent.g = _original.g;
 		parent.b = _original.b;
 		parent.mult = _original.mult;
-		// 通过 setter 挂载, 以便遵守 forceDisabled / shaders 开关的灵活回退
+		// Attach through the setter so forceDisabled / the shaders setting are honoured
 		enabled = true;
 	}
 }

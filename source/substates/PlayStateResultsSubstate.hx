@@ -557,7 +557,6 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 		// --- Status header (moved to the top so it never overlaps the rating icon) ---
 		var statusLineH:Float = 13;
 		var statusCount:Int = 4 + (isReplay ? 1 : 0) + ((replayEntry != null || best != null) ? 1 : 0);
-		// LeatherEngine 移植: 回放判定被还原时多一行提示
 		if (isReplay && game.replayExam != null && game.replayExam.judgementRestoredDifferent) statusCount++;
 		var statusY:Float = leftPanel.y + 14;
 
@@ -619,7 +618,7 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 
 		var si:Int = 0;
 
-		// Judgment window info (always shown) — LeatherEngine 移植: 显示判定类型 + 窗口区间
+		// Judgement window info (always shown): judgement type plus window range
 		var judgePresetName:String = ClientPrefs.data.judgementPreset;
 		if (judgePresetName == null || judgePresetName.length == 0)
 			judgePresetName = backend.Ratings.presetNameForTimings(ClientPrefs.data.judgementTimings);
@@ -632,7 +631,7 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 			+ Std.string(ClientPrefs.data.safeFrames) + "f";
 		addStatusLine(si++, judgeInfo, FlxColor.fromRGB(180, 180, 200));
 
-		// osu! 尾判: 显示本次游玩/回放是否开启尾判
+		// osu! tail judgement: whether this play or replay had it enabled
 		/**var tailOn:Bool = ClientPrefs.data.osuTailJudgement;
 		addStatusLine(si++, Language.get("ResultsScreen.tailJudgement", "Tail Judgement") + ": "
 			+ (tailOn ? Language.get("ResultsScreen.on", "ON") : Language.get("ResultsScreen.off", "OFF")),
@@ -655,7 +654,6 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 				+ Language.get("ResultsScreen.replayMode", "REPLAY"),
 				FlxColor.fromRGB(255, 200, 100));
 
-			// LeatherEngine 移植: 仅在回放判定与当前设置不同时提醒
 			if (game.replayExam != null && game.replayExam.judgementRestoredDifferent)
 			{
 				var jInfo:String = game.replayExam.judgementRestoreInfo;
@@ -993,7 +991,6 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 			// center line
 			FlxSpriteUtil.drawRect(graphNote, drawX, drawH * 0.5 - 1, drawW, 2, 0x7FFFFFFF);
 
-			// marvelous window (LeatherEngine 移植)
 			if (hasMarvelous && marvelousWindow <= sickWindow)
 			{
 				var my = drawH * 0.5 + drawH * 0.5 * moveSize * (marvelousWindow / safeZoneOffset) - 1;
@@ -1280,7 +1277,7 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 					{
 						PauseSubState.entries = history[0];
 
-						// 准备回放文件: 将存储的 replay 数据转回 FrameSave 并写入临时文件
+						// Prepare the replay file: convert the stored replay data back to FrameSave and write a temp file
 						#if sys
 						var entry = history[0];
 						var frames:Array<FrameSave> = [];
@@ -1319,12 +1316,11 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 							goodWindow: details != null && details.length > 21 ? details[21] : 90,
 							badWindow: details != null && details.length > 22 ? details[22] : 135,
 							safeFrames: details != null && details.length > 23 ? details[23] : 10,
-							// LeatherEngine 移植: 从成绩详情恢复判定手感
 							judgementTimings: details != null && details.length > 24 && details[24] != null ? details[24] : null,
 							judgementPreset: details != null && details.length > 26 && details[26] != null ? details[26] : null,
 							marvelousRatings: details != null && details.length > 25 && details[25] != null ? details[25] : null,
 							marvelousWindow: details != null && details.length > 30 && details[30] != null ? details[30] : null,
-							// osu! 尾判 / 判定相关手感: 从成绩详情强制还原
+							// osu! tail judgement / judgement feel: force-restored from the score details
 							//osuTailJudgement: details != null && details.length > 27 && details[27] != null ? details[27] : null,
 							ratingOffset: details != null && details.length > 28 && details[28] != null ? details[28] : null,
 							guitarHeroSustains: details != null && details.length > 29 && details[29] != null ? details[29] : null,
@@ -1349,7 +1345,7 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 				}
 				catch (e:Dynamic)
 				{
-					// 回放准备失败 (成绩/回放数据损坏、谱面缺失等): 不崩溃, 回到原界面
+					// Replay preparation failed (damaged score / replay data, missing chart): do not crash, stay on this screen
 					PlayState.replayMode = false;
 					PlayState.isStoryMode = prevStoryMode;
 					CoolUtil.traceMsg('trace.scoreHistory.playReplay', 'Failed to play replay: {}', [e]);
@@ -1402,7 +1398,7 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 				if (FlxTransitionableState.skipNextTransIn)
 					CustomFadeTransition.nextCamera = null;
 				MusicBeatState.switchState(new FreeplayState());
-				// 音乐交给 FreeplayState.create() 统一处理（优先使用模组筛选目录）
+				// Music is handled by FreeplayState.create() (which prefers the filtered mod directory)
 				PlayState.changedDifficulty = false;
 			}
 		});

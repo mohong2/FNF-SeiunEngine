@@ -44,6 +44,13 @@ enum abstract Action(String) to String from String
 	var BACK = "back";
 	var PAUSE = "pause";
 	var RESET = "reset";
+	#if ONLINE_ALLOWED
+		// Online-only actions. The action set otherwise stops at `reset`, but the online slice
+		// (RoomState / ResultsState / SkinsState) reads `Controls.TAUNT` / `Controls.FAV`,
+		// so they are added backwards-compatible and compiled only when online support is on.
+	var TAUNT = "taunt";
+	var FAV = "fav";
+	#end
 }
 #else
 @:enum
@@ -77,6 +84,10 @@ abstract Action(String) to String from String
 	var BACK = "back";
 	var PAUSE = "pause";
 	var RESET = "reset";
+	#if ONLINE_ALLOWED
+	var TAUNT = "taunt";
+	var FAV = "fav";
+	#end
 }
 #end
 
@@ -105,6 +116,10 @@ enum Control
 	ACCEPT;
 	BACK;
 	PAUSE;
+	#if ONLINE_ALLOWED
+	TAUNT;
+	FAV;
+	#end
 }
 
 enum KeyboardScheme
@@ -149,6 +164,10 @@ class Controls extends FlxActionSet
 	var _back = new FlxActionDigital(Action.BACK);
 	var _pause = new FlxActionDigital(Action.PAUSE);
 	var _reset = new FlxActionDigital(Action.RESET);
+	#if ONLINE_ALLOWED
+	var _taunt = new FlxActionDigital(Action.TAUNT);
+	var _fav = new FlxActionDigital(Action.FAV);
+	#end
 	public static var instance:Controls;
 	
 	#if (haxe >= "4.0.0")
@@ -300,6 +319,18 @@ class Controls extends FlxActionSet
 	inline function get_RESET()
 		return _reset.check();
 
+	#if ONLINE_ALLOWED
+	public var TAUNT(get, never):Bool;
+
+	inline function get_TAUNT()
+		return _taunt.check();
+
+	public var FAV(get, never):Bool;
+
+	inline function get_FAV()
+		return _fav.check();
+	#end
+
 	#if (haxe >= "4.0.0")
 	public function new(name, scheme = None)
 	{
@@ -333,6 +364,10 @@ class Controls extends FlxActionSet
 		add(_back);
 		add(_pause);
 		add(_reset);
+		#if ONLINE_ALLOWED
+		add(_taunt);
+		add(_fav);
+		#end
 
 		for (action in digitalActions)
 			byName[action.name] = action;
@@ -372,6 +407,10 @@ class Controls extends FlxActionSet
 		add(_back);
 		add(_pause);
 		add(_reset);
+		#if ONLINE_ALLOWED
+		add(_taunt);
+		add(_fav);
+		#end
 
 		for (action in digitalActions)
 			byName[action.name] = action;
@@ -569,6 +608,10 @@ class Controls extends FlxActionSet
 			case BACK: _back;
 			case PAUSE: _pause;
 			case RESET: _reset;
+			#if ONLINE_ALLOWED
+			case TAUNT: _taunt;
+			case FAV: _fav;
+			#end
 		}
 	}
 
@@ -628,6 +671,12 @@ class Controls extends FlxActionSet
 				func(_pause, JUST_PRESSED);
 			case RESET:
 				func(_reset, JUST_PRESSED);
+			#if ONLINE_ALLOWED
+			case TAUNT:
+				func(_taunt, JUST_PRESSED);
+			case FAV:
+				func(_fav, JUST_PRESSED);
+			#end
 		}
 	}
 
@@ -812,6 +861,10 @@ class Controls extends FlxActionSet
 				inline bindKeys(Control.BACK, keysMap.get('back'));
 				inline bindKeys(Control.PAUSE, keysMap.get('pause'));
 				inline bindKeys(Control.RESET, keysMap.get('reset'));
+				#if ONLINE_ALLOWED
+				inline bindKeys(Control.TAUNT, keysMap.get('taunt'));
+				inline bindKeys(Control.FAV, keysMap.get('fav'));
+				#end
 			case Duo(true):
 				inline bindKeys(Control.UI_UP, [W]);
 				inline bindKeys(Control.UI_DOWN, [S]);

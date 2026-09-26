@@ -52,7 +52,7 @@ typedef OptionDef =
 	@:optional var onChangeHscript:String;
 	@:optional var platform:String;
 	@:optional var define:String;
-	/** 引擎兼容模式门控: "0.7.3+" 仅 0.7.3/1.0.4 模式显示, "0.6.3" 仅 0.6.3 模式显示。 */
+	/** Engine compatibility gate: "0.7.3+" only shows in 0.7.3/1.0.4 modes, "0.6.3" only in 0.6.3 mode. */
 	@:optional var compat:String;
 	@:optional var modSource:String;
 	@:optional var useModSettings:Bool;
@@ -74,10 +74,10 @@ class OptionLoader
 	static final GLOBAL_ROOT_SOURCE:String = '__GLOBAL__';
 	static var _cachedCategories:Array<OptionCategoryDef> = null;
 	static var _callbacks:Map<String, Void->Void> = new Map();
-	/** mergeAllTextsNamed 结果缓存 (语言/打击音/皮肤列表)。reloadAll() 时清空以保留模组热重载。 */
+	/** Cache of mergeAllTextsNamed results (languages / hit sounds / skins); cleared by reloadAll() for mod hot-reload. */
 	static var _listCache:Map<String, Array<String>> = new Map();
 
-	/** 带缓存的 Paths.mergeAllTextNamed: 设置页每次进出都会取这些列表, 移动端读盘不便宜。 */
+	/** Cached Paths.mergeAllTextNamed: the options menu reads these lists on every visit and mobile disk access is slow. */
 	static function mergedListCached(path:String, ?defaultDirectory:String):Array<String>
 	{
 		var key:String = path + '|' + (defaultDirectory != null ? defaultDirectory : '');
@@ -126,7 +126,7 @@ class OptionLoader
 		return result;
 	}
 
-	/** 按平台过滤分类 (与选项的 platform 字段一致)。 */
+	/** Filters categories by platform (same as an option's platform field). */
 	static function categoryAllowedOnPlatform(cat:OptionCategoryDef):Bool
 	{
 		if (cat.platform == null)
@@ -285,8 +285,8 @@ class OptionLoader
 					}
 
 				case 'hitsound':
-					// LeatherEngine 移植: 击打音效列表来自 data/hitsoundList.txt,
-					// 玩家/模组可以往 txt 里加名字并放入 sounds/hitsounds/ 实现自定义音效
+					// Hit sound list from data/hitsoundList.txt; players and mods can add names
+					// and drop the files into sounds/hitsounds/ for custom hit sounds
 					var hs:Array<String> = mergedListCached('data/hitsoundList.txt', 'assets');
 					if (hs != null && hs.length > 0)
 					{
@@ -296,13 +296,13 @@ class OptionLoader
 					}
 
 				case 'judgementPreset':
-					// LeatherEngine 移植: 判定预设列表来自 data/timingPresets.txt
+					// Judgement preset list from data/timingPresets.txt
 					backend.Ratings.loadPresets();
 					var presets:Array<String> = backend.Ratings.presets.copy();
 					if (presets.indexOf('Custom') < 0) presets.push('Custom');
 					opt.options = presets;
 
-					// 当前预设与 judgementTimings 不匹配时自动标记为 Custom
+					// Automatically labelled Custom when the current value does not match judgementTimings
 					var curPreset:String = opt.getValue();
 					var timings:Array<Int> = ClientPrefs.data.judgementTimings;
 					var matchesPreset:Bool = false;
@@ -322,7 +322,7 @@ class OptionLoader
 					if (num > -1) opt.curOption = num;
 
 				case 'noteSkin':
-					// 0.7.3+ 自由切换 Note 皮肤: 列表来自 images/noteSkins/list.txt (模组可追加)
+					// Free note-skin switching: the list comes from images/noteSkins/list.txt (mods may append)
 					var skins:Array<String> = mergedListCached('images/noteSkins/list.txt');
 					if (skins != null && skins.length > 0)
 					{
@@ -334,7 +334,7 @@ class OptionLoader
 					}
 
 				case 'splashSkin':
-					// 0.7.3+ 自由切换溅射皮肤: 列表来自 images/noteSplashes/list.txt
+					// Free splash-skin switching: the list comes from images/noteSplashes/list.txt
 					var skins:Array<String> = mergedListCached('images/noteSplashes/list.txt');
 					if (skins != null && skins.length > 0)
 					{
@@ -531,7 +531,7 @@ class OptionLoader
 
 	static function createOptionFromDef(def:OptionDef, ?extraCallbacks:Map<String, Void->Void>):Option
 	{
-		// 引擎兼容模式门控: 皮肤切换等 0.7.3+ 专属选项只在对应兼容模式显示
+		// Compatibility gate: 0.7.3+ only options such as skin switching only show in the matching mode
 		if (def.compat != null && def.compat.length > 0)
 		{
 			var show:Bool = switch (def.compat.toLowerCase())

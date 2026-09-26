@@ -216,4 +216,41 @@ class Rating
 		if (PlayState.instance == null) return;
 		Reflect.setField(PlayState.instance, counter, Reflect.field(PlayState.instance, counter) + blah);
 	}
+
+	#if ONLINE_ALLOWED
+	/**
+		 * Builds the default accuracy table.
+		 * `online/GameClient.hx` builds its accuracy table from it:
+		 *   `private static var ratingsData:Array<Rating> = Rating.loadDefault();`
+		 * and indexes `ratingsData[0..3]` as sick/good/bad/shit, so the order and the `ratingMod`
+		 * values below are load-bearing.
+		 *
+		 * The engine's `Rating` has a `counter` field, and its windows are read live from
+		 * `ClientPrefs`; neither affects `loadDefault`, which only sets
+		 * `ratingMod`/`score`/`noteSplash`. Guarded because only the online slice needs it.
+	 */
+	public static function loadDefault():Array<Rating>
+	{
+		var ratingsData:Array<Rating> = [new Rating('sick')]; //highest rating goes first
+
+		var rating:Rating = new Rating('good');
+		rating.ratingMod = 0.67;
+		rating.score = 200;
+		rating.noteSplash = false;
+		ratingsData.push(rating);
+
+		rating = new Rating('bad');
+		rating.ratingMod = 0.34;
+		rating.score = 100;
+		rating.noteSplash = false;
+		ratingsData.push(rating);
+
+		rating = new Rating('shit');
+		rating.ratingMod = 0;
+		rating.score = 50;
+		rating.noteSplash = false;
+		ratingsData.push(rating);
+		return ratingsData;
+	}
+	#end
 }

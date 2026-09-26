@@ -165,6 +165,22 @@ class LoadingState extends MusicBeatState
 	
 	function checkLibrary(library:String) {
 		TraceManager.debug('trace.loading.checkLibrary', 'Checking library: {} - {}', [library, Assets.hasLibrary(library)]);
+		#if ONLINE_ALLOWED
+		// The mod directory is not a lime library but was being checked as one. To keep mod assets
+		// from being redirected to assets/weekX, the asset directory (`directory`) is set to
+		// `Mods.currentModDirectory` (the mod folder name, see getNextState's ONLINE_ALLOWED
+		// block); `create()` then calls this function with it, and a mod name is neither in
+		// `LimeAssets.libraryPaths` nor backed by a lime library, so this throws
+		// `Missing library: <mod>` and a mod song dies right here. This engine resolves mod assets
+		// from disk paths anyway (`Paths.modsImages/modsSounds/modsJson/...`), so no lime library
+		// is needed and the check is skipped; real libraries still take the unchanged branch below.
+		if (!Assets.hasLibrary(library) && backend.Mods.getModDirectories().contains(library))
+		{
+			TraceManager.info('trace.loading.modDirSkipLibrary',
+				'asset folder is a mod directory (not a lime library), skipping library wait: {}', [library]);
+			return;
+		}
+		#end
 		if (Assets.getLibrary(library) == null)
 		{
 			@:privateAccess
@@ -192,10 +208,6 @@ class LoadingState extends MusicBeatState
 		#if sys
 		// Drain background decoding results and fire callbacks on main thread
 		backend.AsyncGfxLoader.drain();
-		#end
-		#if ONLINE_ALLOWED
-		if (online.client.OnlineSession.active && online.client.GameClient.instance != null)
-			online.client.GameClient.instance.update(elapsed);
 		#end
 		#if LUA_ALLOWED
 		callOnLuas('onUpdate', [elapsed]);
@@ -269,6 +281,15 @@ class LoadingState extends MusicBeatState
 		var directory:String = 'shared';
 		var weekDir:String = StageData.forceNextDirectory;
 		StageData.forceNextDirectory = null;
+
+		#if ONLINE_ALLOWED
+		// A song that comes from a mod must use the mod directory, otherwise assets are
+		// redirected to assets/weekX (log: "Re-derived asset folder from SONG: week7").
+		// Only weekDir's initial value changes; the original logic below is untouched.
+		if ((weekDir == null || weekDir.length <= 0) && Std.isOfType(target, PlayState) && PlayState.SONG != null
+			&& backend.Mods.currentModDirectory != null && backend.Mods.currentModDirectory != '')
+			weekDir = backend.Mods.currentModDirectory;
+		#end
 
 		// When restarting/changing difficulty in pause menu, re-derive week directory from SONG
 		// to prevent falling back to 'shared' and failing to load week-specific assets.

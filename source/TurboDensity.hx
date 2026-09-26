@@ -7,20 +7,20 @@ import Note.PreloadedChartNote;
 #end
 
 /**
- * Turbo 模式的谱面预处理。
+ * Turbo-mode chart pre-processing.
  *
- * 引擎只有一条渲染路径：真实 Note 精灵。所以"性能不够"永远等价于
- * "同时存活的精灵太多了"。低流速下这个问题最严重 —— 屏幕像素带 ±700px
- * 对应的可视频段是 1400 / (0.45 * songSpeed) 毫秒，speed=1 时约 3.1 秒，
- * speed=0.5 时约 6.2 秒；几千万 Note 的谱面在这个窗口里能塞进六位数条 Note，
- * 全部物化就是纯粹的浪费。
+ * The engine has a single render path: real note sprites. "Not fast enough" therefore always
+ * means "too many sprites alive at once". Low scroll speeds make this worst: a +/-700px band
+ * covers 1400 / (0.45 * songSpeed) ms of chart, roughly 3.1s at speed=1 and 6.2s at speed=0.5,
+ * which can hold six figures of notes on a very dense chart; materialising all of them is
+ * pure waste.
  *
- * 关键观察：同一轨道上两条 Note 如果屏幕间距小于一个像素级阈值，它们在玩家
- * 眼里、以及在实际绘制结果里就是同一条（Note 是不透明精灵，互相覆盖）。
- * 因此按"屏幕像素间距"而不是"时间间距"来合并，才是与流速自洽的口径：
- * 流速越低 -> 像素间距越小 -> 合并得越多 -> 物化量恒定，不随谱面密度爆炸。
- *
- * 本类只做无副作用的纯数据变换，不落盘、不缓存、不改谱面文件。
+ * Key observation: two notes on the same lane that are less than a pixel apart on screen look
+ * (and draw) as one, because note sprites are opaque and cover each other. Merging by screen
+ * pixel distance rather than time distance is what stays consistent with the scroll speed:
+ * lower speed -> smaller pixel gap -> more merges -> a constant materialised count that does
+ * not explode with chart density.
+ * This class is a side-effect free data transform: nothing is written to disk, cached or modified in place.
  */
 typedef TurboGhostScratch = {
 	var lastTime:Array<Float>;
@@ -30,19 +30,20 @@ typedef TurboGhostScratch = {
 
 class TurboDensity
 {
-	/** 低于该屏幕间距的同轨同向 tap 视为同一条 Note（像素）。 */
+	/** Same-lane same-direction taps closer than this on screen are treated as one note (pixels). */
 	public static inline final DEFAULT_MIN_GAP_PX:Float = 4.0;
 
-	/** 单条 Note 最多代表多少条原始 tap —— 为极端鬼谱面兜底，避免密度值失真。 */
+	/** Most raw taps a single note may represent; guards against extreme charts distorting the density value. */
 	public static inline final MAX_REPRESENTED:Int = 512;
 
 	/**
-	 * 谱面内容指纹。
+ * Chart content fingerprint.
 	 *
-	 * 只包含"谱面自身"的字段：时间、轨道、判定归属、长度。刻意排除
-	 * noteDensity —— 它是 collapseGhostNotes 的输出（被折叠的数量），
-	 * 任何对同一数组重复调用都会改变它，导致指纹不稳定、任何由指纹派生的
-	 * 持久化状态随之漂移。本类不再有缓存，指纹仅用于日志与诊断。
+ * Contains only chart-owned fields: time, lane, judgement side, length. noteDensity is
+ * deliberately excluded because it is an output of collapseGhostNotes (the merged count),
+ * so any repeat call over the same array would change it and make the fingerprint unstable;
+ * anything derived from it would drift. The class holds no cache; the fingerprint is used
+ * for logging and diagnostics only.
 	 */
 	public static function chartFingerprint(notes:Array<PreloadedChartNote>):Int
 	{
@@ -66,26 +67,25 @@ class TurboDensity
 	}
 
 	/**
-	 * 谱面加载期的 Turbo 预处理：把"屏幕上分不开"的 tap 折叠成一条代表 Note。
+ * Turbo pre-processing at chart load: folds taps that cannot be told apart on screen into one
+ * representative note.
+ * Pure function: it never mutates the caller's objects and does not depend on the call count,
+ * so repeated calls give identical results. (The old form wrote `prev.noteDensity += 1` on a
+ * shared object, so the second call differed and every derived index drifted.)
 	 *
-	 * 纯函数：不改写入参数组里的任何对象，也不依赖调用次数，重复调用结果完全一致
-	 * （旧实现直接 `prev.noteDensity += 1` 改写共享对象，第二次调用结果不同，
-	 * 指纹与由此派生的任何索引都会漂移）。
+ * Merge rule (same lane + same mustPress side + same multSpeed, adjacent in time):
+ *   screen gap = dt * 0.45 * songSpeed * multSpeed * maniaScale < minGapPx
+ * The gap uses the slower of the two notes' visible rates, so it is conservative for speed
+ * tweens: notes are merged only when they can never separate beyond minGapPx at any time.
 	 *
-	 * 合并判据（同一 lane + 同一侧 mustPress + 同一 multSpeed，按时间相邻）：
-	 *   屏幕间距 = Δt * 0.45 * songSpeed * multSpeed * maniaScale < minGapPx
-	 * 间距取两条 Note 各自可见期内的较小值（以较慢的那条为准），因此对缓动/变速
-	 * （songSpeedTween）也是保守安全的：只有当它们在任何时刻都不可能分开到
-	 * minGapPx 以上时才合并。
+ * The representative keeps the earliest note of the group (the first to reach the strum line,
+ * which visually fills that pixel band) and accumulates the merged count into its noteDensity,
+ * matching the existing judgement weighting (PlayState counts combo / judgements by noteDensity).
 	 *
-	 * 代表 Note 保留折叠组里最早的一条（最先到判定线的那条，视觉上填补该像素带），
-	 * 折叠数量累加到它的 noteDensity 上 —— 与既有判定加权口径一致
-	 * （PlayState 结算时按 noteDensity 计 combo/判定数）。
-	 *
-	 * @param songSpeed  本局实际流速（PlayState.songSpeed）
-	 * @param mania      本局 k 值（决定 maniaScale）
-	 * @param rangeMs    额外的时间硬下限（鬼 Note 合并），默认 1.0ms
-	 * @param minGapPx   屏幕像素间距阈值
+ * @param songSpeed  actual scroll speed of this play (PlayState.songSpeed)
+ * @param mania      key count of this play (drives maniaScale)
+ * @param rangeMs    extra hard time floor (ghost-note merging), default 1.0ms
+ * @param minGapPx   screen pixel gap threshold
 	 */
 	public static function collapseGhostNotes(notes:Array<PreloadedChartNote>, laneCount:Int,
 		rangeMs:Float = 1.0, songSpeed:Float = 1.0, mania:Int = -1, minGapPx:Float = DEFAULT_MIN_GAP_PX):Array<PreloadedChartNote>
@@ -108,8 +108,8 @@ class TurboDensity
 		if (!Math.isFinite(maniaScale) || maniaScale <= 0)
 			maniaScale = 1.0;
 
-		// 像素/毫秒 -> 毫秒阈值 的换算系数（与 Note 位置公式同源）：
-		// 两条 Note 的屏幕间距 = Δt * 0.45 * songSpeed * multSpeed * maniaScale
+		// Pixel/ms -> ms threshold factor (same formula as the note position):
+		// screen gap between two notes = dt * 0.45 * songSpeed * multSpeed * maniaScale
 		var pxPerMs:Float = 0.45 * songSpeed * maniaScale;
 
 		var slots:Int = laneCount * 2;
@@ -119,9 +119,9 @@ class TurboDensity
 			lastSlowRate: [for (i in 0...slots) 0.0]
 		};
 
-		// 每条 lane/side 当前"可继续吸收折叠"的代表下标。
-		// 必须按 lane 记录而不是直接看 out 的尾部: 长条/尾段会插在代表之间,
-		// 而代表 Note 是唯一允许承载 noteDensity 的对象。
+		// Index of the representative that can still absorb folds, per lane/side.
+		// Tracked per lane rather than just looking at the tail of out: sustains and tails are
+		// inserted between representatives, and a representative is the only object allowed to carry noteDensity.
 		var anchor:Array<Int> = [for (i in 0...slots) -1];
 
 		var out:Array<PreloadedChartNote> = [];
@@ -131,7 +131,7 @@ class TurboDensity
 			if (pn == null)
 				continue;
 
-			// 长条/尾段/长条头不参与合并：尾段的裁剪与 prev/next 链语义必须保持原样。
+			// Sustains, tails and sustain heads never merge: tail trimming and the prev/next chain must stay intact.
 			if (pn.isSustainNote || pn.sustainLength > 0)
 			{
 				out.push(pn);
@@ -151,13 +151,13 @@ class TurboDensity
 				var dt:Float = pn.strumTime - scratch.lastTime[idx];
 				if (dt <= rangeMs)
 				{
-					// 时间上重叠的鬼 Note：无条件合并（等价旧行为）。
+					// Notes overlapping in time: merge unconditionally (matches the old behaviour).
 					mergeable = true;
 				}
 				else if (minGapPx > 0 && dt * scratch.lastSlowRate[idx] < minGapPx)
 				{
-					// 较慢的那条决定了"最小可见间距"：只要它都不足 minGapPx，
-					// 两条 Note 在任何时刻都不会分开到可分辨的程度。
+					// The slower note sets the minimum visible gap: if even it stays under minGapPx,
+					// the two notes can never become distinguishable.
 					mergeable = true;
 				}
 			}
@@ -170,14 +170,14 @@ class TurboDensity
 				continue;
 			}
 
-			// 新的一条代表：复制一份再入列，调用方数组里的对象保持原样。
-			// noteDensity 归一为 1：折叠数量是本次预处理的结果，不是谱面属性。
+			// A new representative: clone it so the caller's objects stay untouched.
+			// noteDensity is normalised to 1: the merged count is a result of this pass, not a chart property.
 			var rep:PreloadedChartNote = cloneNote(pn);
 			rep.noteDensity = 1;
 			out.push(rep);
 			anchor[idx] = out.length - 1;
 
-			// 无论是因为"分得开"还是因为"组已封顶"，这条代表都是该轨接下来的锚点。
+			// Whether it split or hit the group cap, this representative is the next anchor for the lane.
 			scratch.lastTime[idx] = rep.strumTime;
 			scratch.lastRate[idx] = rate;
 			scratch.lastSlowRate[idx] = rate;
@@ -187,11 +187,10 @@ class TurboDensity
 	}
 
 	/**
-	 * 浅拷贝一条 PreloadedChartNote。
-	 * 只在 Turbo 预处理阶段使用：调用方数组里的对象保持原样，
-	 * 折叠结果才有资格做到幂等、可重复、可指纹化。
+	 * Shallow copy of one PreloadedChartNote.
+	 * Turbo-only: the caller's objects stay untouched so the result stays idempotent and fingerprintable.
 	 */
-	static function cloneNote(src:PreloadedChartNote):PreloadedChartNote
+	public static function cloneNote(src:PreloadedChartNote):PreloadedChartNote
 	{
 		return {
 			strumTime: src.strumTime,
@@ -234,8 +233,8 @@ class TurboDensity
 	}
 
 	/**
-	 * 把已经合并长条/尾段逻辑排除在外的 tap 序列，转换为"每条代表 Note 代表多少条"。
-	 * 只用于诊断/测试。
+	 * Converts a tap sequence (with sustains/tails already excluded) into "how many notes each representative stands for".
+	 * Diagnostics / tests only.
 	 */
 	public static function representedTotal(notes:Array<PreloadedChartNote>):Int
 	{
@@ -246,3 +245,106 @@ class TurboDensity
 		return t;
 	}
 }
+
+/**
+ * Incremental version of collapseGhostNotes: folds while the notes are produced instead of
+ * materialising the whole DTO array first. The per-note test matches collapseGhostNotes (and
+ * delegates to the same helper), apart from one deliberate tightening: a note that is earlier
+ * than its representative on the same lane is never merged. Streamed input arrives in file
+ * order, and real charts contain a few out-of-order notes across sections; merging backwards
+ * would drop a real note from the combo / judgement / health totals. Skipping the merge only
+ * costs a few KB and keeps the judgement count correct, since collapses are counted by
+ * noteDensity either way.
+ * Usage: feed() while producing, read out at the end. Sustains and sustain heads are pushed
+ * straight through, as in the full-array version.
+ */
+class GhostCollapser
+{
+	public var out:Array<PreloadedChartNote> = [];
+	/** Total notes fed in (diagnostic). */
+	public var fedCount:Int = 0;
+
+	var laneCount:Int;
+	var rangeMs:Float;
+	var minGapPx:Float;
+	var pxPerMs:Float;
+	var slots:Int;
+	var lastTime:Array<Float>;
+	var lastRate:Array<Float>;
+	var lastSlowRate:Array<Float>;
+	var anchor:Array<Int>;
+
+	public function new(laneCount:Int, rangeMs:Float = 1.0, songSpeed:Float = 1.0, mania:Int = -1,
+		minGapPx:Float = TurboDensity.DEFAULT_MIN_GAP_PX)
+	{
+		if (laneCount <= 0) laneCount = 4;
+		if (!Math.isFinite(songSpeed) || songSpeed <= 0) songSpeed = 1.0;
+		if (!Math.isFinite(minGapPx) || minGapPx < 0) minGapPx = 0;
+		if (!Math.isFinite(rangeMs) || rangeMs < 0) rangeMs = 0;
+
+		var maniaScale:Float = 1.0;
+		#if !seiun_turbo_harness
+		maniaScale = Note.getManiaScale(mania);
+		#end
+		if (!Math.isFinite(maniaScale) || maniaScale <= 0) maniaScale = 1.0;
+
+		this.laneCount = laneCount;
+		this.rangeMs = rangeMs;
+		this.minGapPx = minGapPx;
+		pxPerMs = 0.45 * songSpeed * maniaScale;
+		slots = laneCount * 2;
+		lastTime = [for (i in 0...slots) -1e30];
+		lastRate = [for (i in 0...slots) 0.0];
+		lastSlowRate = [for (i in 0...slots) 0.0];
+		anchor = [for (i in 0...slots) -1];
+	}
+
+	public function feed(pn:PreloadedChartNote):Void
+	{
+		if (pn == null) return;
+		fedCount++;
+
+		// Sustains, tails and sustain heads never merge: tail trimming and the prev/next chain must stay intact.
+		if (pn.isSustainNote || pn.sustainLength > 0)
+		{
+			out.push(pn);
+			return;
+		}
+
+		var lane:Int = Std.int(Math.abs(pn.noteData));
+		if (lane >= laneCount) lane = lane % laneCount;
+		var idx:Int = (pn.mustPress ? 1 : 0) * laneCount + lane;
+		var rate:Float = pxPerMs * (pn.multSpeed > 0 ? pn.multSpeed : 1.0);
+
+		var mergeable:Bool = false;
+		if (anchor[idx] >= 0 && lastRate[idx] == rate && lastSlowRate[idx] > 0)
+		{
+			var dt:Float = pn.strumTime - lastTime[idx];
+			if (dt >= 0)
+			{
+				if (dt <= rangeMs)
+					mergeable = true;
+				else if (minGapPx > 0 && dt * lastSlowRate[idx] < minGapPx)
+					mergeable = true;
+			}
+		}
+
+		var prev:Null<PreloadedChartNote> = (anchor[idx] >= 0) ? out[anchor[idx]] : null;
+		if (mergeable && prev != null && prev.noteDensity < TurboDensity.MAX_REPRESENTED)
+		{
+			prev.noteDensity += 1;
+			return;
+		}
+
+		var rep:PreloadedChartNote = TurboDensity.cloneNote(pn);
+		rep.noteDensity = 1;
+		out.push(rep);
+		anchor[idx] = out.length - 1;
+		lastTime[idx] = rep.strumTime;
+		lastRate[idx] = rate;
+		lastSlowRate[idx] = rate;
+	}
+
+	public function finish():Array<PreloadedChartNote> return out;
+}
+

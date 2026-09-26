@@ -79,13 +79,6 @@ import openfl.filters.ShaderFilter;
 import sys.FileSystem;
 import sys.io.File;
 #end
-#if ONLINE_ALLOWED
-import online.client.GameClient;
-import online.client.OnlineSession;
-import online.client.ProfileStore;
-import online.shared.OnlineTypes;
-import online.shared.SeiunProtocol;
-#end
 
 
 #if VIDEOS_ALLOWED
@@ -109,9 +102,9 @@ import states.stages.SchoolEvilStage;
 import states.stages.TankStage;
 
 /**
- * 一趟数据层批量结算的累加器。
- * 同一个对象在一帧内被 fastSkipPastNotes 与物化路径共用, 帧末一次性交给
- * finishBulkFrame 做聚合表现 (避免逐条触发 popUpScore/RecalculateRating)。
+ * Accumulator for one data-level batch settlement pass.
+ * The same object is shared within a frame by fastSkipPastNotes and the materialisation path,
+ * then handed to finishBulkFrame once per frame for the aggregated presentation (avoids per-hit popUpScore/RecalculateRating).
  */
 typedef BulkAccumulator = {
 	var drainedHit:Int;
@@ -129,7 +122,7 @@ class PlayState extends MusicBeatState
 	public static var STRUM_X = 42;
 	public static var STRUM_X_MIDDLESCROLL = -278;
 
-	/** 多k: 当前谱面键数 (0 基, 3 = 4K, 8 = 9K, 17 = 18K)。 */
+	/** Multi-key: key count of the current chart (0-based; 3 = 4K, 8 = 9K, 17 = 18K). */
 	public static var mania:Int = 3;
 
 	public static var ratingStuff:Array<Dynamic> = [
@@ -195,7 +188,7 @@ class PlayState extends MusicBeatState
 	public var gfGroup:FlxSpriteGroup;
 	public static var curStage:String = '';
 	public static var isPixelStage:Bool = false;
-	/** 0.7.3 兼容：当前 UI 风格，例如 "normal" / "pixel" / 自定义 stageUI。 */
+	/** 0.7.3 compatibility: current UI style, e.g. "normal" / "pixel" / a custom stageUI. */
 	public static var stageUI:String = "normal";
 	public static var SONG:SwagSong = null;
 
@@ -205,19 +198,6 @@ class PlayState extends MusicBeatState
 	public static var storyWeek:Int = 0;
 	public static var storyPlaylist:Array<String> = [];
 	public static var storyDifficulty:Int = 1;
-	/** SeiunEngine 联机对局标记 (离线路径永远为 false)。 */
-	public static var seiunOnline:Bool = false;
-	public static var seiunSpectate:Bool = false;
-	/** 联机服务器已发 GAME_START：跳过本地 ready/set/go，按服务器 3-2-1 开局。 */
-	public static var seiunSkipLocalCountdown:Bool = false;
-	#if ONLINE_ALLOWED
-	static var prevOnlineJudgement:Array<Int> = null;
-	static var prevOnlineJudgementPreset:String = "Leather Engine";
-	static var prevOnlineMarvelous:Bool = true;
-	// osu! 尾判已随离线侧一并移除 (原 prevOnlineTailOn / prevOnlineTailMult)。
-	static var prevOnlineCompat:Bool = false;
-	static var prevOnlineCompatEngine:String = "Auto";
-	#end
 
 	/** Difficulty text for HUD/pause: prefers the chart's own difficulty
 	 *  name (imported osu!/Malody charts), falls back to the current
@@ -236,17 +216,17 @@ class PlayState extends MusicBeatState
 	public var vocalsPlayer:FlxSound;
 	public var opponentVocals:FlxSound;
 
-	/** 旧名兼容：0.6.3/0.7.3 的 vocalsOpponent == 现在的 opponentVocals。 */
+	/** Legacy alias: 0.6.3/0.7.3 vocalsOpponent == the current opponentVocals. */
 	public var vocalsOpponent(get, set):FlxSound;
 	function get_vocalsOpponent():FlxSound return opponentVocals;
 	function set_vocalsOpponent(v:FlxSound):FlxSound return opponentVocals = v;
 
-	/** 1.0.4 兼容：playerVocals == 现在的 vocalsPlayer。 */
+	/** 1.0.4 compatibility: playerVocals == the current vocalsPlayer. */
 	public var playerVocals(get, set):FlxSound;
 	function get_playerVocals():FlxSound return vocalsPlayer;
 	function set_playerVocals(v:FlxSound):FlxSound return vocalsPlayer = v;
 
-	/** 0.7.3 兼容：独立 instrumental 音轨别名，指向当前音乐。 */
+	/** 0.7.3 compatibility: standalone instrumental alias pointing at the current music. */
 	public var inst(get, set):FlxSound;
 	function get_inst():FlxSound return FlxG.sound.music;
 	function set_inst(v:FlxSound):FlxSound return FlxG.sound.music = v;
@@ -270,50 +250,50 @@ class PlayState extends MusicBeatState
 	private var _noteSortArr:Array<Note> = [];
 	private var _noteSortIdx:Array<Int> = [];
 	private var _noteSortRange:Int = 0;
-	/** 缓存的排序比较器 (每 state 只创建一次, 避免每帧 lambda 分配)。 */
+	/** Cached sort comparator (created once per state to avoid a per-frame lambda allocation). */
 	private var _cmpNoteY:Note->Note->Int = null;
 	private var _cmpIntAsc:Int->Int->Int = null;
 	/** True while this PlayState has disabled the hxcpp GC (restored in destroy). */
 	private var _gcDisabledForSong:Bool = false;
-	/** H-Slice 风格离屏剔除: 每帧重算的滚动方向可视距离 (世界像素, 含缩放/旋转余量)。 */
+	/** Off-screen cull distance along the scroll direction, recomputed every frame (world pixels, including zoom/rotation slack). */
 	private var _cullDistPlayer:Float = 2200;
 	private var _cullDistOpponent:Float = 2200;
-	/** 存活 Note 计数: 由每帧 update 钩子刷新, 生成循环 O(1) 读取 (替代 countLiving 全表扫描)。 */
+	/** Living note count, refreshed by the per-frame update hook so the spawn loop reads it in O(1) instead of scanning countLiving(). */
 	private var _frameAliveTally:Int = 0;
 	private var _lastAliveTally:Int = 0;
-	/** notes.members 空槽扫描游标: 让追加 Note 从 O(n) (indexOf+getFirstNull) 降为均摊 O(1)。 */
+	/** Scan cursor for empty notes.members slots: turns appending notes from O(n) (indexOf + getFirstNull) into amortised O(1). */
 	private var _noteSlotCursor:Int = 0;
 
-	// ── 命中表现层合并 (万级 NPS 降阶核心): 分数文本/评级弹窗/ms 文本 每帧最多刷新一次 ──
-	/** 无脚本时 updateScore 只置脏标记, 帧末 flushScoreText() 统一重建一次文本。 */
+	// ── hit presentation merging (the core dense-chart optimization): score text / rating popup / ms text refresh at most once per frame ──
+	/** Without scripts updateScore() only sets a dirty flag; flushScoreText() rebuilds the text once at frame end. */
 	var _scoreTextDirty:Bool = false;
 	var _scoreZoomDirty:Bool = false;
-	/** ms 判定文本 (kadems) 同帧合并: 只保留最后一次命中的差值。 */
+	/** ms judgement text (kadems) merged per frame: only the last hit difference of the frame is kept. */
 	var _msTextDirty:Bool = false;
 	var _pendingMsText:String = null;
 	var _pendingMsColor:FlxColor = 0xFFFFFFFF;
-	/** 评级弹窗合并: 高密度命中帧只展示最新一次 (低密度帧保持原版逐击弹窗)。 */
+	/** Rating popup merging: dense frames show only the newest popup (sparse frames keep the stock per-hit popup). */
 	var _popupPending:Bool = false;
 	var _pendingRatingImage:String = null;
-	/** 每帧前 POPUP_IMMEDIATE_HITS 个命中保持原版逐击弹窗 (正常谱面行为完全不变)。 */
+	/** The first POPUP_IMMEDIATE_HITS hits of a frame keep the stock per-hit popup (normal charts are unaffected). */
 	static inline var POPUP_IMMEDIATE_HITS:Int = 8;
 	var _popupImmediateBudget:Int = POPUP_IMMEDIATE_HITS;
-	/** 每帧溅射生成预算 + 存活硬上限 (手动连击风暴下池化不再无界膨胀)。 */
+	/** Per-frame splash spawn budget and living cap (pooling cannot grow without bound during manual combo storms). */
 	static inline var SPLASH_FRAME_BUDGET:Int = 16;
 	public static inline var MAX_SPLASH_ALIVE:Int = 256;
 	var _splashBudgetLeft:Int = SPLASH_FRAME_BUDGET;
-	/** botplay 下角色 sing 动画 / strum 静态化的"每轨每帧一次"门控 (与 strumsHit 同步重置)。 */
+	/** Once-per-lane-per-frame gates for botplay character sing animations / strum static resets (reset with strumsHit). */
 	var _botCharAnim:Array<Bool> = [false, false, false, false, false, false, false, false];
 	var _botStrumStatic:Array<Bool> = [false, false, false, false, false, false, false, false];
-	/** 对手侧同理: sing 动画与 confirm 动画每轨每帧一次; static 化整帧一次。 */
+	/** Same for the opponent side: sing and confirm animations once per lane per frame; static resets once per frame. */
 	var _oppCharAnim:Array<Bool> = [false, false, false, false, false, false, false, false];
 	var _oppStrumConfirm:Array<Bool> = [false, false, false, false, false, false, false, false];
 	var _oppStaticSet:Bool = false;
-	/** 当前处于离屏剔除驻留状态的 Note 数 (trace 观测用)。 */
+	/** Notes currently culled off-screen (trace diagnostics). */
 	var _culledCount:Int = 0;
-	/** 本帧数据级批量结算中累计的 Hurt Note 数 (finishBulkFrame 消费后清零)。 */
+	/** Hurt notes accumulated in this frame's data-level settlement (cleared after finishBulkFrame consumes them). */
 	var bulkHurtCount:Int = 0;
-	/** 存活音符紧凑列表: 物化时追加, 回收时 O(1) swap-remove; 每帧只需遍历它。 */
+	/** Compact list of living notes: appended on materialisation, swap-removed on recycle; the frame iterates only this. */
 	var activeNotes:Array<Note> = [];
 	/** Reusable key-state buffers for keysCheck (avoid per-frame allocations on Android). */
 	private var _keyHold:Array<Bool> = [];
@@ -340,41 +320,49 @@ class PlayState extends MusicBeatState
 	/** Same-frame mobile release queue: preserve press→release order when a fast tap down+up lands in one frame. */
 	private var _mobileReleaseQueue:Array<Int> = [];
 	/**
-	 * 可视物化地平线 (ms): 超出该时长的音符从物化到被离屏剔除之间根本不会进入屏幕,
-	 * 构造精灵纯属浪费。由 refreshNoteCullRanges() 按真实屏幕几何 + 当前流速推导。
-	 *
-	 * 初值刻意取小: 倒计时开始前 refreshNoteCullRanges 还没跑过, 若沿用 2000ms,
-	 * 低流速谱面第一帧就会按整整 2 秒的窗口把成千上万条 Note 全部物化。
+	 * Visible materialisation horizon (ms): notes further away than this never reach the screen between
+ * materialisation and the off-screen cull, so building a sprite for them is pure waste. Derived by
+ * refreshNoteCullRanges() from the real screen geometry and the current scroll speed.
+ *
+ * The initial value is deliberately small: refreshNoteCullRanges() has not run before the countdown,
+ * and a 2000ms default would materialise thousands of notes on the first frame of a slow chart.
 	 */
 	var _visHorizonMs:Float = 250;
-	/** 上一次数据级批量推进消费的条目数 —— 引擎"是否跟不上到达速率"的过载信号。 */
+	/** Entries consumed by the previous data-level advance -- the overload signal ("is the engine falling behind?"). */
 	var _bulkDrainedLast:Int = 0;
-	/** 过载状态滞回计数: drain 显著非零时置满, 之后逐帧衰减 —— 防止模式来回抖动。 */
+	/** Overload hysteresis counter: set high when drain is clearly non-zero, then decays -- prevents mode flapping. */
 	var _overloadFrames:Int = 0;
 
-	// ── Turbo 模式: 屏幕像素级谱面合并 ──
-	/** Turbo 总开关是否在本局生效。 */
+	// ── Turbo: screen-pixel-level chart merging ──
+	/** Whether Turbo is active for this play. */
 	public var turboModeActive:Bool = false;
-	/** 进入歌曲前保存的 perfMode/bulkSkip/fastSort, 退出时恢复 (Turbo 不持久篡改用户设置)。 */
+	/** perfMode/bulkSkip/fastSort saved before the song and restored afterwards (Turbo never persists its overrides). */
 	private var _turboPrevPerf:Bool = false;
 	private var _turboPrevBulk:Bool = false;
 	private var _turboPrevFastSort:Bool = false;
+	#if ONLINE_ALLOWED
+	/** User values of the runtime Note optimisations, saved while silenced online. */
+	private var _onlinePrevPerf:Bool = false;
+	private var _onlinePrevBulk:Bool = false;
+	private var _onlinePrevFastSort:Bool = false;
+	private var _onlineNoteOptsOff:Bool = false;
+	#end
 	/**
-	 * Turbo 预处理把"屏幕上分不开"的 tap 折叠成代表 Note, 每条代表携带折叠数量
-	 * (noteDensity)。同时存活精灵数因此只由流速与屏幕几何决定, 与谱面密度无关。
+	 * Turbo pre-processing folds taps that cannot be told apart on screen into representative notes, each carrying
+ * its merged count (noteDensity). The living sprite count then depends only on scroll speed and screen geometry.
 	 */
-	/** 本局参与合并的 tap 条数 (未折叠前), 日志/诊断用。 */
+	/** Raw tap count of this play before folding (per unmerged tap), for logs/diagnostics. */
 	private var _turboRawTapCount:Int = 0;
-	/** 每轨 cos/sin 缓存: 万级音符逐帧 trig → 每轨每帧一次 (方向本就按轨道常量)。 */
+	/** Per-lane cos/sin cache: per-note per-frame trig becomes once per lane per frame (the direction is a lane constant anyway). */
 	var _playerLaneCos:Array<Float> = [];
 	var _playerLaneSin:Array<Float> = [];
 	var _oppLaneCos:Array<Float> = [];
 	var _oppLaneSin:Array<Float> = [];
 	/**
-	 * 运行时像素级归属闸门状态 (每条 lane+side 一组) + 共享的数据层结算累加器。
+	 * Runtime pixel-level keep-gate state (one per lane+side) plus the shared data-level settlement accumulator.
 	 *
-	 * 加载期折叠已经按"屏幕像素间距"把重叠的 tap 收进代表 Note; 运行时闸门是第二道:
-	 * 若运行中 songSpeed 被事件/缓动改写, 折叠结果与当前流速不再匹配时仍然有界。
+ * Load-time folding already packed overlapping taps into representatives by screen pixel gap; the runtime
+ * gate is the second line of defence if songSpeed is rewritten mid-song by an event or tween.
 	 */
 	static inline var TURBO_KEEP_GAP_PX:Float = 4.0;
 	private var _laneLastKeptTime:Array<Float> = [];
@@ -422,7 +410,7 @@ class PlayState extends MusicBeatState
 	public var health:Float = 1;
 	// Displayed health used for smooth healthbar transitions
 	public var displayHealth:Float = 1;
-	/** 0.7.3 兼容：图标受伤动画开关（iconShake 等脚本会读取）。 */
+	/** 0.7.3 compatibility: icon hurt animation toggle (read by scripts such as iconShake). */
 	public var iconsAnimations:Bool = true;
 	public var combo:Int = 0;
 
@@ -430,7 +418,7 @@ class PlayState extends MusicBeatState
 	public var healthBar:Dynamic;
 	var songPercent:Float = 0;
 
-	public var timeBarBG:AttachedSprite; //草你妈的LUA
+	public var timeBarBG:AttachedSprite; // curse this Lua API
 	public var timeBar:Dynamic;
 
 
@@ -473,7 +461,14 @@ class PlayState extends MusicBeatState
 	public var instakillOnMiss:Bool = false;
 	public var cpuControlled(default, set):Bool = false;
 	inline function set_cpuControlled(value:Bool):Bool {
-		if (ClientPrefs.data.turboMode) value = true; // Turbo 模式强制锁死 botplay
+		if (ClientPrefs.data.turboMode) value = true; // Turbo forces botplay on
+		#if ONLINE_ALLOWED
+		// set_cpuControlled() tells the room when this client turns botplay on (`send` is a no-op
+		// while disconnected, and `!cpuControlled` mirrors the early return for an already-
+		// botplayed player).
+		if (value && !cpuControlled)
+			online.GameClient.send("botplay");
+		#end
 		cpuControlled = value;
 		if (botplayTxt != null)
 			botplayTxt.visible = (!ClientPrefs.data.hideHud) ? cpuControlled : false;
@@ -489,56 +484,29 @@ class PlayState extends MusicBeatState
 	public var botplayTxt:FlxText;
 	public var replaySine:Float = 0;
 	public var replayTxt:FlxText;
-	#if ONLINE_ALLOWED
-	public var onlineBadgeTxt:FlxText;
-	var onlineWaitSyncTxt:FlxText = null;
-	/** 起跑门闩: 本机玩家是否已按下 空格/回车 确认 (确认后等其他人)。 */
-	var onlineGateConfirmed:Bool = false;
-	/** 观战: 被跟随玩家 (右侧主角色) 的会话 id / 设备 id。 */
-	var onlineFollowedId:String = "";
-	var onlineFollowedDeviceId:String = "";
-	/** 起跑门闩进度 [已确认, 总人数], 由服务器广播刷新。 */
-	var onlineGateConfirmedCount:Int = 0;
-	var onlineGateTotalCount:Int = 0;
-	/** 本机谱面时间轴是否已上报 (上报后进入门闩确认阶段)。 */
-	var onlineTimelineSent:Bool = false;
-	/** PsychOnline 式: 玩家 id → 对局内角色实例 (自己 + 对手主角色 + 额外玩家角色)。 */
-	public var onlinePlayerChars:Map<String, Character> = new Map<String, Character>();
-	/** 玩家 id → 头顶用户名铭牌。 */
-	public var onlineNameplates:Map<String, FlxText> = new Map<String, FlxText>();
-	var onlineNameplateGroup:FlxTypedGroup<FlxText> = null;
-	/** 左侧主角色 (对手) 的玩家 id; 其余远端玩家渲染为额外角色。 */
-	var onlineMainOpponentId:String = "";
-	/** 额外角色在左侧的排列序号 (决定 x 偏移)。 */
-	var onlineExtraCharIndex:Int = 0;
-	/** 对手实时分数 HUD (PsychOnline 式: 右上显示远端玩家分数)。 */
-	public var remoteScoreTxt:FlxText;
-	public var remoteScores:Map<String, Dynamic> = new Map<String, Dynamic>();
-	var remoteScoreSig:String = "";
-	#end
 
-	/** LeatherEngine 移植: 回放判定手感还原提示 */
+	/** Replay judging-feel hint (from LeatherEngine). */
 	public var judgeRestoreTxt:FlxText;
-	/** osu! 尾判: HUD 开启标识 (一眼确认开关与构建生效) */
+	/** osu! tail judgement: HUD badge showing that the option is enabled. */
 	//public var tailBadgeTxt:FlxText;
 	var botplayUsed:Bool = false;
 	var strumsHit:Array<Bool> = [false, false, false, false, false, false, false, false];
 	var _suppressNoteAnim:Bool = false;
 	public var replayExam:Replay;
-	/** 回放模式按键状态数组 (由 replayApplyInput 设置) */
+	/** Replay-mode key state array (filled by replayApplyInput). */
 	private var _hold:Array<Bool> = [];
 	private var _press:Array<Bool> = [];
 	private var _release:Array<Bool> = [];
 
-	// ---- osu! 尾判: 每轨当前按住的"长条头部"与尾端时间 ----
-	/** 每轨活动长条的尾端时间 (0 = 无活动长条) */
+	// ---- osu! tail judgement: per-lane active sustain head and tail end time ----
+	/** Tail end time of the active sustain on this lane (0 = none). */
 	//private var activeTailEnd:Array<Float> = [];
-	/** 每轨活动长条的头部 Note (取 hitHealth/missHealth 用) */
+	/** Head note of the active sustain on this lane (for hitHealth/missHealth). */
 	//private var activeHoldNote:Array<Note> = [];
-	/** 尾判判定窗口 = 普通判定窗口 × 倍率 (ClientPrefs.tailWindowMult, 默认 2.0; 兜底常量仅防异常值) */
+	/** Tail window = normal judgement window x multiplier (ClientPrefs.tailWindowMult, default 2.0; the constant is only a guard). */
 	//private static final TAIL_WINDOW_MULT:Float = 2.0;
 
-	/** 读取当前生效的尾判窗口倍率 (设置异常时回退默认 2.0)。 */
+	/** Current tail window multiplier (falls back to 2.0 on an invalid setting). */
 	//static inline function tailWindowMult():Float
 	//{
 	//	var m:Float = ClientPrefs.data.tailWindowMult;
@@ -546,50 +514,6 @@ class PlayState extends MusicBeatState
 	//		return TAIL_WINDOW_MULT;
 	//	return m;
 	//}
-
-	#if ONLINE_ALLOWED
-	/** 当前联机对局的暂停策略 (everyone / hostOnly / disabled; 离线/无房间恒为 everyone)。 */
-	public static function onlinePausePolicy():String
-	{
-		if (!OnlineSession.active || OnlineSession.settings == null)
-			return online.shared.OnlineTypes.OnlineConst.PAUSE_EVERYONE;
-		var p:String = OnlineSession.pausePolicy;
-		if (p == null || p.length == 0)
-			return online.shared.OnlineTypes.OnlineConst.PAUSE_EVERYONE;
-		return p;
-	}
-
-	/** 本地玩家是否允许主动暂停 (仅房主/禁止暂停时, 非房主不允许)。 */
-	public static function onlineCanPauseLocally():Bool
-	{
-		if (!seiunOnline || !OnlineSession.active)
-			return true;
-		var p:String = onlinePausePolicy();
-		if (p == online.shared.OnlineTypes.OnlineConst.PAUSE_DISABLED)
-			return false;
-		if (p == online.shared.OnlineTypes.OnlineConst.PAUSE_HOST_ONLY && !OnlineSession.isHost)
-			return false;
-		return true;
-	}
-
-	/** 暂停被策略拦截时的短暂提示 (HUD 顶部, 1.8 秒后淡出)。 */
-	var onlinePauseNoticeTxt:FlxText = null;
-	var onlinePauseNoticeTimer:Float = 0;
-	function showOnlinePauseNotice(text:String):Void
-	{
-		if (onlinePauseNoticeTxt == null)
-		{
-			onlinePauseNoticeTxt = new FlxText(0, 68, FlxG.width, "", 16);
-			onlinePauseNoticeTxt.setFormat(Paths.languageFont(), 16, FlxColor.fromRGB(255, 200, 120), CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
-			onlinePauseNoticeTxt.scrollFactor.set();
-			onlinePauseNoticeTxt.cameras = [camHUD];
-			add(onlinePauseNoticeTxt);
-		}
-		onlinePauseNoticeTxt.text = text;
-		onlinePauseNoticeTxt.alpha = 1;
-		onlinePauseNoticeTimer = 1.8;
-	}
-	#end
 
 
 	public var iconP1:HealthIcon;
@@ -668,14 +592,14 @@ class PlayState extends MusicBeatState
 	public static var daPixelZoom:Float = 6;
 	private var singAnimations:Array<String> = ['singLEFT', 'singDOWN', 'singUP', 'singRIGHT'];
 
-	/** 多k: 按 Note 的快照 k 值/轨道取角色动作, 支持 Lua 自定义 (customCharAnim)。 */
+	/** Multi-key: character animation from the note's snapshot key count/lane, with Lua customCharAnim support. */
 	inline function getSingAnim(note:Note):String
 	{
 		if (note.customCharAnim != null && note.customCharAnim.length > 0) return note.customCharAnim;
 		return 'sing' + EKData.getAnim(note.mania, note.laneData());
 	}
 
-	/** 多k: 按当前 k 值/轨道取角色动作。 */
+	/** Multi-key: character animation for the current key count/lane. */
 	inline function getSingAnimDir(dir:Int):String
 	{
 		return 'sing' + EKData.getAnim(mania, Std.int(Math.abs(dir)) % Note.ammo[mania]);
@@ -698,7 +622,7 @@ class PlayState extends MusicBeatState
 
 	//Achievement shit
 	var keysPressed:Array<Bool> = [];
-	/** 多k 移动端: 触摸当前按住的轨道 (FlxHitbox 直接驱动, 供 keysCheck 长条按住判定用)。 */
+	/** Multi-key touch: currently held touch lanes (driven by FlxHitbox, used by keysCheck for sustains). */
 	public var mobileHeld:Array<Bool> = [];
 	var boyfriendIdleTime:Float = 0.0;
 	var boyfriendIdled:Bool = false;
@@ -727,10 +651,10 @@ class PlayState extends MusicBeatState
 	// stores the last combo score objects in an array
 	public static var lastScore:Array<FlxSprite> = [];
 
-	/** 评级弹窗对象池 */
+	/** Rating popup pool. */
 	var ratingPopup:RatingPopup;
 
-	/** 错键时间点 (用于联机结算展示)。 */
+	/** Wrong-lane press times (shown in the online results). */
 	public var wrongLaneTimes:Array<Float> = [];
 	public var NoteMs:Array<Float> = [];
 	public var NoteTime:Array<Float> = [];
@@ -774,24 +698,14 @@ class PlayState extends MusicBeatState
 		// difficulty displays never come out blank.
 		if (CoolUtil.difficulties.length < 1)
 			CoolUtil.difficulties = CoolUtil.defaultDifficulties.copy();
-		#if ONLINE_ALLOWED
-		// 离线路径必须复位联机标记, 防止上一局联机状态污染单机成绩。
-		if (!online.client.OnlineSession.active)
-			seiunOnline = false;
-		if (seiunSkipLocalCountdown)
-		{
-			seiunSkipLocalCountdown = false;
-			skipCountdown = true;
-		}
-		#end
 
 
 		//trace('Playback Rate: ' + playbackRate);
 		// Register song entry before clearing cache to allow LRU tracking
 		GfxPolicy.onPlayStateCreate(SONG != null && SONG.song != null ? SONG.song : 'unknown');
 		Paths.clearStoredMemory();
-		// 旧 state 已在 switchState 中 destroy，useCount 已归零；
-		// 这里立即清掉上一局残留的 currentTrackedAssets，避免反复重开/换歌后图片缓存只增不减。
+		// The old state was destroyed by switchState, so its useCount is already zero;
+		// clear the previous song's currentTrackedAssets here so repeated restarts/song switches cannot grow the image cache.
 		Paths.clearUnusedMemory();
 		// for lua
 		instance = this;
@@ -799,16 +713,16 @@ class PlayState extends MusicBeatState
 		debugKeysCharacter = ClientPrefs.copyKey(ClientPrefs.keyBinds.get('debug_2'));
 		PauseSubState.songName = null; //Reset to default
 		playbackRate = ClientPrefs.getGameplaySetting('songspeed', 1);
-		// replay 模式下 playbackRate 将在 replayExam.loadFromFile() 时从 StateRecord 恢复
-		// H-Slice 风格 Note 上限: 0 = 无限 (仅高级用户)
+		// In replay mode playbackRate is restored from the StateRecord by replayExam.loadFromFile()
+		// Note cap: 0 = unlimited (advanced users only)
 		noteLimit = ClientPrefs.data.limitNotes;
 		if (noteLimit <= 0) noteLimit = 2147483647;
 
 
 		EKData.loadConfig();
 		mania = (SONG.mania == null) ? Note.defaultMania : EKData.clampMania(SONG.mania);
-		SONG.mania = mania; // 写回钳制结果, 避免谱面/编辑器与游戏不一致
-		// 0.7.3/1.0.4 兼容: 每条新谱面重置全局 RGB 色板, 避免跨谱面/跨 mod 串色
+		SONG.mania = mania; // write the clamped value back so chart/editor and gameplay agree
+		// 0.7.3/1.0.4 compatibility: reset the global RGB palettes per chart to avoid colour bleed across charts/mods
 		Note.globalRgbShaders = [];
 		var allKeybinds:Array<Array<Dynamic>> = Keybinds.fill();
 		keysArray = (mania >= 0 && mania < allKeybinds.length) ? allKeybinds[mania] : allKeybinds[3];
@@ -822,12 +736,8 @@ class PlayState extends MusicBeatState
 			'NOTE_RIGHT'
 		];
 
-		//Ratings — LeatherEngine 移植: 判定窗口由 judgementTimings 驱动
+		//Ratings - judgement windows are driven by judgementTimings (from LeatherEngine).
 		buildRatingsData();
-
-		#if ONLINE_ALLOWED
-		onlineApplyRoomSettings();
-		#end
 
 		// For the "Just the Two of Us" achievement
 		for (i in 0...keysArray.length)
@@ -845,22 +755,43 @@ class PlayState extends MusicBeatState
 		instakillOnMiss = ClientPrefs.getGameplaySetting('instakill', false);
 		practiceMode = ClientPrefs.getGameplaySetting('practice', false);
 		turboModeActive = ClientPrefs.data.turboMode;
+		#if ONLINE_ALLOWED
+		// Online play needs real per-note hit reporting: Turbo forces cpuControlled and settles through
+		// bulkSettleNote without noteHit, which conflicts with the shared health bar and per-sid
+		// scoring. Disable it for this session only, leaving the persisted preference untouched.
+		// Single-player uses the persisted setting again after leaving the online session.
+		if (turboModeActive && online.GameClient.isConnected()) turboModeActive = false;
+		// Online: silence the runtime Note optimisations too (perfMode / bulkSkip / fastSort).
+		// They bypass the only two reporting points (goodNoteHit / noteMiss), so the room
+		// would see the local player standing still while combo and health keep growing.
+		// Memory only: user settings are saved here and restored in destroy().
+		if (online.GameClient.isConnected())
+		{
+			_onlinePrevPerf = ClientPrefs.data.perfMode;
+			_onlinePrevBulk = ClientPrefs.data.bulkSkip;
+			_onlinePrevFastSort = ClientPrefs.data.fastSort;
+			_onlineNoteOptsOff = true;
+			ClientPrefs.data.perfMode = false;
+			ClientPrefs.data.bulkSkip = false;
+			ClientPrefs.data.fastSort = false;
+		}
+		#end
 		if (turboModeActive)
 		{
-			// Turbo = 强制锁定 botplay, 无需考虑手动/回放/联机分支。
+			// Turbo forces botplay, so manual/replay/online branches do not apply.
 			cpuControlled = true;
 			playOpponent = false;
 			practiceMode = false;
 			replayMode = false;
-			// 内存中强制 perfMode/bulkSkip/fastSort, 退出歌曲时恢复, 不写入用户设置。
+			// Force perfMode/bulkSkip/fastSort in memory only; restored on song exit, never written to the user's settings.
 			_turboPrevPerf = ClientPrefs.data.perfMode;
 			_turboPrevBulk = ClientPrefs.data.bulkSkip;
 			_turboPrevFastSort = ClientPrefs.data.fastSort;
 			ClientPrefs.data.perfMode = true;
 			ClientPrefs.data.bulkSkip = true;
 			ClientPrefs.data.fastSort = true;
-			// Turbo 硬上限：真实 Note 最多同时存活 4096 个，保证高密度谱仍走真实 Note
-			// 渲染但不会物化 7 万/秒的完整可见窗口。
+			// Turbo hard cap: at most 4096 living real notes, so dense charts still render real notes
+			// without materialising the full visible window at 70k notes/s.
 			if (noteLimit > 4096) noteLimit = 4096;
 		}
 		cpuControlled = ClientPrefs.getGameplaySetting('botplay', false);
@@ -870,17 +801,17 @@ class PlayState extends MusicBeatState
     	        if (cpuControlled) playOpponent = false;
                 if (turboModeActive) { cpuControlled = true; playOpponent = false; practiceMode = false; }
                 guitarHeroSustains = ClientPrefs.data.guitarHeroSustains;
-		#if ONLINE_ALLOWED
-		// 联机封堵: 屏蔽离线预设的 botplay/practice/instakill 读路径, 并强制关闭 (对手是远端真人, playOpponent 一并关)。
-		ClientPrefs.onlineMaskCheats = seiunOnline;
-		if (seiunOnline)
-		{
-			cpuControlled = false;
-			practiceMode = false;
-			instakillOnMiss = false;
-			playOpponent = false;
-		}
-		#end
+                #if ONLINE_ALLOWED
+                // Online must pick which side owns the local chart from the local bfSide. The
+                // equivalent is playOpponent, but it only ever read the single-player 'playOpponent'
+                // setting, so a dad-side player (bfSide=false) still played the BF chart, while dad
+                // charts are never auto-hit online (opponentAutoHitAllowed=false), leaving that
+                if (online.GameClient.isConnected()) {
+                        var onlineSelf = online.GameClient.getPlayerSelf();
+                        if (onlineSelf != null)
+                                playOpponent = !onlineSelf.bfSide;
+                }
+                #end
                 replayExam = new Replay();
                 add(replayExam);
                 if (replayMode) {
@@ -898,16 +829,11 @@ class PlayState extends MusicBeatState
 					Language.get("replaySettingsRestoredMsg", "This replay restores the original judgement settings used when it was recorded, so the score stays accurate.\n\n") + rInfo,
 					'Warning');
 			}
-			// 回放模式下强制关闭 botplay/practice 防止冲突
+			// Botplay and practice mode are forced off in replay mode to avoid conflicts
 			cpuControlled = false;
 			practiceMode = false;
                 } else if(!playOpponent) {
-                        #if ONLINE_ALLOWED
-                          // 联机局始终录制回放 (供结算页查看/保存回放, 异步模式随成绩上报)。
-                          if (ClientPrefs.data.saveReplayData || seiunOnline)
-                          #else
                           if (ClientPrefs.data.saveReplayData)
-                          #end
                               replayExam.startRecording();
                 }
 
@@ -923,7 +849,7 @@ class PlayState extends MusicBeatState
 		FlxG.cameras.add(camHUD, false);
 		FlxG.cameras.add(camOther, false);
 		grpNoteSplashes = new FlxTypedGroup<NoteSplash>();
-		NoteSplash.liveCount = 0; // 新一局: 溅射存活计数归零 (上一局实例随 state 销毁)
+		NoteSplash.liveCount = 0; // new play: reset the living splash count (the previous instances were destroyed with the state)
 
 		FlxG.cameras.setDefaultDrawTarget(camGame, true);
 		CustomFadeTransition.nextCamera = camOther;
@@ -983,13 +909,6 @@ class PlayState extends MusicBeatState
 			}
 		}
 		SONG.stage = curStage;
-		#if ONLINE_ALLOWED
-		// 联机房间舞台覆盖: 房主指定的房间舞台优先于歌曲自带舞台
-		if (online.client.OnlineSession.active
-			&& online.client.OnlineSession.stageName != null
-			&& online.client.OnlineSession.stageName.length > 0)
-			curStage = online.client.OnlineSession.stageName;
-		#end
 
 		var stageData:StageFile = StageData.getStageFile(curStage);
 		if(stageData == null) { //Stage couldn't be found, create a dummy stage for preventing a crash
@@ -1094,8 +1013,8 @@ class PlayState extends MusicBeatState
 		#end
 
 		// ---- GLOBAL SCRIPTS (single pass over folders for both Lua & HScript) ----
-		// 0.6.3/0.7.3 保持旧顺序：在角色创建前加载；
-		// 1.0.4 模式延后到角色/谱面生成后，兼容 104 风格脚本在顶层访问 dad/boyfriend/notes。
+		// 0.6.3/0.7.3 keep the legacy order: loaded before the characters;
+		// 1.0.4 defers them until after the characters and chart exist, so 104-style scripts can access dad/boyfriend/notes at the top level.
 		if (!CompatEngine.is104())
 			loadGlobalAndStageScripts();
 
@@ -1165,9 +1084,16 @@ class PlayState extends MusicBeatState
 		startCharacterLua(boyfriend.curCharacter);
 
 		#if ONLINE_ALLOWED
-		// 联机对局 (PsychOnline 式): 全员按各自 skinData 替换角色 + 头顶铭牌。
-		if (online.client.OnlineSession.active)
-			onlineInitPlayerCharacters();
+		if (online.GameClient.isConnected())
+		{
+			syncOnlineCharacters();
+			// Ready gating + message registration: while connected the countdown is held until the room
+			// broadcasts "startSong". registerMessages() is installed here so no room message can be
+			// missed while the chart is still loading.
+			canStart = false;
+			spawnWaitReadyOverlay();
+			registerMessages();
+		}
 		#end
 
 		var camPos:FlxPoint = new FlxPoint(girlfriendCameraOffset[0], girlfriendCameraOffset[1]);
@@ -1222,7 +1148,7 @@ class PlayState extends MusicBeatState
 		}
 
 		Conductor.songPosition = -5000;
-		// 进入游玩时重置全局音频偏移，避免编辑器里残留的 Conductor.offset 带进来
+		// Reset the global audio offset on entering gameplay so a leftover Conductor.offset from the editor cannot leak in
 		var songOff:Dynamic = (PlayState.SONG != null && Reflect.hasField(PlayState.SONG, 'offset'))
 			? Reflect.field(PlayState.SONG, 'offset') : null;
 		Conductor.offset = (songOff != null && !Math.isNaN(Std.parseFloat(Std.string(songOff))))
@@ -1261,7 +1187,7 @@ class PlayState extends MusicBeatState
 		else
 			add(timeBarBG);
 
-		// 兼容模式使用 0.7.3 Bar 类，非兼容模式使用原始 FlxBar
+		// Compatibility mode uses the 0.7.3 Bar class; otherwise the stock FlxBar
 		if (CompatEngine.isModern()) {
 			var compatTimeBar:objects.Bar = new objects.Bar(0, timeTxt.y + (timeTxt.height / 4), 'timeBar', function() return songPercent, 0, 1);
 			compatTimeBar.scrollFactor.set();
@@ -1269,7 +1195,7 @@ class PlayState extends MusicBeatState
 			compatTimeBar.alpha = 0;
 			compatTimeBar.visible = showTime;
 			timeBar = compatTimeBar;
-			timeBarBG.visible = false; // Bar 自带背景
+			timeBarBG.visible = false; // the Bar class draws its own background
 			uiGroup.add(timeBar);
 			uiGroup.add(timeTxt);
 		} else {
@@ -1301,15 +1227,15 @@ class PlayState extends MusicBeatState
 
 		var splash:NoteSplash = new NoteSplash(100, 100, 0);
 		grpNoteSplashes.add(splash);
-		// 1.0.4 加载顺序: alpha 不能为 0 (否则 Flixel 会跳过渲染, 图集/配置不会真正预加载),
-		// 用 0.000001 让这个 splash 在 create 阶段就把溅射图集 + txt/json 配置读进缓存,
-		// 避免第一次击键时才加载导致卡顿。
+		// 1.0.4 loading order: alpha must not be 0 (Flixel would skip rendering and never preload the atlas/config),
+		// so 0.000001 makes this splash load the splash atlas and its txt/json config into the cache during create()
+		// instead of stalling on the first key press.
 		splash.alpha = 0.000001;
 
 		opponentStrums = new FlxTypedGroup<StrumNote>();
 		playerStrums = new FlxTypedGroup<StrumNote>();
 
-		// 评级弹窗对象池 — 预分配精灵复用，替换 popUpScore 中频繁 new/destroy 的开销
+		// Rating popup pool: preallocated sprites replace the frequent new/destroy inside popUpScore
 		ratingPopup = new RatingPopup();
 		ratingPopup.targetCameras = [camHUD];
 		ratingPopup.antialiasing = isPixelStage ? false : ClientPrefs.data.globalAntialiasing;
@@ -1317,16 +1243,16 @@ class PlayState extends MusicBeatState
 		ratingPopup.daPixelZoom = daPixelZoom;
 		if (CompatEngine.isModern())
 		{
-			// 兼容模式: container 指向 comboGroup
-			// 用 Std.int() + 类型检查避免 cast 返回 null
+			// Compatibility mode: the container is comboGroup
+			// Std.int() plus a type check avoid a null cast result
 			ratingPopup.container = comboGroup;
 			add(ratingPopup.container);
 		}
 		else
 		{
-			// 非兼容模式: container 是独立 FlxSpriteGroup（无相机）。
-			// 必须显式指定 camHUD，否则该组不会设置 Flixel 的 _defaultCameras，
-			// 子精灵若未自带相机就会渲染到默认游戏相机（场景）中。
+			// Non-compatibility mode: the container is a standalone FlxSpriteGroup (no camera).
+			// camHUD must be assigned explicitly, otherwise the group never sets Flixel's _defaultCameras
+			// and children without their own camera render on the default game camera (the stage).
 			ratingPopup.container.cameras = [camHUD];
 			insert(members.indexOf(strumLineNotes), ratingPopup.container);
 		}
@@ -1334,20 +1260,9 @@ class PlayState extends MusicBeatState
 		addAndroidControls(false, true);
 
 		generateSong(SONG.song);
-		#if ONLINE_ALLOWED
-		if (seiunSpectate)
-		{
-			// 轻量观战: 不生成音符流, 仅由判定/分数/血量广播驱动角色动画与 HUD。
-			unspawnNotes = [];
-			lastChartNoteTime = 0;
-		}
-		#end
-		// 1.0.4 模式：全局/舞台脚本延后到角色与谱面生成之后加载
+		// 1.0.4: global/stage scripts are loaded after the characters and chart are generated
 		if (CompatEngine.is104())
 			loadGlobalAndStageScripts();
-		#if ONLINE_ALLOWED
-		onlineGameStart();
-		#end
 
 		if (CompatEngine.isModern()) {
 			noteGroup.add(grpNoteSplashes);
@@ -1385,7 +1300,7 @@ class PlayState extends MusicBeatState
 		FlxG.fixedTimestep = false;
 		moveCameraSection();
 
-		// 兼容模式使用 0.7.3 Bar 类，非兼容模式使用原始 FlxBar
+		// Compatibility mode uses the 0.7.3 Bar class; otherwise the stock FlxBar
 		if (CompatEngine.isModern()) {
 			var barY:Float = FlxG.height * (!ClientPrefs.data.downScroll ? 0.89 : 0.11);
 			var compatBar:objects.Bar = new objects.Bar(0, barY, 'healthBar', function() return displayHealth, 0, 2);
@@ -1453,6 +1368,62 @@ class PlayState extends MusicBeatState
 		else
 			add(scoreTxt);
 
+		#if ONLINE_ALLOWED
+		// Per-player score texts. This engine builds its HUD inline, so the same block runs right after
+		// the local scoreTxt is built. All of it is behind GameClient.isConnected() and inside the
+		// macro guard, so the single-player HUD is untouched.
+		if (online.GameClient.isConnected()) {
+			scoreTxt.visible = false;
+			scoreTxtOriginY = ClientPrefs.data.downScroll ? 120 : 700;
+
+			function createScoreText(isRight:Bool, ?ox:Int = 0, ?isOnline:Bool = false):FlxText {
+				var scoreTxtPlayer = new FlxText(0, 0, FlxG.width, "", 20);
+				scoreTxtPlayer.setFormat(Paths.languageFont(), (!isPixelStage ? 18 : 16) - (isOnline ? 2 : 0), FlxColor.WHITE, isRight ? RIGHT : LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
+				scoreTxtPlayer.scrollFactor.set();
+				scoreTxtPlayer.borderSize = 1.25;
+				scoreTxtPlayer.visible = !ClientPrefs.data.hideHud;
+				// flixel 5 uses `camera = camOther`; on 4.11 cameras is the array form.
+				scoreTxtPlayer.cameras = [camOther];
+				if (CompatEngine.isModern())
+					uiGroup.add(scoreTxtPlayer);
+				else
+					add(scoreTxtPlayer);
+
+				scoreTxtPlayer.y = scoreTxtOriginY - (ox * 20) - scoreTxtPlayer.height;
+
+				if (isRight)
+					scoreTxtPlayer.offset.x += 30;
+				else
+					scoreTxtPlayer.offset.x -= 30;
+
+				if (!isRight && scoreTxtP1 == null)
+					scoreTxtP1 = scoreTxtPlayer;
+
+				if (isRight && scoreTxtP2 == null)
+					scoreTxtP2 = scoreTxtPlayer;
+
+				return scoreTxtPlayer;
+			}
+
+			if (online.GameClient.room.state.teamMode) {
+				scoreTxtOthers.set('LEFTSIDE', createScoreText(false));
+				scoreTxtOthers.set('RIGHTSIDE', createScoreText(true));
+
+				var mySideText = scoreTxtOthers.get(getPlayerStats(online.GameClient.room.sessionId).player.bfSide ? 'RIGHTSIDE' : 'LEFTSIDE');
+				if (mySideText != null) mySideText.color = FlxColor.YELLOW;
+			}
+			else {
+				for (sid => player in online.GameClient.room.state.players) {
+					// Fallback row from effectiveOx when the server provides no ox, to keep same-side texts apart.
+					scoreTxtOthers.set(sid, createScoreText(player.bfSide, effectiveOx(sid), true));
+				}
+
+				var myText = scoreTxtOthers.get(online.GameClient.room.sessionId);
+				if (myText != null) myText.color = FlxColor.YELLOW;
+			}
+		}
+		#end
+
 		botplayTxt = new FlxText(400, timeBarBG.y + 55, FlxG.width - 800, "BOTPLAY", 32);
 		botplayTxt.setFormat(Paths.font("vcr.ttf"), 32, FlxColor.WHITE, CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 		botplayTxt.scrollFactor.set();
@@ -1482,49 +1453,9 @@ class PlayState extends MusicBeatState
 		if(ClientPrefs.data.downScroll) {
 			replayTxt.y = timeBarBG.y - 78;
 		}
-		#if ONLINE_ALLOWED
-		if (seiunOnline)
-		{
-			onlineBadgeTxt = new FlxText(0, 40, FlxG.width,
-				OnlineSession.dedicated
-					? Language.get('online.badgePlayingDedicated', '专用服务器')
-					: Language.get('online.badgePlayingLan', '局域网 · 本机托管'), 18);
-			onlineBadgeTxt.setFormat(Paths.languageFont(), 18, FlxColor.fromRGB(120, 220, 255), CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
-			onlineBadgeTxt.scrollFactor.set();
-			onlineBadgeTxt.cameras = [camHUD];
-			add(onlineBadgeTxt);
-
-			// 右上: 对手实时分数 (PsychOnline scoreboard 等价物)。
-			// 先按房间玩家列表播种 0 分, 这样开局立刻能看到每一位对手,
-			// 之后每次本地/远端判定广播都会带当前分数并即时刷新。
-			remoteScores = new Map<String, Dynamic>();
-			remoteScoreSig = "";
-			for (p in OnlineSession.players)
-			{
-				if (p == null)
-					continue;
-				var dev:String = Reflect.field(p, "deviceId");
-				if (dev == null || dev == ProfileStore.deviceId)
-					continue;
-				var nick:String = Reflect.field(p, "nickname");
-				if (nick == null || nick.length == 0)
-					nick = dev;
-				var ping:Float = Reflect.field(p, "pingMs") == null ? 0 : Std.parseFloat(Std.string(Reflect.field(p, "pingMs")));
-				remoteScores.set(dev, {name: nick, score: 0, misses: 0, maxCombo: 0, accuracy: 0, ratingName: "", ratingFC: "", ping: ping});
-			}
-			// 右上对手分数面板: 右边贴屏 (FlxG.width - 20), 不再假定 1280 宽。
-			var scoreW:Float = Math.min(360, FlxG.width * 0.3);
-			remoteScoreTxt = new FlxText(FlxG.width - scoreW - 20, 64, scoreW, "", 14);
-			remoteScoreTxt.setFormat(Paths.languageFont(), 14, FlxColor.fromRGB(255, 220, 150), RIGHT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
-			remoteScoreTxt.scrollFactor.set();
-			remoteScoreTxt.cameras = [camHUD];
-			remoteScoreTxt.visible = OnlineSession.mode == online.shared.OnlineTypes.OnlineConst.MODE_REALTIME && !ClientPrefs.data.hideHud;
-			add(remoteScoreTxt);
-		}
-		#end
 
 
-		// LeatherEngine 移植: 回放判定手感提示 (仅当与当前设置不同时显示)
+		// Replay judging-feel hint (from LeatherEngine), shown only when it differs.
 		judgeRestoreTxt = new FlxText(400, replayTxt.y + 45, FlxG.width - 800, "", 20);
 		judgeRestoreTxt.setFormat(Paths.font("vcr.ttf"), 20, 0xFFFFD700, CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 		judgeRestoreTxt.scrollFactor.set();
@@ -1834,14 +1765,18 @@ class PlayState extends MusicBeatState
 			missesText = Language.get("missesText", "Misses: 0") + "0";
 
 
-			tnh = new FlxText(tnhx + 10, 259, 250, totalNotesText, 20);
+			// fieldWidth <= 0 disables word-wrap and sizes the text to its content in FlxText
+			// (set_fieldWidth: value <= 0 -> wordWrap = false, autoSize = true).
+			// A fixed width makes longer values wrap and push the lines below it out of the HUD,
+			// so every side-HUD entry has to stay on exactly one line.
+			tnh = new FlxText(tnhx + 10, 259, 0, totalNotesText, 20);
 			tnh.setFormat(20, FlxColor.WHITE, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 			tnh.cameras = [camOther];
 			tnh.font = Paths.languageFont();
 			tnh.borderSize = 2;
 			add(tnh);
 
-			cm = new FlxText(-tnh.x + cmoffset, tnh.y + cmy, 200, combosText, 20);
+			cm = new FlxText(-tnh.x + cmoffset, tnh.y + cmy, 0, combosText, 20);
 			cm.setFormat(20, FlxColor.WHITE, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 			cm.cameras = [camOther];
 			cm.font = Paths.languageFont();
@@ -1850,7 +1785,7 @@ class PlayState extends MusicBeatState
 
 			if (ClientPrefs.data.marvelousRatings)
 			{
-				marv = new FlxText(cm.x, cm.y + 30, 200, marvelousesText, 20);
+				marv = new FlxText(cm.x, cm.y + 30, 0, marvelousesText, 20);
 				marv.setFormat(20, FlxColor.fromRGB(255, 215, 0), LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 				marv.cameras = [camOther];
 				marv.font = Paths.languageFont();
@@ -1858,35 +1793,35 @@ class PlayState extends MusicBeatState
 				add(marv);
 			}
 
-			sick = new FlxText(cm.x, (marv != null ? marv.y : cm.y) + 30, 200, sicksText, 20);
+			sick = new FlxText(cm.x, (marv != null ? marv.y : cm.y) + 30, 0, sicksText, 20);
 			sick.setFormat(20, FlxColor.WHITE, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 			sick.cameras = [camOther];
 			sick.font = Paths.languageFont();
 			sick.borderSize = 2;
 			add(sick);
 
-			good = new FlxText(cm.x, sick.y + 30, 200, goodsText, 20);
+			good = new FlxText(cm.x, sick.y + 30, 0, goodsText, 20);
 			good.setFormat(20, FlxColor.WHITE, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 			good.cameras = [camOther];
 			good.font = Paths.languageFont();
 			good.borderSize = 2;
 			add(good);
 
-			bad = new FlxText(cm.x, good.y + 30, 200, badsText, 20);
+			bad = new FlxText(cm.x, good.y + 30, 0, badsText, 20);
 			bad.setFormat(20, FlxColor.WHITE, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 			bad.cameras = [camOther];
 			bad.font = Paths.languageFont();
 			bad.borderSize = 2;
 			add(bad);
 
-			shit = new FlxText(cm.x, bad.y + 30, 200, shitsText, 20);
+			shit = new FlxText(cm.x, bad.y + 30, 0, shitsText, 20);
 			shit.setFormat(20, FlxColor.WHITE, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 			shit.cameras = [camOther];
 			shit.font = Paths.languageFont();
 			shit.borderSize = 2;
 			add(shit);
 
-			miss = new FlxText(cm.x, shit.y + 30, 200, missesText, 20);
+			miss = new FlxText(cm.x, shit.y + 30, 0, missesText, 20);
 			miss.setFormat(20, FlxColor.RED, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 			miss.cameras = [camOther];
 			miss.font = Paths.languageFont();
@@ -1960,8 +1895,8 @@ class PlayState extends MusicBeatState
 		trackBackground.cameras = [camHUD];
 		trackBackground.scrollFactor.set();
 		trackBackground.visible = (trackAlpha > 0);
-		// 0.7.3/1.0.4 兼容：Lua 的 onCreatePost 在 super.create() 之前调用，
-		// HScript 的 onCreatePost 由 super.create() 内部调用，避免重复。
+		// 0.7.3/1.0.4 compatibility: Lua's onCreatePost runs before super.create(),
+		// while HScript's onCreatePost is called inside super.create(), so it is not duplicated here.
 		callOnLuas('onCreatePost', []);
 		super.create();
 		if (CompatEngine.isModern())
@@ -1987,8 +1922,8 @@ class PlayState extends MusicBeatState
 
 		Paths.clearUnusedMemory();
 
-		// SeiunEngine P6.x：预加载阶段一次性完成大纹理的显存提交与 CPU 副本释放，
-		// 避免进歌后 5 秒内分批提交造成的偶发卡顿。
+		// One-pass preload: large textures are committed to VRAM and their CPU copies released,
+		// avoiding the occasional hitch from batched uploads in the first seconds of a song.
 		GfxPolicy.preloadWarm();
 
 		#if cpp
@@ -2008,7 +1943,7 @@ class PlayState extends MusicBeatState
 		if (!ClientPrefs.data.disableGC && Sys.getEnv("FNF_GC_FULL_ON_PLAY_CREATE") != "0")
 		{
 			cpp.vm.Gc.run(true);
-			// major 回收后压缩堆, 空闲块归还 OS (纯 GC 操作, 无逻辑影响)。
+			// Compacts the heap after a major collection and returns free blocks to the OS (pure GC, no logic impact).
 			cpp.vm.Gc.compact();
 		}
 		#end
@@ -2017,8 +1952,8 @@ class PlayState extends MusicBeatState
 	}
 
 	/**
-	 * 加载全局 scripts/ 与当前 stage 的脚本（Lua + HScript）。
-	 * 0.6.3/0.7.3 模式在角色创建前调用；1.0.4 模式在角色/谱面生成后调用。
+	 * Loads the global scripts/ and the current stage's scripts (Lua + HScript).
+	 * 0.6.3/0.7.3 modes call it before the characters exist; 1.0.4 calls it after they and the chart are generated.
 	 */
 	function loadGlobalAndStageScripts():Void
 	{
@@ -2169,8 +2104,8 @@ class PlayState extends MusicBeatState
 	{
 		if(generatedMusic)
 		{
-			// 直接按新 songSpeed 重算长条 scale.y，避免乘法累积导致的浮点误差和极端值渲染异常。
-			// 未物化的 unspawnNotes 只是轻量数据，spawn 时 setupNoteData 会用当前 songSpeed 生成。
+			// Recompute sustain scale.y from the new songSpeed to avoid float drift from repeated multiplication and extreme render values.
+			// Unmaterialised unspawnNotes are lightweight data; spawn rebuilds them with setupNoteData and the current songSpeed.
 			for (note in notes) if(note != null && note.exists) note.recalcSustainScale(value);
 		}
 		songSpeed = value;
@@ -2810,20 +2745,23 @@ class PlayState extends MusicBeatState
 			return;
 		}
 
+		#if ONLINE_ALLOWED
+		// The room status "In-Game" is sent once the preload finishes and the countdown is about to
+		// start. This engine has no preloadTasks; the equivalent moment is the first countdown
+		// request, and the ready gate below holds that request until the room broadcasts "startSong".
+		if (online.GameClient.isConnected() && !isReady)
+			online.GameClient.send("status", "In-Game");
+
+		// Ready gating: while connected, the first countdown request only arms the
+		// "press accept to start" overlay; the countdown itself runs when the room's "startSong"
+		// message arrives. It follows startCountdown()'s wait-ready gate:
+		// `if (!canStart) { canStart = true; add(waitReadySpr); return false; }` (source :2176-2180).
+		if (!onlineCheckCanStart())
+			return;
+		#end
+
 		if (Conductor.crochet <= 0 || !Math.isFinite(Conductor.crochet))
 			Conductor.changeBPM((SONG != null && SONG.bpm > 0 && Math.isFinite(SONG.bpm)) ? SONG.bpm : 100);
-
-		#if ONLINE_ALLOWED
-		// 实时对战统一起跑: 没收到 MSG_GAME_SYNC 前冻结在等待状态,
-		// 收到后把 startOnTime 换算到所有端共同的服务器时刻。
-		if (seiunOnline && OnlineSession.active
-			&& OnlineSession.mode == online.shared.OnlineTypes.OnlineConst.MODE_REALTIME
-			&& !tryConsumeRealtimeSync())
-		{
-			showOnlineSyncWait();
-			return;
-		}
-		#end
 
 		inCutscene = false;
 		var ret:Dynamic = callOnScripts('onStartCountdown', [], false);
@@ -2835,6 +2773,12 @@ class PlayState extends MusicBeatState
 			                        // If the player is controlling the opponent side, swap the static arrow
                         // positions/properties so arrows match the active side.
             if (playOpponent) {
+                #if ONLINE_ALLOWED
+                // Online keeps each player's screen as "self at the bottom, opponent on top" and skips the
+                // single-player playOpponent arrow swap, otherwise a dad-side player would have to hit the
+                // top arrows to line up.
+                if (!online.GameClient.isConnected()) {
+                #end
                 var maxSwap:Int = Std.int(Math.min(playerStrums.length, opponentStrums.length));
                 for (i in 0...maxSwap) {
                     var p:StrumNote = playerStrums.members[i];
@@ -2872,6 +2816,9 @@ class PlayState extends MusicBeatState
                     p.updateHitbox();
                     o.updateHitbox();
                 }
+                #if ONLINE_ALLOWED
+                }
+                #end
             }
 			for (i in 0...playerStrums.length) {
 				setOnScripts('defaultPlayerStrumX' + i, playerStrums.members[i].x);
@@ -3066,9 +3013,28 @@ class PlayState extends MusicBeatState
 	//var lerpSongScore:Float = 0;
 	public function updateScore(miss:Bool = false)
 	{
+		#if ONLINE_ALLOWED
+		// updateScore() recomputes songPoints, reports it to the room when it changed, then hands the
+		// whole HUD to updateScoreSID() and returns. Implemented as the leading guarded branch (this
+		// engine builds its own score text through buildScoreText()/flushHitPresentation(), so the
+		// online path bypasses that). With GameClient disconnected the original body below runs.
+		if (online.GameClient.isConnected()) {
+			var points:Float = FlxMath.roundDecimal(
+				online.FunkinPoints.fcalcFP(ratingPercent, songMisses, songDensity, totalNotesHit, maxcombo), 2);
+			if (points != songPoints) {
+				songPoints = points;
+				online.GameClient.send("updateSongFP", Math.ffloor(songPoints));
+			}
+			songPoints = points;
+
+			updateScoreSID(online.GameClient.room.sessionId);
+			return;
+		}
+		#end
+
 		if (hasActiveScripts())
 		{
-			// 有脚本: 保留原逐次回调语义 (preUpdateScore 可拦截, onUpdateScore 每次触发)
+			// With scripts: keep the per-hit callback semantics (preUpdateScore can intercept, onUpdateScore fires every time)
 			var preResult:Dynamic = callOnScripts('preUpdateScore', [miss], true);
 			if (preResult == LuaUtils.Function_Stop || preResult == FunkinLua.Function_Stop)
 				return;
@@ -3092,15 +3058,58 @@ class PlayState extends MusicBeatState
 			_scoreZoomDirty = true;
 	}
 
-	/** 拼接分数 HUD 文本 (updateScore 的纯构建部分)。 */
+	/** Builds the score HUD text (the pure part of updateScore). */
 	inline function buildScoreText():String
 	{
+		#if ONLINE_ALLOWED
+			/*
+			 * The FP readout is folded into this one pure builder, because this engine does not
+			 * mutate `scoreTxt` from updateScore(). Either form is produced:
+			 *   ' | FP: ' + songPoints + ' (V5: ${...devFP(..., difficultyInfo)...})'  [newFPPreview]
+			 *   ' | FP: ' + songPoints + ' (${...pointsPercent...}%)'
+			 * `showFP`/`newFPPreview` are the ClientPrefs options (both default false), so with them off
+			 * the returned string is exactly the one built without any FP suffix; disabling both
+			 * options leaves the score text as before.
+			 *
+			 * The percentage branch uses this engine's `getPresencePoints()` (there is no
+			 * `pointsPercent` field here), and the "V5" branch's percentage is rebuilt from the live
+			 * numbers.
+			 *
+			 * The whole body of this inline function lives inside the guard: `inline` forbids returning
+			 * from two different places, so the base string and the single `return` must share one
+			 * branch. With the macro off, the original one-line body is what compiles.
+			 */
+		var txt:String = Language.get("scorelangtxt", "Score") + ': $songScore'
+		+ " | " + Language.get("combobtxt", "Combo Breaks") + ': $songMisses'
+		+  " | " + Language.get("acclangtxt", "Accuracy") + ':' + (ratingName != '?' ? ' ${Highscore.floorDecimal(ratingPercent * 100, 2)}% | $ratingFC ' : '') + '($ratingName)';
+
+		var fpExtra:String = "";
+		if (ClientPrefs.data.showFP)
+		{
+			if (ClientPrefs.data.newFPPreview)
+			{
+				var calcPoints:Float = FlxMath.roundDecimal(
+					online.FunkinPoints.fcalcFP(ratingPercent, songMisses, songDensity, totalNotesHit, maxcombo), 2);
+				var maxPoints:Float = online.FunkinPoints.calcFP(1, 0, songDensity, totalPlayed, totalPlayed);
+				var pointsPercent:Float = maxPoints == 0 ? 0 : Math.min(1, Math.max(0, calcPoints / maxPoints));
+				fpExtra += ' | FP: ' + songPoints
+					+ ' (V5: ${FlxMath.roundDecimal(online.FunkinPoints.devFP(ratingPercent, songMisses, songDensity, totalNotesHit, maxcombo, difficultyInfo), 2)})'
+					+ ' (${CoolUtil.floorDecimal(pointsPercent * 100, 1)}%)';
+			}
+			else
+			{
+				fpExtra += ' | FP: ' + songPoints + ' (' + getPresencePoints() + ')';
+			}
+		}
+		return txt + fpExtra;
+		#else
 		return Language.get("scorelangtxt", "Score") + ': $songScore'
 		+ " | " + Language.get("combobtxt", "Combo Breaks") + ': $songMisses'
 		+  " | " + Language.get("acclangtxt", "Accuracy") + ':' + (ratingName != '?' ? ' ${Highscore.floorDecimal(ratingPercent * 100, 2)}% | $ratingFC ' : '') + '($ratingName)';
+		#end
 	}
 
-	/** 分数文本弹跳 (原 updateScore 内的 zoom tween 块)。 */
+	/** Score text bounce (the zoom tween block from updateScore). */
 	function bounceScoreTxt():Void
 	{
 		if(scoreTxtTween != null) {
@@ -3206,15 +3215,15 @@ class PlayState extends MusicBeatState
 	var songStartTicks:Int = -1;
 
 	/**
-	 * 静音预滚歌曲音频 (keep-playing):
-	 * 加载阶段就以 0 音量开始播放并保持 AudioSource 存活。
-	 * PCM 解码 (mp3 尤其慢)、OpenAL 缓冲上传、vorbis 流式初始化全部提前完成,
-	 * 倒计时结束时只需"归零 + 恢复音量", 不再新建音频通道,
-	 * 彻底消除首次播放的卡顿 (模组 ogg 长歌尤其明显)。
+	 * Muted song pre-buffering (keep-playing):
+ * playback starts at volume 0 during loading and the AudioSource stays alive.
+ * PCM decoding (mp3 especially), OpenAL buffer upload and vorbis stream init all happen up front,
+ * so at countdown end only the volume is restored instead of creating a new channel,
+ * eliminating the first-play stall (very noticeable on long modded oggs).
 	 */
 	function prebufferSongAudio():Void
 	{
-		// 音乐轨: 直接复用 FlxG.sound.music, 0 音量播放
+		// Music track: reuse FlxG.sound.music and play it at volume 0
 		try { FlxG.sound.playMusic(Paths.inst(PlayState.SONG.song), 0, false); } catch (e:Dynamic) {}
 
 		var tracks:Array<FlxSound> = [vocals, vocalsPlayer, opponentVocals];
@@ -3225,16 +3234,16 @@ class PlayState extends MusicBeatState
 			try { snd.play(); } catch (e:Dynamic) {}
 		}
 
-		// 预热完成后立即在 lime 层暂停所有音源:
-		// AudioSource 保持存活 (倒计时结束时恢复无任何新建开销),
-		// 但暂停中的音源完全不输出, 倒计时期间物理上不可能漏音。
+		// Pause every source at the lime layer right after pre-buffering:
+		// the AudioSource stays alive (no setup cost when the countdown restores it),
+		// and a paused source outputs nothing, so no audio can leak during the countdown.
 		pauseAudioSource(FlxG.sound.music);
 		pauseAudioSource(vocals);
 		pauseAudioSource(vocalsPlayer);
 		pauseAudioSource(opponentVocals);
 	}
 
-	/** 在 lime 层暂停音源 (保留通道与缓冲, 暂停即静音) */
+	/** Pauses a source at the lime layer (channel and buffer kept; a paused source is silent). */
 	function pauseAudioSource(snd:FlxSound):Void
 	{
 		if (snd == null || !snd.exists) return;
@@ -3252,8 +3261,8 @@ class PlayState extends MusicBeatState
 	}
 
 	/**
-	 * 把音轨归零并恢复播放 (复用现有 AudioSource, 不新建通道)。
-	 * 找不到活动通道时回退为 stop+play。
+	 * Seeks a track back to zero and resumes it (reusing the existing AudioSource, no new channel).
+ * Falls back to stop+play when no live channel is found.
 	 */
 	function seekAudioToZero(snd:FlxSound):Void
 	{
@@ -3277,7 +3286,7 @@ class PlayState extends MusicBeatState
 		try { snd.play(); } catch (e:Dynamic) {}
 	}
 
-	/** 倒计时结束: 恢复音量并归零, 正式开始播放 */
+	/** Countdown finished: restore the volume from zero and start playback for real. */
 	function resumeSongAudio():Void
 	{
 		if (FlxG.sound.music != null && FlxG.sound.music.exists)
@@ -3286,7 +3295,7 @@ class PlayState extends MusicBeatState
 		}
 		else
 		{
-			// 兜底: 预滚失败时按原逻辑播放
+			// Fallback: if pre-buffering failed, use the normal playback path
 			try { FlxG.sound.playMusic(Paths.inst(PlayState.SONG.song), 1, false); } catch (e:Dynamic) {}
 		}
 
@@ -3294,8 +3303,8 @@ class PlayState extends MusicBeatState
 		seekAudioToZero(vocalsPlayer);
 		seekAudioToZero(opponentVocals);
 
-		// 全部归零完成后再恢复音量, 并做 80ms 极短淡入,
-		// 把倒带/重启瞬间任何残留的杂音或漏音都遮掉
+		// After everything is back at zero, restore the volume with an 80ms fade-in
+		// that masks any leftover noise or leak from the seek/restart.
 		FlxG.sound.music.volume = 0;
 		vocals.volume = 0;
 		vocalsPlayer.volume = 0;
@@ -3317,7 +3326,7 @@ class PlayState extends MusicBeatState
 			opponentVocals.volume = v;
 		});
 
-		// 通道已存在, 重新应用倍速音高
+		// The channel already exists, so just re-apply the pitch
 		vocals.pitch = playbackRate;
 		vocalsPlayer.pitch = playbackRate;
 		opponentVocals.pitch = playbackRate;
@@ -3326,16 +3335,6 @@ class PlayState extends MusicBeatState
 	function startSong():Void
 	{
 		startingSong = false;
-		#if ONLINE_ALLOWED
-		// 防对局中途脚本把作弊开关改回: 开唱瞬间再强制一次。
-		if (seiunOnline)
-		{
-			cpuControlled = false;
-			practiceMode = false;
-			instakillOnMiss = false;
-			playOpponent = false;
-		}
-		#end
 		// Countdown time is advanced independently of the music clock. If the
 		// frame that finishes the countdown is long, songPosition may already be
 		// hundreds of milliseconds past zero. Anchor normal playback at the
@@ -3352,6 +3351,8 @@ class PlayState extends MusicBeatState
 		MenuFX.markMenuMusicStopped();
 		resumeSongAudio();
 		FlxG.sound.music.pitch = playbackRate;
+		// Remember which FlxSound owns this callback so destroy() can detach it.
+		_songMusic = FlxG.sound.music;
 		FlxG.sound.music.onComplete = onMusicComplete;
 		songStartTicks = FlxG.game.ticks;
 
@@ -3434,8 +3435,8 @@ class PlayState extends MusicBeatState
 		FlxG.sound.list.add(opponentVocals);
 		FlxG.sound.list.add(new FlxSound().loadEmbedded(Paths.inst(PlayState.SONG.song)));
 
-		// 预滚歌曲音频: 在加载阶段静音播放一遍再停止, 强制完成 PCM 解码与
-		// OpenAL 缓冲上传 (mp3 尤其明显), 避免倒计时结束时首次播放卡顿。
+		// Pre-buffer the song audio: play it muted once during loading and stop it, forcing PCM decoding and
+		// OpenAL buffer upload (very noticeable on mp3) so the first playback at countdown end does not stall.
 		prebufferSongAudio();
 
 		notes = new FlxTypedGroup<Note>();
@@ -3454,6 +3455,33 @@ class PlayState extends MusicBeatState
 		var preloadedNotes:Array<PreloadedChartNote> = [];
 		var noteData:Array<SwagSection> = songData.notes;
 		var songName:String = Paths.formatToSongPath(SONG.song);
+
+		// Streamed chart: sectionNotes live on disk, never in memory. Each section is fetched
+		// when needed and dropped right after, so the peak is a single section DOM.
+		var chartStreamInfo:Dynamic = Reflect.field(songData, '__seiunStream');
+		var chartStream:ChartStream.ChartSectionReader = null;
+		if (chartStreamInfo != null && noteData != null)
+		{
+			try
+			{
+				chartStream = new ChartStream.ChartSectionReader(chartStreamInfo.path, chartStreamInfo.ranges);
+			}
+			catch (e:Dynamic)
+			{
+				chartStream = null;
+			}
+		}
+		var chartSectionIndex:Int = 0;
+		// Streaming path only; hoisted out of the note loop (chartStreamInfo is Dynamic).
+		var streamRewrite:Bool = (chartStream != null) && (chartStreamInfo.rewrite == true);
+		var streamAmmo:Int = (chartStream != null && chartStreamInfo.ammo != null && Std.int(chartStreamInfo.ammo) > 0)
+			? Std.int(chartStreamInfo.ammo) : 4;
+
+		// Fold incrementally while streaming: building every DTO first would peak at GBs of
+		// intermediate array that Immix never returns to the OS.
+		var collapser:TurboDensity.GhostCollapser = null;
+		if (turboModeActive && chartStream != null)
+			collapser = new TurboDensity.GhostCollapser(Note.ammo[mania], 1.0, songSpeed, mania);
 
 		// Load event notes from events.json
 		var file:String = Paths.json(songName + '/events');
@@ -3480,7 +3508,7 @@ class PlayState extends MusicBeatState
 						subEvent.strumTime -= eventNoteEarlyTrigger(subEvent);
 						eventNotes.push(subEvent);
 						eventPushed(subEvent);
-						// 0.7.3+/1.0.4: onEventPushed（事件入列时触发）
+						// 0.7.3+/1.0.4: onEventPushed (fires when an event is queued)
 						// 0.7.3+/1.0.4: onEventPushed (fires when an event is queued)
 						callOnScripts('onEventPushed', [subEvent.event, subEvent.value1 != null ? subEvent.value1 : '', subEvent.value2 != null ? subEvent.value2 : '', subEvent.strumTime]);
 					}
@@ -3491,20 +3519,29 @@ class PlayState extends MusicBeatState
 		var stepCrochet:Float = Conductor.stepCrochet;
 		var isNewVer:Bool = Song.isNewVersion;
 
-		// 预构建 Change Mania 时间线: 每条 Note 的键数查询由全事件扫描 O(E)
-		// 降为二分查找 O(log M) —— 万级 Note 谱面的加载耗时不再随事件数平方增长。
+		// Pre-build the Change Mania timeline: per-note key-count lookups fall from a full event scan O(E)
+		// to a binary search O(log M), so loading no longer grows with the event count on dense charts.
 		EKData.maniaTimelineBuild(songData.events, mania);
 
-		// noteType 字符串驻留表 (本函数内有效): JSON 解析会给每条 note 的 type
-		// 新建 String 实例, 百万级谱面下内容重复的字符串常驻数百 MB。
+		// noteType string intern table (local to this function): JSON parsing creates a new String for every
+		// note type, and duplicate strings on million-note charts hold hundreds of MB alive.
 		var typeIntern:Map<String, String> = new Map<String, String>();
 
-		var turboStripDOM:Bool = false;
-
-		// 多k: Change Mania 事件会把事件后的谱面按新键数解释/编码: 这里按每个 Note 自身
-		// 时间点的生效键数解释轨道, 保证事件前后的 Note 各归各的键数 (无事件时与旧行为一致)。
+		// Multi-key: Change Mania events make the chart use a new key count from that point on; each note is
+		// interpreted with the key count in effect at its own time, so notes before and after the event keep their own counts.
 		for (section in noteData)
 		{
+			// Streaming: read this section's notes from disk. A failed read must not be skipped.
+			if (chartStream != null)
+			{
+				var rawNotes:Array<ChartStream.ChartRawNote> = chartStream.readNotes(chartSectionIndex);
+				if (rawNotes == null)
+					throw new haxe.Exception('chart stream: cannot read section ' + chartSectionIndex
+						+ ' of ' + chartStreamInfo.path + ' (' + chartStream.lastError + ')');
+				section.sectionNotes = cast rawNotes;
+			}
+			chartSectionIndex++;
+
 			if (section.changeBPM && section.bpm > 0 && Math.isFinite(section.bpm))
 			{
 				Conductor.changeBPM(section.bpm);
@@ -3516,8 +3553,45 @@ class PlayState extends MusicBeatState
 
 			for (songNotes in section.sectionNotes)
 			{
-				var rawStrum:Float = songNotes[0];
-				var rawData:Int = Std.int(songNotes[1]);
+				// Both paths meet here: songNotes is a JSON array after a full parse and a
+				// ChartRawNote on the streaming path. Only these reads differ; the generation
+				// below is shared, so a change cannot apply to just one of them.
+				var rawStrum:Float;
+				var rawData:Int;
+				var susLen:Float;
+				var noteTypeDyn:Dynamic;
+				var noteCount:Int;
+				if (chartStream != null)
+				{
+					var rn:ChartStream.ChartRawNote = cast songNotes;
+					rawStrum = rn.strumTime;
+					rawData = Std.int(rn.data);
+					susLen = rn.sustain;
+					noteTypeDyn = rn.type;
+					noteCount = rn.count;
+					// Per-note equivalent of ChartStream.rewriteSectionNotes(): negative data is
+					// not remapped, but the note is still consumed.
+					if (streamRewrite && rawData >= 0)
+					{
+						var rewriteHit:Bool = (rawData < streamAmmo) ? section.mustHitSection : !section.mustHitSection;
+						rawData = (rawData % streamAmmo) + (rewriteHit ? 0 : streamAmmo);
+						if (noteCount > 3 && !Std.isOfType(noteTypeDyn, String) && noteTypeDyn != null)
+						{
+							var typeIdx:Int = Std.int(noteTypeDyn);
+							noteTypeDyn = (typeIdx >= 0 && typeIdx < Note.defaultNoteTypes.length)
+								? Note.defaultNoteTypes[typeIdx] : '';
+						}
+						else if (noteCount <= 3) noteTypeDyn = '';
+					}
+				}
+				else
+				{
+					rawStrum = songNotes[0];
+					rawData = Std.int(songNotes[1]);
+					susLen = songNotes[2];
+					noteTypeDyn = songNotes[3];
+					noteCount = songNotes.length;
+				}
 				var noteMania:Int = EKData.maniaAtTimeCached(rawStrum);
 				var noteAmmo:Int = Note.ammo[noteMania];
 				var noteDataIdx:Int = rawData % noteAmmo;
@@ -3526,20 +3600,20 @@ class PlayState extends MusicBeatState
 				var isGFSide:Bool = gfSec && (gottaHitNote == mustHit);
 				if (playOpponent) gottaHitNote = !gottaHitNote;
 
-				var noteType:String = songNotes[3];
-				if (!Std.isOfType(songNotes[3], String))
-					noteType = Note.defaultNoteTypes[Std.int(songNotes[3])];
+				var noteType:String = noteTypeDyn;
+				if (!Std.isOfType(noteTypeDyn, String))
+					noteType = Note.defaultNoteTypes[Std.int(noteTypeDyn)];
 				else
 				{
-					// 驻留为共享实例并回写 DOM: 字符串不可变且内容不变,
-					// 引擎/脚本读到的值完全一致, 仅消除重复对象 (无损)。
+					// Intern the string and write it back to the DOM: strings are immutable, so
+					// this only removes duplicate objects. The streaming path has no DOM.
 					var interned:String = typeIntern.get(noteType);
 					if (interned == null)
 						typeIntern.set(noteType, noteType);
 					else
 					{
 						noteType = interned;
-						songNotes[3] = interned;
+						if (chartStream == null) songNotes[3] = interned;
 					}
 				}
 
@@ -3566,7 +3640,7 @@ class PlayState extends MusicBeatState
 					noMissAnimation: isNoAnim,
 					isSustainNote: false,
 					isSustainEnd: false,
-					sustainLength: songNotes[2],
+					sustainLength: susLen,
 					hitHealth: 0.023,
 					missHealth: isHurt ? 0.3 : 0.0475,
 					hitCausesMiss: isHurt,
@@ -3591,7 +3665,7 @@ class PlayState extends MusicBeatState
 					noteSplashBrt: null,
 					hitsoundDisabled: false
 				};
-				preloadedNotes.push(swagNote);
+				if (collapser != null) collapser.feed(swagNote) else preloadedNotes.push(swagNote);
 
 				var susLen:Float = swagNote.sustainLength;
 				if (susLen < 1) continue;
@@ -3640,14 +3714,12 @@ class PlayState extends MusicBeatState
 						noteSplashBrt: null,
 						hitsoundDisabled: false
 					};
-					preloadedNotes.push(sustainNote);
+					if (collapser != null) collapser.feed(sustainNote) else preloadedNotes.push(sustainNote);
 				}
 			}
 
-			// Turbo 专属: 本节逐 note 数据已全部转换为 PreloadedChartNote, 立即释放本节数组,
-			// 使 DOM 释放与生成同步进行 (降低生成期峰值内存); 非 Turbo 不动 DOM。
-			if (turboStripDOM)
-				section.sectionNotes = [];
+			if (chartStream != null) section.sectionNotes = [];
+
 		}
 
 		// Load song events (legacy format)
@@ -3667,28 +3739,19 @@ class PlayState extends MusicBeatState
 					subEvent.strumTime -= eventNoteEarlyTrigger(subEvent);
 					eventNotes.push(subEvent);
 					eventPushed(subEvent);
-					// 0.7.3+/1.0.4: onEventPushed（事件入列时触发）
+					// 0.7.3+/1.0.4: onEventPushed (fires when an event is queued)
 					// 0.7.3+/1.0.4: onEventPushed (fires when an event is queued)
 					callOnScripts('onEventPushed', [subEvent.event, subEvent.value1 != null ? subEvent.value1 : '', subEvent.value2 != null ? subEvent.value2 : '', subEvent.strumTime]);
 				}
 			}
 		}
 
-		// Turbo 专属: 事件已全部入列 eventNotes (mania 时间线也已构建), 释放 DOM 事件数组,
-		// 并在 SONG 上记录重载参数, 重开时由 create 的守卫从磁盘无损重载。
-		if (turboStripDOM)
-		{
-			Reflect.setField(songData, '__seiunStripped', true);
-			Reflect.setField(songData, '__seiunReloadJson', Song.lastChartReloadJson);
-			Reflect.setField(songData, '__seiunReloadFolder', Song.lastChartReloadFolder);
-			songData.events = [];
-		}
 
 		// Sort preloaded notes by time
-		// 防护: 数组若在生成阶段被异常破坏出现 null 槽位, sort 闭包解引用会直接原生
-		// 崩溃 (AV@0x8, hxcpp 对 null this 无检查, 曾在重开关卡时概率性触发)。
-		// 正常路径只有一次 O(n) 指针扫描; 检出 null 时重建数组剔除毒槽, 闭包内再兜底。
-		//果然hxcpp就是一坨屎
+		// Guard: if the array is corrupted with null slots during generation, the sort closure dereferences
+		// them natively and crashes (hxcpp does not check for a null this; it triggered rarely on restarts).
+		// The normal path is one O(n) pointer scan; when nulls are found the array is rebuilt without them.
+		// hxcpp indeed never checks for null.
 		var hasNullSlot:Bool = false;
 		for (n in preloadedNotes)
 		{
@@ -3700,29 +3763,54 @@ class PlayState extends MusicBeatState
 		}
 		if (hasNullSlot)
 			preloadedNotes = preloadedNotes.filter(function(n) return n != null);
-		preloadedNotes.sort(function(a, b) {
-			if (a == null || b == null)
-				return 0;
-			return FlxSort.byValues(FlxSort.ASCENDING, a.strumTime, b.strumTime);
-		});
+		if (chartStream != null)
+		{
+			// Streaming path: bucket sort, since Array.sort needs ~2.8s for 11.8M notes.
+			// See ChartSort and tools/online_probe/ChartSortProbe.
+			ChartSort.sortPreloadedNotes(preloadedNotes);
+		}
+		else
+		{
+			preloadedNotes.sort(function(a, b) {
+				if (a == null || b == null)
+					return 0;
+				return FlxSort.byValues(FlxSort.ASCENDING, a.strumTime, b.strumTime);
+			});
+		}
 		lastChartNoteTime = 0;
 		if (preloadedNotes.length > 0 && preloadedNotes[preloadedNotes.length - 1] != null)
 			lastChartNoteTime = preloadedNotes[preloadedNotes.length - 1].strumTime;
 
-		// Turbo: 按"屏幕像素间距"折叠 tap —— 低流速下屏幕可视频段会被拉长到数秒,
-		// 几千万 Note 的谱面在这个窗口里能塞进六位数条 Note; 其中绝大多数在屏幕上
-		// 完全重叠 (同一轨道同向, 间距不足几个像素), 全部物化纯粹是浪费。
-		// 折叠后同时存活精灵数只由"流速 × 屏幕几何 × 轨道数"决定, 与谱面密度无关。
-		// 这一步是纯数据变换: 不改写入参对象, 不落盘, 重复调用结果一致。
+		// Turbo: fold taps by screen pixel gap -- at low scroll speed the visible band spans several seconds,
+		// which can hold six figures of notes on very dense charts; most of them overlap completely on screen
+		// (same lane and direction, only a few pixels apart), so materialising them all is pure waste.
+		// After folding, the living sprite count depends only on speed x screen geometry x lane count.
+		// This is a pure data transform: no caller objects are mutated, nothing is cached and repeated calls are identical.
 		_turboRawTapCount = 0;
-		if (turboModeActive)
+		if (collapser != null)
+		{
+			// Streaming emits notes in file order, so re-sort by strum time for the consumers
+			// (spawn / fastSkipPastNotes) that assume ascending order. The array is already
+			// collapsed, so this sort is cheap.
+			_turboRawTapCount = collapser.fedCount;
+			preloadedNotes = collapser.finish();
+			preloadedNotes.sort(function(a, b) {
+				if (a == null || b == null)
+					return 0;
+				return FlxSort.byValues(FlxSort.ASCENDING, a.strumTime, b.strumTime);
+			});
+			lastChartNoteTime = 0;
+			if (preloadedNotes.length > 0 && preloadedNotes[preloadedNotes.length - 1] != null)
+				lastChartNoteTime = preloadedNotes[preloadedNotes.length - 1].strumTime;
+		}
+		else if (turboModeActive)
 		{
 			_turboRawTapCount = preloadedNotes.length;
 			preloadedNotes = TurboDensity.collapseGhostNotes(preloadedNotes, Note.ammo[mania], 1.0, songSpeed, mania);
 		}
 
-		// 轻量谱面数据：不再提前物化成 Note 对象。
-		// Note 只在进入生成窗口时由 spawn 循环物化，峰值内存 = 同时存活 Note，而不是整张谱面。
+		// Lightweight chart data: notes are no longer materialised up front.
+		// Notes are built by the spawn loop only when they enter the generation window, so peak memory is the living notes, not the whole chart.
 		unspawnNotes = preloadedNotes;
 		lastSpawnedNote = new Map<Int, Note>();
 		_chartHasHolds = false;
@@ -3742,6 +3830,38 @@ class PlayState extends MusicBeatState
 				+ ', speed=' + FlxMath.roundDecimal(songSpeed, 2) + ', mania=' + mania + ')');
 		}
 
+		#if ONLINE_ALLOWED
+		/*
+			 * The song-density score is computed right after the note-generation loop:
+			 *
+			 *     songDensity = playingNoteCount == 0 ? 0 : playingNoteCount / (inst.length / playbackRate / 1000) / 2;
+			 *
+			 * `playingNoteCount` counts the *tap* notes that belong to the player's side, only when
+			 * more than 10 ms separate them from the previously counted one. This engine's note loader
+			 * builds `PreloadedChartNote` DTOs instead of live `Note` objects, so the predicate is
+			 * `pn.mustPress == playsAsBF()`, and sustain segments are skipped because the counter is
+			 * incremented on the tap note only, before the sustain loop.
+			 * The value is used by `online.FunkinPoints.(f)calcFP/devFP` only; nothing else reads it,
+			 * so the exact insertion point inside generateSong() is immaterial.
+			 * It reads the just-sorted `preloadedNotes` (before the Turbo collapse below), which is
+			 * the full tap set.
+			 * Only tap notes of the player's own side count; opponent notes and sustains do not
+			 * inflate the density.
+		 */
+		var fpPlayerNoteCount:Float = 0;
+		var fpPlayerLastStrumTime:Float = 0;
+		for (pn in preloadedNotes)
+		{
+			if (pn == null || pn.isSustainNote) continue;
+			if (pn.mustPress != playsAsBF()) continue;
+			if (pn.strumTime - fpPlayerLastStrumTime > 10)
+				fpPlayerNoteCount++;
+			fpPlayerLastStrumTime = pn.strumTime;
+		}
+		songDensity = (fpPlayerNoteCount == 0 || inst == null || inst.length <= 0 || playbackRate <= 0)
+			? 0 : fpPlayerNoteCount / (inst.length / playbackRate / 1000) / 2;
+		#end
+
 		if (eventNotes.length > 1)
 			eventNotes.sort(sortByTime);
 
@@ -3752,24 +3872,48 @@ class PlayState extends MusicBeatState
 		else
 			Conductor.changeBPM(songData.bpm);
 
+		#if ONLINE_ALLOWED
+		/*
+			 * The chart-difficulty info is computed here, at the end of the note-generation loop,
+			 * and the V5 FP readout reads it back:
+			 *   difficultyInfo = online.ChartAnalyzer.calc(songData, playsAsBF());
+			 *   trace(difficultyInfo);
+			 * `prepareNetSong()` is NOT called: it would submit the song to the account backend
+			 * through `online.network.FunkinNetwork.hasAccess('/api/admin/song/submit')`.
+			 * `playOpponent` is always false while the chart loads, so passing `playsAsBF()` here
+			 * can only express "BF side" -- that is what the analyzer needs. On the streaming path
+			 * it reads the generated PreloadedChartNote list.
+		 */
+		// On the streaming path songData.notes[].sectionNotes is empty (the DOM is not resident), so
+		// the analysis reads the generated PreloadedChartNote list instead.
+		difficultyInfo = (chartStream != null)
+			? online.ChartAnalyzer.calcFromPreloaded(preloadedNotes, playsAsBF())
+			: online.ChartAnalyzer.calc(songData, playsAsBF());
+		#end
+
+		if (chartStream != null)
+		{
+			chartStream.close();
+			chartStream = null;
+		}
+
 		generatedMusic = true;
 	}
 
 	// ─────────────────────────────────────────────────────────────
-	// Turbo 谱面预处理
+	// Turbo chart pre-processing
 	// ─────────────────────────────────────────────────────────────
-	// 高密度段的处理全部在加载期完成 (TurboDensity.collapseGhostNotes):
-	// 屏幕上分不开的 tap 折叠成代表 Note, 其 noteDensity = 折叠数量,
-	// 运行时按簇批量结算 (见 bulkSettleNote)。
+	// All dense-section work happens at load time (TurboDensity.collapseGhostNotes):
+	// taps that cannot be told apart on screen fold into representatives whose noteDensity is the merged count,
+	// and the runtime settles them in clusters (see bulkSettleNote).
 	//
-	// 这里刻意不再有"高密度聚合区"侧车缓存:
-	//   - 缓存内容是 unspawnNotes 的**下标区间**, 属于位置相关状态。任何一次折叠
-	//     口径变化都会让它整体错位, 而写坏的索引不会崩, 只会静默算错区间;
-	//   - 旧折叠实现会直接改写共享对象 (prev.noteDensity += 1), 因此对同一数组
-	//     重复调用会得到不同结果 —— 也就是同一张谱面会不停生成新的缓存文件。
-	//     实测 turbo_cache/ 里同一首歌、同一 Note 数留下了 5 份不同指纹的缓存;
-	//   - 折叠口径改为像素级之后, 物化量已由流速与屏幕几何定量约束, 区间缓存
-	//     带来的收益 (省一次 O(n) 扫描) 远小于它引入的失效风险。
+	// There is deliberately no "dense cluster" side cache:
+	//   - its content was index ranges into unspawnNotes, i.e. position-dependent state; any folding
+	//     change shifted it and a bad index fails silently by computing the wrong range;
+	//   - the old folding mutated shared objects (prev.noteDensity += 1), so repeating it over the same
+	//     array gave different results and kept writing new cache files for one chart;
+	//   - with pixel-level folding the materialised count is already bounded by speed and screen geometry,
+	//     so the saved O(n) scan is worth far less than the invalidation risk.
 
 	function eventPushed(event:EventNote) {
 		switch(event.event) {
@@ -3920,7 +4064,7 @@ class PlayState extends MusicBeatState
 
 		strumLineNotes.add(babyArrow);
 		babyArrow.postAddedToGroup();
-		// 多k: middleScroll 时对手 strum 自适应屏幕两侧, 避免与玩家 strum 重叠
+		// Multi-key: with middleScroll the opponent strums spread to both screen edges to avoid overlapping the player's
 		if (player == 0 && ClientPrefs.data.middleScroll && Note.ammo[mania] > 4)
 		{
 			var separator:Int = Note.separator[mania];
@@ -3935,20 +4079,20 @@ class PlayState extends MusicBeatState
 	}
 
 	/**
-	 * 多k: 中途切换谱面键数 (Change Mania 事件 / Lua / HScript 调用)。
-	 * 旧 strum 过渡 -> 重建 strum -> 新 k 值生效。已生成的 Note 保留其生成时
-	 * 的 k 值快照继续渲染/判定, 直到被销毁; 之后新生成的 Note 使用新 k 值。
+	 * Multi-key: switch the chart key count mid-song (Change Mania event / Lua / HScript call).
+ * Old strums animate out, strums are rebuilt, the new key count takes effect. Notes already generated keep
+ * their key-count snapshot until destroyed; later notes use the new count.
 	 *
-	 * 过渡动画支持 Lua/HScript 自定义:
-	 * - 动画开始前触发 onChangeManiaStart 脚本回调, 脚本可返回 true / Function_Stop
-	 *   完全接管动画 (引擎跳过内置过渡, 脚本自行用 noteTweenX/doTweenX 等补间)。
-	 * - 未接管时按 animStyle 播放内置动画, 内置动画至少 3 种:
-	 *   fade (淡出淡入) / slide (向两侧滑出滑入) / zoom (缩放淡出) / spin (旋转淡出)。
-	 * - 动画样式可通过 Lua/HScript setMania(k, skip, "样式名") 或事件 Value 2 指定,
-	 *   脚本也可 setVar('maniaChangeAnimStyle', '样式名') 预设。
+ * The transition can be customised from Lua/HScript:
+ * - onChangeManiaStart fires first and may return true / Function_Stop to take over the animation completely
+ *   (the engine skips its built-in transition and the script can use noteTweenX/doTweenX).
+ * - Otherwise the built-in animation for animStyle plays; the built-ins are
+ *   fade / slide / zoom / spin.
+ * - The style can be passed to setMania(k, skip, "style") / changeMania(...) from Lua/HScript or via event Value 2,
+ *   or preset with setVar('maniaChangeAnimStyle', 'style').
 	 *
-	 * @param skipStrumFadeOut 为 true 时跳过过渡动画
-	 * @param animStyle 内置动画样式名 (fade/slide/zoom/spin), 为空时取脚本变量, 默认 fade
+ * @param skipStrumFadeOut skips the transition animation when true
+ * @param animStyle built-in style name (fade/slide/zoom/spin); empty uses the script variable, default fade
 	 */
 	public function changeMania(newValue:Int, skipStrumFadeOut:Bool = false, ?animStyle:String = null)
 	{
@@ -3958,12 +4102,12 @@ class PlayState extends MusicBeatState
 
 		var daOldMania:Int = mania;
 
-		// 动画样式: 参数 > 脚本预设变量 > 默认 fade
+		// Animation style: argument > script variable > default fade
 		if (animStyle == null || animStyle.length < 1)
 			animStyle = Std.string(getScriptManiaAnimStyle());
 		if (animStyle == null || animStyle.length < 1) animStyle = 'fade';
 
-		// 允许 Lua/HScript 接管动画: onChangeManiaStart 返回 true/Function_Stop 则跳过内置过渡
+		// Lua/HScript may take over: returning true/Function_Stop from onChangeManiaStart skips the built-in transition
 		var customAnim:Bool = false;
 		var scriptResult:Dynamic = callOnScripts('onChangeManiaStart', [newValue, daOldMania, animStyle]);
 		if (scriptResult == true || scriptResult == FunkinLua.Function_Stop)
@@ -3971,7 +4115,7 @@ class PlayState extends MusicBeatState
 
 		mania = newValue;
 
-		// 内置过渡: 旧 strum 按动画样式退场 (可被 skip / 脚本接管跳过)
+		// Built-in transition: the old strums exit with the chosen style (skippable by skip / a script takeover)
 		if (!skipStrumFadeOut && !customAnim && strumLineNotes != null)
 			playManiaStrumOutAnim(animStyle);
 
@@ -3979,31 +4123,31 @@ class PlayState extends MusicBeatState
 		opponentStrums.clear();
 		strumLineNotes.clear();
 
-		// 同步新 k 值的键位绑定
+		// Sync the key bindings of the new key count
 		var allKeybinds:Array<Array<Dynamic>> = Keybinds.fill();
 		keysArray = (mania >= 0 && mania < allKeybinds.length) ? allKeybinds[mania] : allKeybinds[3];
 		setOnScripts('mania', mania);
 		setOnScripts('keys', mania + 1);
 
-		// 暂时禁用 generateStaticArrows 内部的入场 tween, 由内置动画接管 (脚本接管时保持原有行为)
+		// Temporarily disable the entry tween inside generateStaticArrows so the built-in animation takes over (the script path keeps its behaviour)
 		var prevSkipArrowTween:Bool = skipArrowStartTween;
 		if (!skipStrumFadeOut && !customAnim) skipArrowStartTween = true;
 		generateStaticArrows(0);
 		generateStaticArrows(1);
 		skipArrowStartTween = prevSkipArrowTween;
 
-		// 内置过渡: 新 strum 入场动画
+		// Built-in transition: the new strums enter
 		if (!skipStrumFadeOut && !customAnim)
 			playManiaStrumInAnim(animStyle);
 
-		// 多k: 切 K 后同步重建小键盘显示 (键数/键名/统计条)
+		// Multi-key: rebuild the keyboard display after a key-count change (count/names/stats bar)
 		if (keyboardDisplay != null)
 			keyboardDisplay.rebuild();
 
-		// 多k: 实时重置已生成 Note 的缩放大小, 与新的 strum 大小保持同步
-		// 仅重置属于新 k 段 (mania 快照 == 当前 k) 的 Note, 避免覆盖其他 k 段 Note 的缩放
-		// (>9K 时 strum 显著缩小, 已生成 Note 若保持旧缩放会与 strum 错位)
-		// 未物化的 unspawnNotes 是轻量数据，spawn 时 setupNoteData 会用各自的 mania 快照生成，无需在此调整。
+		// Multi-key: reset the scale of already generated notes to match the new strum size
+		// Only notes whose mania snapshot matches the current key count are reset, so other segments keep their scale
+		// (above 9K the strums shrink a lot and stale note scales would no longer line up)
+		// Unmaterialised unspawnNotes are lightweight data and spawn with their own mania snapshot, so they need no adjustment here.
 		for (note in notes.members)
 			if (note != null && note.exists && note.noteData > -1 && note.mania == mania) note.resetNoteScaleForMania(mania);
 
@@ -4011,9 +4155,9 @@ class PlayState extends MusicBeatState
 	}
 
 	/**
-	 * 读取脚本预设的切 K 动画样式。
-	 * HScript: 可通过 `maniaChangeAnimStyle = "slide";` 预设 (引擎读取全局变量)。
-	 * Lua: 推荐直接调用 `setMania(k, skip, "样式名")` / `changeMania(k, skip, "样式名")` 传样式。
+	 * Reads the key-count-change animation style preset by a script.
+ * HScript: `maniaChangeAnimStyle = "slide";` (the engine reads the global variable).
+ * Lua: preferably pass the style directly to `setMania(k, skip, "style")` / `changeMania(k, skip, "style")`.
 	 */
 	function getScriptManiaAnimStyle():String
 	{
@@ -4024,7 +4168,7 @@ class PlayState extends MusicBeatState
 		return (v != null) ? Std.string(v) : '';
 	}
 
-	/** 旧 strum 退场动画: fade 淡出 / slide 滑出 / zoom 缩小淡出 / spin 旋转淡出。 */
+	/** Old strum exit animation: fade / slide out / zoom out / spin out. */
 	function playManiaStrumOutAnim(animStyle:String):Void
 	{
 		if (strumLineNotes == null) return;
@@ -4043,7 +4187,7 @@ class PlayState extends MusicBeatState
 			switch(animStyle.toLowerCase())
 			{
 				case 'slide':
-					// 玩家侧向右、对手侧向左滑出
+					// Player side slides right, opponent side slides left
 					var dir:Float = (i < ammo) ? -1 : 1;
 					FlxTween.tween(ghost, {x: ghost.x + dir * FlxG.width * 0.5, alpha: 0}, 0.35, {
 						ease: FlxEase.circIn,
@@ -4069,7 +4213,7 @@ class PlayState extends MusicBeatState
 		}
 	}
 
-	/** 新 strum 入场动画: fade 淡入 / slide 从两侧滑入 / zoom 放大进入 / spin 旋转进入。 */
+	/** New strum entry animation: fade / slide in from the sides / zoom in / spin in. */
 	function playManiaStrumInAnim(animStyle:String):Void
 	{
 		if (strumLineNotes == null) return;
@@ -4105,19 +4249,19 @@ class PlayState extends MusicBeatState
 		}
 	}
 
-	/** 多k HScript API: 当前键数 (1 基)。 */
+	/** Multi-key HScript API: current key count (1-based). */
 	public function getManiaK():Int
 	{
 		return mania + 1;
 	}
 
-	/** 多k HScript API: 修改指定 Note 的材质。 */
+	/** Multi-key HScript API: change the texture of a note. */
 	public function setNoteTextureByIndex(noteIndex:Int, texture:String):Bool
 	{
 		if (texture == null || noteIndex < 0 || noteIndex >= notes.length) return false;
 		var note:Note = notes.members[noteIndex];
 		if (note == null || !note.exists || note.noteData < 0) return false;
-		// 自定义纹理不应用多k 调色 (默认/空纹理恢复轨道色)
+		// Custom textures skip multi-key tinting (default/empty textures restore the lane colour)
 		note.applyLaneColorShader = (texture.length < 1 || texture == 'NOTE_assets');
 		note.texture = texture;
 		note.reloadNote('', texture);
@@ -4125,7 +4269,7 @@ class PlayState extends MusicBeatState
 		return true;
 	}
 
-	/** 多k HScript API: 修改指定 Note 命中时的角色动作。 */
+	/** Multi-key HScript API: change the character animation of a note's hit. */
 	public function setNoteCharAnimByIndex(noteIndex:Int, anim:String):Bool
 	{
 		if (noteIndex < 0 || noteIndex >= notes.length) return false;
@@ -4135,7 +4279,7 @@ class PlayState extends MusicBeatState
 		return true;
 	}
 
-	/** 多k HScript API: 直接修改指定 Note 的颜色 (hue/sat/brt, 0~360/0~100/0~100)。 */
+	/** Multi-key HScript API: set a note's colour directly (hue/sat/brt, 0~360/0~100/0~100). */
 	public function setNoteColorByIndex(noteIndex:Int, hue:Float, sat:Float, brt:Float):Bool
 	{
 		if (noteIndex < 0 || noteIndex >= notes.length) return false;
@@ -4303,7 +4447,7 @@ class PlayState extends MusicBeatState
 
 	override public function update(elapsed:Float)
 	{
-		// perfMode 关闭: 预算视为无限 —— 弹窗/溅射回到原版逐击直显, 无存活上限。
+		// With perfMode off the budget is unlimited: popups/splashes go straight back to stock per-hit display with no living cap.
 		if (ClientPrefs.data.perfMode)
 		{
 			_popupImmediateBudget = POPUP_IMMEDIATE_HITS;
@@ -4315,23 +4459,55 @@ class PlayState extends MusicBeatState
 			_splashBudgetLeft = 999999;
 		}
 		var _phaseT:Float = haxe.Timer.stamp();
-		#if seiun_lua_perf
-		// 埋点（默认关闭）：本窗口测量的是「一次 update 步」内的耗时。
-		// 注意 FlxG.fixedTimestep = true（见 flixel/FlxG.hx:78），所以 update() 每渲染帧
-		// 可能被调用 0..N 次；这里绝不能放每秒一次的逻辑（落盘由 SystemDiag 心跳负责）。
-		// English: measures one update *step*; update() may run 0..N times per drawn
-		// frame under fixed timestep, so no once-per-frame work belongs here.
-		var _perfFrameT0:Float = LuaPerf.now();
-		var _perfLuaT0:Float = _perfFrameT0;
+
+		#if ONLINE_ALLOWED
+		/*
+			 * In-game FP-counter toggle on `FlxG.keys.justPressed.F7`, next to the other
+			 * debug hotkeys handled by update().
+			 * This is what makes the FP readout wired into `buildScoreText()`
+			 * observable without editing the save file, and it is the F7 key the setting's own
+			 * description advertises.
+			 *
+			 * It lives in the online guard on purpose: `showFP` / `newFPPreview` and the counter
+			 * itself are online-only additions, so with `ONLINE_ALLOWED` off the key map stays
+			 * untouched. Only the two values it assigns are new; the
+			 * dirty-flag refreshes below are this engine's own score-text mechanism.
+		 */
+		if (FlxG.keys.justPressed.F7)
+		{
+			ClientPrefs.data.showFP = !ClientPrefs.data.showFP;
+			ClientPrefs.saveSettings();
+			_scoreTextDirty = true;
+			_scoreZoomDirty = true;
+		}
+
+		// Ctrl+P lets a client take over the opponent side, which is also the escape hatch that
+		// un-gates the local opponent auto-hit below.
+
+		if (FlxG.keys.pressed.CONTROL && FlxG.keys.justPressed.P)
+			playOtherSide = !playOtherSide;
+
+		// Ready gating: the ACCEPT branch tells the room this client is ready. The overlay is a
+		// plain Alphabet, so its text is swapped instead of flickering a dedicated ready sprite.
+
+		if (online.GameClient.isConnected() && !isReady && controls.ACCEPT && canStart && !inCutscene)
+		{
+			isReady = true;
+			FlxG.sound.play(Paths.sound('confirmMenu'), 0.5);
+			if (waitReadySpr != null)
+				waitReadySpr.text = "waiting for other player...";
+			online.GameClient.send("playerReady");
+		}
+
+		// Report the local health delta to the room, which accumulates it into Room.health and broadcasts it.
+		syncOnlineHealth();
 		#end
+
 		/*if (FlxG.keys.justPressed.NINE)
 		{
 			iconP1.swapOldIcon();
 		}*/
 		callOnScripts('onUpdate', [elapsed]);
-		#if ONLINE_ALLOWED
-		updateOnline(elapsed);
-		#end
 
 		keyboardDisplay.dataUpdate(elapsed);
 		/*
@@ -4421,26 +4597,15 @@ class PlayState extends MusicBeatState
 		}
 
 
-		if ((controls.PAUSE	#if android || FlxG.android.justReleased.BACK #end) && (startedCountdown #if ONLINE_ALLOWED || onlineGateWaiting() #end) && canPause)
+		if ((controls.PAUSE	#if android || FlxG.android.justReleased.BACK #end) && startedCountdown && canPause)
 		{
 			var ret:Dynamic = callOnScripts('onPause', [], false);
 			if(ret != FunkinLua.Function_Stop#if VIDEOS_ALLOWED && !videoPlaying #end)  {
-				#if ONLINE_ALLOWED
-				if (seiunOnline && !onlineCanPauseLocally() && !onlineGateWaiting())
-				{
-					// 暂停策略限制 (仅房主可暂停 / 禁止暂停): 拦截并提示, 不弹暂停菜单。
-					// 但统一起跑前的等待阶段例外: 即使房主禁止暂停, 玩家也需要能退出对局/房间。
-					FlxG.sound.play(Paths.sound('cancelMenu'));
-					showOnlinePauseNotice(Language.get('online.pauseBlocked' + (onlinePausePolicy() == online.shared.OnlineTypes.OnlineConst.PAUSE_DISABLED ? 'Disabled' : 'HostOnly'),
-						onlinePausePolicy() == online.shared.OnlineTypes.OnlineConst.PAUSE_DISABLED ? '房主禁止了对局暂停' : '只有房主可以暂停对局'));
-				}
-				else
-				#end
 				openPauseMenu();
 			}
 		}
 
-		if (FlxG.keys.anyJustPressed(debugKeysChart) && !endingSong && !inCutscene && !seiunOnline)
+		if (FlxG.keys.anyJustPressed(debugKeysChart) && !endingSong && !inCutscene)
 		{
 			openChartEditor();
 		}
@@ -4570,43 +4735,43 @@ class PlayState extends MusicBeatState
 
 			fastSkipPastNotes(elapsed);
 			var targetData:PreloadedChartNote = (notesAddedCount < unspawnNotes.length) ? unspawnNotes[notesAddedCount] : null;
-			// 精确存活数: perfMode 关闭时与提交前一致，用 FlxTypedGroup 的 countLiving()，
-			// 避免脚本额外加入 notes 的音符不被计数；perfMode 开启时读紧凑列表 (O(1))。
+			// Exact living count: with perfMode off it matches the pre-submit behaviour via FlxTypedGroup.countLiving(),
+			// so notes added by scripts are still counted; with perfMode on it reads the compact list (O(1)).
 			limitNC = ClientPrefs.data.perfMode ? activeNotes.length : notes.countLiving();
 
-			// 自适应物化预算: 帧时间越长允许生成越多 (掉帧后自动追赶积压, 恢复流畅);
-			// 同时判定线前的音符 (hardDeadline 内) 无视预算强制生成 —— 保证可玩性优先于削峰。
+			// Adaptive materialisation budget: longer frames may spawn more (catch up after a drop and recover);
+			// notes inside hardDeadline (at the strum line) ignore the budget and always spawn, prioritising playability over smoothing.
 			var hardDeadline:Float = Conductor.songPosition + Conductor.safeZoneOffset;
 			var spawnBudget:Int = Std.int(Math.max(2048, Math.min(20000, elapsed * 1000 * 30)));
-			// 过载判定用"本帧数据级 drain 量": drain 显著非零说明到达速率超过了物化能力,
-			// 此刻到点音符由数据级路径结算, 物化只保留小额度维持近线可视, 且判定线硬时限
-			// 不再强制追加 —— 落后状态下强物化等于为注定被数据层结算的音符白付构造费。
-			// 滞回: 本帧 drain 显著非零 → 置满 30 帧; 否则逐帧衰减。
-			// 光标被长条头临时钉住等场景下 drain 会短暂归零, 滞回避免节流模式反复开关。
+			// Overload is judged from this frame's data-level drain: a clearly non-zero drain means arrivals outpace
+			// materialisation, so due notes are settled by the data path, materialisation keeps only a small quota
+			// near the line and the hard deadline no longer forces spawns (behind, forced spawns pay for notes the data layer will settle).
+			// Hysteresis: a clearly non-zero drain fills 30 frames, otherwise the counter decays per frame.
+			// When drain briefly returns to zero (e.g. the cursor pinned by a sustain head) the hysteresis avoids toggling the throttle.
 			if (_bulkDrainedLast >= 128) _overloadFrames = 30;
 			else if (_overloadFrames > 0) _overloadFrames--;
 			var perfOn:Bool = ClientPrefs.data.perfMode;
-			// 关键修复: 物化节流只允许存在于 botplay。手动模式没有数据层吸收路径
-			// (fastSkipPastNotes 的 softCut 恒为 -∞), 节流的唯一效果是让生成光标
-			// 落后于可视地平线 —— 落后的毫秒数 × 流速 = 音符在屏内"凭空出现"的像素
-			// 深度 (流速越大越深入屏幕), 长条头已生成而尾段未跟上则表现为"吞长条"。
-			// 手动模式恢复原版无限物化吞吐, 仅保留 noteLimit 上限与可视地平线准入。
+			// Critical: materialisation throttling must only exist under botplay. Manual mode has no data-layer
+			// absorption path (fastSkipPastNotes uses softCut = -inf), so the only effect of throttling is to let the
+			// spawn cursor fall behind the visible horizon: the lag in ms x scroll speed is how deep notes pop in
+			// from mid-screen, and a spawnable head with a missing tail looks like a swallowed sustain.
+			// Manual mode restores unlimited stock throughput, keeping only the noteLimit cap and the visible horizon gate.
 			var behind:Bool = perfOn && cpuControlled && _overloadFrames > 0;
 			var manualUnthrottled:Bool = !cpuControlled;
 			if (behind)
 				spawnBudget = 1024;
-			// 可视物化地平线: 超出剔除距离的音符只会被驻留或数据层结算, 构造它们是纯浪费。
-			// (spawnTime=2000ms 的旧窗口在 speed=10 时是可视视距的 ~10 倍。)
-			// perfMode 关闭: 回到原版完整 spawnTime 窗口, 不做地平线收缩。
+			// Visible materialisation horizon: notes beyond the cull distance are only kept resident or settled in the data layer, so building them is waste.
+			// (The old 2000ms spawnTime window is ~10x the visible range at speed=10.)
+			// With perfMode off the full stock spawnTime window is used and no horizon shrink is applied.
 			var effTime:Float = perfOn ? Math.min(time, _visHorizonMs) : time;
 			var spawnedThisFrame:Int = 0;
 
 			_phaseT = haxe.Timer.stamp();
-			// Turbo: 每帧重置运行时归属闸门 (见 turboKeepNote)。
+			// Turbo: reset the runtime keep gate every frame (see turboKeepNote).
 			if (turboModeActive)
 				resetTurboKeepGate();
-			// perfMode 关闭: 无预算节流、无硬时限追加 —— 与原版逐条无条件物化一致。
-			// 手动模式 (manualUnthrottled): 同样不节流, 保证屏外滑入的正确性优先。
+			// With perfMode off there is no budget throttle and no hard-deadline forcing, matching the stock per-note behaviour.
+			// Manual mode (manualUnthrottled) is also unthrottled to keep off-screen slide-in correct.
 			while (targetData != null && targetData.strumTime - Conductor.songPosition < effTime
 				&& limitNC < noteLimit
 				&& (!perfOn || manualUnthrottled || spawnedThisFrame < spawnBudget
@@ -4647,11 +4812,11 @@ class PlayState extends MusicBeatState
 				newNote.sourceIndex = notesAddedCount;
 				newNote.setupNoteData(targetData);
 				newNote.spawned = true;
-				// 进入存活紧凑列表 (limitNC 读取精确存活数的关键)
+				// Join the compact living list (what lets limitNC read the exact living count)
 				newNote.activeIdx = activeNotes.length;
 				activeNotes.push(newNote);
 
-				// 重建 prevNote/nextNote 链（只链已生成的 Note；未生成的 sustain 尾段由数据扫描兜底）。
+				// Rebuild the prevNote/nextNote chain (links only generated notes; ungenerated sustain tails are handled by the data scan).
 				var linkKey:Int = newNote.noteData + (newNote.mustPress ? 10000 : 0);
 				var prev:Note = lastSpawnedNote.get(linkKey);
 				if (prev != null) {
@@ -4693,7 +4858,7 @@ class PlayState extends MusicBeatState
 
 		if (generatedMusic && !inCutscene)
 		{
-			// 回放模式: 由 replayExam.replayUpdate() 处理按键; 非回放模式: 由 keysCheck() 处理
+			// Replay mode: keys are handled by replayExam.replayUpdate(); otherwise by keysCheck()
 			if (replayMode) {
 				if (replayExam != null) replayExam.replayUpdate(elapsed);
 			} else if(!cpuControlled) {
@@ -4704,8 +4869,8 @@ class PlayState extends MusicBeatState
 
 			if(startedCountdown)
 			{
-				// perfMode 关闭时不做离屏剔除，也不使用每帧 trig 缓存，
-				// 这两项都属于 H-Slice 优化，关闭时应保持提交前逐音符实时计算。
+				// With perfMode off there is no off-screen culling and no per-frame trig cache;
+				// both are optimizations that are skipped to keep the pre-optimization per-note real-time computation.
 				if (ClientPrefs.data.perfMode)
 				{
 					refreshNoteCullRanges(elapsed);
@@ -4713,23 +4878,23 @@ class PlayState extends MusicBeatState
 				}
 				_frameAliveTally = 0;
 
-				// 复用 strumsHit 数组，避免每帧分配新数组（密集谱面下是主要的每帧垃圾来源之一）
+				// Reuse the strumsHit array to avoid a per-frame allocation (a main source of frame garbage on dense charts)
 				var laneCount:Int = Note.ammo[mania] * 2;
 				if (strumsHit.length != laneCount)
 					strumsHit = [for (i in 0...laneCount) false];
 				else
 					for (i in 0...laneCount)
 						strumsHit[i] = false;
-				// botplay/对手侧的"每轨每帧一次"门控同步重置
+				// Reset the once-per-lane-per-frame gates for botplay/opponent side
 				resetBotGateArrays();
 
 				_phaseT = haxe.Timer.stamp();
-				bulkHitDueMaterialized(); // botplay 到点已物化音符的批量命中 (合并逐击调用链)
+				bulkHitDueMaterialized(); // batch-hit botplay's due materialised notes (merged per-hit call chain)
 				if (ClientPrefs.data.perfMode)
 				{
-					// 遍历存活紧凑列表 (O(存活数), 不再扫全量 members 槽位)。
-					// 正向遍历 + swap-remove 补偿: updateDaNote 可能回收当前元素,
-					// 尾元素补位到当前下标, 此时 i 不前进即可补上新换入的元素。
+					// Iterate the compact living list (O(living), no full member scan).
+					// Forward iteration with swap-remove compensation: updateDaNote may recycle the current element
+					// and the tail element moves into its slot, so i must not advance then.
 					var ai:Int = 0;
 					while (ai < activeNotes.length)
 					{
@@ -4742,20 +4907,20 @@ class PlayState extends MusicBeatState
 				}
 				else
 				{
-					// 关闭性能模式时保持提交前行为: 遍历 notes 全组 alive 成员，
-					// 脚本额外加入/移动的 Note 也会被正常更新。
+					// With perfMode off keep the pre-optimization behaviour: iterate every alive member of notes,
+					// including notes that scripts add or move.
 					notes.forEachAlive(updateDaNote);
 				}
 				_lastAliveTally = _frameAliveTally;
 
-				// 回池复用后不再批量 remove/destroy；dead Note 保留在 members 中供槽位复用。
-				// 只清理被脚本/外部直接 destroy 的壳（scale == null），避免异常路径堆积。
+				// Pooled notes are no longer removed/destroyed in bulk; dead notes stay in members for slot reuse.
+				// Only shells destroyed directly by scripts/external code (scale == null) are cleaned up, avoiding growth on error paths.
 				_noteCleanupFrameCounter++;
 				if (_noteCleanupFrameCounter >= NOTE_CLEANUP_INTERVAL)
 				{
 					_noteCleanupFrameCounter = 0;
-					// 单趟压缩清除被脚本 destroy 的空壳 (scale == null),
-					// 替代逐个 notes.remove(.., true) 的 O(n) splice。
+					// One-pass compaction removes shells destroyed by scripts (scale == null),
+					// replacing the O(n) splice of removing them one by one.
 					var m:Array<Note> = notes.members;
 					var total:Int = m.length;
 					var wI:Int = 0;
@@ -4765,19 +4930,19 @@ class PlayState extends MusicBeatState
 						if (cleanNote != null && cleanNote.scale == null)
 							continue;
 						m[wI] = cleanNote;
-						if (cleanNote != null) cleanNote.memberIndex = wI; // 同步下标缓存
+						if (cleanNote != null) cleanNote.memberIndex = wI; // keep the index cache in sync
 						wI++;
 					}
 					@:privateAccess notes.length = wI;
-					// 关键修复: 必须直接截断数组, 保持与旧版 notes.remove(splice) 相同的
-					// "members 无 null 槽位" 不变量 —— FlxTypedGroup.sort 是不加过滤的
-					// members.sort(), fastSort 关闭时每帧 notes.sort(FlxSort.byY) 会把
-					// null 槽位送入比较器解引用 Obj1.y → 按下长条(留壳)后数帧内直接崩溃。
+					// Critical: the array must be truncated directly to keep the "members has no null slots" invariant
+					// that notes.remove(splice) maintained. FlxTypedGroup.sort sorts members without filtering, so when
+					// fastSort is off each frame's notes.sort(FlxSort.byY) feeds null slots to the comparator, which
+					// dereferences Obj1.y and crashes a few frames after a sustain is held with a shell left behind.
 					if (wI < total)
 						m.resize(wI);
 					if (_noteSlotCursor > wI) _noteSlotCursor = wI;
 
-					// 同步压缩存活列表 (脚本 destroy 的壳可能残留在活跃列表)
+					// Compact the living list too (shells destroyed by scripts may remain in it)
 					var wA:Int = 0;
 					for (aI in 0...activeNotes.length)
 					{
@@ -4803,8 +4968,8 @@ class PlayState extends MusicBeatState
 				GfxPolicy.onPlayUpdate(elapsed);
 
 				// Sort for correct draw order (closer to strum on top).
-				// fasterNoteSort 对长条同样安全: 只重排存活且可见的 Note, 死槽位保持原位,
-				// 绘制顺序与全表 sort 完全一致; 密集长条谱面不再退回 O(n log n) 全排序。
+				// fasterNoteSort is safe for sustains too: it reorders only living, visible notes and leaves dead slots in place,
+				// so the draw order matches a full sort and dense sustain charts no longer fall back to an O(n log n) full sort.
 				var sortOrder:Int = ClientPrefs.data.downScroll ? FlxSort.ASCENDING : FlxSort.DESCENDING;
 				_phaseT = haxe.Timer.stamp();
 				if (ClientPrefs.data.fastSort)
@@ -4812,7 +4977,7 @@ class PlayState extends MusicBeatState
 				else
 				{
 					notes.sort(noteDrawOrder, sortOrder);
-					rebuildMemberIndexes(notes.members, notes.members.length); // 全表重排后单趟重建下标缓存
+					rebuildMemberIndexes(notes.members, notes.members.length); // rebuild the index cache in one pass after a full reorder
 				}
 			}
 			else
@@ -4828,7 +4993,7 @@ class PlayState extends MusicBeatState
 					notes.forEachAlive(resetNote);
 				}
 				_lastAliveTally = _frameAliveTally;
-				// 倒计时前同样不 remove/destroy，dead Note 留在 members 中复用。
+				// Before the countdown notes are also not removed/destroyed; dead notes stay in members for reuse.
 			}
 		}
 		checkEventNote();
@@ -4846,8 +5011,8 @@ class PlayState extends MusicBeatState
 		}
 		#end
 
-		// 表现层帧末统一刷新 (分数文本/ms 文本/合并弹窗), 随后写 watch 计数面板。
-		// 放在 onUpdatePost 之前: 脚本在本帧回调里读到的分数/文本已是最终值。
+		// Refresh the presentation once at frame end (score text / ms text / merged popup), then update the watch counters.
+		// Before onUpdatePost, so scripts reading the score/text in this frame's callbacks see the final values.
 		_phaseT = haxe.Timer.stamp();
 		flushHitPresentation();
 
@@ -4855,9 +5020,6 @@ class PlayState extends MusicBeatState
 		setOnScripts('cameraY', camFollowPos.y);
 		setOnScripts('botPlay', cpuControlled);
 		callOnScripts('onUpdatePost', [elapsed]);
-		#if seiun_lua_perf
-		LuaPerf.noteFrame(LuaPerf.now() - _perfFrameT0, LuaPerf.now() - _perfLuaT0);
-		#end
 	}
 	// Health icon updaters(like 073?)
 	public dynamic function updateIconsScale(elapsed:Float){
@@ -4876,17 +5038,6 @@ class PlayState extends MusicBeatState
 		persistentUpdate = false;
 		persistentDraw = true;
 		paused = true;
-		#if ONLINE_ALLOWED
-		if (sendNetworkPause)
-		{
-			// 自己主动暂停: 清除"对方暂停"标记 (远程暂停走 openPauseMenu(false) 并单独设置)。
-			OnlineSession.pauseNickname = "";
-			// 暂停策略: 只有允许本地暂停时才广播 (仅房主/禁止暂停时, 非房主不发暂停消息)。
-			// 观战者: 暂停纯属本地画面, 绝不广播 (会把整场对局挂起)。
-			if (onlineCanPauseLocally() && seiunOnline && !seiunSpectate && OnlineSession.active && OnlineSession.mode == online.shared.OnlineTypes.OnlineConst.MODE_REALTIME && GameClient.instance != null)
-				GameClient.instance.send(SeiunProtocol.MSG_GAME_PAUSE, SeiunProtocol.CHANNEL_GAME, {at: Date.now().getTime()});
-		}
-		#end
 
 
 		keyboardDisplay.save();
@@ -4909,8 +5060,7 @@ class PlayState extends MusicBeatState
 			opponentVocals.pause();
 		}
 		#if HSCRIPT_ALLOWED
-		// 联机模式强制使用新版暂停菜单: 旧版没有联机暂停/恢复/退出房间的处理逻辑。
-		var usePause:Bool = seiunOnline ? false : ((Main.useOldPause != null) ? Main.useOldPause : ClientPrefs.data.oldPauseMenu);
+		var usePause:Bool = ((Main.useOldPause != null) ? Main.useOldPause : ClientPrefs.data.oldPauseMenu);
 		if (usePause)
 			openSubState(new OldPauseSubState(boyfriend.getScreenPosition().x, boyfriend.getScreenPosition().y));
 		else
@@ -4944,9 +5094,15 @@ class PlayState extends MusicBeatState
 	public var isDead:Bool = false; //Don't mess with this on Lua!!!
 	function doDeathCheck(?skipHealthCheck:Bool = false) {
 		#if ONLINE_ALLOWED
-		if (seiunOnline && OnlineSession.active
-			&& OnlineSession.mode == online.shared.OnlineTypes.OnlineConst.MODE_REALTIME)
+		// Online play disables the death check while connected (the check starts with
+		// `!GameClient.isConnected()`). The online path never switches to GameOverSubstate, and
+		// `boyfriend.stunned` is never reset, so zeroed health would permanently kill the four note
+		// keys while the screen kept running; the server never broadcasts endSong after one side's
+		// playerEnded while it still waits for the other, so that side would hang forever. Online
+		// now skips the death check: the bar stays empty and play continues; `endSong()` alone ends it.
+		if (online.GameClient.isConnected()) {
 			return false;
+		}
 		#end
 		if (((skipHealthCheck && instakillOnMiss) || (playOpponent ? health >= 2 : health <= 0)) && !practiceMode && !isDead && !replayMode && !cpuControlled)
 		{
@@ -5007,7 +5163,7 @@ class PlayState extends MusicBeatState
 			}
 			catch (e:Dynamic)
 			{
-				// 单个事件执行失败不阻塞后续事件 (防卡顿/异常吞事件)
+				// A failing event does not block the following ones (prevents stalls and swallowed errors)
 				FlxG.log.error('Event failed: ${eventNotes[0].event} - $e');
 			}
 			eventNotes.shift();
@@ -5160,14 +5316,14 @@ class PlayState extends MusicBeatState
 
 			case 'Change Mania':
 				var newMania:Int = Std.parseInt(value1);
-				if (Math.isNaN(newMania)) newMania = Note.defaultMania + 1; // 缺省 4K (1 基)
-				// 事件 Value 2: 'true'/'skip' 跳过过渡动画; 其他值作为动画样式名
-				// (内置: fade/slide/zoom/spin, 脚本也可自定义样式)
+				if (Math.isNaN(newMania)) newMania = Note.defaultMania + 1; // default 4K (1-based)
+				// Event Value 2: 'true'/'skip' skips the transition; any other value is an animation style name
+				// (built-ins: fade/slide/zoom/spin; scripts may define their own)
 				var skipTween:Bool = (value2 != null && (value2 == 'true' || value2 == 'skip'));
 				var animStyle:String = null;
 				if (!skipTween && value2 != null && value2.length > 0)
 					animStyle = value2;
-				// 事件 Value 1 使用 1 基键数 (9 = 9K), 内部 mania 为 0 基
+				// Event Value 1 uses a 1-based key count (9 = 9K); the internal mania is 0-based
 				changeMania(newMania - 1, skipTween, animStyle);
 
 			case 'Alt Idle Animation':
@@ -5235,8 +5391,8 @@ class PlayState extends MusicBeatState
 							boyfriend = boyfriendMap.get(value2);
 							boyfriend.alpha = lastAlpha;
 							iconP1.changeIcon(boyfriend.healthIcon);
-							// 073/104 的 Bar 是 FlxSpriteGroup，部分自定义图标切图后会被
-							// 血条背景盖住；把图标重新放到 healthBar 之后，确保始终在血条上层。
+							// The 0.7.3/1.0.4 Bar is a FlxSpriteGroup and some custom icons end up covered by the
+							// health bar background; re-adding the icon after the bar keeps it on top.
 							forceHealthIconsAboveBar();
 						}
 						setOnScripts('boyfriendName', boyfriend.curCharacter);
@@ -5282,6 +5438,15 @@ class PlayState extends MusicBeatState
 							setOnScripts('gfName', gf.curCharacter);
 						}
 				}
+
+				#if ONLINE_ALLOWED
+				// Change Character must sync the characters map per sid.
+				// The canonical swap is done above; this fills in the per-sid loop. Without it
+				// characters[sid] still points at the replaced-out instance, so the remote animations
+				if (charType != 2)
+					onlineRebindCharacters(charType, value2);
+				#end
+
 				reloadHealthBarColors();
 
 			case 'BG Freaks Expression':
@@ -5405,8 +5570,22 @@ class PlayState extends MusicBeatState
 	 * the virtual playhead running so those notes get played out before the
 	 * song ends.
 	 */
+	/**
+	 * The FlxSound that carries onMusicComplete. It outlives this state while the next one
+	 * loads (the song keeps playing during the transition), so destroy() has to detach the
+	 * callback -- otherwise a late completion runs finishSong() on a destroyed state and
+	 * writes the volume of an already destroyed FlxG.sound.music (null write at +0x30,
+	 * crash/native_crash_20260925_154824.txt).
+	 */
+	var _songMusic:FlxSound = null;
+
 	function onMusicComplete():Void
 	{
+		// The song's FlxSound outlives this state while the next one loads, and its onComplete
+		// still points here. A late completion must not run on a dead state: FlxG.sound.music can
+		// already be destroyed (FlxSound.destroy nulls _transform), and finishSong() writes its
+		// volume -- a null write at +0x30 (crash/native_crash_20260925_154824.txt).
+		if (instance != this) return;
 		if (notesAddedCount >= unspawnNotes.length)
 			finishSong();
 		else
@@ -5418,7 +5597,7 @@ class PlayState extends MusicBeatState
 		var finishCallback:Void->Void = endSong; //In case you want to change it in a specific song.
 
 		updateTime = false;
-		FlxG.sound.music.volume = 0;
+		if (FlxG.sound.music != null && FlxG.sound.music.exists) FlxG.sound.music.volume = 0;
 		vocals.volume = 0;
 		vocalsPlayer.volume = 0;
 		opponentVocals.volume = 0;
@@ -5438,6 +5617,19 @@ class PlayState extends MusicBeatState
 	public var transitioning = false;
 	public function endSong():Void
 	{
+		#if ONLINE_ALLOWED
+		// endSong() first reports the final FP, max combo and "playerEnded" to the room and
+		// bails out. The room then answers with the "endSong" message, whose listener
+		// calls endSong() again; that listener is not wired here, so online songs currently stop
+		// at this early return.
+		if (!canEndSongOnline && online.GameClient.isConnected()) {
+			online.GameClient.send("updateSongFP", Math.ffloor(songPoints));
+			online.GameClient.send("updateMaxCombo", maxcombo);
+			online.GameClient.send("playerEnded");
+			return;
+		}
+		#end
+
 		//Should kill you if you tried to cheat
 		if(!startingSong) {
 			function drainHealth(daNote:Note):Void {
@@ -5507,9 +5699,9 @@ class PlayState extends MusicBeatState
 				#if !switch
 				var percent:Float = ratingPercent;
 				if(Math.isNaN(percent)) percent = 0;
-				if (!replayMode && !practiceMode && !cpuControlled && !chartingMode && !seiunOnline)
+				if (!replayMode && !practiceMode && !cpuControlled && !chartingMode)
 				{
-				// 准备回放帧数据 (转为 Dynamic 以存入 Allscore)
+				// Prepare replay frame data (converted to Dynamic for Allscore)
 				var replayFrameData:Array<Dynamic> = (replayExam != null && ClientPrefs.data.saveReplayData)
 					? Replay.framesToDynamic(replayExam.getFrameData()) : null;
 
@@ -5541,8 +5733,8 @@ class PlayState extends MusicBeatState
 					ClientPrefs.data.judgementTimings,
 					ClientPrefs.data.marvelousRatings,
 					ClientPrefs.data.judgementPreset,
-					// osu! 尾判 + 判定相关手感 (27-30, 回放/成绩详情强制还原用)
-					null, // 占位: osu! 尾判已禁用，保留 details[27] 索引，避免后续字段错位
+					// osu! tail judgement + judgement feel (27-30, force-restored by replay/score details)
+					null, // placeholder: tail judgement is disabled but details[27] is kept so later fields do not shift
 					ClientPrefs.data.ratingOffset,
 					ClientPrefs.data.guitarHeroSustains,
 					ClientPrefs.data.marvelousWindow
@@ -5566,16 +5758,30 @@ class PlayState extends MusicBeatState
 				openChartEditor();
 				return;
 			}
+
+
 			#if ONLINE_ALLOWED
-			if (seiunOnline)
-			{
-				onlineSubmitResult();
-				MusicBeatState.switchState(new online.states.OnlineResultsState(buildOnlineScore()));
+				// The FP total for the finished run:
+				//   songPoints = online.FunkinPoints.calcFP(ratingPercent, songMisses, songDensity, totalNotesHit, maxCombo);
+				// This engine has no `finishingSong` member, so the equivalent "the run really ended"
+				// condition is its `SONG.validScore` gate around the score-saving block below. Computed
+				// here (not inside that block) because songDensity/totalNotesHit/maxcombo are all final
+				// by this point. Read by buildScoreText()/getPresencePoints() and by the online results
+			// dispatch -- both only under ONLINE_ALLOWED.
+			if (SONG.validScore || SONG.validScore == null)
+				songPoints = online.FunkinPoints.calcFP(ratingPercent, songMisses, songDensity, totalNotesHit, maxcombo);
+			#end
+
+			#if ONLINE_ALLOWED
+			// Online results go to online.states.ResultsState (which reads the room state for the
+			// ranking) instead of the single-player PlayStateResultsSubstate.
+			if (online.GameClient.isConnected()) {
+				online.states.ResultsState.gainedPoints = songPoints;
 				transitioning = true;
+				FlxG.switchState(new online.states.ResultsState());
 				return;
 			}
 			#end
-
 
 			prevCamFollow = camFollow;
 			prevCamFollowPos = camFollowPos;
@@ -5670,14 +5876,14 @@ class PlayState extends MusicBeatState
 	}
 
 	/**
-	 * LeatherEngine 移植: 按 judgementTimings / marvelousRatings 重建评级数据。
-	 * 回放加载后也会重新调用, 保证恢复的判定手感立即生效。
+	 * Rebuild the rating data from judgementTimings / marvelousRatings (from LeatherEngine).
+	 * Called again after a replay load so the restored judging feel applies immediately.
 	 */
 	private function buildRatingsData():Void
 	{
 		ratingsData = [];
 
-		// 判定窗口以 judgementTimings 为准, 同步到 Psych 窗口字段
+		// Judgement windows come from judgementTimings and are synced into the Psych window fields
 		Ratings.syncWindows();
 
 		if (ClientPrefs.data.marvelousRatings)
@@ -5720,8 +5926,8 @@ class PlayState extends MusicBeatState
 		}
 
 		// boyfriend.playAnim('hey');
-		// set_volume 会触发 soundTransform 原生写入, 峰值下每击×3 路是纯浪费;
-		// 已是 1 时跳过 (语义等价)。
+		// set_volume triggers a native soundTransform write, which is waste at three paths per hit under load;
+		// skip it when the value is already 1 (semantically identical).
 		if (vocals.volume != 1) vocals.volume = 1;
 		if (vocalsPlayer.volume != 1) vocalsPlayer.volume = 1;
 		if (opponentVocals.volume != 1) opponentVocals.volume = 1;
@@ -5742,14 +5948,25 @@ class PlayState extends MusicBeatState
 		}
 
 		if(!practiceMode) {
-		 // 分数仍保持 vanilla botplay 语义 (botplay 不加分); 命中数则与批量路径
-		 // 同口径计入, 避免 HUD/结算里"击中数"只剩逐对象路径处理的少数音符。
+		 // Scoring keeps the vanilla botplay semantics (botplay adds no score); hit counts are counted like the batch path
+		 // so the HUD/results do not show only the few notes handled by the per-object path.
 		 if(!cpuControlled) songScore += score;
 		 if(!note.ratingDisabled)
 		 {
 			 songHits++;
 		 }
 		}
+		#if ONLINE_ALLOWED
+		// Every local judgement is forwarded to the room. This engine also stashes the rating image
+		// so goodNoteHit() can forward it in "noteHit" (the image comes from popUpScore(), which is
+		// Void here), and that image is what the remote side plays.
+		onlineLastRatingImage = daRating.image;
+		if (!practiceMode && !cpuControlled)
+		{
+			online.GameClient.send("addScore", score);
+			online.GameClient.send("addHitJudge", note.rating);
+		}
+		#end
 		if(!note.ratingDisabled) {
 			totalPlayed++;
 			RecalculateRating(false);
@@ -5792,7 +6009,7 @@ class PlayState extends MusicBeatState
 			if (!generatedMusic || endingSong || boyfriend.stunned)
 				return;
 
-			// 0.7.3+/1.0.4: onKeyPressPre（返回 Function_Stop 可拦截本次按键）
+			// 0.7.3+/1.0.4: onKeyPressPre (returning Function_Stop cancels the press)
 			// 0.7.3+/1.0.4: onKeyPressPre (return Function_Stop to block the press)
 			var preResult:Dynamic = callOnScripts('onKeyPressPre', [key]);
 			if (preResult == LuaUtils.Function_Stop || preResult == FunkinLua.Function_Stop)
@@ -5837,7 +6054,7 @@ class PlayState extends MusicBeatState
 				}
 			}
 
-			// 回放模式: 让脚本/按键处理都基于录制帧的精确时间。
+			// Replay mode: scripts and key handling both use the exact time of the recorded frame.
 			if (replayMode && time != -999999)
 				Conductor.songPosition = hitTime;
 
@@ -5861,7 +6078,7 @@ class PlayState extends MusicBeatState
 				var canMiss:Bool = !ClientPrefs.data.ghostTapping;
 
 				// heavily based on my own code LOL if it aint broke dont fix it
-				// 复用 keyPressed 的临时数组: 最外层调用零分配; 脚本重入时用新数组防止污染外层。
+				// Reuse keyPressed' scratch arrays so the outermost call allocates nothing; script re-entry gets fresh arrays.
 				var useScratch:Bool = _pressScratchDepth == 0;
 				var pressNotes:Array<Note> = useScratch ? _keyPressedPressNotes : [];
 				var sortedNotesList:Array<Note> = useScratch ? _keyPressedSortedNotes : [];
@@ -5874,7 +6091,7 @@ class PlayState extends MusicBeatState
 				var notesStopped:Bool = false;
 			if (!hasActiveScripts())
 			{
-				// 无脚本: 只扫紧凑存活列表, 避开 notes 组里的死槽位与 forEachAlive 闭包。
+				// Without scripts, scan only the compact living list instead of dead members and a forEachAlive closure.
 				for (daNote in activeNotes)
 				{
 					if (daNote == null) continue;
@@ -5937,14 +6154,6 @@ class PlayState extends MusicBeatState
 				// Shubs, this is for the "Just the Two of Us" achievement lol
 				//									- Shadow Mario
 				keysPressed[key] = true;
-				#if ONLINE_ALLOWED
-				if (seiunOnline)
-					// 上报按键时间用 keyPressed 入口处的帧时钟 (lastTime), 不能用上面同步后的
-					// music.time: 音频时钟相对帧时钟滞后 (声卡缓冲) 且不含 Conductor.offset,
-					// 会把所有按键报早几百毫秒, 被服务器判成 "illegal press outside chart window"。
-					if (!seiunSpectate)
-						OnlineSession.sendInput(key, true, lastTime);
-				#end
 
 
 				//more accurate hit time for the ratings? part 2 (Now that the calculations are done, go back to the time it was before for not causing a note stutter)
@@ -5955,6 +6164,10 @@ class PlayState extends MusicBeatState
 			var spr:StrumNote = playerStrums.members[key];
 			if(strumsBlocked[key] != true && spr != null && spr.animation.curAnim.name != 'confirm')
 			{
+				#if ONLINE_ALLOWED
+				// keyPressed() mirrors the press to the room.
+				online.GameClient.send("strumPlay", ["pressed", key, 0]);
+				#end
 				spr.playAnim('pressed');
 				spr.resetAnim = 0;
 			}
@@ -5963,16 +6176,16 @@ class PlayState extends MusicBeatState
 			}
 
 		/**
-		 * 多k: 多键同时按下时批量判定 (只遍历一次 Note 表, 避免每个键全表扫描导致掉帧)。
-		 * 逻辑与 keyPressed 一致: 按轨道分组处理 jack、幽灵键、strum 动画, 并逐键触发脚本回调。
+		 * Multi-key: batch judgement for several simultaneous presses (one pass over the notes instead of one per key).
+ * Same logic as keyPressed: jack detection, ghost keys and strum animations per lane, with script callbacks per key.
 		 */
 		public function keyPressBatch(keys:Array<Int>, time:Float, ?suppressAllButLast:Int = -1, ?pressTimes:Array<Float> = null):Void
 		{
 			if (cpuControlled || paused || keys == null || keys.length < 2) return;
 			if (!generatedMusic || endingSong || boyfriend.stunned) return;
 
-			// 预先构建轨道按下位图, 避免每个存活 Note 都做 keys.indexOf (O(N*K) -> O(N))
-			// 复用 keyPressBatch 的临时数组: 最外层调用零分配; 脚本重入时用新数组防止污染外层。
+			// Pre-build the pressed-lane bitmap so every living note avoids keys.indexOf (O(N*K) -> O(N))
+			// Reuse keyPressBatch' scratch arrays so the outermost call allocates nothing; script re-entry gets fresh arrays.
 			var useScratch:Bool = _pressScratchDepth == 0;
 			var laneCount:Int = Note.ammo[mania];
 			var laneDown:Array<Bool> = useScratch ? _batchLaneDown : [for (i in 0...laneCount) false];
@@ -6017,7 +6230,7 @@ class PlayState extends MusicBeatState
 				});
 			}
 
-			// 按轨道分组 (同轨 jack 检测互不影响); 最外层用预分配桶, 避免每批新建 Map/数组。
+			// Group by lane (same-lane jack detection is independent); preallocated buckets avoid new Maps/arrays per batch.
 			var laneNotes:Array<Array<Note>>;
 			if (useScratch)
 			{
@@ -6052,6 +6265,11 @@ class PlayState extends MusicBeatState
 				var spr:StrumNote = (key >= 0 && key < playerStrums.members.length) ? playerStrums.members[key] : null;
 				if (strumsBlocked[key] != true && spr != null && spr.animation.curAnim != null && spr.animation.curAnim.name != 'confirm')
 				{
+					#if ONLINE_ALLOWED
+					// The batch path is this engine's multi-key merge of the per-key keyPressed();
+					// mirror each merged lane of the batch.
+					online.GameClient.send("strumPlay", ["pressed", key, 0]);
+					#end
 					spr.playAnim('pressed');
 					spr.resetAnim = 0;
 				}
@@ -6062,11 +6280,6 @@ class PlayState extends MusicBeatState
 					callOnScripts('onGhostTap', [key]);
 					if (canMiss) noteMissPress(key);
 					keysPressed[key] = true;
-					#if ONLINE_ALLOWED
-					if (seiunOnline)
-						if (!seiunSpectate)
-							OnlineSession.sendInput(key, true, reportTime);
-					#end
 
 					callOnScripts('onKeyPress', [key]);
 					continue;
@@ -6103,26 +6316,22 @@ class PlayState extends MusicBeatState
 					}
 				}
 				keysPressed[key] = true;
-				#if ONLINE_ALLOWED
-				if (seiunOnline && !seiunSpectate)
-					OnlineSession.sendInput(key, true, reportTime);
-				#end
 
 				callOnScripts('onKeyPress', [key]);
 			}
 			_pressScratchDepth--;
 		}
 
-		/** 多k: 供安卓 Hitbox 直接触发额外轨道 (4K 以上)。 */
+		/** Multi-key: lets the Android hitbox trigger extended lanes directly (above 4K). */
 		public function mobileKeyPressed(key:Int):Void
 		{
 			if (key < 0 || key >= Note.ammo[mania] || key >= mobileHeld.length)
 				return;
-			// 触摸按住状态: 即使暂停/回放也如实记录, keysCheck 才能持续命中长条段
+			// Touch hold state: recorded even while paused or replaying so keysCheck can keep hitting sustain bodies
 			mobileHeld[key] = true;
 			if (replayMode || cpuControlled || paused)
 				return;
-			// 同帧多指按下先入队, 由 keysCheck 合并成 keyPressBatch, 避免每指全表扫 Note。
+			// Same-frame multi-touch presses are queued and merged into one keyPressBatch by keysCheck, avoiding a full note scan per finger.
 			if (_mobilePressQueue.indexOf(key) == -1)
 			{
 				_mobilePressQueue.push(key);
@@ -6130,14 +6339,14 @@ class PlayState extends MusicBeatState
 			}
 		}
 
-		/** 多k: 供安卓 Hitbox 直接释放额外轨道 (4K 以上)。 */
+		/** Multi-key: lets the Android hitbox release extended lanes directly (above 4K). */
 		public function mobileKeyReleased(key:Int):Void
 		{
 			if (key < 0 || key >= Note.ammo[mania] || key >= mobileHeld.length)
 				return;
 			mobileHeld[key] = false;
-			// 若同一帧内还有未处理的按下，先入队释放，keysCheck 按 按下→释放 顺序处理，
-			// 避免快速点按在同帧 down+up 时出现“先 release 后 press”导致按键状态卡住。
+			// If same-frame presses are still pending, queue the release first so keysCheck processes press then release,
+			// otherwise a fast same-frame down+up would release before pressing and leave the key stuck.
 			if (_mobilePressQueue.indexOf(key) != -1)
 				_mobileReleaseQueue.push(key);
 			else
@@ -6168,19 +6377,19 @@ class PlayState extends MusicBeatState
 
 		public function keyReleased(key:Int, ?time:Float = -999999):Void
 		{
-			// 回放模式必须对称处理按下/释放：keyPressed 不要求 startedCountdown，
-			// 如果这里仍要求 startedCountdown，倒计时/开场的释放会被吞掉，导致按键一直按住。
+			// Replay mode must handle press and release symmetrically: keyPressed does not require startedCountdown,
+			// and requiring it here would swallow releases during the countdown/intro, leaving keys held.
 			if (cpuControlled || paused || (!replayMode && !startedCountdown))
 				return;
 			keyboardDisplay.released(key);
 
-			// 0.7.3+/1.0.4: onKeyReleasePre（返回 Function_Stop 可拦截本次松键）
+			// 0.7.3+/1.0.4: onKeyReleasePre (returning Function_Stop cancels the release)
 			// 0.7.3+/1.0.4: onKeyReleasePre (return Function_Stop to block the release)
 			var preResult:Dynamic = callOnScripts('onKeyReleasePre', [key]);
 			if (preResult == LuaUtils.Function_Stop || preResult == FunkinLua.Function_Stop)
 				return;
 
-			/** osu! 尾判: 松键时按释放时机相对长条尾端判定
+			/** osu! tail judgement: a release is judged against the sustain tail time
 			if (ClientPrefs.data.osuTailJudgement
 				&& key >= 0 && key < activeTailEnd.length
 				&& activeTailEnd[key] > 0
@@ -6194,21 +6403,20 @@ class PlayState extends MusicBeatState
 			var spr:StrumNote = playerStrums.members[key];
 			if (spr != null)
 			{
+				#if ONLINE_ALLOWED
+				// keyReleased() mirrors the release.
+				online.GameClient.send("strumPlay", ["static", key, 0]);
+				#end
 				spr.playAnim('static');
 				spr.resetAnim = 0;
 			}
 			callOnScripts('onKeyRelease', [key]);
-			#if ONLINE_ALLOWED
-			if (seiunOnline)
-				if (!seiunSpectate)
-					OnlineSession.sendInput(key, false, Conductor.songPosition);
-			#end
 
 		}
 
-		// ======================== osu! 尾判 ========================
+		// ======================== osu! tail judgement ========================
 
-		/** osu! 尾判: 初始化轨道数组 (mania 可能变化)
+		/** osu! tail judgement: initialises the per-lane arrays (mania may change).
 		private function ensureTailArrays():Void
 		{
 			var laneCount:Int = Note.ammo[mania];
@@ -6220,7 +6428,7 @@ class PlayState extends MusicBeatState
 		}
 			*/
 
-		/** osu! 尾判: 清除指定轨道的活动长条
+		/** osu! tail judgement: clears the active sustain on a lane.
 		private function clearActiveHold(lane:Int):Void
 		{
 			if (lane >= 0 && lane < activeTailEnd.length)
@@ -6231,7 +6439,7 @@ class PlayState extends MusicBeatState
 		}
 			*/
 
-		/** osu! 尾判: 长条头部命中时注册活动长条 (记录尾端时间与头部 Note)
+		/** osu! tail judgement: registers the active sustain when a head is hit (tail time and head note).
 		private function registerActiveHold(note:Note):Void
 		{
 			if (note == null || cpuControlled || playOpponent || note.isSustainNote || note.sustainLength < 1) return;
@@ -6240,7 +6448,7 @@ class PlayState extends MusicBeatState
 			var lane:Int = Std.int(Math.abs(note.noteData));
 			if (lane < 0 || lane >= activeTailEnd.length) return;
 
-			// 长条链: 上一根长条还挂着就按下新头部 → 上一根视为按住完成, 结算其长条分数
+			// Sustain chain: pressing a new head while the previous sustain is still active completes the previous one and settles its score
 			if (activeTailEnd[lane] > 0)
 			{
 				if (!practiceMode)
@@ -6258,11 +6466,11 @@ class PlayState extends MusicBeatState
 			*/
 
 		/**
-		 * osu! 尾判: 计算长条的视觉尾端时间。
-		 * 不能直接用 strumTime + sustainLength —— 谱面生成时尾段会额外偏移
-		 * (stepCrochet / songSpeed), 玩家松手是对着屏幕上的尾段松的。
-		 * 沿 nextNote 链找到最后一个 sustain 段 (isSustainEnd) 用它的 strumTime;
-		 * 短到没生成尾段的兜底用 chart 时长。
+		 * osu! tail judgement: visual tail time of a sustain.
+ * It cannot be strumTime + sustainLength: chart generation offsets the tail segment
+ * (stepCrochet / songSpeed) and the player releases against the segment on screen.
+ * Walk the nextNote chain to the last sustain segment (isSustainEnd) and use its strumTime;
+ * if the sustain is too short to generate a tail segment, fall back to the chart length.
 
 		private function computeTailEnd(head:Note):Float
 		{
@@ -6275,7 +6483,7 @@ class PlayState extends MusicBeatState
 			while (i < unspawnNotes.length)
 			{
 				var d:PreloadedChartNote = unspawnNotes[i];
-				// 只扫描属于同一根长条的 sustain 片段；遇到其它 Note 就停止。
+				// Scan only sustain segments belonging to this one sustain; stop at any other note.
 				if (!d.isSustainNote || d.parentST != headParentST)
 					break;
 				endPieceTime = d.strumTime;
@@ -6287,10 +6495,10 @@ class PlayState extends MusicBeatState
 		}
 	 */
 		/**
-		 * osu! 尾判: 松键判定 (由 keyReleased 调用)。
-		 * - 松键误差 = 松键时间 - 尾端时间, 与普通音符一样按 |误差| 使用同一套判定窗口
-		 * - 误差超出安全区 → miss (早放/晚放都算)
-		 * - 按住超过尾端 + 安全区仍不松 → 由每帧超时检查判 miss (osu: 超过晚 miss 窗口仍按住 = miss)
+		 * osu! tail judgement: release judgement (called from keyReleased).
+ * - release error = release time - tail time, judged with the same windows on |error| as normal notes
+ * - error outside the safe zone -> miss (early and late both count)
+ * - still held past tail + safe zone -> the per-frame timeout marks a miss (osu: holding past the late miss window = miss)
 
 		private function judgeTailRelease(lane:Int, releaseTime:Float):Void
 		{
@@ -6309,27 +6517,27 @@ class PlayState extends MusicBeatState
 		//}
 
 		/**
-		 * osu! 尾判: 松键评级 (完全还原 osu!mania: 早放/晚放对称使用同一套窗口)。
-		 * - |误差| ≤ marvelous/sick/good/bad 窗口 → 对应评级
-		 * - bad 窗口 < |误差| ≤ 安全区 → shit
-		 * - |误差| > 安全区 → miss
+		 * osu! tail judgement: release rating (fully osu!mania-like: early and late use the same windows).
+ * - |error| <= marvelous/sick/good/bad window -> that rating
+ * - bad window < |error| <= safe zone -> shit
+ * - |error| > safe zone -> miss
 
 		private function tailRatingFor(diff:Float):String
 		{
 			var absDiff:Float = Math.abs(diff);
 			var mult:Float = tailWindowMult();
 			if (absDiff > Conductor.safeZoneOffset * mult) return 'miss';
-			// 尾判窗口按倍率放宽 (默认 2 倍)
+			// The tail window is widened by the multiplier (default 2x)
 			return backend.Ratings.getRating(absDiff / mult);
 		}
 			*/
 
-		/** osu! 尾判: 松键命中 → 结算长条分数 + 评级分数, 显示延迟与评级图标
+		/** osu! tail judgement: a successful release settles the sustain and rating scores, showing the delay and rating icon.
 		private function tailHit(lane:Int, tailEnd:Float, diff:Float, rating:String):Void
 		{
 			var head:Note = (lane < activeHoldNote.length) ? activeHoldNote[lane] : null;
 
-			// 回放时优先使用录制的高精度尾判, 100% 还原评分与 ms
+			// During replay the recorded high-precision tail judgement is preferred, reproducing the score and ms exactly
 			var recordedJ = null;
 			if (replayMode && replayExam != null && replayExam.hasJudgments)
 				recordedJ = replayExam.getRecordedJudgment(tailEnd, lane);
@@ -6339,7 +6547,7 @@ class PlayState extends MusicBeatState
 			if (!replayMode && replayExam != null)
 				replayExam.recordJudgment(tailEnd, lane, diff, rating, true);
 
-			// 尾判命中: 剩余长条段直接作废, 不再逐段判定
+			// Successful tail hit: the remaining sustain segments are voided instead of judged one by one
 			if (head != null) invalidateRemainingSustain(lane, head);
 
 			if (rating == 'marvelous') msTxtKade.color = 0xFFFFD700;
@@ -6360,18 +6568,18 @@ class PlayState extends MusicBeatState
 			var score:Int = backend.Ratings.getScore(rating);
 			if (!practiceMode && !cpuControlled)
 			{
-				// 尾判命中才结算长条按住期间累积的分数 (osu: 断条不结算)
+				// Only a successful tail hit settles the score accumulated while holding the sustain (osu: a broken sustain does not settle)
 				songScore += sustainNotescore;
 				songScore += score;
 				songHits++;
-				// 尾判命中计入评级计数 (marvelouses/sicks/goods/bads/shits), 与准确率一致
+				// A successful tail hit is counted in the rating counters (marvelouses/sicks/goods/bads/shits), matching accuracy
 				var counterName:String = (rating == 'marvelous') ? 'marvelouses' : rating + 's';
 				Reflect.setField(this, counterName, Reflect.field(this, counterName) + 1);
 			}
 			sustainNotescore = 0;
 			updateScore();
 			totalPlayed++;
-			// 尾判命中按评级计入准确率 (与普通音符一致), 否则全 perfect 也会被长条拉低准确率
+			// A successful tail hit counts toward accuracy by rating like normal notes, otherwise an all-perfect run would drop accuracy on sustains
 			var tailMod:Float = 1;
 			if (rating == 'good') tailMod = 0.7;
 			else if (rating == 'bad') tailMod = 0.4;
@@ -6380,7 +6588,7 @@ class PlayState extends MusicBeatState
 			RecalculateRating(false);
 			*/
 
-			// 评级弹窗 (只显示评级图, 不叠 combo 数字: 连击由头部音符负责)
+			// Rating popup (the rating image only, no combo number: the combo is handled by the head note)
 			/**if (ratingPopup != null)
 				ratingPopup.show(rating, combo, playbackRate, FlxG.width * 0.35,
 					ClientPrefs.data.hideHud, showRating, false, false,*/
@@ -6388,7 +6596,7 @@ class PlayState extends MusicBeatState
 					//ClientPrefs.data.comboStacking);
 		//}
 
-		/** osu! 尾判: 提前过多松键 → 尾判失误 (断连/扣血/计 miss)
+		/** osu! tail judgement: releasing far too early is a tail miss (breaks combo, drains health, counts a miss).
 		private function tailMiss(lane:Int, tailEnd:Float, releaseTime:Float):Void
 		{
 			var head:Note = (lane < activeHoldNote.length) ? activeHoldNote[lane] : null;
@@ -6397,7 +6605,7 @@ class PlayState extends MusicBeatState
 			if (!replayMode && replayExam != null)
 				replayExam.recordJudgment(tailEnd, lane, diff, 'miss', true);
 
-			// miss: 长条段恢复未按住状态, 让它们像普通 miss 一样划过接收器 (只计一次失误)
+			// miss: the sustain segments return to the un-held state so they pass the receptor like normal misses (only one miss is counted)
 			if (head != null) markRemainingSustainMissed(lane, head);
 
 			combo = 0;
@@ -6419,7 +6627,7 @@ class PlayState extends MusicBeatState
 				else health -= 0.05 * healthLoss;
 			}
 */
-			// 模拟普通 miss 效果: 角色 miss 动画 / gf 难过
+			// Mimic a normal miss: character miss animation / gf cries
 			/**if (head != null && !head.noMissAnimation)
 			{
 				var missChar:Character = playOpponent ? dad : boyfriend;
@@ -6453,7 +6661,7 @@ class PlayState extends MusicBeatState
 
 			// it's bad , yes?
 
-		/** osu! 尾判: 命中时丢弃长条剩余未命中段, 防止松键后被逐段判 miss
+		/** osu! tail judgement: on a hit the remaining un-hit sustain segments are discarded so a release is not judged segment by segment.
 		private function invalidateRemainingSustain(lane:Int, head:Note):Void
 		{
 			if (head == null) return;
@@ -6473,7 +6681,7 @@ class PlayState extends MusicBeatState
 
 
 
-		/** osu! 尾判: 判 miss 时把长条剩余段恢复为未按住状态, 让它们像普通 miss 一样划过接收器
+		/** osu! tail judgement: on a miss the remaining sustain segments return to the un-held state so they pass the receptor like normal misses.
 		private function markRemainingSustainMissed(lane:Int, head:Note):Void
 		{
 			if (head == null) return;
@@ -6483,7 +6691,7 @@ class PlayState extends MusicBeatState
 				if (n != null && n.isSustainNote && n.mustPress && n.noteData == lane
 					&& n.parentST == headParentST && !n.missed)
 				{
-					n.wasGoodHit = false; // 恢复未按住状态
+					n.wasGoodHit = false; // back to the un-held state
 					n.missed = true;
 					n.ignoreNote = true;
 					n.tooLate = true;
@@ -6494,10 +6702,10 @@ class PlayState extends MusicBeatState
 		}*/
 
 	/**
-	 * @param frameTime 当前帧对应的歌曲时间
-	 * @param pressLanes 按下的轨道列表
-	 * @param releaseLanes 释放的轨道列表
-	 * @param heldLanes 保持按下的轨道数组
+	 * @param frameTime  song time of this frame
+ * @param pressLanes lanes pressed this frame
+ * @param releaseLanes lanes released this frame
+ * @param heldLanes  lanes currently held
 	 */
 	public function replayApplyInput(frameTime:Float, pressLanes:Array<Int>, releaseLanes:Array<Int>, heldLanes:Array<Bool>):Void
 	{
@@ -6523,7 +6731,7 @@ class PlayState extends MusicBeatState
 			}
 		}
 
-		// 处理按下
+		// Handle presses
 		if (_press.contains(true))
 		{
 			for (i in 0..._press.length)
@@ -6533,7 +6741,7 @@ class PlayState extends MusicBeatState
 			}
 		}
 
-		// 处理长条 (hold)
+		// Handle sustains (hold)
 		if (startedCountdown && !boyfriend.stunned && generatedMusic && !endingSong)
 		{
 			if (notes.length > 0)
@@ -6553,7 +6761,7 @@ class PlayState extends MusicBeatState
 			}
 		}
 
-		// 角色空闲动画
+		// Character idle animation
 		if (!_hold.contains(true) && !endingSong && generatedMusic)
 		{
 			var danceChar:Character = playOpponent ? dad : boyfriend;
@@ -6564,7 +6772,7 @@ class PlayState extends MusicBeatState
 				danceChar.dance();
 		}
 
-		// 处理释放
+		// Handle releases
 		if (_release.contains(true))
 		{
 			for (i in 0..._release.length)
@@ -6574,7 +6782,7 @@ class PlayState extends MusicBeatState
 			}
 		}
 
-		// osu! 尾判: 回放中按住超过尾端 + 安全区仍不松 → 按太久 miss (与实机判定一致)
+			// osu! tail judgement: during replay, holding past tail + safe zone still counts as a miss (same as live)
 		//if (ClientPrefs.data.osuTailJudgement && activeTailEnd.length > 0)
 		//{
 		//	for (i in 0..._hold.length)
@@ -6605,865 +6813,6 @@ class PlayState extends MusicBeatState
 			return -1;
 		}
 
-	#if ONLINE_ALLOWED
-	/** 进入联机对局时应用房间统一判定/兼容模式, 离开时恢复。 */
-	function onlineApplyRoomSettings():Void
-	{
-		if (!OnlineSession.active)
-			return;
-		var s = OnlineSession.settings;
-		if (s != null)
-		{
-			if (prevOnlineJudgement == null)
-				prevOnlineJudgement = ClientPrefs.data.judgementTimings.copy();
-			prevOnlineJudgementPreset = ClientPrefs.data.judgementPreset;
-			prevOnlineMarvelous = ClientPrefs.data.marvelousRatings;
-			//prevOnlineTailOn = ClientPrefs.data.osuTailJudgement;
-			//prevOnlineTailMult = ClientPrefs.data.tailWindowMult;
-			prevOnlineCompat = ClientPrefs.data.compatibility_mode;
-			prevOnlineCompatEngine = ClientPrefs.data.compatEngine;
-			if (s.judgementTimings != null && s.judgementTimings.length >= 4)
-			{
-				ClientPrefs.data.judgementTimings = s.judgementTimings.copy();
-				ClientPrefs.data.judgementPreset = s.judgementPreset == null ? "Custom" : s.judgementPreset;
-				ClientPrefs.data.marvelousRatings = s.marvelousRatings;
-				backend.Ratings.syncWindows();
-			}
-			// 房间统一尾判参数 (osu! 尾判开关 + 窗口倍率)
-			//if (Reflect.hasField(s, "osuTailJudgement"))
-			//	ClientPrefs.data.osuTailJudgement = s.osuTailJudgement == true;
-			//if (Reflect.hasField(s, "tailWindowMult") && s.tailWindowMult != null
-			//	&& !Math.isNaN(s.tailWindowMult) && s.tailWindowMult > 0 && s.tailWindowMult <= 8)
-			//	ClientPrefs.data.tailWindowMult = s.tailWindowMult;
-			// 房间统一兼容模式 (四值: Auto/0.6.3/0.7.3/1.0.4)
-			var ce:String = OnlineSession.compatEngine;
-			if (ce != null && ce.length > 0 && backend.CompatEngine.VALUES.contains(ce))
-				ClientPrefs.data.compatEngine = ce;
-			else
-				ClientPrefs.data.compatibility_mode = s.compatibilityMode;
-		}
-		buildRatingsData();
-	}
-
-	function onlineRestoreRoomSettings():Void
-	{
-		if (prevOnlineJudgement != null)
-		{
-			ClientPrefs.data.judgementTimings = prevOnlineJudgement;
-			ClientPrefs.data.judgementPreset = prevOnlineJudgementPreset;
-			ClientPrefs.data.marvelousRatings = prevOnlineMarvelous;
-			//ClientPrefs.data.osuTailJudgement = prevOnlineTailOn;
-			//ClientPrefs.data.tailWindowMult = prevOnlineTailMult;
-			ClientPrefs.data.compatibility_mode = prevOnlineCompat;
-			ClientPrefs.data.compatEngine = prevOnlineCompatEngine;
-			backend.Ratings.syncWindows();
-			prevOnlineJudgement = null;
-		}
-	}
-
-	/** 尝试消费服务器统一起跑信号; 成功则写入 startOnTime 并允许 startCountdown 继续。 */
-	function tryConsumeRealtimeSync():Bool
-	{
-		if (!seiunOnline || !OnlineSession.active || OnlineSession.mode != online.shared.OnlineTypes.OnlineConst.MODE_REALTIME)
-			return true;
-		var wait:Float = OnlineSession.consumePendingRealtimeSync();
-		if (wait < 0)
-			return false;
-		PlayState.startOnTime = wait;
-		skipCountdown = true;
-		hideOnlineSyncWait();
-		return true;
-	}
-
-	/** 起跑门闩是否仍在等待 (倒计时冻结中): 时间轴上报后、统一起跑帧到达前。 */
-	function onlineGateWaiting():Bool
-	{
-		return seiunOnline && !seiunSpectate && OnlineSession.active
-			&& OnlineSession.mode == online.shared.OnlineTypes.OnlineConst.MODE_REALTIME
-			&& onlineTimelineSent
-			&& !startedCountdown && !endingSong
-			&& OnlineSession.pendingRealtimeSyncServerStartMs <= 0;
-	}
-
-	function refreshOnlineSyncWaitText():Void
-	{
-		if (onlineWaitSyncTxt == null)
-			return;
-		// 起跑改为自动: 全员加载完成后服务器立即广播统一起跑帧, 无需再按确认。
-		var prog:String = onlineGateTotalCount > 0
-			? " (" + onlineGateConfirmedCount + "/" + onlineGateTotalCount + ")"
-			: "";
-		onlineWaitSyncTxt.text = Language.get('online.gateWaitingStart', '已就绪，等待其他玩家加载，服务器将自动开始') + prog;
-	}
-
-	function showOnlineSyncWait():Void
-	{
-		if (onlineWaitSyncTxt == null)
-		{
-			onlineWaitSyncTxt = new FlxText(0, 86, FlxG.width, "", 18);
-			onlineWaitSyncTxt.setFormat(Paths.languageFont(), 18, FlxColor.fromRGB(255, 220, 150), CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
-			onlineWaitSyncTxt.scrollFactor.set();
-			onlineWaitSyncTxt.cameras = [camHUD];
-			add(onlineWaitSyncTxt);
-		}
-		refreshOnlineSyncWaitText();
-		onlineWaitSyncTxt.visible = true;
-		onlineWaitSyncTxt.alpha = 1;
-	}
-
-	function hideOnlineSyncWait():Void
-	{
-		if (onlineWaitSyncTxt != null)
-			onlineWaitSyncTxt.visible = false;
-	}
-
-	/** 起跑门闩: 每帧检查本机玩家的确认按键 (空格/回车, 走 controls.ACCEPT)。 */
-	function updateOnlineStartGate():Void
-	{
-		if (!onlineGateWaiting())
-			return;
-		if (!onlineGateConfirmed)
-		{
-			showOnlineSyncWait();
-			if (controls != null && controls.ACCEPT)
-			{
-				onlineGateConfirmed = true;
-				onlineGateConfirmedCount = Std.int(Math.max(1, onlineGateConfirmedCount));
-				OnlineSession.sendStartAck();
-				FlxG.sound.play(Paths.sound('confirmMenu'), 0.7);
-				refreshOnlineSyncWaitText();
-			}
-		}
-		else
-		{
-			// 已确认但还没收到统一起跑帧: 保持等待文本可见。
-			showOnlineSyncWait();
-		}
-	}
-
-	/** 谱面加载完成后把 note 时间轴交给服务器做输入合法性校验。 */
-	function onlineGameStart():Void
-	{
-		if (!seiunOnline || !OnlineSession.active || GameClient.instance == null || GameClient.instance.state != online.client.GameClient.ClientState.Ready)
-			return;
-		#if ONLINE_ALLOWED
-		// 观战: 不上传时间轴/开工信号, 起跑由 MSG_GAME_SYNC 广播驱动 (服务器只等游玩者)。
-		if (seiunSpectate)
-		{
-			onlineTimelineSent = true;
-			return;
-		}
-		#end
-		if (OnlineSession.mode == online.shared.OnlineTypes.OnlineConst.MODE_ASYNC)
-		{
-			// 异步排名: 各打各的, 只上报"我开始打了", 不参与统一起跑。
-			OnlineSession.sendAsyncStart();
-			return;
-		}
-		var notesPayload:Array<Dynamic> = [];
-		if (unspawnNotes != null)
-		{
-			for (n in unspawnNotes)
-			{
-				if (n == null)
-					continue;
-				// 结构体：头 Note 自带长条总长（长条片段延迟生成，不再逐片段上报）
-				notesPayload.push({timeMs: n.strumTime, lane: Std.int(Math.abs(n.noteData) % Note.ammo[n.mania]), lengthMs: n.sustainLength > 0 ? n.sustainLength : 0});
-			}
-		}
-		// 实时对战: 时间轴同时兼作"我加载完成"信号。服务器收到全部真人玩家的
-		// 时间轴后立即自动广播 MSG_GAME_SYNC, 不再等手动空格/回车确认。
-		// 这里同时自动发送一次 START_ACK 作为兼容信号: 即使某个玩家的时间轴
-		// 因故没被服务器登记, 只要全员 ACK 到达, 服务器也会强制发令, 避免僵死。
-		// chartNotes 可能超过 64 KiB, 走 FILE 通道 (上限 64 MiB), 服务器端同样解析 JSON。
-		onlineTimelineSent = true;
-		GameClient.instance.send(SeiunProtocol.MSG_GAME_START, SeiunProtocol.CHANNEL_FILE, {
-			song: OnlineSession.chart,
-			chartNotes: notesPayload,
-			startedAt: Date.now().getTime()
-		});
-		onlineGateConfirmed = true;
-		onlineGateConfirmedCount = 1;
-		OnlineSession.sendStartAck();
-	}
-
-	/**
-		PsychOnline 式联机角色初始化 (对局开始):
-		- 自己 (右侧主角色) 用 ProfileStore.skinData 替换 BF;
-		- 第一个远端玩家 (左侧主角色) 用其 skinData 替换 Dad;
-		- 其余远端玩家 (2v2+) 在左侧渲染额外角色, 按 judge 事件做 sing 动画;
-		- 每个玩家头顶生成用户名铭牌。
-		角色缺失时逐级回退 (OnlineSkinUtil), 最终回退谱面原角色。
-	**/
-	function onlineInitPlayerCharacters():Void
-	{
-		onlinePlayerChars = new Map<String, Character>();
-		onlineNameplates = new Map<String, FlxText>();
-		onlineNameplateGroup = new FlxTypedGroup<FlxText>();
-		onlineMainOpponentId = "";
-		onlineExtraCharIndex = 0;
-
-		// 观战: 右侧主角色 = 被跟随玩家 (第一个游玩者), 其判定广播驱动该角色。
-		var followed:Dynamic = null;
-		if (seiunSpectate)
-		{
-			for (p in OnlineSession.players)
-			{
-				if (p != null && !(Reflect.hasField(p, "isSpectator") && Reflect.field(p, "isSpectator") == true))
-				{
-					followed = p;
-					break;
-				}
-			}
-			onlineFollowedId = followed != null && Reflect.field(followed, "id") != null ? Std.string(Reflect.field(followed, "id")) : "";
-			onlineFollowedDeviceId = followed != null && Reflect.field(followed, "deviceId") != null ? Std.string(Reflect.field(followed, "deviceId")) : "";
-		}
-
-		// 自己: 右侧主角色 (观战时=被跟随玩家)
-		var selfSd:online.shared.OnlineTypes.OnlineSkinData = (seiunSpectate && followed != null)
-			? cast Reflect.field(followed, "skinData")
-			: ProfileStore.skinData;
-		var selfSkin:String = online.client.OnlineSkinUtil.resolveSkin(selfSd, true, curStage);
-		if (selfSkin != null && selfSkin != SONG.player1)
-		{
-			var modDir:String = online.client.OnlineSkinUtil.resolveModDir(selfSd, true, curStage);
-			var oldDir:String = backend.Mods.currentModDirectory;
-			if (modDir.length > 0)
-				backend.Mods.currentModDirectory = modDir;
-			var nb:Boyfriend = null;
-			try { nb = new Boyfriend(0, 0, selfSkin); } catch (e:Dynamic) { nb = null; }
-			backend.Mods.currentModDirectory = oldDir;
-			if (nb != null)
-			{
-				boyfriendGroup.remove(boyfriend);
-				boyfriend.destroy();
-				boyfriend = nb;
-				startCharacterPos(boyfriend);
-				boyfriendGroup.add(boyfriend);
-				startCharacterLua(boyfriend.curCharacter);
-			}
-		}
-		var selfMapId:String = (seiunSpectate && onlineFollowedId.length > 0) ? onlineFollowedId : OnlineSession.selfId;
-		onlinePlayerChars.set(selfMapId, boyfriend);
-		onlineMakeNameplate(selfMapId,
-			(seiunSpectate && followed != null && Reflect.field(followed, "nickname") != null && Std.string(Reflect.field(followed, "nickname")).length > 0)
-				? Std.string(Reflect.field(followed, "nickname"))
-				: ProfileStore.nickname);
-
-		// 远端玩家: 第一个替换左侧主角色 (Dad), 其余为额外角色 (观战者跳过)
-		for (p in OnlineSession.players)
-		{
-			if (p == null)
-				continue;
-			var pid:String = Reflect.field(p, "id");
-			if (pid == null || pid == OnlineSession.selfId)
-				continue;
-			// 观战: 其它观战者与被跟随者 (已在右侧) 都不建角色。
-			if (Reflect.hasField(p, "isSpectator") && Reflect.field(p, "isSpectator") == true)
-				continue;
-			if (seiunSpectate && pid == onlineFollowedId)
-				continue;
-			var nick:String = Reflect.field(p, "nickname");
-			if (nick == null || nick.length == 0)
-				nick = pid;
-			var sd:online.shared.OnlineTypes.OnlineSkinData = cast Reflect.field(p, "skinData");
-			if (onlineMainOpponentId.length == 0)
-			{
-				onlineMainOpponentId = pid;
-				var skinName:String = online.client.OnlineSkinUtil.resolveSkin(sd, false, curStage);
-				if (skinName != null && skinName != SONG.player2)
-				{
-					var modDir:String = online.client.OnlineSkinUtil.resolveModDir(sd, false, curStage);
-					var oldDir:String = backend.Mods.currentModDirectory;
-					if (modDir.length > 0)
-						backend.Mods.currentModDirectory = modDir;
-					var nd:Character = null;
-					try { nd = new Character(0, 0, skinName, false); } catch (e:Dynamic) { nd = null; }
-					backend.Mods.currentModDirectory = oldDir;
-					if (nd != null)
-					{
-						dadGroup.remove(dad);
-						dad.destroy();
-						dad = nd;
-						startCharacterPos(dad, true);
-						dadGroup.add(dad);
-						startCharacterLua(dad.curCharacter);
-					}
-				}
-				onlinePlayerChars.set(pid, dad);
-			}
-			else
-				onlineMakeExtraCharacter(pid, sd, SONG.player2);
-			onlineMakeNameplate(pid, nick);
-		}
-	}
-
-	/** 生成玩家头顶铭牌 (半透明, 跟随角色, 不参与摄像机缩放以外的变换)。 */
-	function onlineMakeNameplate(pid:String, nick:String):Void
-	{
-		if (onlineNameplateGroup == null || onlineNameplates.exists(pid))
-			return;
-		// 铭牌字体随语言包 (中文昵称用 vcrcn, 不再豆腐块) —— UI 重构修复。
-		var plate:FlxText = new FlxText(0, 0, 0, nick, 20);
-		plate.setFormat(Paths.languageFont(), 20, FlxColor.WHITE, CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
-		plate.borderSize = 1.5;
-		plate.alpha = 0.9;
-		plate.scrollFactor.set(0.9, 0.9);
-		onlineNameplates.set(pid, plate);
-		onlineNameplateGroup.add(plate);
-	}
-
-	/** 为第 N 位远端玩家在左侧主角色旁创建额外角色 (2v2+ 可视化)。 */
-	function onlineMakeExtraCharacter(pid:String, sd:online.shared.OnlineTypes.OnlineSkinData, fallbackName:String):Void
-	{
-		var skinName:String = online.client.OnlineSkinUtil.resolveSkin(sd, false, curStage);
-		var modDir:String = skinName != null ? online.client.OnlineSkinUtil.resolveModDir(sd, false, curStage) : "";
-		if (skinName == null)
-			skinName = fallbackName;
-		var oldDir:String = backend.Mods.currentModDirectory;
-		if (modDir.length > 0)
-			backend.Mods.currentModDirectory = modDir;
-		var char:Character = null;
-		try { char = new Character(0, 0, skinName, false); } catch (e:Dynamic) { char = null; }
-		backend.Mods.currentModDirectory = oldDir;
-		if (char == null)
-			return;
-		// 排布在主角色左侧, 稍靠后, 避免完全重叠
-		onlineExtraCharIndex++;
-		if (dad != null)
-		{
-			char.x = dad.x - 90 * onlineExtraCharIndex;
-			char.y = dad.y + 10 * (onlineExtraCharIndex % 2 == 0 ? 1 : -1);
-		}
-		char.active = false; // 不自行跳舞, 由 judge 事件驱动 sing 动画
-		dadGroup.add(char);
-		onlinePlayerChars.set(pid, char);
-	}
-
-	/** 每帧把铭牌贴到对应角色头顶。 */
-	function onlineUpdateNameplates():Void
-	{
-		if (onlineNameplateGroup == null)
-			return;
-		for (pid in onlinePlayerChars.keys())
-		{
-			var c:Character = onlinePlayerChars.get(pid);
-			var plate:FlxText = onlineNameplates.get(pid);
-			if (c == null || plate == null)
-				continue;
-			plate.x = c.x + c.width / 2 - plate.width / 2;
-			plate.y = c.y - plate.height - 16;
-			plate.visible = c.visible;
-		}
-	}
-
-	/** 对局中换肤: 重建该玩家的角色实例 (保留位置), 更新铭牌颜色提示。 */
-	function onlineApplySkinChange(pid:String, sd:online.shared.OnlineTypes.OnlineSkinData):Void
-	{
-		var old:Character = onlinePlayerChars.get(pid);
-		if (old == null)
-			return;
-		var isSelf:Bool = pid == OnlineSession.selfId;
-		var isMainOpponent:Bool = pid == onlineMainOpponentId;
-		var skinName:String = online.client.OnlineSkinUtil.resolveSkin(sd, isSelf, curStage);
-		if (skinName == null)
-			return; // 换肤目标不存在: 保持原角色
-		var modDir:String = online.client.OnlineSkinUtil.resolveModDir(sd, isSelf, curStage);
-		var oldDir:String = backend.Mods.currentModDirectory;
-		if (modDir.length > 0)
-			backend.Mods.currentModDirectory = modDir;
-		var nc:Character = null;
-		try
-		{
-			if (isSelf)
-				nc = new Boyfriend(0, 0, skinName);
-			else
-				nc = new Character(0, 0, skinName, false);
-		}
-		catch (e:Dynamic)
-		{
-			nc = null;
-		}
-		backend.Mods.currentModDirectory = oldDir;
-		if (nc == null)
-			return;
-		nc.x = old.x;
-		nc.y = old.y;
-		if (isSelf)
-		{
-			boyfriendGroup.remove(boyfriend);
-			boyfriend.destroy();
-			boyfriend = cast nc;
-			boyfriendGroup.add(boyfriend);
-			onlinePlayerChars.set(pid, boyfriend);
-		}
-		else if (isMainOpponent)
-		{
-			dadGroup.remove(dad);
-			dad.destroy();
-			dad = nc;
-			dadGroup.add(dad);
-			onlinePlayerChars.set(pid, dad);
-		}
-		else
-		{
-			dadGroup.remove(old);
-			old.destroy();
-			dadGroup.add(nc);
-			onlinePlayerChars.set(pid, nc);
-		}
-	}
-
-	/** 额外角色 (非主 Dad) 的 sing 动画: 按 judge 事件的 lane 播放对应方向。 */
-	function onlineAnimatePlayerByDevice(deviceId:String, lane:Int):Void
-	{
-		if (onlinePlayerChars == null || lane < 0)
-			return;
-		// 观战: 被跟随玩家的判定直接驱动右侧主角色动画。
-		if (seiunSpectate && onlineFollowedDeviceId.length > 0 && deviceId == onlineFollowedDeviceId)
-		{
-			var fc:Character = onlinePlayerChars.get(onlineFollowedId);
-			if (fc != null)
-			{
-				var fanims:Array<String> = ['singLEFT', 'singDOWN', 'singUP', 'singRIGHT'];
-				var fanim:String = fanims[lane % fanims.length];
-				if (fc.animation.getByName(fanim) != null)
-				{
-					fc.playAnim(fanim, true);
-					fc.holdTimer = 0;
-				}
-			}
-			return;
-		}
-		for (pid in onlinePlayerChars.keys())
-		{
-			if (pid == OnlineSession.selfId || pid == onlineMainOpponentId)
-				continue;
-			var p:Dynamic = null;
-			for (pp in OnlineSession.players)
-				if (pp != null && Reflect.field(pp, "id") == pid)
-				{
-					p = pp;
-					break;
-				}
-			if (p == null || Reflect.field(p, "deviceId") != deviceId)
-				continue;
-			var c:Character = onlinePlayerChars.get(pid);
-			if (c == null)
-				continue;
-			var anims:Array<String> = ['singLEFT', 'singDOWN', 'singUP', 'singRIGHT'];
-			var anim:String = anims[lane % anims.length];
-			if (c.animation.getByName(anim) != null)
-			{
-				c.playAnim(anim, true);
-				c.holdTimer = 0;
-			}
-		}
-	}
-
-	function updateOnline(elapsed:Float):Void
-	{
-		var client:GameClient = GameClient.instance;
-		if (client == null || !seiunOnline || !OnlineSession.active)
-			return;
-		// 暂停拦截提示的淡出计时。
-		if (onlinePauseNoticeTimer > 0)
-		{
-			onlinePauseNoticeTimer -= elapsed;
-			if (onlinePauseNoticeTimer <= 0 && onlinePauseNoticeTxt != null)
-				onlinePauseNoticeTxt.alpha = 0;
-		}
-		client.update(elapsed);
-		updateOnlineStartGate();
-		onlineUpdateNameplates();
-		// 消费对局中收到的皮肤变更 (重建对应玩家角色)。
-		if (OnlineSession.pendingSkinChanges.iterator().hasNext())
-		{
-			for (pid in OnlineSession.pendingSkinChanges.keys())
-				onlineApplySkinChange(pid, OnlineSession.pendingSkinChanges.get(pid));
-			OnlineSession.pendingSkinChanges = new Map<String, online.shared.OnlineTypes.OnlineSkinData>();
-		}
-		var ev = client.pollEvent();
-		while (ev != null)
-		{
-			switch (ev.type)
-			{
-				case SeiunProtocol.MSG_GAME_SYNC:
-					// 服务器统一起跑: 存锚点后立即尝试开始; 若 PlayState 仍在
-					// create 流程中, startCountdown 的在线闸门稍后也会消费它。
-					if (OnlineSession.mode == online.shared.OnlineTypes.OnlineConst.MODE_REALTIME
-						&& ev.data != null && !startedCountdown && !endingSong && !inCutscene)
-					{
-						OnlineSession.setPendingRealtimeSync(
-							Std.parseFloat(Std.string(Reflect.field(ev.data, "serverNow"))),
-							Std.parseFloat(Std.string(Reflect.field(ev.data, "startDelayMs"))));
-						if (tryConsumeRealtimeSync())
-							startCountdown();
-					}
-				case SeiunProtocol.MSG_GAME_START_ACK:
-					// 其他玩家按下了确认键: 刷新门闩进度显示。
-					if (ev.data != null)
-					{
-						var cf:Float = Std.parseFloat(Std.string(Reflect.field(ev.data, "confirmed")));
-						var tt:Float = Std.parseFloat(Std.string(Reflect.field(ev.data, "total")));
-						if (!Math.isNaN(cf))
-							onlineGateConfirmedCount = Std.int(cf);
-						if (!Math.isNaN(tt) && tt > 0)
-							onlineGateTotalCount = Std.int(tt);
-						refreshOnlineSyncWaitText();
-					}
-				case SeiunProtocol.MSG_ROOM_PLAYER_SKIN:
-					// 对局中有人换肤: 更新会话数据, 渲染层 (消费 pendingSkinChanges) 负责换角色。
-					if (ev.data != null)
-					{
-						var skinSid:String = Std.string(Reflect.field(ev.data, "id"));
-						var sd:Dynamic = Reflect.field(ev.data, "skinData");
-						var skinData:online.shared.OnlineTypes.OnlineSkinData = online.shared.OnlineTypes.SkinDataUtil.fromDynamic(sd);
-						for (p in OnlineSession.players)
-						{
-							if (Std.string(Reflect.field(p, "id")) == skinSid)
-							{
-								Reflect.setField(p, "skinData", sd);
-								Reflect.setField(p, "skin", skinData != null ? skinData.char : "");
-								break;
-							}
-						}
-						if (skinSid != OnlineSession.selfId)
-							OnlineSession.pendingSkinChanges.set(skinSid, skinData);
-					}
-				case SeiunProtocol.MSG_GAME_INPUT:
-					if (OnlineSession.mode != online.shared.OnlineTypes.OnlineConst.MODE_REALTIME)
-						break;
-					if (ev.data != null && ev.data.id != OnlineSession.selfId)
-					{
-						var laneValue:Null<Int> = Std.parseInt(Std.string(Reflect.field(ev.data, "lane")));
-						var lane:Int = laneValue == null ? -1 : laneValue;
-						var pressed:Bool = Reflect.field(ev.data, "pressed") == true;
-						if (pressed && opponentStrums != null && lane >= 0 && lane < opponentStrums.members.length)
-						{
-							var strum:StrumNote = opponentStrums.members[lane];
-							if (strum != null)
-							{
-								strum.playAnim('pressed', true);
-								strum.resetAnim = 0;
-							}
-						}
-					}
-				case SeiunProtocol.MSG_GAME_PAUSE:
-					// 联机暂停是全局的: 对方暂停/恢复都同步; 倒计时/结算中不弹暂停。
-					// 暂停策略 disabled 时服务器不会转发, 这里再兜底一次。
-					if (ev.data != null && ev.data.id != OnlineSession.selfId && !paused
-						&& startedCountdown && canPause && !endingSong && !transitioning
-						&& onlinePausePolicy() != online.shared.OnlineTypes.OnlineConst.PAUSE_DISABLED)
-					{
-						OnlineSession.pauseNickname = Reflect.field(ev.data, "nickname") == null
-							? "" : Std.string(Reflect.field(ev.data, "nickname"));
-						openPauseMenu(false);
-					}
-				case SeiunProtocol.MSG_GAME_RESUME:
-					OnlineSession.pauseNickname = "";
-					if (ev.data != null && ev.data.id != OnlineSession.selfId && paused
-						&& subState != null
-						&& (Std.isOfType(subState, substates.PauseSubState) || Std.isOfType(subState, substates.OldPauseSubState)))
-						closeSubState();
-				case SeiunProtocol.MSG_GAME_JUDGE:
-					if (OnlineSession.mode != online.shared.OnlineTypes.OnlineConst.MODE_REALTIME)
-						break;
-					if (ev.data != null)
-					{
-						#if ONLINE_ALLOWED
-						// 共享血量 (PsychOnline room.state.health 等价物):
-						// 远端判定带来的血量直接同步到本地血条; 实时模式不因血量归零
-						// 单独 Game Over, 双方都打完以成绩排名结算。
-						var remoteHealth:Dynamic = Reflect.field(ev.data, "health");
-						var remoteDev0:String = Reflect.field(ev.data, "deviceId");
-						// 观战时血量只跟随被跟随玩家 (否则全房任意广播都会拉动本地血条)。
-						if (remoteHealth != null && remoteDev0 != null && remoteDev0 != ProfileStore.deviceId
-							&& (!seiunSpectate || remoteDev0 == onlineFollowedDeviceId))
-						{
-							var hv:Float = Std.parseFloat(Std.string(remoteHealth));
-							// -1 = 旧客户端未携带血量, 忽略而不是把共享血量压到 0。
-							if (!Math.isNaN(hv) && hv >= 0)
-								health = Math.max(0, Math.min(2, hv));
-						}
-						// 对手实时分数 (PsychOnline 式): 本地判定/假人判定广播都带 score 与实时统计。
-						var judgeDev:String = Reflect.field(ev.data, "deviceId");
-						var judgeScore:Dynamic = Reflect.field(ev.data, "score");
-						if (judgeScore != null && judgeDev != null && judgeDev != ProfileStore.deviceId)
-						{
-							var nick:String = judgeDev;
-							for (p in OnlineSession.players)
-								if (p != null && Reflect.field(p, "deviceId") == judgeDev)
-								{
-									nick = Reflect.field(p, "nickname");
-									break;
-								}
-							var oldEntry:Dynamic = remoteScores.get(judgeDev);
-							var ping:Float = oldEntry != null && Reflect.field(oldEntry, "ping") != null ? Std.parseFloat(Std.string(Reflect.field(oldEntry, "ping"))) : 0;
-							remoteScores.set(judgeDev, {
-								name: nick,
-								score: judgeScore,
-								misses: Reflect.field(ev.data, "misses"),
-								maxCombo: Reflect.field(ev.data, "maxCombo"),
-								accuracy: Reflect.field(ev.data, "accuracy"),
-								ratingName: Reflect.field(ev.data, "ratingName"),
-								ratingFC: Reflect.field(ev.data, "ratingFC"),
-								ping: Reflect.field(ev.data, "pingMs") == null ? ping : Reflect.field(ev.data, "pingMs")
-							});
-						}
-						// 额外联机角色 (2v2+): 按该玩家判定事件的 lane 播 sing 动画。
-						var judgeLane:Float = Std.parseFloat(Std.string(Reflect.field(ev.data, "lane")));
-						if (!Math.isNaN(judgeLane) && judgeLane >= 0)
-							onlineAnimatePlayerByDevice(judgeDev, Std.int(judgeLane));
-						#end
-						OnlineSession.incomingJudges.push(ev.data);
-					}
-				case SeiunProtocol.MSG_GAME_RESULT:
-					// 自己还在打时, 其他玩家可能已经先提交成绩。先缓存到
-					// OnlineSession, 结算页创建时合并, 避免事件在 PlayState 被消费后丢失。
-					if (ev.data != null && OnlineSession.mode == online.shared.OnlineTypes.OnlineConst.MODE_REALTIME)
-					{
-						var resultDev:String = Reflect.field(ev.data, "deviceId");
-						if (resultDev != null && resultDev != OnlineSession.selfId)
-						{
-							OnlineSession.pendingRealtimeResults.set(resultDev, ev.data);
-							#if ONLINE_ALLOWED
-							// 最终成绩也即时反映到右上 HUD。
-							var nick:String = resultDev;
-							for (p in OnlineSession.players)
-								if (p != null && Reflect.field(p, "deviceId") == resultDev)
-								{
-									nick = Reflect.field(p, "nickname");
-									break;
-								}
-							var oldEntry:Dynamic = remoteScores.get(resultDev);
-							var ping:Float = oldEntry != null && Reflect.field(oldEntry, "ping") != null ? Std.parseFloat(Std.string(Reflect.field(oldEntry, "ping"))) : 0;
-							remoteScores.set(resultDev, {
-								name: nick,
-								score: Reflect.field(ev.data, "score"),
-								misses: Reflect.field(ev.data, "misses"),
-								maxCombo: Reflect.field(ev.data, "maxCombo"),
-								accuracy: Reflect.field(ev.data, "accuracy"),
-								ratingName: Reflect.field(ev.data, "ratingName"),
-								ratingFC: Reflect.field(ev.data, "ratingFC"),
-								ping: ping
-							});
-							#end
-						}
-					}
-				case SeiunProtocol.MSG_GAME_END:
-					if (ev.data != null && ev.data.results != null && Std.isOfType(ev.data.results, Array))
-						OnlineSession.pendingRealtimeRanking = cast ev.data.results;
-				case SeiunProtocol.MSG_ROOM_ANNOUNCE:
-					if (ev.data != null)
-					{
-						var noticeText:String = Std.string(Reflect.field(ev.data, "text"));
-						if (noticeText.indexOf("房主退出") >= 0 || noticeText.indexOf("房间已关闭") >= 0 || noticeText.indexOf("房主断开") >= 0)
-						{
-							// 房主退出/房间关闭: 本局作废, 提示后回联机主界面。
-							OnlineSession.recordDisconnect(noticeText);
-							client.disconnect(true);
-							OnlineSession.clear();
-							seiunOnline = false;
-							onlineRestoreRoomSettings();
-							MusicBeatState.switchState(new online.states.OnlineState());
-							return;
-						}
-					}
-				case SeiunProtocol.MSG_ROOM_PLAYER_LEAVE:
-					if (ev.data != null)
-						OnlineSession.recordDisconnect(Std.string(Reflect.field(ev.data, "nickname")));
-				case SeiunProtocol.MSG_ERROR:
-					if (ev.data != null)
-					{
-						OnlineSession.recordDisconnect(Std.string(Reflect.field(ev.data, "message")));
-						var msg:String = ev.data.message == null ? "" : Std.string(ev.data.message);
-						if (msg.indexOf("移出房间") >= 0 || msg.indexOf("请出服务器") >= 0 || msg.indexOf("封禁") >= 0)
-						{
-							client.disconnect(true);
-							OnlineSession.clear();
-							seiunOnline = false;
-							onlineRestoreRoomSettings();
-							MusicBeatState.switchState(new online.states.OnlineState());
-							return;
-						}
-					}
-			}
-			ev = client.pollEvent();
-		}
-		while (OnlineSession.mode == online.shared.OnlineTypes.OnlineConst.MODE_REALTIME && OnlineSession.incomingJudges.length > 0)
-		{
-			var judge:Dynamic = OnlineSession.incomingJudges.shift();
-			if (judge == null || judge.deviceId == ProfileStore.deviceId)
-				continue;
-			#if ONLINE_ALLOWED
-			handleRemoteJudgeVisual(judge);
-			#end
-		}
-		if (client.state == online.client.GameClient.ClientState.Failed && !endingSong && !paused)
-		{
-			OnlineSession.recordDisconnect(client.lastError);
-			openPauseMenu();
-		}
-		#if ONLINE_ALLOWED
-		refreshRemoteScoreText();
-		#end
-	}
-
-	#if ONLINE_ALLOWED
-	/** 刷新右上对手分数 HUD (PsychOnline 式: 名字/分数/漏键/准确率/评级, 按分数降序, 最多 6 人)。 */
-	function refreshRemoteScoreText():Void
-	{
-		if (remoteScoreTxt == null)
-			return;
-		remoteScoreTxt.visible = OnlineSession.mode == online.shared.OnlineTypes.OnlineConst.MODE_REALTIME && !ClientPrefs.data.hideHud;
-		if (!remoteScoreTxt.visible)
-			return;
-		var list:Array<Dynamic> = [];
-		for (k in remoteScores.keys())
-			list.push(remoteScores.get(k));
-		list.sort(function(a:Dynamic, b:Dynamic):Int
-		{
-			var sa:Float = Std.parseFloat(Std.string(a.score));
-			var sb:Float = Std.parseFloat(Std.string(b.score));
-			return sa == sb ? 0 : (sb > sa ? 1 : -1);
-		});
-		var lines:Array<String> = [];
-		for (i in 0...Std.int(Math.min(list.length, 6)))
-		{
-			var e = list[i];
-			var acc:Float = Std.parseFloat(Std.string(e.accuracy == null ? 0 : e.accuracy));
-			var missParsed:Null<Int> = Std.parseInt(Std.string(e.misses == null ? 0 : e.misses));
-			var miss:Int = missParsed == null ? 0 : missParsed;
-			var comboParsed:Null<Int> = Std.parseInt(Std.string(e.maxCombo == null ? 0 : e.maxCombo));
-			var combo:Int = comboParsed == null ? 0 : comboParsed;
-			var rating:String = Std.string(e.ratingName == null ? "" : e.ratingName);
-			var fc:String = Std.string(e.ratingFC == null ? "" : e.ratingFC);
-			var ping:Float = Std.parseFloat(Std.string(e.ping == null ? 0 : e.ping));
-			lines.push(Std.string(e.name) + "  " + Std.string(e.score)
-				+ "  " + miss + "M " + combo + "C"
-				+ (rating.length > 0 ? " " + rating + (fc.length > 0 ? " [" + fc + "]" : "") : "")
-				+ " " + Highscore.floorDecimal(acc * 100, 2) + "%"
-				+ (ping > 0 ? " " + Std.int(ping) + "ms" : ""));
-		}
-		var sig:String = lines.join("\n");
-		if (sig == remoteScoreSig)
-			return;
-		remoteScoreSig = sig;
-		remoteScoreTxt.text = sig;
-	}
-
-	/** 远端判定可视化: 让对手的实时输入打在本地对手侧音符上 (PsychOnline 的 noteHit/noteMiss 等价物)。 */
-	function handleRemoteJudgeVisual(judge:Dynamic):Void
-	{
-		if (judge == null)
-			return;
-		var laneValue:Null<Int> = Std.parseInt(Std.string(Reflect.field(judge, "lane")));
-		var lane:Int = laneValue == null ? -1 : Std.int(Math.abs(laneValue));
-		var strumTime:Float = Std.parseFloat(Std.string(Reflect.field(judge, "strumTime")));
-		var isSustain:Bool = Reflect.field(judge, "isSustain") == true;
-		var rating:String = Std.string(Reflect.field(judge, "rating"));
-
-		if (lane >= 0 && opponentStrums != null && lane < opponentStrums.members.length)
-		{
-			var strum:StrumNote = opponentStrums.members[lane];
-			if (strum != null)
-			{
-				strum.playAnim(rating == "shit" ? 'static' : 'confirm', true);
-				strum.resetAnim = 0;
-			}
-		}
-
-		var found:Note = null;
-		if (notes != null)
-		{
-			for (note in notes.members)
-			{
-				if (note == null || !note.alive || note.mustPress)
-					continue;
-				if (note.isSustainNote != isSustain)
-					continue;
-				if (Math.abs(note.strumTime - strumTime) > 100)
-					continue;
-				var noteLane:Int = Std.int(Math.abs(note.noteData)) % Note.ammo[mania];
-				if (noteLane != lane % Note.ammo[mania])
-					continue;
-				found = note;
-				break;
-			}
-		}
-		if (found == null)
-			return;
-
-		if (rating == "shit")
-		{
-			// 远端漏键: 只移除音符/表现 miss, 不改本地血量与成绩。
-			recycleNote(found);
-		}
-		else
-		{
-			opponentNoteHit(found);
-		}
-	}
-	#end
-	/** 生成联机成绩对象 (结算页与异步排名共用)。实时模式不带大回放, 避免超过游戏通道消息上限。 */
-	function buildOnlineScore(?includeReplay:Bool = true):Dynamic
-	{
-		ProfileStore.ensureLoaded();
-		var replayJson:String = "";
-		if (includeReplay && replayExam != null && replayExam.getFrameData().length > 0)
-			replayJson = haxe.Json.stringify({frameData: Replay.framesToDynamic(replayExam.getFrameData())});
-		if (replayJson.length > 3 * 1024 * 1024)
-			replayJson = ""; // 超过异步消息上限时放弃回放, 成绩标记为未校验而不是断开连接
-		return {
-			deviceId: ProfileStore.deviceId,
-			nickname: ProfileStore.nickname,
-			avatar: ProfileStore.avatar,
-			score: songScore,
-			accuracy: Math.isNaN(ratingPercent) ? 0 : ratingPercent,
-			maxCombo: maxcombo,
-			misses: songMisses,
-			marvelous: marvelouses,
-			sick: sicks,
-			good: goods,
-			bad: bads,
-			shit: shits,
-			completed: true,
-			nps: songLength > 0 ? totalNotesHit / (songLength / 1000.0) : 0,
-			missTimes: NoteTime.copy(),
-			wrongLaneHits: wrongLaneTimes.copy(),
-			replayJson: replayJson
-		};
-	}
-
-	function onlineSubmitResult():Void
-	{
-		// 观战者不提交任何成绩 (服务器也不把观战者计入排名)。
-		if (seiunSpectate)
-			return;
-		var client:GameClient = GameClient.instance;
-		if (client == null || !OnlineSession.active)
-			return;
-		if (OnlineSession.mode == online.shared.OnlineTypes.OnlineConst.MODE_ASYNC)
-		{
-			OnlineSession.submitAsyncScore(buildOnlineScore(true));
-		}
-		else
-		{
-			var realtimeScore:Dynamic = buildOnlineScore(false);
-			// 先传回放再传成绩: 服务器以成绩消息触发 GAME_END 汇总,
-			// 保证最终排名广播时回放已经挂到该玩家记录上。
-			var replayUpload:Dynamic = buildOnlineScore(true);
-			if (replayUpload != null && replayUpload.replayJson != null && replayUpload.replayJson.length > 0)
-				client.send(SeiunProtocol.MSG_ASYNC_REPLAY_UPLOAD, SeiunProtocol.CHANNEL_ASYNC, {replayJson: replayUpload.replayJson});
-			// 反作弊已移除: 成绩一律由客户端上报, 服务器转发/汇总。
-			client.send(SeiunProtocol.MSG_GAME_RESULT, SeiunProtocol.CHANNEL_GAME, realtimeScore);
-			// 不再由房主单方面发 GAME_END: 服务器会等所有玩家提交成绩后
-			// 自动汇总并广播最终排名 (与 PsychOnline 的 playerEnded 收尾一致)。
-		}
-	}
-
-	#end
 
 
 		// Hold notes
@@ -7478,7 +6827,7 @@ class PlayState extends MusicBeatState
 			var laneCount:Int = Note.ammo[mania];
 			_keysCheckDepth++;
 
-			// 复用预分配数组, 避免每帧 3 个新 Array + 后续 expand (Android GC 压力)。
+			// Reuse the preallocated arrays instead of allocating three new ones per frame (Android GC).
 			if (holdArray.length < laneCount) holdArray.resize(laneCount);
 			if (pressArray.length < laneCount) pressArray.resize(laneCount);
 			if (releaseArray.length < laneCount) releaseArray.resize(laneCount);
@@ -7490,11 +6839,11 @@ class PlayState extends MusicBeatState
 				releaseArray[i] = false;
 			}
 
-			// 非回放模式: 从 controls 读取按键状态
+			// Non-replay input: read the key state from the controls object.
 			for (i in 0...laneCount)
 			{
-				// 4K: 沿用原版 controls 动作 (键盘/手柄/安卓按键)
-				// 多k: 全部轨道直接读键盘 (0-3 轨也读多k键位, 保证用户改绑的多k键生效)
+				// 4K uses the stock control actions (keyboard / gamepad / Android buttons);
+				// every lane of a multi-key layout reads its own extended key binding directly.
 				if (mania == Note.defaultMania && i < controlArray.length && controlArray[i] != null)
 				{
 					var held:Bool = false;
@@ -7519,7 +6868,7 @@ class PlayState extends MusicBeatState
 							pressed = controls.NOTE_RIGHT_P;
 							released = controls.NOTE_RIGHT_R;
 						default:
-							// 自定义扩展轨道名仍走动态读取, 保持与旧 Reflect 行为一致。
+							// Extended lane names still go through dynamic lookup (Reflect).
 							held = Reflect.getProperty(controls, controlArray[i]);
 							pressed = Reflect.getProperty(controls, controlArray[i] + '_P');
 							released = Reflect.getProperty(controls, controlArray[i] + '_R');
@@ -7531,7 +6880,7 @@ class PlayState extends MusicBeatState
 				}
 				else
 				{
-					// 直接读该轨道的键位 (多k: 全部轨道; 4K: 兜底)
+					// Direct lookup of this lane's key binding (all lanes for multi-key, fallback for 4K).
 					var held:Bool = false;
 					var pressed:Bool = false;
 					var released:Bool = false;
@@ -7548,8 +6897,8 @@ class PlayState extends MusicBeatState
 							}
 						}
 					}
-					// 多k 移动端: 触摸按住的轨道也算"按住", 否则 FlxHitbox 按下的长条段
-					// 永远收不到 goodNoteHit (4K 走 Controls 通路所以正常)
+					// FlxHitbox-driven holds must mark the lane here, otherwise held sustains never
+					// reach goodNoteHit (4K goes through the controls path, so it is unaffected).
 					if (i < mobileHeld.length && mobileHeld[i])
 						held = true;
 					holdArray[i] = held;
@@ -7563,8 +6912,8 @@ class PlayState extends MusicBeatState
 			{
 				if (ClientPrefs.data.lastNoteAnimation)
 				{
-					// lastNoteAnimation: 保持旧的多K触摸逐键语义（不合并/不抑制），
-					// 先清同帧触摸队列，再走键盘原路径，避免改变“最后一键播动画”的视觉行为。
+					// lastNoteAnimation keeps the per-key multi-key touch semantics: clear the same-frame
+					// touch queue and then run the normal keyboard path, so the last-key animation wins.
 					if (_mobilePressQueue.length > 0)
 					{
 						for (mi in 0..._mobilePressQueue.length)
@@ -7583,7 +6932,7 @@ class PlayState extends MusicBeatState
 						_mobileReleaseQueue.resize(0);
 					}
 
-					// 多键时同样走批量扫描, 只保留原版"最后一键播动画"的语义
+					// Multiple keys take the same batch scan, preserving that same visual behavior.
 					pressedLanes.resize(0);
 					for (i in 0...laneCount)
 						if (pressArray[i] && strumsBlocked[i] != true)
@@ -7596,8 +6945,8 @@ class PlayState extends MusicBeatState
 				}
 				else
 				{
-					// 多k: 多键同时按下时走批量判定, 避免每个键都全表扫描 Note 造成掉帧；
-					// 同帧触摸与键盘一起合并，触摸原始时间随 pressTimes 交给批量上报。
+					// Single scan for all lanes pressed this frame instead of a full note-table scan per key;
+					// same-frame touches are merged in and their raw press times go through pressTimes.
 					pressedLanes.resize(0);
 					var mobileTimes:Array<Float> = null;
 					if (_mobilePressQueue.length > 0)
@@ -7623,6 +6972,7 @@ class PlayState extends MusicBeatState
 								if (mobileTimes != null) mobileTimes.push(-999999);
 							}
 						}
+
 					}
 					if (_mobilePressQueue.length > 0)
 					{
@@ -7641,9 +6991,9 @@ class PlayState extends MusicBeatState
 					}
 				}
 
-				// 没有任何轨道按住时, 长条不可能被命中, 跳过整次全表扫描。
-				// 无脚本时用紧凑存活列表 (activeNotes), 避免扫全量 members 死槽位；
-				// 有脚本时保持 notes.forEachAlive 原语义 (脚本额外加入的 Note 也参与)。
+				// With nothing held a sustain cannot be hit, so skip the whole table scan.
+				// Without scripts the compact living list (activeNotes) is used, avoiding dead member slots;
+				// with scripts the notes.forEachAlive semantics are kept (notes added by scripts participate too).
 				if (anyHeld)
 				{
 					if (!hasActiveScripts())
@@ -7674,11 +7024,19 @@ class PlayState extends MusicBeatState
 			}
 			else
 			{
-				// 非游戏输入帧（暂停/结束/回放/锁定等）不应保留同帧触摸队列。
+				// Non-gameplay input frames (pause/end/replay/lock) must not keep the same-frame touch queue.
 				_mobilePressQueue.resize(0);
 				_mobilePressTimes.resize(0);
 				_mobileReleaseQueue.resize(0);
 			}
+
+			#if ONLINE_ALLOWED
+			// keysCheck() writes the local player's hold state back onto its own character; this is
+			// what makes the guarded Character.noteHold setter emit the room's "noteHold" callback.
+
+			if (online.GameClient.isConnected())
+				(playsAsBF() ? boyfriend : dad).noteHold = anyHeld;
+			#end
 
 			if (!anyHeld && !endingSong && generatedMusic)
 			{
@@ -7694,8 +7052,8 @@ class PlayState extends MusicBeatState
 					keyReleased(i, time);
 				
 				var spr:StrumNote = playerStrums.members[i];
-				// 反卡键 (多绑定/触摸释放丢失的幻按): 该轨道当前确实没有按住, 但 strum 仍停在 'pressed',
-				// 说明释放事件被吞, 强制回 'static'。只在"确实未按住"时才复位, 因此不误伤长按/真按住。
+				// Anti-stuck key (multi-bind or lost touch release leaves a phantom press): the lane is not
+				// actually held but the strum is still 'pressed', so the release was swallowed; force 'static'. Only checked when the lane is truly not held.
 				var stuckPressed:Bool = (spr != null && !holdArray[i]
 					&& spr.animation.curAnim != null && spr.animation.curAnim.name == 'pressed');
 				if (strumsBlocked[i] == true || stuckPressed)
@@ -7708,7 +7066,7 @@ class PlayState extends MusicBeatState
 					keyboardDisplay.released(i);
 				}
 			}
-			// osu! 尾判: 按住超过尾端 + 安全区仍不松 → 按太久 miss (osu: 超过晚 miss 窗口仍按住 = miss)
+			// osu! tail judgement: holding past tail + safe zone -> too-long miss (osu: holding past the late miss window = miss)
 			//if (ClientPrefs.data.osuTailJudgement && activeTailEnd.length > 0)
 			//{
 			//	for (i in 0...laneCount)
@@ -7824,15 +7182,20 @@ class PlayState extends MusicBeatState
 		songMisses++;
 		if (!replayMode && replayExam != null)
 			replayExam.recordJudgment(daNote.strumTime, daNote.noteData, 0, 'miss', daNote.isSustainNote);
-		#if ONLINE_ALLOWED
-		if (seiunOnline && !cpuControlled)
-			OnlineSession.sendLocalJudge(daNote.strumTime, Std.int(Math.abs(daNote.noteData)), "shit", 0, daNote.isSustainNote,
-				songScore, songMisses, maxcombo, ratingPercent, ratingName, ratingFC, 0, health);
-		#end
 
 		vocals.volume = 0;
 		vocalsPlayer.volume = 0;
 		if(!practiceMode) songScore -= 0;
+		#if ONLINE_ALLOWED
+		// noteMissCommon() forwards the miss to the room. This engine's local score deliberately
+		// does not subtract 10, but the room's score is what the online scoreboard shows, so -10
+		// is what gets reported.
+		if (!practiceMode)
+			online.GameClient.send("addScore", -10);
+		if (!endingSong)
+			online.GameClient.send("addMiss");
+		online.GameClient.send("noteMiss", [daNote.strumTime, daNote.noteData, daNote.isSustainNote]);
+		#end
 
 		totalPlayed++;
 		RecalculateRating(true);
@@ -7846,6 +7209,10 @@ class PlayState extends MusicBeatState
 		{
 			var animToPlay:String = getSingAnim(daNote) + 'miss' + daNote.animSuffix;
 			char.playAnim(animToPlay, true);
+			#if ONLINE_ALLOWED
+			// noteMissCommon() echoes the miss animation.
+			online.GameClient.send("charPlay", [animToPlay, char == gf]);
+			#end
 		}
 
 		if (hasActiveScripts())
@@ -7879,11 +7246,16 @@ class PlayState extends MusicBeatState
 			if(!endingSong) {
 				songMisses++;
 			}
-			totalPlayed++;
 			#if ONLINE_ALLOWED
-			if (seiunOnline)
-				wrongLaneTimes.push(Conductor.songPosition);
+			// noteMissPress() goes through noteMissCommon(), so an empty-lane tap forwards the
+			// same score/miss pair.
+			if (!practiceMode)
+				online.GameClient.send("addScore", -10);
+			if (!endingSong)
+				online.GameClient.send("addMiss");
 			#end
+			totalPlayed++;
+			wrongLaneTimes.push(Conductor.songPosition);
 			RecalculateRating(true);
 
 			FlxG.sound.play(Paths.soundRandom('missnote', 1, 3), FlxG.random.float(0.1, 0.2));
@@ -7901,6 +7273,10 @@ class PlayState extends MusicBeatState
             var missChar:Character = playOpponent ? dad : boyfriend;
             if(missChar.hasMissAnimations) {
                      missChar.playAnim(getSingAnimDir(direction) + 'miss', true);
+                     #if ONLINE_ALLOWED
+                     // noteMissCommon() echoes the miss animation.
+                     online.GameClient.send("charPlay", [getSingAnimDir(direction) + 'miss', false]);
+                     #end
             }
 			vocals.volume = 0;
 			vocalsPlayer.volume = 0;
@@ -7915,8 +7291,8 @@ class PlayState extends MusicBeatState
 		if (Paths.formatToSongPath(SONG.song) != 'tutorial')
 			camZooming = true;
 
-		// 对手侧降阶: sing 动画与 strum confirm 同样"每轨每帧一次" (对手轨道在
-		// 万级 NPS 谱面下同样每帧数千次命中, 逐击 playAnim 是纯浪费)。
+		// Opponent-side downgrade: sing animations and strum confirms are also once per lane per frame (opponent
+		// lanes fire thousands of hits per frame on dense charts, so per-hit playAnim is pure waste).
 		var oppLane:Int = Std.int(Math.abs(note.noteData));
 		var laneTotal:Int = Note.ammo[mania];
 		if (oppLane >= laneTotal) oppLane %= laneTotal;
@@ -7974,7 +7350,7 @@ class PlayState extends MusicBeatState
 		note.hitByOpponent = true;
 
 if (CompatEngine.isModern() && hasActiveScripts()) {
-			// 0.7.3+/1.0.4: opponentNoteHitPre / goodNoteHitPre 回调
+			// 0.7.3+/1.0.4: opponentNoteHitPre / goodNoteHitPre callbacks
 			var preName:String = reverseNoteHit ? 'goodNoteHitPre' : 'opponentNoteHitPre';
 			var preResult:Dynamic = callOnLuas(preName, [noteIndexFast(note), Math.abs(note.noteData), note.noteType, note.isSustainNote]);
 			if(preResult != FunkinLua.Function_Stop && preResult != FunkinLua.Function_StopHScript && preResult != FunkinLua.Function_StopAll)
@@ -7990,22 +7366,30 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 			var scriptName:String = reverseNoteHit ? 'goodNoteHit' : 'opponentNoteHit';
 			var result:Dynamic;
 			if (CompatEngine.isModern()) {
-				// 0.7.3 格式: 与 opponentNoteHit 一致使用 Math.abs
+				// 0.7.3 format: uses Math.abs like opponentNoteHit
 				result = callOnLuas(scriptName, [noteIndexFast(note), Math.abs(note.noteData), note.noteType, note.isSustainNote]);
 			} else if (reverseNoteHit) {
-				// 0.6.3 格式, 但因 reverseNoteHit 实际调用了 goodNoteHit, 需传原始 noteData
+				// 0.6.3 format, but reverseNoteHit actually calls goodNoteHit so the raw noteData is passed
 				result = callOnLuas(scriptName, [noteIndexFast(note), note.noteData, note.noteType, note.isSustainNote]);
 			} else {
-				// 0.6.3 opponentNoteHit 本身使用 Math.abs
+				// 0.6.3 opponentNoteHit itself uses Math.abs
 				result = callOnLuas(scriptName, [noteIndexFast(note), Math.abs(note.noteData), note.noteType, note.isSustainNote]);
 			}
 			if(result != FunkinLua.Function_Stop && result != FunkinLua.Function_StopHScript && result != FunkinLua.Function_StopAll) callOnHScript(scriptName, [note]);
 		}
+		// Turbo: opponent hits feed the player's own combo counter and popup. Most local notes are
+		// settled in the data layer, so without this the combo never moves on dense charts. Only
+		// taps count (no sustain tails) and none of the score / hit stats / judgement / rating are
+		// touched; the popup draws the combo only, never the judgement icon.
+		// opponent paths, with the popup still bounded by the per-frame POPUP_IMMEDIATE_HITS budget.
+		// Both the counter and the popup live in addOpponentHit, the shared entry for all three
+		if (turboModeActive && !note.isSustainNote)
+			addOpponentHit(1);
 		if (!note.isSustainNote)
 			recycleNote(note);
 		if (!ClientPrefs.data.opponentfe) {
-			// 对手侧降阶: 原实现每击把全部轨道 static 化一次 (万级 NPS 下 = 命中数×轨道数次
-			// playAnim); 改为整帧一次, 同帧内重复设置不可见。
+			// Opponent-side downgrade: the original reset every lane to static on each hit (hits x lanes
+			// playAnim calls on dense charts); once per frame is invisible because same-frame repeats are not seen.
 			if (!_oppStaticSet)
 			{
 				_oppStaticSet = true;
@@ -8022,11 +7406,11 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 
 
 
-	/** 击杀 Note 并回收到本 state 的 notePool；不 remove、不 destroy，members 保持有界。 */
+	/** Kills a note and returns it to this state's notePool; no remove/destroy, so members stays bounded. */
 	private function recycleNote(daNote:Note):Void
 	{
 		if (daNote == null || daNote.pooled) return;
-		if (daNote.scale == null) return; // 已 destroy 的壳直接丢弃
+		if (daNote.scale == null) return; // discard shells that were already destroyed
 		if (daNote.culled) { daNote.culled = false; if (_culledCount > 0) _culledCount--; }
 		activeRemove(daNote);
 
@@ -8047,7 +7431,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		daNote.kill();
 		if (daNote.resetForReuse())
 		{
-			// 简单 tap 回池后不再作为后续 Note 的 prevNote，避免复用后链到错误对象。
+			// A plain tap returned to the pool must not stay as another note's prevNote, or reuse would link to the wrong object.
 			if (lastSpawnedNote.get(linkKey) == daNote)
 				lastSpawnedNote.remove(linkKey);
 			daNote.pooled = true;
@@ -8056,37 +7440,37 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 	}
 
 	/**
-	 * 每帧重算离屏剔除距离 (世界像素):
-	 * - 由接收器组与 HUD 相机的真实几何推导: 距最远接收器到屏幕上下边的余量
-	 *   (再留 140px 给长条裁剪/offset 抖动)。被剔除的音符必然不可见。
-	 * - 覆盖 HUD 相机缩放 (zoom<1 时可见世界范围更大)
-	 * - 除以轨道滚动方向的 |sin|: 即使模组旋转了接收器也保证正确; 纯水平滚动放弃剔除。
+	 * Recomputes the off-screen cull distance every frame (world pixels):
+ * - derived from the real geometry of the receptor group and the HUD camera: the room from the farthest
+ *   receptor to the screen edges (plus 140px for sustain trimming/offset jitter). Culled notes are always invisible.
+ * - accounts for the HUD camera zoom (zoom < 1 shows a larger world range)
+ * - divided by |sin| of the lane scroll direction, so it stays correct with rotated receptors; purely horizontal scrolling disables culling.
 	 *
-	 * 同时推导可视物化地平线: "音符还能停多久才越过剔除边界"的毫秒数。
-	 * 这是决定物化量的唯一闸门 ——
-	 *   可视频段(ms) = 屏幕像素带 / (0.45 * songSpeed * maniaScale)
-	 * speed=1 时约 3 秒, speed=0.5 时约 6 秒; 几十万 NPS 的谱面在这个窗口里
-	 * 能塞进六位数条 Note。把物化窗口钉在真实像素带上, 物化量就由屏幕几何决定,
-	 * 而不是由谱面密度决定 (再叠加 Turbo 的像素级折叠, 两者互相独立地兜底)。
+ * It also derives the visible materialisation horizon: how many ms a note can still stay before crossing the cull edge.
+ * That is the only gate on the materialised count:
+ *   visible span (ms) = screen pixel band / (0.45 * songSpeed * maniaScale)
+ * roughly 3s at speed=1 and 6s at speed=0.5, which is where dense charts fit six figures of notes.
+ * Pinning the window to the real pixel band makes the materialised count depend on screen geometry,
+ * not chart density (with Turbo's pixel folding covering the other side independently).
 	 */
 	function refreshNoteCullRanges(elapsed:Float):Void
 	{
 		var zoom:Float = (camHUD != null && camHUD.zoom > 0 && camHUD.zoom < 32) ? camHUD.zoom : 1;
 		var viewTop:Float = (camHUD != null) ? camHUD.scroll.y : 0;
 		var viewBottom:Float = viewTop + FlxG.height / zoom;
-		// 关键修复: 余量必须覆盖"帧量化超冲" —— 驻留/解除驻留的判定每帧只做一次,
-		// 低帧率下一帧内音符会多走 帧时长×流速 像素, 固定 140px 余量会被直接冲过,
-		// 音符/长条尾段在屏内闪现 (流速越大越深入屏幕)。余量随帧时长与流速放大。
+		// Critical: the margin must cover frame quantisation overshoot. Residency is decided once per frame, so at low
+		// frame rates a note travels frame time x speed pixels in one step and a fixed 140px margin is overrun,
+		// flashing notes/sustain tails on screen. The margin grows with frame time and speed.
 		var quantizeMs:Float = Math.max(120.0, elapsed * 1000 * 1.5);
 		var cullMargin:Float = 140 + 0.45 * songSpeed * quantizeMs;
 		_cullDistPlayer = noteCullDistFor(playerStrums, viewTop, viewBottom, cullMargin);
 		_cullDistOpponent = noteCullDistFor(opponentStrums, viewTop, viewBottom, cullMargin);
 
-		// 可视物化地平线 (ms): 距离换算 px/ms = 0.45 * songSpeed * maniaScale
-		// (与 updateDaNote 的位置公式同源)。用真实屏幕像素带 + 剔除余量, 余量本身
-		// 已含帧量化超冲, 因此这个窗口里物化出来的音符一定能在屏内被看到,
-		// 也一定能等到下一次更新的机会 —— 不会在屏内凭空出现。
-		// 上限仍是 spawnTime (原版生成窗口), 下限防止极端值把窗口压成 0。
+		// Visible materialisation horizon (ms): distance conversion px/ms = 0.45 * songSpeed * maniaScale
+		// (the same formula as updateDaNote). Using the real pixel band plus the cull margin, which already
+		// covers frame quantisation overshoot, means notes materialised in this window are guaranteed to appear
+		// on screen and to get another update before leaving it.
+		// The cap is still spawnTime (the stock spawn window); the floor guards against extreme values collapsing the window.
 		var cullMin:Float = Math.min(_cullDistPlayer, _cullDistOpponent);
 		var speedFactor:Float = 0.45 * songSpeed * Note.getManiaScale(mania);
 		if (speedFactor <= 0.0001) speedFactor = 0.45;
@@ -8094,9 +7478,9 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 	}
 
 	/**
-	 * 每轨 cos/sin 缓存: 音符位置 = strum + (cos,sin)(direction) * distance。
-	 * direction 属于 strum (每轨常量), 原实现对每个音符每帧算两次 trig ——
-	 * 屏内 ~3200 音符时是 ~6400 次/帧; 缓存后每轨每帧只算一次。
+	 * Per-lane cos/sin cache: note position = strum + (cos,sin)(direction) * distance.
+ * direction belongs to the strum (a per-lane constant), and the original computed two trig calls per note per
+ * frame (~6400/frame with ~3200 notes on screen); the cache computes it once per lane per frame.
 	 */
 	function refreshLaneTrigCaches():Void
 	{
@@ -8120,7 +7504,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		}
 	}
 
-	/** 存活列表 O(1) 移除 (swap-remove; 尾元素补位并修正其下标)。 */
+	/** O(1) removal from the living list (swap-remove; the tail element fills the slot and its index is fixed up). */
 	function activeRemove(n:Note):Void
 	{
 		var i:Int = n.activeIdx;
@@ -8136,7 +7520,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		n.activeIdx = -1;
 	}
 
-	/** 重置 botplay/对手侧"每轨每帧一次"门控数组 (与 strumsHit 同步, 大小随 k 值调整)。 */
+	/** Resets the botplay/opponent once-per-lane-per-frame gate arrays (synced with strumsHit, sized to the key count). */
 	function resetBotGateArrays():Void
 	{
 		var laneCount:Int = Note.ammo[mania] * 2;
@@ -8164,10 +7548,10 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 	}
 
 	/**
-	 * O(1) 读取 Note 在 notes.members 的下标 (脚本回调参数用), 替代每击
-	 * notes.members.indexOf 的 O(n) 全表扫描 —— 万级成员 × 上万命中/帧 时是秒级开销。
-	 * 下标由 appendNoteFast/fasterNoteSort/压缩清理增量维护; 校验失败 (脚本/外部
-	 * 直接改过 members) 时回退一次 indexOf 并自愈缓存。
+	 * O(1) note index lookup in notes.members (for script callback arguments), replacing the per-hit
+ * notes.members.indexOf O(n) scan, which costs seconds with tens of thousands of members and hits per frame.
+ * The index is maintained by appendNoteFast/fasterNoteSort/compaction; when validation fails (scripts or
+ * external code changed members) it falls back to one indexOf and self-heals the cache.
 	 */
 	function noteIndexFast(note:Note):Int
 	{
@@ -8183,7 +7567,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		return idx;
 	}
 
-	/** 全量重建 memberIndex 缓存 (notes.sort 等整体重排路径后调用, 单趟 O(n))。 */
+	/** Rebuilds the whole memberIndex cache (after a full reorder such as notes.sort; one O(n) pass). */
 	static function rebuildMemberIndexes(m:Array<Note>, len:Int):Void
 	{
 		for (i in 0...len)
@@ -8194,10 +7578,10 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 	}
 
 	/**
-	 * O(1) 均摊追加 Note 到 notes 组, 槽位选择与 FlxTypedGroup.add 一致
-	 * (优先填第一个空洞, 否则尾部追加)。add() 内部的 members.indexOf 去重检查
-	 * 与 getFirstNull 都是 O(n): 万级成员 + 密集生成时每帧浪费数十毫秒。
-	 * 仅用于本 state 的延迟物化路径 (同一 Note 绝不会重复添加)。
+	 * Amortised O(1) append of a note to the notes group, with the same slot choice as FlxTypedGroup.add
+ * (first free slot, otherwise append). add()'s members.indexOf duplicate check and getFirstNull are both
+ * O(n), which wastes tens of ms per frame with tens of thousands of members during dense spawning.
+ * Only used by this state's deferred materialisation path (a note is never added twice).
 	 */
 	@:privateAccess
 	function appendNoteFast(note:Note):Void
@@ -8205,13 +7589,13 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		var m:Array<Note> = notes.members;
 		var len:Int = m.length;
 
-		// 从游标向后找第一个空洞
+		// Find the first free slot from the cursor onwards
 		var idx:Int = _noteSlotCursor;
 		while (idx < len && m[idx] != null) idx++;
 
 		if (idx >= len)
 		{
-			// 游标之前可能有清理产生的空洞, 补扫前段
+			// There may be holes left by cleanup before the cursor; rescan the earlier part
 			idx = 0;
 			while (idx < _noteSlotCursor && idx < len && m[idx] != null) idx++;
 		}
@@ -8227,7 +7611,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		}
 
 		if (notes.maxSize > 0 && notes.length >= notes.maxSize)
-			return; // 组已满: 与 add() 行为一致, 丢弃
+			return; // group is full: drop it, matching add()
 
 		m.push(note);
 		note.memberIndex = m.length - 1;
@@ -8247,13 +7631,13 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 			if (st.y < minY) minY = st.y;
 			if (st.y > maxY) maxY = st.y;
 		}
-		if (minY > maxY) return 2200; // 接收器未就绪: 保守默认值
+		if (minY > maxY) return 2200; // receptors not ready: conservative default
 
-		var below:Float = viewBottom - maxY + margin; // 向屏幕下方还能滚多远
-		var above:Float = minY - viewTop + margin;    // 向屏幕上方还能滚多远
+		var below:Float = viewBottom - maxY + margin; // how far it can still scroll below the screen
+		var above:Float = minY - viewTop + margin;    // how far it can still scroll above the screen
 		var dist:Float = (below > above) ? below : above;
 
-		// 旋转/异形轨道: 按 |sin(滚动角)| 收紧阈值, 保证 "距离超限 ⇒ 必然出屏"
+		// Rotated / irregular lanes: tighten the threshold by |sin(scroll angle)| so "beyond distance => definitely off screen" holds
 		var s0:StrumNote = members[0];
 		var sinY:Float = (s0 == null) ? 1 : Math.abs(Math.sin(s0.direction * Math.PI / 180));
 		return (sinY < 0.35) ? 1e12 : dist / sinY;
@@ -8261,15 +7645,15 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 
 	/** H-Slice style fasterSort: only alive+visible notes participate in the Y sort; dead slots keep their positions. */
 	/**
-	 * Note 绘制顺序比较器 (签名匹配 FlxTypedGroup.sort 的 Function.bind(Order) 约定)。
-	 * 分层规则: 长条段永远先画 (下层), TAP 后画 (上层), 同层内再按 y 排序
-	 * (靠近判定线者在顶)。
-	 * 背景: downscroll 的 Y 排序 (ASCENDING, y 大者后画) 会让长条段 (y 比 tap 大)
-	 * 盖住自己的 tap —— 本引擎段高致密 (自带 2px 重叠, 是原版段高的 1.43 倍),
-	 * tap 矩形与前几段大量重叠, 0.6 透明度的段压在箭头上, 表现为
-	 * "tap 被卡在长条中间 / 被压到最后"。原版没暴露是因为原版段很短,
-	 * 与 tap 的重叠可忽略。长条段必须与 tap 重叠才能衔接, 所以只能在
-	 * 绘制顺序上保证 tap 可见。
+	 * Note draw-order comparator (signature matches FlxTypedGroup.sort's Function.bind(Order) convention).
+ * Layering: sustain segments always draw first (below), taps after (above), then by y within a layer
+ * (closest to the strum line on top).
+ * Background: the downscroll y order (ASCENDING, larger y drawn later) lets sustain segments (larger y
+ * than taps) cover their own taps. This engine's segments are dense (2px overlap, 1.43x the stock
+ * segment height), so tap rectangles overlap many segments and 0.6-alpha segments sitting on the arrows
+ * look like "the tap is stuck inside the sustain" or "pressed to the back". The stock engine never
+ * exposed this because stock segments are short. Segments must overlap taps to connect, so only the
+ * draw order can keep the tap visible.
 	 */
 	public static function noteDrawOrder(order:Int, a:Note, b:Note):Int
 	{
@@ -8308,8 +7692,8 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 
 		if (_noteSortRange > 1)
 		{
-			// 比较器闭包只创建一次 (原实现每帧两个 lambda 分配, 高帧率下是稳定的 GC 压力源);
-			// 排序方向在比较器内部实时读取, 与外部 order 参数保持一致。
+			// The comparator closure is created once (the original allocated two lambdas per frame, a steady GC source);
+			// the sort direction is read live inside the comparator and stays consistent with the order argument.
 			if (_cmpNoteY == null)
 				_cmpNoteY = function(a:Note, b:Note):Int {
 					return noteDrawOrder(ClientPrefs.data.downScroll ? FlxSort.ASCENDING : FlxSort.DESCENDING, a, b);
@@ -8321,7 +7705,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 			for (k in 0..._noteSortRange)
 			{
 				members[_noteSortIdx[k]] = _noteSortArr[k];
-				// 同步维护 memberIndex 缓存 (排序重排是缓存失效的主要来源)
+				// Keep the memberIndex cache in sync (reordering is the main source of cache invalidation)
 				_noteSortArr[k].memberIndex = _noteSortIdx[k];
 			}
 		}
@@ -8334,11 +7718,11 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 
 		_frameAliveTally++;
 
-		// H-Slice 风格离屏剔除: 音符 y 完全由 strumTime 线性派生, 远离屏幕的音符
-		// 无需逐帧三角函数/裁剪/绘制 (visible=false 让 group.draw 直接跳过)。
-		// 只对位置完全由引擎派生 (copyX&&copyY) 的音符生效; 已过击杀窗口的音符
-		// 永不驻留 —— 它们必须走正常 miss/kill 流程。
-		// perfMode 关闭时完全不剔除，保持提交前“所有 alive Note 都参与更新/绘制”的逻辑。
+		// Off-screen culling: a note's y is derived linearly from strumTime, so notes far off screen need no
+		// per-frame trig/clip/draw (visible=false lets group.draw skip them).
+		// Only applies to notes whose position is fully engine-derived (copyX && copyY); notes past the kill
+		// window are never kept resident -- they must run the normal miss/kill path.
+		// With perfMode off there is no culling at all, keeping the pre-optimization behaviour where every alive note updates/draws.
 		if (ClientPrefs.data.perfMode)
 		{
 			if (daNote.copyX && daNote.copyY && !daNote.inEditor)
@@ -8362,7 +7746,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 				}
 			}
 		}
-		// 如果从 perfMode 开启切回关闭，或既有 culled 标记需要恢复，统一在这里解除驻留。
+		// Restore residency here when perfMode is switched back off or an existing culled flag must be cleared.
 		if (daNote.culled)
 		{
 			daNote.culled = false;
@@ -8371,7 +7755,27 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 			_culledCount--;
 		}
 
+		#if ONLINE_ALLOWED
+		// Connected players must set `camZooming = true` when a note is due (source
+		// PlayState.hx:3560-3562). This engine only sets it in `opponentNoteHit()` / auto-hit opponent
+		// notes, but online opponent notes are driven by the remote's "noteHit" message, so neither a
+		// locally hit note nor an "unplayed yet" stretch sets it, and the
+		// `if (camZooming) FlxG.camera.zoom = lerp(defaultCamZoom, ...)` in `update()` never runs:
+		//   * a script or event changing `defaultCamZoom` has no effect (camera does not zoom);
+		//   * zoom added by `Add Camera Zoom` never decays back to defaultCamZoom (bad zoom).
+		// Set here only while connected; the single-player path is unchanged.
+		if (online.GameClient.isConnected() && daNote.strumTime <= Conductor.songPosition)
+			camZooming = true;
+		#end
+
 		// Auto-hit opponent notes
+		#if ONLINE_ALLOWED
+		// While connected, whoever does NOT own the opponent side must let the remote
+		// player's "noteHit" messages drive those notes (the same rule as
+		// `(!GameClient.isConnected() || playOtherSide || royalMode)`). The guarded `if` wraps the
+		// untouched engine statement below, so the single-player path is unaffected.
+		if (opponentAutoHitAllowed())
+		#end
 		if (!daNote.mustPress && !daNote.hitByOpponent && !daNote.ignoreNote && daNote.strumTime <= Conductor.songPosition)
 			opponentNoteHit(daNote);
 
@@ -8399,7 +7803,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		else
 			daNote.distance = (-0.45 * (Conductor.songPosition - daNote.strumTime) * songSpeed * daNote.multSpeed) * Note.getManiaScale(daNote.mania);
 
-		// 每轨 cos/sin 缓存 (refreshLaneTrigCaches 每帧刷新); 缓存未覆盖时回退实时计算。
+		// Per-lane cos/sin cache (refreshed by refreshLaneTrigCaches every frame); falls back to live computation when not covered.
 		var angleDir:Float = strumDirection * Math.PI / 180;
 		var cosDir:Float = Math.cos(angleDir);
 		var sinDir:Float = Math.sin(angleDir);
@@ -8433,7 +7837,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 
 				if (PlayState.isPixelStage)
 				{
-					// 像素阶段：保留 0.6.3 原修正，本次不改动，避免像素回归。
+					// Pixel stage: keeps the 0.6.3 fix, untouched here to avoid a pixel regression.
 					var fakeCrochet:Float = (60 / PlayState.SONG.bpm) * 1000;
 					var isEnd:Bool = (daNote.animation.curAnim != null
 						&& (daNote.animation.curAnim.name.endsWith('end') || daNote.animation.curAnim.name.endsWith('holdend')));
@@ -8448,7 +7852,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 				}
 				else
 				{
-					//操你妈的傻逼，怎么又让我修一遍？
+					// hxcpp, again.
 					var stepCrochet:Float = (daNote.genStepCrochet > 0) ? daNote.genStepCrochet : Conductor.stepCrochet;
 					var anchor:Float = (Note.swagWidth / 2) * maniaScale
 						+ 0.45 * stepCrochet * daNote.multSpeed * maniaScale
@@ -8461,7 +7865,17 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 
 		var center:Float = strumY + (Note.swagWidth / 2) * Note.getManiaScale(daNote.mania);
 		if (strum.sustainReduce && daNote.isSustainNote
-			&& (!daNote.mustPress || daNote.wasGoodHit))
+			#if ONLINE_ALLOWED
+			// Online: opponent sustains that nobody pressed vanish at the judgement line.
+			// Online opponent notes are driven by remote messages and are no longer auto-hit locally, so
+			// the old !mustPress branch matched every opponent sustain and clipped it to zero height as
+			// soon as it crossed the line. Only sustains actually hit by the remote should clip at the
+			// line; unplayed ones keep travelling past it.
+			&& (daNote.wasGoodHit || (!daNote.mustPress && (!online.GameClient.isConnected() || daNote.hitByOpponent)))
+			#else
+			&& (!daNote.mustPress || daNote.wasGoodHit)
+			#end
+		)
 		{
 			var drawnTop:Float = daNote.y - daNote.offset.y + daNote.origin.y * (1 - daNote.scale.y)
 				+ daNote.frame.offset.y * daNote.scale.y;
@@ -8492,6 +7906,22 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		}
 
 		// Kill late notes
+		#if ONLINE_ALLOWED
+		// Online: opponent sustains that nobody pressed vanish at the judgement line.
+		// Online opponent notes are driven by remote messages and are not auto-hit locally, so an
+		// unplayed note gets no message and fell into the "late recycle" below, dying noteKillOffset
+		// past the line. The earlier clipping change only touched the visual layer, so it could not
+		// fix the symptom; the lifetime is decided here. Unplayed opponent notes now keep travelling
+		// past the line and are recycled only once fully off screen (both scroll directions).
+		if (online.GameClient.isConnected() && !daNote.mustPress && !daNote.wasGoodHit && !daNote.hitByOpponent
+			&& !daNote.ignoreNote && !endingSong)
+		{
+			if (Conductor.songPosition > noteKillOffset + daNote.strumTime
+				&& (daNote.y > FlxG.height || daNote.y + daNote.height < 0))
+				invalidateNote(daNote);
+		}
+		else
+		#end
 		if (Conductor.songPosition > noteKillOffset + daNote.strumTime)
 		{
 			if (daNote.mustPress && !cpuControlled && !daNote.ignoreNote && !endingSong && !daNote.wasGoodHit)
@@ -8510,60 +7940,60 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 	}
 
 	/**
-	 * H-Slice 风格数据级批量推进 —— 万级 NPS 的结构性降阶。
+	 * Data-level batch advance: the structural downgrade for extreme note densities.
 	 *
-	 * 核心思想: 音符密度超过"逐对象处理"能力时, 把到点/过期的未物化音符在数据层
-	 * 直接结算 (PreloadedChartNote.wasHit = true), 不再为它们构造精灵。
-	 * 结算口径与逐击路径一致 (combo/maxcombo/totalPlayed/totalNotesHit/判定计数/血量);
-	 * 表现层合并到帧末或按轨去重。
+ * Core idea: when note density exceeds what per-object processing can handle, due/expired unmaterialised notes
+ * are settled in the data layer (PreloadedChartNote.wasHit = true) instead of building sprites for them.
+ * The settlement matches the per-hit path (combo/maxcombo/totalPlayed/totalNotesHit/judgement counts/health);
+ * presentation is merged at frame end or de-duplicated per lane.
 	 *
-	 * 两层 cutoff:
-	 * - softCut (= songPosition, 仅 botplay): 已到点的未物化 tap 音符按自动命中在
-	 *   数据层结算。帧率健康时光标跑在演唱位置前面 (~2s 提前物化), 此层无事可做;
-	 *   帧率跟不上到达速率时光标落后, 溢出部分在这里被吸收 —— 打破"越卡越积、
-	 *   越积越卡"的死亡螺旋。
-	 * - hardCut (= songPosition - noteKillOffset): 过期音符 drain (原行为)。
+ * Two cutoffs:
+ * - softCut (= songPosition, botplay only): due unmaterialised taps settle as auto-hits in the
+ *   data layer. With a healthy frame rate the cursor runs ~2s ahead, so this layer does nothing;
+ *   when it falls behind, the overflow is absorbed here, breaking the "lag -> backlog -> more lag"
+ *   death spiral.
+ * - hardCut (= songPosition - noteKillOffset): drains expired notes (the original behaviour).
 	 *
-	 * 含长条的谱面不再整体禁用: 扫描在第一条未结算长条处停下 (长条仍走逐对象路径,
-	 * 保留尾段/裁剪语义); 其后的 tap 在长条解决后继续 drain。
+ * Charts with sustains are no longer disabled as a whole: the scan stops at the first unsettled sustain
+ * (sustains keep the per-object path and tail/trim semantics); taps after it keep draining once it is resolved.
 	 *
-	 * 门控: 无 Lua/HScript、非回放、非联机 (脚本语义保持逐字节不变)。
+ * Gated off with Lua/HScript, replay mode or an online session (script semantics stay byte-identical).
 	 */
 	function fastSkipPastNotes(elapsed:Float):Void
 	{
 		if (!ClientPrefs.data.perfMode || !ClientPrefs.data.bulkSkip) { _bulkDrainedLast = 0; return; }
-		if ((hasActiveScripts() && !turboModeActive) || replayMode || seiunOnline || endingSong) { _bulkDrainedLast = 0; return; }
+		if ((hasActiveScripts() && !turboModeActive) || replayMode || endingSong) { _bulkDrainedLast = 0; return; }
 		if (notesAddedCount >= unspawnNotes.length) { _bulkDrainedLast = 0; return; }
 
 		var pos:Float = Conductor.songPosition;
 		var hardCut:Float = pos - noteKillOffset;
-		// 关键修复: 原写法 "-Math.NEGATIVE_INFINITY" 是正无穷 —— 手动模式下 softCut
-		// 变 +∞, 扫描永不停且 "strumTime <= softCut" 对所有未生成音符恒真,
-		// 全部被数据层提前自动命中 (combo/回血/strum confirm 全触发), 即
-		// "没开 botplay 却部分 Note 自己按下且提前" 的根因。禁用 softCut 应取 -∞。
+		// Critical: the original "-Math.NEGATIVE_INFINITY" is positive infinity, so in manual mode softCut
+		// became +inf, the scan never stopped, "strumTime <= softCut" held for every ungenerated note and
+		// all of them were auto-hit early in the data layer (combo/health/strum confirms all fired).
+		// Disabling softCut therefore has to use -inf.
 		var softCut:Float = cpuControlled ? pos : Math.NEGATIVE_INFINITY;
-		// 过载 (上一帧 drain 显著非零) 时把数据层结算线推进到可视带内沿:
-		// 物化预算不足时, 近半带的音符只会在判定线附近闪现一帧就被回收,
-		// 与其白付构造费不如直接数据层结算; 物化因此集中到外半带 ——
-		// 每个精灵存活整个下落过程 (多帧可见), 视觉变成连续稀疏流而非贴线闪烁。
-		// (结算口径不变: 该自动命中的照常计入 combo/判定/血量, 只是提前几毫秒。
-		//  Turbo 的像素级折叠已把物化量按屏幕几何定量约束, 这里不再需要
-		//  "高密度聚合区"之类的特例分支。)
+		// Under overload (previous frame's drain clearly non-zero) the data settlement line moves to the inner visible edge:
+		// with an insufficient materialisation budget, notes in the near half only flash for one frame at the strum
+		// line before being recycled, so settling them directly beats paying for their construction; materialisation
+		// then concentrates in the outer half, where each sprite lives through the whole fall (visible for many frames).
+		// (The settlement itself is unchanged: notes that were due still count toward combo/judgements/health,
+		//  just a few ms early. Turbo's pixel folding already bounds the materialised count by screen geometry,
+		//  so special-casing a "dense cluster" is no longer needed.)
 		if (cpuControlled && _overloadFrames > 0)
 			softCut = pos + _visHorizonMs * 0.5;
 		var drainTotal:Int = 0;
 
-		// 累加器由"帧末消费点"归零 (finishBulkFrame -> resetBulkAccumulator):
-		// 物化路径在 fastSkipPastNotes 之前就把折叠组结算进同一个累加器,
-		// 这里必须沿用它的内容, 否则同帧的命中会漏进表现层。
+		// The accumulator is zeroed at the frame-end consumption point (finishBulkFrame -> resetBulkAccumulator):
+		// the materialisation path settles folded groups into the same accumulator before fastSkipPastNotes,
+		// so its contents must be reused or same-frame hits are lost before presentation.
 		var acc:BulkAccumulator = _bulkAcc;
 
-		// Turbo 模式专用自适应每帧预算: 约 100 条/ms 帧时间, 上限 65536。
-		// 70k NPS 在 60fps 约 1167 条/帧, 这个预算既跟得上极密尾杀,
-		// 又避免单帧一次性 drain 数万条造成尖峰; 低配帧率下自动放大追补。
-		// 非 Turbo 模式保持原版一次性 drain 行为 (关闭 Turbo 时行为不变)。
-		// 折叠组按"组"计一次预算: 组内成员是同一像素带里的重叠 Note,
-		// 与旧实现消费折叠组时的口径一致。
+		// Turbo-only adaptive per-frame budget: about 100 notes per ms of frame time, capped at 65536.
+		// 70k NPS is ~1167 notes/frame at 60fps; the budget keeps up with the densest endings while avoiding
+		// a one-frame spike of tens of thousands of drains, and it grows automatically on slower frame rates.
+		// Outside Turbo the stock one-shot drain behaviour is kept (off means unchanged).
+		// A folded group counts as one budget unit: its members are overlapping notes in the same pixel band,
+		// matching how the old implementation consumed folded groups.
 		var drainBudget:Int = turboModeActive ? Std.int(Math.max(4096, Math.min(65536, elapsed * 1000 * 100))) : 0x7FFFFFFF;
 		var processed:Int = 0;
 
@@ -8575,8 +8005,8 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 
 			var d:PreloadedChartNote = unspawnNotes[notesAddedCount];
 			if (d.strumTime > hardCut && d.strumTime > softCut) break;
-			// 长条与长条头 (isSustainNote=false 但 sustainLength>0) 都留给逐对象路径:
-			// 头被数据层消费会让尾段失去 prevNote/parent 链, 破坏长条渲染。
+			// Sustains and sustain heads (isSustainNote=false but sustainLength>0) keep the per-object path:
+			// consuming a head in the data layer would break the tail's prevNote/parent chain and its rendering.
 			if (d.isSustainNote || d.sustainLength > 0) break;
 
 			if (d.wasHit)
@@ -8585,9 +8015,9 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 				continue;
 			}
 
-			// 数据层结算 (含 Turbo 折叠组的一次性展开)。未到点/非玩家/长条一律
-			// 返回 false 且保持游标不动 —— 这里也是唯一能推进结算游标的路径,
-			// 任何"提前消费却不推进游标"的分支都会把后续 Note 永久卡死。
+			// Data-level settlement (including expanding a Turbo fold group). Not-yet-due / non-player / sustain notes
+			// return false with the cursor untouched -- this is also the only path that may advance the settlement cursor,
+			// so any early-consume path that forgets to advance it would block every following note forever.
 			if (!bulkSettleNote(d, acc))
 				break;
 			drainTotal++;
@@ -8599,7 +8029,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 			finishBulkFrame(acc.drainedHit, acc.skippedHit, acc.skippedHitHealth, acc.skippedMiss, acc.skippedMissHealth, acc.oppDrained);
 	}
 
-	/** 每帧重置 Turbo 运行时归属闸门 (每条 lane+side 一份"上一条已物化"记录)。 */
+	/** Resets the Turbo runtime keep gate every frame (one "last materialised" record per lane+side). */
 	function resetTurboKeepGate():Void
 	{
 		var slots:Int = Note.ammo[mania] * 2;
@@ -8621,14 +8051,14 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 	}
 
 	/**
-	 * Turbo 运行时归属闸门: 判断这条 tap 是否值得为它构造精灵。
+	 * Turbo runtime keep gate: decides whether a tap is worth building a sprite for.
 	 *
-	 * 判据与加载期折叠一致 (同 lane + 同侧 + 同 multSpeed, 屏幕像素间距小于阈值),
-	 * 但用的是**当前** songSpeed: 加载期折叠用的是进入歌曲时的流速, 若运行中
-	 * songSpeed 被事件/缓动改写, 折叠结果就不再匹配, 这道闸门保证物化量仍然有界。
+ * The test matches load-time folding (same lane + same side + same multSpeed, screen pixel gap below the threshold)
+ * but uses the *current* songSpeed: load-time folding used the speed on entering the song, so if songSpeed is
+ * rewritten by an event or tween mid-song the folded result no longer matches; this gate keeps the count bounded.
 	 *
-	 * 返回 false 表示"屏幕上与上一条已物化 Note 完全重叠", 调用方应直接数据层结算。
-	 * 长条/长条头一律放行 (尾段链与裁剪语义不允许被跳过)。
+ * Returning false means "on screen this fully overlaps the previous materialised note", so the caller settles it in the data layer.
+ * Sustains and sustain heads always pass (their tail chain and trimming must not be skipped).
 	 */
 	function turboKeepNote(pn:PreloadedChartNote):Bool
 	{
@@ -8652,15 +8082,15 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		if (_laneLastKeptSlow[idx] > 0)
 		{
 			var dt:Float = pn.strumTime - _laneLastKeptTime[idx];
-			// 以较慢的那条为准 (lastSlow): 保证"两条 Note 在任何时刻都不会分开到
-			// 可分辨程度"这个结论对 multSpeed 不同的音符同样成立。
+			// The slower note decides (lastSlow), so the conclusion "the two can never separate enough to be told apart"
+			// also holds for notes with different multSpeed.
 			if (dt >= 0 && dt * _laneLastKeptSlow[idx] < TURBO_KEEP_GAP_PX)
 				keep = false;
 		}
 
 		if (keep)
 		{
-			// 速率不变时保持取较小值; 速率变了就重新以当前速率为准。
+			// Keep the smaller value while the rate is unchanged; re-anchor on the current rate when it changes.
 			var prevRate:Float = _laneLastKeptRate[idx];
 			var slow:Float = (prevRate == rate && _laneLastKeptSlow[idx] < rate) ? _laneLastKeptSlow[idx] : rate;
 			_laneLastKeptTime[idx] = pn.strumTime;
@@ -8671,21 +8101,61 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 	}
 
 	/**
-	 * 数据层结算一条未物化 Note, 不构造精灵。
+	 * Settle one unmaterialised note in the data layer without constructing a sprite.
 	 *
-	 * Turbo 折叠后一条代表 Note 代表 noteDensity 条原始 tap (屏幕像素间距小于阈值,
-	 * 任何时刻都互相重叠)。它们必须在同一时刻一起结算:
-	 *   - 少结算 -> 命中数与 totalPlayed 对不上, 命中率/评级算错;
-	 *   - 分帧结算 -> 同一像素带里的音符会把 combo 拆成好几段。
-	 * 因此这里一次性展开整组, 并按"组"计一次每帧预算。
+	 * After Turbo folding one representative note stands for noteDensity original taps (pixel
+	 * spacing below the threshold, so they always overlap). They must settle together:
+	 *   - settling too few desyncs hit counts from totalPlayed, breaking accuracy/rating;
+	 *   - settling across frames splits the combo of one pixel band into several runs.
+	 * The whole group is therefore expanded at once and counts as one per-frame budget unit.
 	 *
-	 * @return 是否结算成功 (调用方可以推进游标)。
+	 * @return whether settlement succeeded (the caller may then advance the cursor).
 	 */
+	/**
+	 * Turbo only: count one opponent hit towards the player's own combo.
+	 *
+	 * It must be a single entry point: an opponent note has three disjoint consumption paths:
+	 *   1. the !mustPress branch of bulkSettleNote() (unmaterialised tap, data-layer settle);
+	 *   2. the else branch of bulkHitDueMaterialized() (materialised tap, batch recycle, botplay only);
+	 *   3. opponentNoteHit() (sustains / sustain heads and the per-object path).
+	 * Patching only one always misses the other two; under Turbo the tap path is (2), so a fix
+	 * that only covers path (1) still leaves the taps uncounted.
+	 * It is a no-op outside Turbo, so existing behaviour is unchanged.
+	 */
+	inline function addOpponentHit(den:Int):Void
+	{
+		if (!turboModeActive || den <= 0) return;
+		combo += den;
+		if (combo > maxcombo) maxcombo = combo;
+		notehitlol += den;          // the side HUD's "Total Notes Hit" grows too
+		popUpComboOnly();
+	}
+
+	/**
+	 * Turbo only: draw the combo number / COMBO text, never a judgement icon (showRating = false).
+	 *
+	 * The popup hangs off addOpponentHit together with the count because the count has three
+	 * paths; attaching the popup to only one (opponentNoteHit) leaves the other two (data-layer /
+	 * materialised batch) raising the number with no popup.
+	 * Per-frame POPUP_IMMEDIATE_HITS budget: with thousands of opponent hits per Turbo frame,
+	 * over-budget hits are neither drawn nor queued (the _popupPending queue adds icons).
+	 */
+	function popUpComboOnly():Void
+	{
+		if (_popupImmediateBudget <= 0) return;
+		_popupImmediateBudget--;
+		showComboNum = (combo >= 10);
+		ratingPopup.show('', combo, playbackRate, FlxG.width * 0.35,
+			ClientPrefs.data.hideHud, false, showCombo, showComboNum,
+			[for (v in ClientPrefs.data.comboOffset) Std.int(v)], Conductor.crochet,
+			ClientPrefs.data.comboStacking);
+	}
+
 	function bulkSettleNote(d:PreloadedChartNote, acc:BulkAccumulator):Bool
 	{
 		if (d == null || d.wasHit)
 			return false;
-		// 长条/长条头: 逐对象路径专有 (尾段链与裁剪语义)。
+		// Sustains / sustain heads: per-object path only (tail chain and trimming semantics).
 		if (d.isSustainNote || d.sustainLength > 0)
 			return false;
 
@@ -8698,7 +8168,9 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		{
 			d.wasHit = true;
 			acc.oppDrained += den;
-			// 到点的对手音符补一次表现门控, 与原逐对象路径一致。
+			// Turbo: opponent-side unmaterialised taps are consumed here (folded groups by noteDensity).
+			addOpponentHit(den);
+			// Due opponent note: apply the presentation gate, matching the per-object path.
 			if (onTime) gateOppLaneAnim(laneOf(d.noteData));
 			return true;
 		}
@@ -8708,11 +8180,11 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 			d.wasHit = true;
 			if (d.blockHit)
 			{
-				// 卡键音符从不参与判定: 静默消费 (与原路径最终效果一致)
+				// Stuck-key notes never judge: consume silently (final effect matches the original path)
 			}
 			else if (d.ignoreNote)
 			{
-				// botplay 下原路径仅触发脚本 (此处无脚本): 静默消费
+				// Under botplay the original path only fires scripts (none here): consume silently
 			}
 			else if (d.hitCausesMiss)
 			{
@@ -8732,8 +8204,8 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 				if (combo > maxcombo) maxcombo = combo;
 				totalPlayed += den;
 				songHits += den;
-				notehitlol += den; // HUD 总命中数口径与 totalPlayed 同源
-				totalNotesHit += den; // botplay 判定恒为 ratingsData[0], ratingMod=1
+				notehitlol += den; // HUD total hit count shares the totalPlayed source
+				totalNotesHit += den; // botplay judgement is always ratingsData[0] with ratingMod=1
 				if (ClientPrefs.data.marvelousRatings)
 					marvelouses += den;
 				else
@@ -8747,9 +8219,9 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 			return true;
 		}
 
-		// 尚未到点: 只有 botplay 的玩家 tap 可以在数据层提前自动命中
-		// (等价旧实现 cpuControlled 的 skippedHit 分支)。手动模式返回 false,
-		// 保持"外轨音符不被提前结算"的原语义。
+		// Not due yet: only botplay player taps may auto-hit early in the data layer
+		// (equivalent to the old cpuControlled skippedHit branch). Manual mode returns false,
+		// keeping the "off-lane notes are not settled early" semantics.
 		if (!cpuControlled)
 			return false;
 
@@ -8769,7 +8241,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		return (lane >= laneTotal) ? lane % laneTotal : lane;
 	}
 
-	/** botplay 到点对手音符的表现门控 (sing/confirm 动画, 每轨每帧一次)。 */
+	/** Presentation gate for due botplay opponent notes (sing/confirm animations, once per lane per frame). */
 	function gateOppLaneAnim(lane:Int, allowAnim:Bool = true):Void
 	{
 		camZooming = true;
@@ -8793,12 +8265,12 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 	}
 
 	/**
-	 * botplay 到点命中的轨道表现门控: 角色 sing 动画 + 玩家侧 strum confirm,
-	 * 均为每轨每帧一次 —— 与逐击路径的表现完全一致。
+	 * Lane presentation gate for due botplay hits: character sing animation plus player-side strum confirm,
+ * both once per lane per frame -- identical to the per-hit path's presentation.
 	 */
 	function gateBotLaneAnim(lane:Int):Void
 	{
-		// strum confirm (与逐击路径的 strumsHit 门控同口径, 保证击中特效不丢)
+		// strum confirm (same strumsHit gate as the per-hit path, so hit effects are not lost)
 		var shIdx:Int = lane + Note.ammo[mania];
 		if (shIdx >= 0 && shIdx < strumsHit.length && !strumsHit[shIdx])
 		{
@@ -8816,22 +8288,22 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 	}
 
 	/**
-	 * 已物化音符的到点批量命中 (仅 botplay): 把逐击 goodNoteHit 的调用链
-	 * (judgeNote/popUpScore/RecalculateRating/回收) 合并为一次聚合 + O(存活数)
-	 * 的单趟扫描。结算口径与逐击路径一致; 长条/长条头仍走原路径 (裁剪/尾段语义)。
-	 * 视觉等价: 音符在判定线处消失的时机不变, 轨道动画保持每轨每帧一次。
+	 * Batch hit of due materialised notes (botplay only): folds the per-hit goodNoteHit call chain
+ * (judgeNote/popUpScore/RecalculateRating/recycle) into one aggregation plus a single O(living) scan.
+ * Settlement matches the per-hit path; sustains/heads still use the original path (trim/tail semantics).
+ * Visually equivalent: notes still disappear at the strum line and lane animations stay once per lane per frame.
 	 */
 	function bulkHitDueMaterialized():Void
 	{
-		if (!ClientPrefs.data.perfMode || !cpuControlled || replayMode || seiunOnline || (hasActiveScripts() && !turboModeActive)) return;
+		if (!ClientPrefs.data.perfMode || !cpuControlled || replayMode || (hasActiveScripts() && !turboModeActive)) return;
 
 		var pos:Float = Conductor.songPosition;
 		var hitCount:Int = 0;
 		var hurtCount:Int = 0;
 		var oppCount:Int = 0;
 
-		// 遍历存活紧凑列表; recycleNote 会 swap-remove 当前元素并把尾元素补位到
-		// 当前下标 —— 未处理的新元素需要原地复查, 因此只在"长度未变"时前进。
+		// Iterate the compact living list; recycleNote swap-removes the current element and moves the tail
+		// element into its slot, so re-check the same index for unprocessed elements (only advance when the length is unchanged).
 		var i:Int = 0;
 		while (i < activeNotes.length)
 		{
@@ -8842,11 +8314,11 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 			{
 				if (n == null || n.pooled || !n.exists)
 				{
-					// 幽灵槽位: 不可能出现在活跃列表, 防御性跳过
+					// Ghost slot: cannot exist in the living list; skipped defensively
 				}
 				else if (n.isSustainNote || n.sustainLength > 0)
 				{
-					// 长条与长条头走逐对象路径 (裁剪/尾段链语义)
+					// Sustains and sustain heads use the per-object path (trim/tail chain semantics)
 					removed = false;
 				}
 				else if (n.strumTime <= pos && !n.wasGoodHit && !n.hitByOpponent)
@@ -8856,7 +8328,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 						var den:Int = Std.int(Math.max(1, Math.round(n.noteDensity)));
 						if (n.blockHit || n.ignoreNote)
 						{
-							recycleNote(n); // 从不参与判定的音符: 直接回收
+							recycleNote(n); // note that never judges: recycle it directly
 							removed = true;
 						}
 						else if (n.hitCausesMiss)
@@ -8879,8 +8351,8 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 							if (combo > maxcombo) maxcombo = combo;
 							totalPlayed += den;
 							songHits += den;
-							notehitlol += den; // HUD 总命中数口径同源
-							totalNotesHit += den; // botplay 判定恒为 ratingsData[0], ratingMod=1
+							notehitlol += den; // HUD total hit count shares the same source
+							totalNotesHit += den; // botplay judgement is always ratingsData[0] with ratingMod=1
 							if (ClientPrefs.data.marvelousRatings)
 								marvelouses += den;
 							else
@@ -8897,7 +8369,10 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 					}
 					else
 					{
-						// 对手到点: opponentNoteHit 的表现门控 + 回收
+						// Due opponent note: opponentNoteHit presentation gate plus recycle
+						// Main opponent-tap path under Turbo: it bypasses opponentNoteHit, so the combo
+						// counter is added explicitly here; addOpponentHit is a no-op outside Turbo.
+						addOpponentHit(Std.int(Math.max(1, Math.round(n.noteDensity))));
 						oppCount++;
 						camZooming = true;
 						if (SONG.needsVoices && vocals.volume != 1) vocals.volume = 1;
@@ -8912,7 +8387,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 
 			if (!removed && activeNotes.length == lenBefore)
 				i++;
-			// removed 或长度变化: 尾元素已补位到当前下标, 原地下标复查
+			// removed or the length changed: the tail element filled the current slot, so re-check the same index
 		}
 
 		if (hitCount > 0)
@@ -8937,8 +8412,8 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 	}
 
 	/**
-	 * 本帧数据级批量结算收尾: 统一一次 RecalculateRating / 弹窗合并标记 / 音量。
-	 * 结束时清零共用累加器 (物化路径与 fastSkipPastNotes 在帧内共用同一个对象)。
+	 * End of this frame's data-level batch settlement: one RecalculateRating / popup merge flag / volume update.
+ * The shared accumulator is cleared afterwards (the materialisation path and fastSkipPastNotes share it within the frame).
 	 */
 	function finishBulkFrame(drainedHit:Int, skippedHit:Int, skippedHitHealth:Float,
 		skippedMiss:Int, skippedMissHealth:Float, oppDrained:Int):Void
@@ -8948,8 +8423,8 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 			combo += skippedHit;
 			if (combo > maxcombo) maxcombo = combo;
 			totalPlayed += skippedHit;
-			songHits += skippedHit; // 口径修复: 结算 hits 此前漏加聚合命中
-			notehitlol += skippedHit; // 口径修复: HUD 总命中数此前只统计逐对象路径
+			songHits += skippedHit; // count fix: aggregated hits were previously missing from the settlement
+			notehitlol += skippedHit; // count fix: the HUD total only counted the per-object path
 			totalNotesHit += skippedHit;
 			if (ClientPrefs.data.marvelousRatings)
 				marvelouses += skippedHit;
@@ -9006,7 +8481,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		resetBulkAccumulator();
 	}
 
-	/** 清零每帧复用的数据层结算累加器 (finishBulkFrame 消费完就归零)。 */
+	/** Clears the per-frame data-level settlement accumulator (zeroed once finishBulkFrame consumes it). */
 	inline function resetBulkAccumulator():Void
 	{
 		_bulkAcc.drainedHit = 0;
@@ -9035,12 +8510,12 @@ public function setgoodnoteStrumStatic(direction:Int) {
 
 var msScaleTween:FlxTween;
 
-/** LeatherEngine 移植: 当前选择的击打音效 (预加载, 避免每帧解析路径) */
+/** Current hit sound (preloaded so the path is not parsed every frame; from LeatherEngine). */
 var hitsoundSnd:FlxSound = null;
 
 /**
- * LeatherEngine 移植: 预加载当前选择的击打音效。
- * 音效文件放在 sounds/hitsounds/ 下 (可用 mod 覆盖), 缺失时回退到默认 hitsound。
+ * Preload the currently selected hit sound (from LeatherEngine).
+ * Files live under sounds/hitsounds/ (mods may override); missing files fall back to the default.
  */
 function initHitsound():Void
 {
@@ -9061,7 +8536,7 @@ function initHitsound():Void
 	hitsoundSnd = (loaded != null) ? FlxG.sound.load(loaded) : null;
 }
 
-/** LeatherEngine 移植: 播放击打音效 (支持 'none' 关闭与自定义音效) */
+/** Play the hit sound (supports 'none' to mute and custom sounds; from LeatherEngine). */
 function playHitsound():Void
 {
 	if (ClientPrefs.data.hitsoundVolume <= 0) return;
@@ -9082,9 +8557,12 @@ function playHitsound():Void
 function goodNoteHit(note:Note, ?time:Float = -999999):Void
 {
 #if ONLINE_ALLOWED
-var onlineHitDiff:Float = 0;
+// goodNoteHit() starts with `camZooming = true`.
+// See the note on the same fix in `updateDaNote()`.
+if (online.GameClient.isConnected())
+	camZooming = true;
 #end
-// osu! 尾判: 长条头部命中 → 注册活动长条; 尾段命中 → 长条完成
+// osu! tail judgement: sustain head hit -> register the active sustain; tail segment hit -> sustain complete
 //if (!note.isSustainNote)
 //	registerActiveHold(note);
 //else if (note.isSustainEnd && !ClientPrefs.data.osuTailJudgement)
@@ -9102,7 +8580,7 @@ sustainNotescore += 10;
 if (!note.isSustainNote && !(note.ignoreNote || note.hitCausesMiss))  {
 notehitlol++;
 if (!cpuControlled) {
-	// 回放时优先使用录制的高精度判定，100% 还原原始评分与 ms（旧回放无判定数据时回退实时判定）
+	// During replay the recorded high-precision judgement is preferred, reproducing the original score/ms (older replays without judgement data fall back to live judging)
 	var recordedJ = null;
 	if (replayMode && replayExam != null && replayExam.hasJudgments)
 		recordedJ = replayExam.getRecordedJudgment(note.strumTime, note.noteData);
@@ -9114,7 +8592,7 @@ if (!cpuControlled) {
 	if (recordedJ != null) {
 	    rating = recordedJ.rating;
 	} else {
-	    // LeatherEngine 移植: 判定窗口由 judgementTimings 驱动 (marvelous/sick/good/bad/shit)
+	    // Judgement windows come from judgementTimings (marvelous/sick/good/bad/shit; from LeatherEngine).
 	    rating = backend.Ratings.getRating(noteDiff);
 	}
 
@@ -9140,14 +8618,11 @@ if (!cpuControlled) {
 	var songPos:Float = Conductor.songPosition;
 	var rOffset:Float = ClientPrefs.data.ratingOffset;
 	var diff:Float = (recordedJ != null) ? recordedJ.hitDiff : (strumTime - songPos + rOffset);
-#if ONLINE_ALLOWED
-	onlineHitDiff = diff;
-#end
 
-	// 万级 NPS 降阶: ms 文本同帧合并 —— 只保留本帧最后一次命中的差值,
-	// 帧末 flushHitPresentation() 统一重建一次文本 + 一对 tween。
-	// 原实现每击一次 text setter (整段字形网格重建) + 两次 tween 分配。
-	// perfMode 关闭: 保持原版逐击直写文本 + tween, 不做合并。
+	// ms text merged per frame: only the last hit difference of the frame is kept,
+	// and flushHitPresentation() rebuilds the text and its tween pair once at frame end.
+	// The original set the text (rebuilding the whole glyph mesh) and allocated two tweens per hit.
+	// With perfMode off the stock per-hit direct text write and tween are kept, without merging.
 	if (!ClientPrefs.data.perfMode)
 	{
 		if (rating == 'marvelous') msTxtKade.color = 0xFFFFD700;
@@ -9186,7 +8661,7 @@ if (!cpuControlled) {
 
 if (!note.wasGoodHit)
 		{
-			// 0.7.3+/1.0.4: goodNoteHitPre / opponentNoteHitPre 回调
+			// 0.7.3+/1.0.4: goodNoteHitPre / opponentNoteHitPre callbacks
 if (CompatEngine.isModern() && hasActiveScripts()) {
 				var preName:String = reverseNoteHit ? 'opponentNoteHitPre' : 'goodNoteHitPre';
 				var preIsSus:Bool = note.isSustainNote;
@@ -9220,7 +8695,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 
 			if (!cpuControlled && ClientPrefs.data.hitsoundVolume > 0 && !note.hitsoundDisabled)
 			{
-				// LeatherEngine 移植: 播放当前选择的击打音效
+				// Play the currently selected hit sound (from LeatherEngine).
 				playHitsound();
 			}
 
@@ -9274,12 +8749,26 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 					health += note.hitHealth * healthGain;
 			}
 
+
+			#if ONLINE_ALLOWED
+			// The hit itself is forwarded here. The `rating?.image` equivalent comes from the image
+			// popUpScore() stashed; it is null for sustain notes, just like the null `rating` local.
+
+			if (online.GameClient.isConnected())
+			{
+				online.GameClient.send("noteHit", [note.strumTime, note.noteData, note.isSustainNote,
+					(note.isSustainNote ? null : onlineLastRatingImage), note.noteType,
+					notes.members.indexOf(note), note.mustPress]);
+				online.GameClient.send("updateMaxCombo", maxcombo);
+			}
+			#end
+
 			if(!note.noAnimation && !_suppressNoteAnim) {
 				var animToPlay:String = getSingAnim(note);
 
-				// botplay 降阶: 角色动画改为"每轨每帧一次"。峰值下每帧数千次命中
-				// 原本会触发数千次 playAnim (字符串拼接 + 动画查找 + 重启), 而同轨
-				// 同帧的重启只有第一次可见; 手动模式保持逐击播放不变。
+				// Botplay downgrade: character animations become once per lane per frame. Thousands of hits per
+				// frame would otherwise trigger thousands of playAnim calls (string building + anim lookup + restart),
+				// while same-lane same-frame restarts are only visible once; manual mode keeps per-hit playback.
 				var allowCharAnim:Bool = true;
 				if (cpuControlled)
 				{
@@ -9321,6 +8810,17 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 							gf.heyTimer = 0.6;
 						}
 					}
+					#if ONLINE_ALLOWED
+					// The local character animation is echoed to the room,
+					// including the "Hey!" variant's special flag.
+					if (online.GameClient.isConnected())
+					{
+						if (note.noteType == 'Hey!')
+							online.GameClient.send("charPlay", [note.gfNote ? 'cheer' : 'hey', note.gfNote, true]);
+						else
+							online.GameClient.send("charPlay", [animToPlay + note.animSuffix, note.gfNote]);
+					}
+					#end
 				}
 			}
 
@@ -9338,19 +8838,14 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 				var spr = playerStrums.members[note.noteData];
 				if(spr != null)
 				{
+					#if ONLINE_ALLOWED
+					// Manual-hit confirm.
+					online.GameClient.send("strumPlay", ["confirm", note.noteData, 0]);
+					#end
 					spr.playAnim('confirm', true);
 				}
 			}
 						note.wasGoodHit = true;
-			#if ONLINE_ALLOWED
-			if (seiunOnline && !cpuControlled && OnlineSession.mode == online.shared.OnlineTypes.OnlineConst.MODE_REALTIME)
-			{
-				// 每次本地判定都广播当前分数/实时统计 (PsychOnline 的 addScore 等价物),
-				// 对手 HUD 因此能实时刷新, 而不是只有漏键时才更新一次。
-				OnlineSession.sendLocalJudge(note.strumTime, Std.int(Math.abs(note.noteData)), rating, onlineHitDiff, note.isSustainNote,
-					songScore, songMisses, maxcombo, ratingPercent, ratingName, ratingFC, 0, health);
-			}
-			#end
 			if (vocals.volume != 1) vocals.volume = 1;
 			if (vocalsPlayer.volume != 1) vocalsPlayer.volume = 1;
 			if (opponentVocals.volume != 1) opponentVocals.volume = 1;
@@ -9361,13 +8856,13 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 				var result:Dynamic = FunkinLua.Function_Continue;
 				if (!cpuControlled) {
 					if (CompatEngine.isModern()) {
-						// 0.7.3 格式: 传递 Math.round(Math.abs(noteData))
+						// 0.7.3 format: passes Math.round(Math.abs(noteData))
 						var isSus:Bool = note.isSustainNote;
 						var leData:Int = Math.round(Math.abs(note.noteData));
 						var leType:String = note.noteType;
 						result = callOnLuas(scriptName, [noteIndexFast(note), leData, leType, isSus]);
 					} else {
-						// 0.6.3 格式: 传递原始 noteData (可能为负数)
+						// 0.6.3 format: passes the raw noteData (may be negative)
 						result = callOnLuas(scriptName, [noteIndexFast(note), note.noteData, note.noteType, note.isSustainNote]);
 					}
 				}
@@ -9387,10 +8882,10 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 				recycleNote(note);
 		}
 		if (cpuControlled && !ClientPrefs.data.opponentfe) {
-			// botplay 降阶: static 化同样"每轨每帧一次" (原为每击一次 playAnim)
+			// Botplay downgrade: static resets are also once per lane per frame (was one playAnim per hit)
 			var stIdx:Int = Std.int(Math.abs(note.noteData));
 			var laneTotal:Int = Note.ammo[mania];
-			if (laneTotal <= 0) laneTotal = 1; // 防 % 0
+			if (laneTotal <= 0) laneTotal = 1; // guard against % 0
 			if (stIdx >= laneTotal) stIdx %= laneTotal;
 			if (stIdx >= 0 && stIdx < _botStrumStatic.length && !_botStrumStatic[stIdx])
 			{
@@ -9402,13 +8897,13 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 
 	public function spawnNoteSplashOnNote(note:Note) {
 		if(ClientPrefs.data.noteSplashes && note != null && !cpuControlled) {
-			// 0.6.3 原版: 直接 playerStrums.members[note.noteData]。
-			// laneData() 的 % ammo 会把 lua 模组 (如 Holofunk 第5键) 改出的
-			// noteData=4 折叠回 0, 溅射错误落在第 0 轨; 与 update 里的
-			// strum 索引修复保持同一策略。
+			// The stock 0.6.3 path indexes playerStrums.members[note.noteData] directly;
+			// laneData()'s % ammo would fold a noteData=4 written by a Lua mod (e.g. Holofunk's fifth key)
+			// back to 0 and put the splash on lane 0, so the same strategy as the update() strum
+			// index fix is used here.
 			var strumIdx:Int = Std.int(Math.abs(note.noteData));
 			var strumCount:Int = playerStrums.members.length;
-			if (strumCount <= 0) return; // 重建/清空 strum 组期间没有轨道可取
+			if (strumCount <= 0) return; // no lanes available while the strum group is rebuilt/cleared
 			if (strumIdx >= strumCount) strumIdx %= strumCount;
 			var strum:StrumNote = playerStrums.members[strumIdx];
 			if(strum != null) {
@@ -9425,7 +8920,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		if(PlayState.SONG != null && PlayState.SONG.splashSkin != null && PlayState.SONG.splashSkin.length > 0) skin = PlayState.SONG.splashSkin;
 		else
 		{
-			// 用户自定义溅射皮肤任意模式生效; 默认皮肤跟随兼容模式路径
+			// A user-chosen splash skin applies in every mode; the default skin follows the compatibility path
 			var postfix:String = NoteSplash.getSplashSkinPostfix();
 			if (postfix.length > 0) skin = 'noteSplashes/noteSplashes' + postfix;
 			else if (CompatEngine.isModern()) skin = NoteSplash.defaultNoteSplash;
@@ -9445,7 +8940,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 			}
 			else
 			{
-				// 多k: 无 Note 时按当前 k 值轨道色
+				// Multi-key: use the current key count's lane colour when there is no note
 				var lane:Int = Std.int(Math.abs(data)) % Note.ammo[mania];
 				var delta:Array<Float> = EKData.getLaneColorSwap(mania, lane);
 				var colorIdx:Int = EKData.letterColorIndex.get(EKData.getLetter(mania, lane));
@@ -9473,9 +8968,20 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		return (stageBackdrop is LimoStage) ? cast stageBackdrop : null;
 
 	override function destroy() {
+		// Detach the song's completion callback before the state goes away (see _songMusic).
+		if (_songMusic != null) {
+			_songMusic.onComplete = null;
+			_songMusic = null;
+		}
+
 		#if ONLINE_ALLOWED
-		ClientPrefs.onlineMaskCheats = false;
+		// Unregister this state's onMessage handlers and schema callbacks.
+		// These closures reaching a destroyed PlayState through a Waiter is what crashed before.
+		// Only this state's batch is removed: clearOnMessage() would wipe the whole room's handlers.
+		// The new lines stay inside the guard, so the single-player path is unaffected.
+		online.GameClient.disposeStateHandlers(this);
 		#end
+
 		for (lua in luaArray) {
 			lua.call('onDestroy', []);
 			lua.stop();
@@ -9519,17 +9025,25 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		FlxAnimationController.globalSpeed = 1;
 		if (FlxG.sound.music != null) FlxG.sound.music.pitch = 1;
 		if (ratingPopup != null) ratingPopup.destroyAll();
+		#if ONLINE_ALLOWED
+		// Each remote player gets its own rating popup.
+		if (onlineRatingPopups != null) {
+			for (sid => popup in onlineRatingPopups)
+				if (popup != null) popup.destroyAll();
+			onlineRatingPopups.clear();
+		}
+		#end
 
 		// Clear NoteMs/NoteTime arrays to free memory
 		if (NoteMs != null) NoteMs = [];
 		if (NoteTime != null) NoteTime = [];
 
-		// unspawnNotes 现在是轻量 PreloadedChartNote 数据，不持有 Note 对象。
+		// unspawnNotes now holds lightweight PreloadedChartNote data, not Note objects.
 		if (unspawnNotes != null)
 			unspawnNotes = [];
 		lastSpawnedNote = new Map<Int, Note>();
 
-		// 销毁仍然存活的 Note；已 destroy 的壳直接移除。
+		// Destroy notes that are still alive; shells already destroyed are removed directly.
 		if (notes != null)
 		{
 			var i:Int = notes.members.length - 1;
@@ -9550,11 +9064,11 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		_lastAliveTally = 0;
 		_noteSlotCursor = 0;
 
-		// 清空跨歌曲静态 Note 池，释放池中 Note 的动画/ColorSwap 等常驻内存。
+		// Clear the cross-song static note pool, releasing the animations/ColorSwaps of pooled notes.
 		if (Note.pool != null)
 			Note.pool.clear(function(note) { if (note != null && note.scale != null) note.destroy(); });
 
-		// 1.0.4: 清理溅射配置缓存, 防止跨谱面/换模组时串配置
+		// 1.0.4: clear the splash config cache to avoid config bleed across charts/mods
 		NoteSplash.configs.clear();
 		if (eventNotes != null) eventNotes = [];
 
@@ -9566,18 +9080,24 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		}
 
 
-		// 恢复 Turbo 强制改写的 perfMode/bulkSkip。
+		// Restore the perfMode/bulkSkip overrides Turbo forced.
 		if (turboModeActive)
 		{
 			ClientPrefs.data.perfMode = _turboPrevPerf;
 			ClientPrefs.data.bulkSkip = _turboPrevBulk;
 			ClientPrefs.data.fastSort = _turboPrevFastSort;
 		}
+		#if ONLINE_ALLOWED
+		// Restore the runtime Note optimisations silenced while online.
+		if (_onlineNoteOptsOff)
+		{
+			ClientPrefs.data.perfMode = _onlinePrevPerf;
+			ClientPrefs.data.bulkSkip = _onlinePrevBulk;
+			ClientPrefs.data.fastSort = _onlinePrevFastSort;
+		}
+		#end
 
 		instance = null;
-		#if ONLINE_ALLOWED
-		onlineRestoreRoomSettings();
-		#end
 
 		super.destroy();
 	}
@@ -9717,9 +9237,9 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 
 	#if HSCRIPT_ALLOWED
 	/**
-	 * MusicBeatState.initHScripts() 现已使用 concat 追加而非重置数组，
-	 * 因此 PlayState 在 create() 中手动加载的 scripts/ 脚本得以保留。
-	 * data/states/PlayState/ 与 hscripts/PlayState/ 的脚本由父类补充加载。
+	 * MusicBeatState.initHScripts() now appends with concat instead of resetting the array,
+ * so the scripts/ scripts loaded manually in PlayState.create() survive.
+ * The scripts under data/states/PlayState/ and hscripts/PlayState/ are added by the parent.
 	 */
 	override function initHScripts():Void {
 		super.initHScripts();
@@ -9728,7 +9248,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 
 	#if HSCRIPT_ALLOWED
 	/**
-	 * 0.7.3+/1.0.4 addHScript 用：按完整路径加载一个 hscript 文件。
+	 * 0.7.3+/1.0.4 addHScript: loads one hscript file by full path.
 	 * English: used by the 0.7.3+/1.0.4 addHScript Lua function —
 	 * loads an HScript file by full path.
 	 */
@@ -9867,6 +9387,10 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 			spr = (id >= 0 && id < strumLineNotes.members.length) ? strumLineNotes.members[id] : null;
 		} else {
 			spr = (id >= 0 && id < playerStrums.members.length) ? playerStrums.members[id] : null;
+			#if ONLINE_ALLOWED
+			// StrumPlayAnim() echoes player confirmations.
+			online.GameClient.send("strumPlay", ["confirm", id, time]);
+			#end
 		}
 		if(spr != null) {
 			spr.playAnim('confirm', true);
@@ -9878,10 +9402,10 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 	public var ratingPercent:Float;
 	public var ratingFC:String;
 	public function RecalculateRating(badHit:Bool = false) {
-		// 万级 NPS 降阶: setOnScripts/callOnScripts 在无脚本时本就是空转, 但
-		// 每击 7 次 set + 1 次回调的调用链在峰值下仍有可观开销, 统一收进
-		// hasActiveScripts() 门控 —— 有脚本时语义逐字节保留 (含 Stop 跳过计算,
-		// 但 set 变量仍照常同步)。
+		// Dense-chart downgrade: setOnScripts/callOnScripts are no-ops without scripts, but the per-hit
+		// chain of seven sets plus one callback is still measurable at peak, so it is gated by
+		// hasActiveScripts() -- with scripts the semantics are byte-identical (including Stop skipping
+		// the calculation while set variables are still synced).
 		var scriptStopped:Bool = false;
 		if (hasActiveScripts())
 		{
@@ -9926,7 +9450,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 
 			// Rating FC
 			ratingFC = "";
-			// LeatherEngine 移植: marvelous 命中计入 FC 徽章 (MFC > SFC > GFC > FC)
+			// Marvelous hits count towards the FC badge (MFC > SFC > GFC > FC; from LeatherEngine).
 			if (marvelouses > 0) ratingFC = "MFC";
 			if (sicks > 0) ratingFC = "SFC";
 			if (goods > 0) ratingFC = "GFC";
@@ -10034,4 +9558,1402 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 
 	public var curLight:Int = -1;
 	public var curLightEvent:Int = -1;
+
+	#if ONLINE_ALLOWED
+	/**
+		 * Two static members the online code needs; both are read by the online states.
+		 * They are only meaningful while a room is connected.
+	 *
+	 *   * RAW_SONG -- the raw chart text loadSong() read, kept for the online chart
+	 *     identity/hash work.
+		 *   * redditMod -- set in the "enables" easter-egg branch so that the following
+	 *     mod install/uninstall steps skip the normal alerts and skip canPause/chart-editor
+	 *     checks. Consumers here: online/states/OnlineState.hx:623 (setter) and
+	 *     online/mods/OnlineMods.hx:498 (reader).
+	 *
+	 * Deliberately placed at the END of the class: every addition above an existing method shifts
+	 * the source line numbers that Haxe embeds in HXDLIN() and HX_LOCAL_STACK_FRAME(), so adding
+	 * lines earlier in the file changes the generated C++ even when the macro is off. Appending
+	 * here keeps every existing line number, and therefore the whole macro-off translation unit,
+	 * identical to the previous output.
+	 */
+	/** Raw text of the chart last read by loadSong(). */
+	public static var RAW_SONG:String = '';
+	/** Set by the "enables" easter egg; read by the online mod installer. */
+	@:unreflective
+	public static var redditMod:Bool = false;
+
+	/**
+		 * Loads a chart for the online flow and keeps its raw text in RAW_SONG.
+		 * online/GameClient.hx calls it when the host starts a song and online/states/RoomState.hx
+		 * calls it for the "host this song" flow.
+		 *
+		 * The raw-text reader is Song.loadRawSong() (added here, source/Song.hx) and the parser
+		 * entry point is Song.parseJSON() -- parseJSON is what Song.loadFromJson() itself calls,
+		 * so the chart is normalised exactly the same way a normal load would normalise it, which
+		 * is what the online flow needs: the host and the client must end up with the same
+		 * in-memory chart. RAW_SONG is only empty for charts that go through the byte-stream path
+		 * (see below).
+	 */
+	public static function loadSong(jsonInput:String, ?folder:String):SwagSong {
+		// Large charts go through Song.loadFromJson's byte-stream path (same route as FreeplayState).
+		// RAW_SONG stays empty for them: this is the only writer in the tree and nothing reads it
+		// for streamed charts.
+		var loaded:SwagSong = Song.loadFromJson(jsonInput, folder);
+		RAW_SONG = (loaded != null && Reflect.field(loaded, '__seiunStream') != null)
+			? '' : Song.loadRawSong(jsonInput, folder);
+		return SONG = loaded;
+	}
+
+	/**
+		 * Tells whether the chart's player side is BF. Who needs it:
+		 * online.ChartAnalyzer.calc(songData, mustPress) is always called with
+		 * playsAsBF() as the second argument, so the analyzer can tell "this chart's player side is
+		 * the dad side" (online room / opponent mode) from "player side is BF".
+		 *
+		 * This engine has no `opponentMode` member; its equivalent switch is `playOpponent` (this
+		 * file, instance field, filled from the 'playOpponent' gameplay setting) -- it drives the
+		 * very same note-side flip in its own note loader. `instance` is null outside a song
+		 * (main menu, chart editor, results), where "the player is BF" is the correct answer anyway.
+		 *
+		 * GameClient.room.state.{royalMode,royalModeDadSide} and GameClient.getPlayerSelf().bfSide are
+		 * the online schema fields (online/backend/schema/{Room,Player}.hx), so the online
+		 * branch keeps the online behavior.
+	 *
+	 * `GameClient.room.state.{royalMode,royalModeDadSide}` and `GameClient.getPlayerSelf().bfSide` are
+	 * the online schema fields (online/backend/schema/{Room,Player}.hx), so the online
+	 * branch keeps the online behavior.
+	 */
+	public static function playsAsBF():Bool {
+		if (online.GameClient.isConnected()) {
+			if (online.GameClient.room.state.royalMode) {
+				return !online.GameClient.room.state.royalModeDadSide;
+			}
+
+			var playerSelf = online.GameClient.getPlayerSelf();
+			if (playerSelf != null) {
+				return playerSelf.bfSide;
+			}
+		}
+		if (instance != null) return !instance.playOpponent;
+		return true;
+	}
+
+	/**
+		 * Resolves whether a raw note belongs to the player side, using the chart convention
+		 * described below.
+	 *
+	 * The chart convention is chosen from `PlayState.SONG.format`
+	 * (`rawNote[1] < Note.maniaKeys`) and the legacy convention
+	 * (`rawNote[1] > Note.maniaKeys - 1` -> flip against `section.mustHitSection`).
+	 *
+	 * Decisive difference in THIS engine: `Song.loadFromJson()` normalises every chart through
+	 * `Song.convert()`, which already rewrites every raw note index into the psych_v1 convention --
+	 * for ALL formats, unconditionally:
+	 *     var gottaHitNote:Bool = (rawData < ammo) ? section.mustHitSection : !section.mustHitSection;
+	 *     note[1] = (rawData % ammo) + (gottaHitNote ? 0 : ammo);
+	 * (source/Song.hx, `convert()`, lines ~444-465). The engine's own note loader then decides sides
+	 * two-branch `isPsychRelease` test here is just the psych_v1 branch -- keeping the `format`
+	 * branch would make the analyzer disagree with the engine's own loader for the legacy charts
+	 * that convert() has already re-encoded.
+	 *
+	 * It is also per-note mania aware (`EKData.maniaAtTimeCached`), mirroring generateSong, so a
+	 * "Change Mania" event mid-chart is interpreted with the same key count in both places.
+	 * This per-mania model difference also applies to the analyzer.
+	 */
+	public static function getMustPressFromRaw(section:SwagSection, rawNote:Array<Dynamic>):Bool {
+		var rawData:Int = Std.int(rawNote[1]);
+		var noteMania:Int = EKData.maniaAtTimeCached(rawNote[0]);
+		var noteAmmo:Int = Note.ammo[noteMania];
+		return rawData < noteAmmo;
+	}
+
+	#if ONLINE_ALLOWED
+	/**
+		 * Chart-difficulty info, filled right after the notes are generated:
+		 *   difficultyInfo = online.ChartAnalyzer.calc(songData, playsAsBF());
+		 * It is read by `online.FunkinPoints.devFP(...)`, which feeds the "V5 FP" readout in the score
+		 * text.
+		 *
+		 * Appended here (not next to the other vars) to respect the line-number constraint: adding
+		 * lines above existing members shifts the line numbers Haxe embeds in HXDLIN().
+	 */
+	public var difficultyInfo:online.ChartAnalyzer.FunkinDiffInfo;
+
+	/**
+		 * Formats the FP readout from `songPoints`; called from `buildScoreText()`'s FP
+		 * readout. Lives in the same ONLINE_ALLOWED class-level block as `difficultyInfo`.
+	 * readout. Lives in the same ONLINE_ALLOWED class-level block as `difficultyInfo`.
+	 */
+	function getPresencePoints():String {
+		if (songPoints == 0)
+			return "";
+
+		if (songPoints < 0) {
+			var aasss = '${songPoints}'.split('');
+			aasss.insert(1, ' ');
+			return ' - ${aasss.join('')}FP';
+		}
+
+		return ' - ${songPoints}FP';
+	}
+
+	/**
+		 * The FP fields.
+		 *
+		 *   * songPoints  -- `public var songPoints(default, null):Float = 0;`
+		 *   * songDensity -- `public var songDensity:Float = 0;`
+		 *   * netSong     -- `public var netSong:online.network.Leaderboard.NetSong = null;`
+		 *
+		 * `songPoints`/`songDensity` are what feeds `online.FunkinPoints.(f)calcFP/devFP` from
+		 * `buildScoreText()` / `generateSong()` / `endSong()`; `netSong` is only ever filled by
+		 * `prepareNetSong()`, which is not wired here (see the generateSong() note -- that is the
+		 * leaderboard-submission wiring, not the FP readout), so the field is deliberately present but
+		 * always null. Kept at the END of the class with `difficultyInfo` for the line-number reason
+		 * documented above. `songPoints` is a plain `var` rather than a read-only property:
+		 * nothing outside this class writes it either way.
+	 */
+	public var songPoints:Float = 0;
+	public var songDensity:Float = 0;
+	public var netSong:online.network.Leaderboard.NetSong = null;
+
+	
+	/*
+	 * ============================================================================================
+	 * Online per-player score HUD ("scoreboard").
+	 * ============================================================================================
+		 * Per-player score HUD renderer for the online room.
+		 *
+		 * Entry points: updateScoreSelf(), updateTeamSide(), averageOf(), updateScoreSID(),
+		 * doTweenScore(), getPlayerStats() and the @:publicFields class PlayStatePlayer.
+		 *
+	 * This is a *pure render* of the online schema
+	 * (online.GameClient.room.state.players, source/online/backend/schema/Player.hx). It touches
+	 * nothing on the single-player HUD: every entry point is behind GameClient.isConnected() and
+	 * the whole block lives inside the class-level #if ONLINE_ALLOWED region at the END of the
+	 * class (zero line-number offset for everything that came before it).
+	 *
+		 * Implementation notes (library / engine differences, all mechanical):
+	 *   * FlxText.camera = camOther (flixel 5) -> cameras = [camOther] (flixel 4.11).
+	 *   * The updateScore() FP block is folded into the guarded branch added in
+	 *     updateScore() itself (this engine builds its score text through
+	 *     buildScoreText()/flushHitPresentation(), not by assigning scoreTxt.text inline).
+	 *   * resetRPC(true) (Discord RPC) is not called here: this engine has no equivalent.
+	 *   * PlayStatePlayer is declared after PlayState rather than inline.
+	 *
+	 * Not covered here (the remaining online work):
+	 * registerMessages() and the outgoing note/strum/score messages. They need the per-sid
+	 * characters map, popUpScoreOP, getRatingOffset, getStrumsFromSID and the online character
+	 * spawn, none of which exist in this engine yet.
+	 */
+
+	/** Per-player score texts; keyed by session id, or by 'LEFTSIDE'/'RIGHTSIDE' in team mode. */
+	public var scoreTxtOthers:Map<String, FlxText> = new Map();
+	public var scoreTxtOthersTween:Map<String, FlxTween> = new Map();
+	public var scoreTxtP1:FlxText;
+	public var scoreTxtP2:FlxText;
+	/** Score HUD baseline Y. */
+	var scoreTxtOriginY:Float = 700;
+	/** Per-player rating/counter wrapper. */
+	var playersStats:Map<String, PlayStatePlayer> = new Map();
+	/** Set by the room's "endSong" message listener; read by endSong(). */
+	var canEndSongOnline:Bool = false;
+
+	/** Per-player score text update. */
+	public function updateScoreSelf(?miss:Bool = false):Void {
+		RecalculateRating(miss);
+		if (online.GameClient.isConnected()) {
+			updateScoreSID(online.GameClient.room.sessionId);
+		}
+	}
+
+	/** Team-wide score text update (isRight, miss). */
+	public function updateTeamSide(isRight:Bool, miss:Bool):Void {
+		var sideNames:Array<String> = [];
+		var sideScores:Array<Float> = [];
+		var sideMisses:Array<Float> = [];
+		var sideAccuracy:Array<Float> = [];
+		var sidePing:Array<Float> = [];
+		var sideFP:Array<Float> = [];
+
+		for (sid => player in online.GameClient.room.state.players) {
+			if (player.bfSide == isRight) {
+				var stats = getPlayerStats(sid);
+
+				var ret:Dynamic = callOnScripts('onRecalculateRatingPlayer', [sid], true);
+				if (ret != FunkinLua.Function_Stop) {
+					stats.recalculateRating();
+				}
+
+				sideNames.push(player.name);
+				sideScores.push(player.score);
+				sideMisses.push(player.misses);
+				sideAccuracy.push(stats.ratingPercent * 100);
+				sidePing.push(player.ping);
+				if (ClientPrefs.data.showFP) {
+					sideFP.push(player.songPoints);
+				}
+			}
+		}
+
+		if (sideNames.length == 0)
+			return;
+
+		var daText = scoreTxtOthers.get(isRight ? 'RIGHTSIDE' : 'LEFTSIDE');
+
+		var pingText = onlinePingList(sidePing);
+
+		if (ClientPrefs.data.onlineScoreDetails) {
+			daText.text = onlineDetailScore(sideNames.join(' & '), [
+				['scorelangtxt', 'Score', FlxStringUtil.formatMoney(averageOf(sideScores), false)],
+				['missesText', 'Misses', Std.string(averageOf(sideMisses))],
+				['acclangtxt', 'Accuracy', CoolUtil.floorDecimal(averageOf(sideAccuracy), 2) + '%']
+			], ClientPrefs.data.showFP ? averageOf(sideFP) : null, pingText);
+		}
+		else {
+			daText.text = onlineCompactScore(sideNames.join(' & '), averageOf(sideScores), averageOf(sideMisses),
+				Std.string(CoolUtil.floorDecimal(averageOf(sideAccuracy), 2)), null,
+				ClientPrefs.data.showFP ? averageOf(sideFP) : null, pingText);
+		}
+
+		daText.y = scoreTxtOriginY - daText.height;
+
+		if (!miss) {
+			doTweenScore(isRight ? 'RIGHTSIDE' : 'LEFTSIDE', isRight);
+		}
+
+		callOnScripts('onUpdateScoreTeam', [isRight, miss]);
+	}
+
+	function averageOf(arr:Array<Float>):Float {
+		if (arr.length == 0)
+			return 0;
+		var sum = 0.0;
+		for (item in arr)
+			sum += item;
+		if (sum == 0)
+			return 0;
+		return sum / arr.length;
+	}
+
+	/*
+	 * The online score HUD is localised and Ping is rounded. Labels reuse the engine's
+	 * own keys where they exist (scorelangtxt / missesText / acclangtxt); only Rating
+	 * (ScoreHistorySubstate.rating) and Ping (Online.room.ping) come from shared keys.
+	 * The compact one-liner is the default form; ClientPrefs.onlineScoreDetails restores the
+	 * multi-line block. Text only -- no layout math changes.
+	 */
+	function onlineScoreLabel(key:String, fallback:String):String {
+		var s = StringTools.trim(Language.get(key, fallback));
+		if (StringTools.endsWith(s, ':') || StringTools.endsWith(s, '：'))
+			s = StringTools.trim(s.substr(0, s.length - 1));
+		return s;
+	}
+
+	function onlinePingMs(ping:Null<Float>):String {
+		if (ping == null || ping != ping)
+			return '?ms';
+		return Math.round(ping) + 'ms';
+	}
+
+	function onlinePingList(pings:Array<Float>):String {
+		var out:Array<String> = [];
+		for (p in pings)
+			out.push(onlinePingMs(p));
+		return out.join(' & ');
+	}
+
+	function onlineCompactScore(name:String, score:Float, misses:Float, percent:String, ratingFC:String, fp:Null<Float>, pingText:String):String {
+		var out = name + ': ' + FlxStringUtil.formatMoney(score, false)
+			+ ' | ' + onlineScoreLabel('missesText', 'Misses') + ': ' + misses
+			+ ' | ' + percent + '%';
+		if (ratingFC != null && ratingFC != '')
+			out += ' - ' + ratingFC;
+		if (ClientPrefs.data.showFP && fp != null)
+			out += ' | ' + Math.round(fp) + 'FP';
+		return out + ' | ' + onlineScoreLabel('Online.room.ping', 'Ping') + ': ' + pingText;
+	}
+
+	function onlineDetailScore(name:String, lines:Array<Array<String>>, fp:Null<Float>, pingText:String):String {
+		var out = name;
+		for (line in lines)
+			out += '\n' + onlineScoreLabel(line[0], line[1]) + ': ' + line[2];
+		if (ClientPrefs.data.showFP && fp != null)
+			out += '\nFP: ' + Math.round(fp);
+		return out + '\n' + onlineScoreLabel('Online.room.ping', 'Ping') + ': ' + pingText;
+	}
+
+	/** Per-sid score text update. */
+	public function updateScoreSID(sid:String, ?miss:Bool = false):Void {
+		var op = getPlayerStats(sid);
+
+		if (online.GameClient.room.state.teamMode) {
+			updateTeamSide(op.player.bfSide, miss);
+			return;
+		}
+
+		setOnScripts('scoreOP', op.player.score);
+		setOnScripts('missesOP', op.player.misses);
+		setOnScripts('hitsOP', op.calcHits()); // may be inaccurate to hits
+		setOnScripts('comboOP', op.combo);
+
+		var ret:Dynamic = callOnScripts('onRecalculateRatingPlayer', [sid], true);
+		if (ret != FunkinLua.Function_Stop) {
+			op.recalculateRating();
+		}
+
+		var str:String = op.ratingName != null ? op.ratingName : '?';
+		var percent:Float = 0;
+		if (op.calcTotalPlayed() != 0) {
+			percent = CoolUtil.floorDecimal(op.ratingPercent * 100, 2);
+			str += ' ($percent%) - ${op.ratingFC}';
+		}
+
+		var countSide = 0;
+		for (otherSid => otherPlayer in online.GameClient.room.state.players) {
+			if (otherPlayer.bfSide == op.player.bfSide) {
+				countSide++;
+			}
+		}
+
+		var daText = scoreTxtOthers.get(sid);
+
+		var pingText = onlinePingMs(op.player.ping);
+
+		if (ClientPrefs.data.onlineScoreDetails && countSide <= 1) {
+			daText.text = onlineDetailScore(op.player.name, [
+				['scorelangtxt', 'Score', FlxStringUtil.formatMoney(op.player.score, false)],
+				['missesText', 'Misses', Std.string(op.player.misses)],
+				['ScoreHistorySubstate.rating', 'Rating', str]
+			], ClientPrefs.data.showFP ? op.player.songPoints : null, pingText);
+		}
+		else {
+			daText.text = onlineCompactScore(op.player.name, op.player.score, op.player.misses, Std.string(percent), op.ratingFC,
+				ClientPrefs.data.showFP ? op.player.songPoints : null, pingText);
+		}
+
+		daText.y = scoreTxtOriginY - (effectiveOx(sid) * 20) - daText.height;
+
+		if (!miss) {
+			doTweenScore(sid);
+		}
+
+		setOnScripts('ratingOP', op.ratingPercent);
+		setOnScripts('ratingNameOP', op.ratingName);
+		setOnScripts('ratingFCOP', op.ratingFC);
+
+		callOnScripts('onUpdateScorePlayer', [sid, miss]);
+	}
+
+	function doTweenScore(sid:String, ?isRight:Null<Bool> = null):Void {
+		if (isRight != null) {
+			sid = isRight ? 'RIGHTSIDE' : 'LEFTSIDE';
+		}
+
+		if (ClientPrefs.data.scoreZoom) {
+			if (scoreTxtOthersTween.exists(sid)) {
+				scoreTxtOthersTween.get(sid).cancel();
+			}
+
+			var text = scoreTxtOthers.get(sid);
+			text.scale.x = 1.025;
+			text.scale.y = 1.025;
+			
+			scoreTxtOthersTween.set(sid, FlxTween.tween(text.scale, {x: 1, y: 1}, 0.2, {
+				onComplete: function(twn:FlxTween) {
+					scoreTxtOthersTween.remove(sid);
+				}
+			}));
+		}
+	}
+
+	/**
+	 * Vertical row number for per-sid texts (two clients' F7 FP texts overlapped).
+	 *
+	 * The position should come from the server's `Player.ox`, but the server does not always
+	 * provide a usable ox, and then the two same-side rows both landed on the same y. This adds
+	 * a client-side fallback: use the server value when ox > 0, otherwise give a stable row
+	 * number from the player's insertion order on that side (MapSchema preserves it).
+	 */
+	function effectiveOx(sid:String):Int {
+		if (!online.GameClient.isConnected() || online.GameClient.room == null)
+			return 0;
+
+		var player = online.GameClient.room.state.players.get(sid);
+		if (player == null)
+			return 0;
+		if (player.ox > 0)
+			return Std.int(player.ox);
+
+		var index:Int = 0;
+		for (otherSid => other in online.GameClient.room.state.players) {
+			if (other == null)
+				continue;
+			if (other.bfSide == player.bfSide) {
+				if (otherSid == sid)
+					return index;
+				index++;
+			}
+		}
+		return 0;
+	}
+
+	function getPlayerStats(sid:String):PlayStatePlayer {
+		if (!playersStats.exists(sid))
+			playersStats.set(sid, new PlayStatePlayer(online.GameClient.room.state.players.get(sid)));
+
+		return playersStats.get(sid);
+	}
+
+	/*
+	 * ============================================================================================
+	 * Per-session characters map + strums/vocals accessors.
+	 * ============================================================================================
+		 * Per-session characters map plus the strums/vocals accessors.
+		 *
+		 * Entry points: getStrumsFromSID(), getPlayerStrums(), getOpponentStrums(),
+		 * getVocalsFromSID(), getVocalsFromSIDVolume() and the per-sid spawn in create().
+	 *
+		 * Implementation notes (all mechanical, no single-player behaviour change):
+	 *   * The engine builds exactly one dad + one boyfriend in create(); the room-player
+	 *     preload path pushes one character per room player. `spawnOnlineCharacters()` keeps
+	 *     the engine's two canonical characters and maps the LOCAL session id onto whichever
+	 *     of them matches player.bfSide; only REMOTE sessions get an extra Character.
+	 *   * The skin branch in initPlayCharacter is not implemented: this engine has no
+	 *     ClientPrefs.data.currentSkin / player.skin handling. A remote player is therefore
+	 *     rendered with the song's own player1/player2 character -- the same final fallback.
+	 *   * Health icons / nameplates are not spawned per player. This engine has a single
+	 *     iconP1/iconP2 and no nameplate group, so they are absent; cosmetics only, not on
+	 *     the critical path.
+	 *   * `characters.get(sid)` is null-checked in getStrumsFromSID/getVocalsFromSID.
+	 */
+
+	/** Per-sid characters, keyed by session id. */
+	public var characters:Map<String, Character> = new Map<String, Character>();
+
+	/** Player strum group. */
+	public function getPlayerStrums():FlxTypedGroup<StrumNote> {
+		// Online returns this engine's own mustPress meaning: the note update uses
+		// strumGroup = daNote.mustPress ? playerStrums : opponentStrums, so mustPress notes always
+		// live in playerStrums. The playsAsBF() meaning matches only while mustPress is
+		// BF-relative; online, a dad-side player (bfSide=false) is misread as opponentStrums, so its strumPlay animation plays on the wrong side.
+		if (online.GameClient.isConnected())
+			return playerStrums;
+
+		if (playsAsBF())
+			return playerStrums;
+		return opponentStrums;
+	}
+
+	/** Opponent strum group. */
+	public function getOpponentStrums():FlxTypedGroup<StrumNote> {
+		if (online.GameClient.isConnected())
+			return opponentStrums;
+
+		if (playsAsBF())
+			return opponentStrums;
+		return playerStrums;
+	}
+
+	/** Strum group of the given sid, or null when the sid has no character. */
+	public function getStrumsFromSID(sid:String):FlxTypedGroup<StrumNote> {
+		if (online.GameClient.isConnected() && online.GameClient.room.state.royalMode) {
+			return online.GameClient.room.state.royalModeDadSide ? opponentStrums : playerStrums;
+		}
+
+		var char = characters.get(sid);
+		if (char != null && char.isPlayer == playsAsBF())
+			return playerStrums;
+
+		return opponentStrums;
+	}
+
+	/** Vocals of the given sid. */
+	public function getVocalsFromSID(sid:String):FlxSound {
+		if (online.GameClient.isConnected() && online.GameClient.room.state.royalMode) {
+			return null;
+		}
+
+		var char = characters.get(sid);
+		if (char == null || opponentVocals == null || opponentVocals.length <= 0 || char.isPlayer == playsAsBF()) {
+			return vocals;
+		}
+		return opponentVocals;
+	}
+
+	/** Sets the vocals volume of the given sid. */
+	public function getVocalsFromSIDVolume(sid:String, v:Float):Void {
+		var sidVocals = getVocalsFromSID(sid);
+		if (sidVocals != null)
+			sidVocals.volume = v;
+	}
+
+	/** Per-sid character spawn, minus skins / icons / nameplates. */
+	/** A character this state created itself (not the dad/boyfriend canonical). */
+	var onlineIndepChars:Map<String, Character> = new Map<String, Character>();
+
+	/** SIDs that already have their ping/botplay/noteHold listeners (reconnect must not stack them). */
+	var onlineListenedSIDs:Map<String, Bool> = new Map<String, Bool>();
+
+	/**
+	 * Online health is *room-shared* (Room.health).
+	 * onlineSyncedHealth = the last synced health; syncOnlineHealth() uses it to compute the delta.
+	 */
+	var onlineSyncedHealth:Float = 1;
+	var onlineHealthReady:Bool = false;
+
+	/**
+	 * Keep characters consistent with room.state.players, with exactly one Character per player.
+	 * Every player must have exactly one Character.
+	 *
+	 * Rules (idempotent; safe to repeat from create(), onAdd/onRemove("players") and bfSide changes):
+	 *   1. the first sid on the BF side (bfSide=true) takes the existing boyfriend, and the first sid on the dad side takes the existing dad;
+	 *   2. the second and later players on a side each get a new Character (using the song's player1/player2);
+	 *   3. a sid that leaves the room returns its canonical (not destroyed); an independently created one is destroyed and removed from the group;
+	 *   4. hide an unoccupied side's canonical -- this is the fix for the "two opponent sprites" bug: while both clients defaulted to
+	 *      bfSide=false, the local dad canonical and the remote shadow character showed at once.
+	 *      The server now assigns sides in onPlayerJoined (one left, one right) and the client falls back to the character table.
+	 */
+	function syncOnlineCharacters():Void {
+		var room = online.GameClient.room;
+		if (room == null || room.state == null || room.state.players == null)
+			return;
+
+		// 1) Which side's canonical slot each sid occupies
+		var bfOwner:String = null;
+		var dadOwner:String = null;
+		for (sid => player in room.state.players) {
+			if (player == null)
+				continue;
+			if (player.bfSide) {
+				if (bfOwner == null)
+					bfOwner = sid;
+			}
+			else if (dadOwner == null)
+				dadOwner = sid;
+		}
+
+		// 2) Drop the sids that have left the room
+		var gone:Array<String> = [];
+		for (sid in characters.keys()) {
+			if (room.state.players.get(sid) == null)
+				gone.push(sid);
+		}
+		for (sid in gone) {
+			var indep = onlineIndepChars.get(sid);
+			onlineIndepChars.remove(sid);
+			characters.remove(sid);
+			if (indep != null) {
+				(indep.isPlayer ? boyfriendGroup : dadGroup).remove(indep, true);
+				indep.destroy();
+			}
+		}
+
+		// 3) Assign / reuse per room member
+		for (sid => player in room.state.players) {
+			if (player == null)
+				continue;
+
+			var isBF:Bool = player.bfSide;
+			var canonical:Character = isBF ? boyfriend : dad;
+			var ownsCanonical:Bool = (isBF ? bfOwner : dadOwner) == sid;
+			var indep = onlineIndepChars.get(sid);
+			var current = characters.get(sid);
+
+			if (ownsCanonical) {
+				if (indep != null) {
+					// This player went from an independent character to the canonical owner (e.g. the other side freed it)
+					onlineIndepChars.remove(sid);
+					(indep.isPlayer ? boyfriendGroup : dadGroup).remove(indep, true);
+					indep.destroy();
+					if (current == indep)
+						current = null;
+				}
+				canonical.ox = Std.int(player.ox);
+				characters.set(sid, canonical);
+			}
+			else {
+				if (current == null || indep == null) {
+					// Needs a (new) independent character: either none yet, or it currently owns the canonical slot
+					var charName:String = isBF ? SONG.player1 : SONG.player2;
+					var nc:Character = new Character(0, 0, charName, isBF);
+					startCharacterPos(nc, !isBF);
+					(isBF ? boyfriendGroup : dadGroup).add(nc);
+					onlineIndepChars.set(sid, nc);
+					characters.set(sid, nc);
+					current = nc;
+				}
+				if (current != null)
+					current.ox = Std.int(player.ox);
+			}
+		}
+
+		// 4) Hide the canonical character of an unclaimed side (avoids ghost characters)
+		if (boyfriend != null)
+			boyfriend.visible = bfOwner != null;
+		if (dad != null)
+			dad.visible = dadOwner != null;
+	}
+
+	/**
+	 * Per-sid sync for the Change Character event.
+	 *
+	 * This engine drives remote-player animations (charPlay, opponentNoteHitSID,
+	 * noteMiss / noteHold) through characters:Map<sid, Character>. The event
+	 * walks [canonical].concat([for (v in characters) v]) in the event and builds one
+	 * `<value2>__<sid>` instance per same-side sid, then characters.set(daSID, char). This engine's
+	 * onEvent used to swap only the canonical, so after a character change characters[sid] still
+	 * pointed at the old, replaced-out instance (alpha 0.00001): to the other player the new character just stands still.
+	 *
+	 * This function follows the same rules as syncOnlineCharacters():
+	 *   * the first sid on a side owns the canonical -> characters[sid] is re-pointed to the swapped canonical;
+	 *   * the other same-side sids are independent instances -> build one `<value2>__<sid>` (the
+	 *     resource name stays value2 without the suffix; only the Map key carries it) and replace onlineIndepChars[sid],
+	 *     otherwise the next onAdd/onRemove triggers syncOnlineCharacters() and rebuilds the song default character.
+	 * Old instances are only hidden, not destroyed, which keeps them in their groups.
+	 *
+	 * Online only; charType == 2 (gf) never enters the characters map, so callers skip it.
+	 */
+	function onlineRebindCharacters(charType:Int, newChar:String):Void {
+		if (!online.GameClient.isConnected()) return;
+
+		var room = online.GameClient.room;
+		if (room == null || room.state == null || room.state.players == null) return;
+
+		var isBF:Bool = (charType == 0);
+
+		// Canonical owner = the first sid on that side (same rule as syncOnlineCharacters)
+		var owner:String = null;
+		for (sid => player in room.state.players) {
+			if (player != null && player.bfSide == isBF) {
+				owner = sid;
+				break;
+			}
+		}
+
+		var holder:Character = isBF ? boyfriend : dad;
+
+		for (sid in characters.keys()) {
+			var old:Character = characters.get(sid);
+			if (old == null || old.isPlayer != isBF) continue;   // the other side, or already gone
+			if (old.curCharacter == newChar) continue;           // already the new character
+
+			if (sid == owner) {
+				if (holder != null) characters.set(sid, holder);
+				continue;
+			}
+
+			var target:Character = null;
+			var indepID:String = newChar + '__' + sid;
+			if (isBF) {
+				if (!boyfriendMap.exists(indepID)) {
+					var nb:Boyfriend = new Boyfriend(0, 0, newChar);
+					boyfriendMap.set(indepID, nb);
+					boyfriendGroup.add(nb);
+					startCharacterPos(nb);
+					nb.alpha = 0.00001;
+					startCharacterLua(nb.curCharacter);
+				}
+				target = boyfriendMap.get(indepID);
+			} else {
+				if (!dadMap.exists(indepID)) {
+					var nd:Character = new Character(0, 0, newChar);
+					dadMap.set(indepID, nd);
+					dadGroup.add(nd);
+					startCharacterPos(nd, true);
+					nd.alpha = 0.00001;
+					startCharacterLua(nd.curCharacter);
+				}
+				target = dadMap.get(indepID);
+			}
+			if (target == null) continue;
+
+			var keepAlpha:Float = old.alpha;
+			old.alpha = 0.00001;
+			target.alpha = keepAlpha;
+			characters.set(sid, target);
+			onlineIndepChars.set(sid, target);
+		}
+	}
+	/*
+		 * The remaining host methods the online noteHit / registerMessages path calls; none of
+		 * them existed here before.
+	 *
+		 * Implementation notes:
+	 *   * getRatingOffset(): this engine does not have `ClientPrefs.data.verticalRatingPos`,
+	 *     so placementY is always 0 (horizontal placement).
+	 *   * popUpScoreOP(): this engine has a
+	 *     pooled RatingPopup (source/popup/RatingPopup.hx) whose show(ratingKey, combo, rate, baseX,
+	 *     ...) already applies RATING_X_OFFSET == -40 -- the same as
+	 *     `rating.x = placement[0] - 40` -- so getRatingOffset()[0] is passed as `baseX`. The combo
+	 *     count comes from the per-sid stats the score HUD already keeps.
+	 *   * showBotplay(): the body is just
+	 *     the botplay label visibility.
+
+	 * NOTE: these are staged host methods. They are only *called* by the noteHit listener, which
+	 * needs the online opponent-note loop to be wired first (see the deferred registerMessages()
+	 * note).
+	 */
+
+	/**
+	 * Online rating popups must be one per sid.
+	 *
+	 * comboGroup is a shared container, but each popup takes an *independent*
+	 * sprite from the pool (`comboGroup.recycle(new FlxTweenedSprite(...))`),
+	 * positioned by getRatingOffset(forSID) (:4769-4785) per sid. This engine replaced that with a
+	 * pooled RatingPopup (source/popup/RatingPopup.hx), and popUpScore() and popUpScoreOP()
+	 * **share the same instance**, so:
+	 *   * both players' rating icons stack on the same baseX (always FlxG.width*0.35 locally);
+	 *   * RatingPopup.show() calls clearAll() when !comboStacking, which clears its own container's
+	 *     members and wipes the other player's floating icons too.
+	 * Here each remote sid lazily gets its own RatingPopup (its own container / pool) while the
+	 * local player keeps the main ratingPopup. Created only online; the single-player path is unchanged.
+	 */
+	var onlineRatingPopups:Map<String, RatingPopup> = new Map<String, RatingPopup>();
+
+	/** Get (or lazily create) the rating popup owned by a remote sid. */
+	function getOnlineRatingPopup(sid:String):RatingPopup {
+		var popup = onlineRatingPopups.get(sid);
+		if (popup != null) return popup;
+
+		popup = new RatingPopup();
+		popup.targetCameras = [camHUD];
+		popup.antialiasing = isPixelStage ? false : ClientPrefs.data.globalAntialiasing;
+		popup.isPixel = isPixelStage;
+		popup.daPixelZoom = daPixelZoom;
+
+		// Every popup needs its own FlxSpriteGroup: RatingPopup.clearAll() clears `container.members`,
+		// so sharing comboGroup across sids would share one pool. Cameras must be assigned
+		// explicitly or the children fall back to the default game camera (see create()).
+		var grp:FlxSpriteGroup = new FlxSpriteGroup();
+		grp.cameras = [camHUD];
+		if (CompatEngine.isModern() && comboGroup != null)
+			comboGroup.add(grp);
+		else
+			insert(members.indexOf(strumLineNotes), grp);
+		popup.container = grp;
+
+		onlineRatingPopups.set(sid, popup);
+		return popup;
+	}
+
+	/** Whether the BOTPLAY label is visible. */
+	@:unreflective public var botplayVisibility:Bool = false;
+
+	/** Rating placement offset (horizontal / vertical) for the given sid. */
+	function getRatingOffset(?forSID:String):Array<Float> {
+		var placementX:Float = FlxG.width * 0.35;
+		var placementY:Float = 0;
+		if (online.GameClient.isConnected() && forSID != null) {
+			var char = characters.get(forSID);
+			if (char != null) {
+				placementX = FlxG.width * (0.4 + (char.isPlayer == playsAsBF() ? 0.15 : -0.1));
+				placementX += char.ox * (char.isPlayer == playsAsBF() ? 250 : -250);
+			}
+		}
+		return [placementX, placementY];
+	}
+
+	/** Rating popup for the given sid, drawn through this engine's RatingPopup. */
+	function popUpScoreOP(ratingImage:String, ?forSID:String):Void {
+		// A remote player uses its own popup; the local player still goes through ratingPopup / popUpScore()
+		// (the server broadcasts noteHit with `except: client`, so the local client never receives its own hits).
+		var popup:RatingPopup = ratingPopup;
+		if (forSID != null)
+			popup = getOnlineRatingPopup(forSID);
+
+		if (popup == null)
+			return;
+
+		var stats:PlayStatePlayer = (forSID != null) ? getPlayerStats(forSID) : null;
+		var comboValue:Int = (stats != null) ? stats.combo : 0;
+		var placement = getRatingOffset(forSID);
+
+		popup.show(ratingImage, comboValue, playbackRate, placement[0],
+			ClientPrefs.data.hideHud, showRating, showCombo, comboValue >= 10,
+			[for (v in ClientPrefs.data.comboOffset) Std.int(v)], Conductor.crochet,
+			ClientPrefs.data.comboStacking);
+	}
+
+	/** Character animation tag for the given side / sid. */
+	function getCharPlayTag(isBF:Null<Bool>, ?sid:String):String {
+		if (sid != null)
+			return 'characters[${sid}]';
+
+		if (isBF == null)
+			return 'gf';
+
+		return isBF ? 'boyfriend' : 'dad';
+	}
+
+	/** Shows the BOTPLAY label. */
+	function showBotplay():Void {
+		if (botplayTxt == null)
+			return;
+
+		// There is an online branch that shows the BOTPLAY label when any player in the room
+		// has botplay on, but it reads the long-gone `state.player1/player2` fields, so the whole
+		// block is commented out there. This engine's schema is a `players` map, so the same intent is
+		// restored: show the label when the local or any room player has botplay on (still centred).
+		// showBotplay is only called from the online listener, so the single-player path is unaffected.
+		botplayVisibility = cpuControlled;
+		if (online.GameClient.isConnected() && online.GameClient.room != null) {
+			for (sid => player in online.GameClient.room.state.players) {
+				if (player != null && player.botplay) {
+					botplayVisibility = true;
+					break;
+				}
+			}
+		}
+
+		botplayTxt.x = FlxG.width / 2 - botplayTxt.width / 2;
+		botplayTxt.visible = botplayVisibility;
+	}
+
+	
+	/*
+	 * ============================================================================================
+	 * Online note-loop gating + ready gating + registerMessages().
+	 * ============================================================================================
+		 * Online note-loop and ready gating plus registerMessages().
+		 *
+		 * Entry points: playOtherSide(), countOpponents(), isPlayerNote(), the per-sid
+		 * opponentNoteHit(note, ?sid), the canStart/waitReady/isReady gates and registerMessages().
+	 *
+	 * This closes the two holes in the online note loop:
+	 *   1. this engine's update() auto-hit opponent notes unconditionally, so the "noteHit"
+	 *      listener would double-drive them -> `opponentAutoHitAllowed()` gates the local path;
+	 *   2. this engine's create() starts the countdown unconditionally, so the "startSong"
+	 *      listener would start it twice -> `onlineCheckCanStart()` holds the first request.
+	 *
+		 * Implementation notes (all mechanical):
+	 *   * `isPlayerNote`: the check is `note.mustPress == playsAsBF()` because mustPress is
+	 *     BF-relative. This engine's generateSong() already flips mustPress for the local player
+	 *     (`if (playOpponent) gottaHitNote = !gottaHitNote`), so the predicate is just
+	 *     `note.mustPress`.
+	 *   * per-sid opponentNoteHit: this
+	 *     engine's method is performance-gated and cannot be edited outside a guard, so
+	 *     `opponentNoteHitSID` reuses it with `note.noAnimation` raised and animates the remote
+	 *     player's own character afterwards.
+	 *   * `Alphabet` stands in for the overlay (same constructor signature).
+	 *   * the "noteMiss" listener's `unspawnNotes.remove(note)` is NOT portable (this engine's
+	 *     unspawnNotes holds PreloadedChartNote, not Note); the note goes back to the engine's note
+	 *     pool through recycleNote() instead.
+	 *   * `replayPlayer`/`replayRecorder`/`nameplates`/s3d are absent here.
+	 */
+
+	/** This client drives the opponent side itself. */
+	public var playOtherSide:Bool = false;
+
+	/** Ready-gating fields. */
+	var isReady:Bool = false;
+	var waitReady(default, set):Bool = false;
+	var canStart:Bool = true;
+	var waitReadySpr:Alphabet;
+	var readyTween:FlxTween;
+
+	function set_waitReady(v:Bool):Bool {
+		if (readyTween != null)
+			readyTween.cancel();
+
+		if (waitReadySpr != null)
+			readyTween = FlxTween.tween(waitReadySpr, {alpha: v ? 1 : 0}, 0.5, {ease: FlxEase.quadIn});
+
+		return waitReady = v;
+	}
+
+	/** Creates the wait-ready overlay. */
+	function spawnWaitReadyOverlay():Void {
+		if (waitReadySpr != null)
+			return;
+
+		waitReadySpr = new Alphabet(0, 0, "PRESS ACCEPT TO START", true);
+		waitReadySpr.cameras = [camOther];
+		waitReadySpr.setAlignmentFromString('center');
+		waitReadySpr.x = FlxG.width / 2;
+		waitReadySpr.y = (FlxG.height - waitReadySpr.height) / 2;
+		waitReadySpr.alpha = 0;
+		add(waitReadySpr);
+		waitReady = true;
+	}
+
+	/** startCountdown()'s `canStart` check. */
+	function onlineCheckCanStart():Bool {
+		if (!online.GameClient.isConnected())
+			return true;
+
+		if (!canStart)
+		{
+			canStart = true;
+			if (waitReadySpr != null)
+				waitReadySpr.alpha = 1;
+			return false;
+		}
+		return true;
+	}
+
+	/** May this client auto-hit opponent notes locally? */
+	function opponentAutoHitAllowed():Bool {
+		if (!online.GameClient.isConnected())
+			return true;
+
+		return playOtherSide || online.GameClient.room.state.royalMode;
+	}
+
+	/** Number of opponents in the room. */
+	function countOpponents():Int {
+		if (!online.GameClient.isConnected() || playOtherSide || online.GameClient.room.state.royalMode)
+			return 1;
+
+		var count:Int = 0;
+		for (sid => character in characters)
+		{
+			if (character != null && !character.isPlayer)
+				count++;
+		}
+		return count;
+	}
+
+	/**
+		 * The isPlayerNote() predicate, using this engine's mustPress convention (see the
+	 * block header). Used by the "noteHit"/"noteMiss" listeners to find the note a remote player
+	 * just drove.
+	 */
+	public static function isPlayerNote(note:Note):Bool {
+		return note.mustPress;
+	}
+
+	/**
+	 * Per-sid opponent note hit for a remote player. See the block header for
+	 * why this wraps the engine's 1-parameter opponentNoteHit instead of extending it.
+	 */
+	function opponentNoteHitSID(note:Note, sid:String):Void {
+		note.hits++;
+		if (note.hits - countOpponents() > 0)
+			return;
+
+		var opChar:Character = characters.get(sid);
+
+		var altAnim:String = note.animSuffix;
+		var useGF:Bool = note.gfNote;
+		var isHey:Bool = (note.noteType == 'Hey!');
+		var doSing:Bool = !note.noAnimation && !isHey && opChar != null;
+		var animToPlay:String = null;
+
+		if (doSing)
+		{
+			if (playsAsBF() && SONG.notes[curSection] != null && SONG.notes[curSection].altAnim && !SONG.notes[curSection].gfSection)
+				altAnim = '-alt';
+			animToPlay = getSingAnim(note) + altAnim;
+		}
+
+		// The engine's opponent path also animates dad/boyfriend and switches the opponent vocals;
+		// suppress only the animation so the remote character is the one that sings (the split happens
+		// exactly at the opChar selection).
+		var wasNoAnim:Bool = note.noAnimation;
+		note.noAnimation = true;
+		opponentNoteHit(note);
+		note.noAnimation = wasNoAnim;
+
+		if (isHey && opChar != null && opChar.animOffsets.exists('hey'))
+		{
+			opChar.playAnim('hey', true);
+			opChar.specialAnim = true;
+			opChar.heyTimer = 0.6;
+		}
+		else if (doSing)
+		{
+			var target:Character = (useGF && gf != null) ? gf : opChar;
+			if (target != null)
+			{
+				target.playAnim(animToPlay, true);
+				target.holdTimer = 0;
+			}
+		}
+
+		if (SONG.needsVoices)
+			getVocalsFromSIDVolume(sid, 1);
+	}
+
+	/**
+		 * Room message registration, as described in the block header.
+		 * Called once from create() while connected, and re-invoked
+		 * through `GameClient.initStateListeners` after a reconnect.
+	 */
+	function registerMessages():Void {
+		online.GameClient.initStateListeners(this, this.registerMessages);
+
+		if (!online.GameClient.isConnected())
+			return;
+
+		// Players can join or leave mid-song, so listeners and characters must hang off the state-level
+		// onAdd/onRemove rather than being installed once for the players present when the room was
+		// created. onAdd's immediate flag defaults to true, so registration already fires once for
+		// every player in the room; a for loop here would double the listeners.
+		online.GameClient.registerStateDisposer(this, online.GameClient.callbacks.onAdd("players", (player, sid) -> {
+			online.backend.Waiter.put(() -> {
+				if (destroyed)
+					return;
+				listenPlayerSID(sid, player);
+				syncOnlineCharacters();
+			});
+		}));
+
+		online.GameClient.registerStateDisposer(this, online.GameClient.callbacks.onRemove("players", (player, sid) -> {
+			online.backend.Waiter.put(() -> {
+				if (destroyed)
+					return;
+				onlineListenedSIDs.remove(sid);
+				syncOnlineCharacters();
+				showBotplay();
+			});
+		}));
+
+		syncOnlineCharacters();
+		initOnlineHealthSync();
+
+		online.GameClient.registerStateMessage(this, "custom", function(message:Array<Dynamic>) {
+			if (message.length != 2)
+				return;
+
+			online.backend.Waiter.put(() -> {
+				callOnScripts('onCustomMessage', message);
+			});
+		});
+
+		online.GameClient.registerStateMessage(this, "log", function(message) {
+			online.backend.Waiter.putPersist(() -> {
+				online.gui.Alert.alert("New message", online.util.ShitUtil.parseLog(message).content);
+			});
+		});
+
+		online.GameClient.registerStateMessage(this, "strumPlay", function(_message:Array<Dynamic>) {
+			var sid:String = _message[0];
+			var message:Array<Dynamic> = _message[1];
+
+			online.backend.Waiter.put(() -> {
+				if (message == null || message[0] == null || message[1] == null || message[2] == null)
+					return;
+
+				if (callOnScripts('onMessageStrumPlay', [sid, message], true) == FunkinLua.Function_Stop)
+					return;
+
+				var strums = getStrumsFromSID(sid);
+				if (strums == getPlayerStrums())
+					return;
+
+				var spr:StrumNote = strums.members[Std.int(message[1])];
+				if (spr != null)
+				{
+					spr.playAnim(message[0] + "", true);
+					spr.resetAnim = message[2];
+				}
+			});
+		});
+
+		online.GameClient.registerStateMessage(this, "charPlay", function(_message:Array<Dynamic>) {
+			var sid:String = _message[0];
+			var message:Array<Dynamic> = _message[1];
+
+			online.backend.Waiter.put(() -> {
+				if (message == null || message[0] == null)
+					return;
+
+				if (callOnScripts('onMessageCharPlay', [sid, message], true) == FunkinLua.Function_Stop)
+					return;
+
+				var isGF:Bool = (message[1] == true);
+				var special:Bool = (message[2] == true);
+				if (isGF && gf != null)
+				{
+					gf.playAnim(message[0], true);
+					if (special)
+						gf.specialAnim = true;
+				}
+				else if (!isGF)
+				{
+					var char = characters.get(sid);
+					if (char == null)
+						return;
+
+					char.playAnim(message[0], true);
+					if (special)
+						char.specialAnim = true;
+				}
+			});
+		});
+
+		online.GameClient.registerStateMessage(this, "noteHit", function(_message:Array<Dynamic>) {
+			var sid:String = _message[0];
+			var message:Array<Dynamic> = _message[1];
+
+			online.backend.Waiter.put(() -> {
+				if (message == null || message[0] == null || message[1] == null || message[2] == null)
+					return;
+
+				if (callOnScripts('onMessageNoteHit', [sid, message], true) == FunkinLua.Function_Stop)
+					return;
+
+				notes.forEachAlive(function(note:Note) {
+					if (!isPlayerNote(note)
+						&& note.noteData == message[1]
+						&& note.isSustainNote == message[2]
+						&& Math.abs(note.strumTime - (message[0] : Float)) < 1)
+					{
+						opponentNoteHitSID(note, sid);
+					}
+				});
+
+				if (!(message[2] == true) && message[3] != null)
+				{
+					getPlayerStats(sid).combo++;
+					popUpScoreOP(message[3], sid);
+				}
+
+				var isSelf:Bool = (message[6] == true);
+				callOnLuas(isSelf ? 'goodNoteHit' : 'opponentNoteHit', [message[5], message[1], message[4], message[2], getCharPlayTag(isSelf, sid)]);
+				callOnHScript(isSelf ? 'goodNoteHit' : 'opponentNoteHit', [notes.members[Std.int(message[5])], getCharPlayTag(isSelf, sid)]);
+
+				updateScoreSID(sid, false);
+				getVocalsFromSIDVolume(sid, 1);
+			});
+		});
+
+		online.GameClient.registerStateMessage(this, "noteMiss", function(_message:Array<Dynamic>) {
+			var sid:String = _message[0];
+			var message:Array<Dynamic> = _message[1];
+
+			online.backend.Waiter.put(() -> {
+				if (message == null || message[0] == null || message[1] == null || message[2] == null)
+					return;
+
+				if (callOnScripts('onMessageNoteMiss', [sid, message], true) == FunkinLua.Function_Stop)
+					return;
+
+				// The remote sends a noteMiss for *every* sustain segment, and this used to recycle the local
+				// counterpart, so an unplayed opponent sustain disappeared segment by segment. Unplayed opponent
+				// notes must keep travelling past the judgement line, so the local visual note is no longer
+				// destroyed here -- updateNote's "recycle only once off screen" branch handles it. Score / combo / vocals still settle normally.
+
+				updateScoreSID(sid, true);
+				getVocalsFromSIDVolume(sid, 0);
+				getPlayerStats(sid).combo = 0;
+			});
+		});
+
+		online.GameClient.registerStateMessage(this, "startSong", function(_) {
+			online.backend.Waiter.put(() -> {
+				if (callOnScripts('onMessageStartSong', null, true) == FunkinLua.Function_Stop)
+					return;
+
+				isReady = true;
+				waitReady = false;
+				startCountdown();
+			});
+		});
+
+		online.GameClient.registerStateMessage(this, "endSong", function(_) {
+			online.backend.Waiter.put(() -> {
+				if (callOnScripts('onMessageEndSong', null, true) == FunkinLua.Function_Stop)
+					return;
+
+				canEndSongOnline = true;
+				endSong();
+			});
+		});
+
+		online.objects.ChatBox.tryRegisterLogs();
+	}
+
+	/** Installs the state-level schema listeners (ping / botplay / noteHold) for one sid. Idempotent. */
+	function listenPlayerSID(sid:String, player:online.backend.schema.Player):Void {
+		if (player == null || sid == null)
+			return;
+		if (onlineListenedSIDs.exists(sid))
+			return;
+		onlineListenedSIDs.set(sid, true);
+
+		online.GameClient.registerStateDisposer(this, online.GameClient.callbacks.listen(player, "ping", (value, prev) -> {
+			online.backend.Waiter.put(() -> {
+				if (destroyed)
+					return;
+				if (callOnScripts('onPlayerPing', [sid, player.ping], true) == FunkinLua.Function_Stop)
+					return;
+
+				updateScoreSID(sid, true);
+			});
+		}));
+
+		online.GameClient.registerStateDisposer(this, online.GameClient.callbacks.listen(player, "botplay", (value, prev) -> {
+			online.backend.Waiter.put(() -> {
+				if (destroyed)
+					return;
+				if (callOnScripts('onPlayerBotplay', [sid, value], true) == FunkinLua.Function_Stop)
+					return;
+
+				showBotplay();
+			});
+		}));
+
+		online.GameClient.registerStateDisposer(this, online.GameClient.callbacks.listen(player, "noteHold", (value, prev) -> {
+			online.backend.Waiter.put(() -> {
+				if (destroyed)
+					return;
+				if (callOnScripts('onPlayerNoteHold', [sid, value], true) == FunkinLua.Function_Stop)
+					return;
+
+				if (characters.exists(sid))
+					characters.get(sid).noteHold = value;
+			});
+		}));
+	}
+
+	/**
+	 * Online never declares death -- the old `onlineDeathCheck()` is gone.
+	 *
+	 * It used to zero health into `isDead` + `boyfriend.stunned` + a `playerEnded` broadcast,
+	 * but the online path never switches to GameOverSubstate, and `boyfriend.stunned` is the
+	 * first gate on note input with no reset point, so one side failing would leave that side
+	 * permanently unable to press keys while the screen kept running and no failure was shown.
+	 * "Ending" is now driven only by the normal `endSong()` path (which still sends `playerEnded`).
+	 */
+
+	/*
+	 * The two host members the outbound message send sites need.
+	 */
+	/**
+	 * popUpScore() returns the judgement Rating so its caller can forward `rating.image` in
+	 * "noteHit"; this engine's popUpScore() is a Void method whose signature cannot change outside a
+	 * guard, so it stashes the image here and goodNoteHit() reads it back.
+	 */
+	public var onlineLastRatingImage:String = null;
+
+	/** Is `character` this client's own player character? */
+	public static function isCharacterPlayer(character:Character):Bool {
+		if (instance == null)
+			return character != null && character.isPlayer;
+
+		return character == (playsAsBF() ? instance.boyfriend : instance.dad);
+	}
+
+	/**
+	 * Online health is *room-shared* (the schema's Room.health; PlayState.get_health/set_health
+	 * PlayState.get_health/set_health also proxy room.state.health while connected). This engine's
+	 * health is a plain field (no get/set proxy), so it uses an equivalent report + adopt scheme:
+	 *   1. on song start, initialise onlineSyncedHealth to the current local health;
+	 *   2. listen to room.state.health -- the server value is authoritative and is adopted directly
+	 *      (also updating onlineSyncedHealth so the next update() does not re-send it as a local change);
+	 *   3. update() calls syncOnlineHealth() every frame, reporting the local health delta for the server to accumulate.
+	 * Result: both clients see the same health value/progress instead of each its own.
+	 *
+	 * Deliberate difference: set_health is a no-op online (only the
+	 * server-simulated value counts); with no server-side simulation here the delta comes from the real client's local judging -- equivalent in effect.
+	 */
+	function initOnlineHealthSync():Void {
+		var room = online.GameClient.room;
+		if (room == null || room.state == null)
+			return;
+
+		onlineSyncedHealth = health;
+		onlineHealthReady = true;
+
+		online.GameClient.registerStateDisposer(this, online.GameClient.callbacks.listen(room.state, "health", (value, prev) -> {
+			online.backend.Waiter.put(() -> {
+				if (destroyed || !onlineHealthReady)
+					return;
+				var v:Float = (value == null) ? 1 : (cast value);
+				health = v;
+				onlineSyncedHealth = v;
+			});
+		}));
+	}
+
+	function syncOnlineHealth():Void {
+		if (!onlineHealthReady || !online.GameClient.isConnected())
+			return;
+
+		var delta:Float = health - onlineSyncedHealth;
+		if (delta == 0)
+			return;
+
+		onlineSyncedHealth = health;
+		online.GameClient.send("updateHealth", delta);
+	}
+
+	#end
+	#end
 }
+
+#if ONLINE_ALLOWED
+/**
+ * Row model for the online score HUD. It wraps one online.backend.schema.Player (the
+ * Colyseus room state object) and recomputes that player's rating from the *same*
+ * PlayState.ratingStuff / ratingsData tables the local player uses, so a remote player's row
+ * is scored exactly like the local one. Only the rating tier is recomputed here; nothing is
+ * sent back to the server.
+ *
+ * Declared after PlayState and guarded, so the class disappears with the macro.
+ */
+@:publicFields
+class PlayStatePlayer {
+	public var player:online.backend.schema.Player;
+	public var ratingPercent:Float = 0.;
+	public var ratingName:String = '?';
+	public var ratingFC:String = null;
+	public var combo:Int = 0;
+
+	function calcHits():Int {
+		return player.sicks + player.goods + player.bads + player.shits;
+	}
+
+	// all the encountered notes
+	function calcTotalPlayed():Int {
+		return player.sicks + player.goods + player.bads + player.shits + player.misses;
+	}
+
+	function calcTotalNotesHit():Float {
+		return 
+			(player.sicks * PlayState.instance.ratingsData[0].ratingMod) + 
+			(player.goods * PlayState.instance.ratingsData[1].ratingMod) + 
+			(player.bads * PlayState.instance.ratingsData[2].ratingMod) +
+			(player.shits * PlayState.instance.ratingsData[3].ratingMod)
+		;
+	}
+
+	function recalculateRating():Void {
+		var totalPlayed = calcTotalPlayed();
+		var totalNotesHit = calcTotalNotesHit();
+		var ratingStuff = PlayState.ratingStuff;
+
+		if (totalPlayed != 0) // Prevent divide by 0
+		{
+			// Rating Percent
+			ratingPercent = Math.min(1, Math.max(0, totalNotesHit / totalPlayed));
+
+			// Rating Name
+			ratingName = ratingStuff[ratingStuff.length - 1][0]; // Uses last string
+			if (ratingPercent < 1)
+				for (i in 0...ratingStuff.length - 1)
+					if (ratingPercent < ratingStuff[i][1]) {
+						ratingName = ratingStuff[i][0];
+						break;
+					}
+		}
+
+		ratingFC = 'Clear';
+		if (player.misses < 1) {
+			if (player.shits > 0) ratingFC = 'NM';
+			if (player.bads > 0) ratingFC = 'FC';
+			else if (player.goods > 0) ratingFC = 'GFC';
+			else if (player.sicks > 0) ratingFC = 'SFC';
+		}
+		else if (player.misses < 10)
+			ratingFC = 'SDCB';
+	}
+
+	function new(player:online.backend.schema.Player) {
+		this.player = player;
+	}
+}
+#end
+

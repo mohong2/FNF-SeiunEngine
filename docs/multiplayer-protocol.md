@@ -1,7 +1,14 @@
+> ⚠️ **已废弃 / DEPRECATED（2026-09-12）**
+>
+> 本文描述的是 SeiunEngine **旧版联机实现**，该实现已在 commit `8ab3200` 中整体拆除。
+> 它与现役的 SeiunEngine 联机实现（Colyseus/WebSocket，见 `docs/ONLINE_PORT_HANDOFF.md`）
+> **协议不兼容**，因此本文**不能作为新实现的参考**。
+> 保留仅为历史记录，将在新实现落地后重写或替换。
+
 # SeiunEngine Multiplayer Protocol / SeiunEngine 联机协议
 
-SeiunEngine 专属协议。与 Funkin-Psych-Online（Colyseus/WebSocket）互不兼容。
-This is a SeiunEngine-specific protocol and is intentionally incompatible with Psych Online.
+SeiunEngine 旧版专属协议。与本引擎现役的 Colyseus/WebSocket 实现互不兼容。
+This is a legacy SeiunEngine-specific protocol, intentionally incompatible with the current Colyseus/WebSocket implementation.
 
 ## 1. Transport / 传输层
 
@@ -85,6 +92,6 @@ Received files are written to the matching relative path under `mods/`, verified
 
 ## 9. Isolation guarantees / 隔离保证
 
-- Seiun client connects to a Psych Online server: the HTTP/WebSocket endpoint does not recognize `SEIUNP01`, handshake fails.
-- Psych Online client connects to Seiun server: first bytes are HTTP text, server sends `ERR_BAD_MAGIC` and disconnects.
+- Legacy Seiun client connects to the current server: the HTTP/WebSocket endpoint does not recognize `SEIUNP01`, handshake fails.
+- Current client connects to a legacy Seiun server: first bytes are HTTP text, the server sends `ERR_BAD_MAGIC` and disconnects.
 - No public server addresses are built into the client.

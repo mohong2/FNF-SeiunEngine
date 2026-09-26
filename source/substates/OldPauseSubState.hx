@@ -20,8 +20,7 @@ import states.FreeplayState;
 import Alphabet;
 
 /**
-	OldPauseSubState — 移植自 PsychEngine 0.6.3 的简约暂停界面。
-	基于 Alphabet 菜单，无玻璃态/3D 特效，供 hscript 切换使用。
+	OldPauseSubState -- minimal pause menu based on the Alphabet menu, with no glass or 3D effects.
 **/
 class OldPauseSubState extends MusicBeatSubstate
 {

@@ -1,0 +1,22 @@
+# SeiunEngine server - Haxe -> neko
+#
+# Run from the repository root:
+#   haxe server/server.hxml                    # build  -> server/bin/server.n
+#   haxe server/server.hxml --no-output        # typecheck only
+#   neko server/bin/server.n                   # run
+#
+# Or use the wrapper scripts:  server\build.ps1   server\start.ps1
+#
+# Dependencies: Haxe 4.2.5 + neko only. No Node / TypeScript / colyseus-server.
+# Compile closure:
+#   server/src/online_server/**            <- the server itself (this folder)
+#   source/online/backend/schema/**        <- colyseus schema shared with the client
+#   source/_online_libs/**                 <- io.colyseus.* / org.msgpack.*
+# NOTE: neko (or cpp). `--interp` has no sys.thread.Thread/Mutex, which both the
+#       HTTP server and io.colyseus.Connection need.
+-cp server/src
+-cp source
+-cp source/_online_libs
+-D server_build
+-main online_server.Main
+-neko server/bin/server.n

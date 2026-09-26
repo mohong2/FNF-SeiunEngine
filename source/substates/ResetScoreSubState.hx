@@ -6,11 +6,11 @@ using StringTools;
 class ResetScoreSubState extends MusicBeatSubstate
 {
 	var bg:FlxSprite;
-	var alphabetArray:Array<Alphabet> = [];
+	var alphabetArray:Array<FlxTextMenuItem> = [];
 	var icon:HealthIcon;
 	var onYes:Bool = false;
-	var yesText:Alphabet;
-	var noText:Alphabet;
+	var yesText:FlxTextMenuItem;
+	var noText:FlxTextMenuItem;
 
 	var song:String;
 	var difficulty:Int;
@@ -37,13 +37,13 @@ class ResetScoreSubState extends MusicBeatSubstate
 		add(bg);
 
 		var tooLong:Float = (name.length > 18) ? 0.8 : 1; //Fucking Winter Horrorland
-		var text:Alphabet = new Alphabet(0, 180, "Reset the score of", true);
+		var text:FlxTextMenuItem = new FlxTextMenuItem(0, 180, Language.get('ResetScore.prompt', 'Reset the score of'), 48); text.isMenuItem = false;
 		text.screenCenter(X);
 		alphabetArray.push(text);
 		text.alpha = 0;
 		add(text);
-		var text:Alphabet = new Alphabet(0, text.y + 90, name, true);
-		text.scaleX = tooLong;
+		var text:FlxTextMenuItem = new FlxTextMenuItem(0, text.y + 90, name, 48); text.isMenuItem = false;
+		text.scale.x = tooLong;
 		text.screenCenter(X);
 		if(week == -1) text.x += 60 * tooLong;
 		alphabetArray.push(text);
@@ -58,11 +58,11 @@ class ResetScoreSubState extends MusicBeatSubstate
 			add(icon);
 		}
 
-		yesText = new Alphabet(0, text.y + 150, 'Yes', true);
+		yesText = new FlxTextMenuItem(0, text.y + 150, Language.get('Dialog.yes', 'Yes'), 48); yesText.isMenuItem = false;
 		yesText.screenCenter(X);
 		yesText.x -= 200;
 		add(yesText);
-		noText = new Alphabet(0, text.y + 150, 'No', true);
+		noText = new FlxTextMenuItem(0, text.y + 150, Language.get('Dialog.no', 'No'), 48); noText.isMenuItem = false;
 		noText.screenCenter(X);
 		noText.x += 200;
 		add(noText);

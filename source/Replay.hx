@@ -62,33 +62,33 @@ typedef StateRecord = {
 	var goodWindow:Int;
 	var badWindow:Int;
 	var safeFrames:Float;
-	/** LeatherEngine 移植: 录制时的判定手感 (marvelous/sick/good/bad ms 窗口) */
+	/** Judgement windows recorded with the replay (marvelous/sick/good/bad ms). */
 	@:optional var judgementTimings:Array<Int>;
-	/** LeatherEngine 移植: 录制时的判定类型 (预设名或 Custom) */
+	/** Judgement preset name recorded with the replay (preset name or "Custom"). */
 	@:optional var judgementPreset:String;
 	@:optional var marvelousRatings:Bool;
 	@:optional var marvelousWindow:Int;
-	/** osu! 尾判: 录制时是否开启尾判 + 尾判窗口 (ms) */
+	/** osu! tail judgement: whether it was enabled while recording, plus the tail window (ms). */
 	//@:optional var osuTailJudgement:Bool;
-	/** osu! 尾判窗口倍率 (相对普通判定窗口, 默认 2.0) */
+	/** osu! tail window multiplier relative to a normal judgement window (default 2.0). */
 	//@:optional var tailWindowMult:Float;
-	/** 联机回放标识: 该回放录制于联机对局 */
+	/** Online replay marker: this replay was recorded in an online match. */
 	@:optional var isOnline:Bool;
-	/** 联机回放: 房间码 / 房间名 / 模式 (realtime/async) */
+	/** Online replay: room code / room name / mode (realtime/async). */
 	@:optional var roomCode:String;
 	@:optional var roomName:String;
 	@:optional var onlineMode:String;
-	/** 判定相关手感: 录制时的评级偏移 / 长条是否按单音符判定 */
+	/** Judgement feel recorded with the replay: rating offset / whether sustains are judged as single notes. */
 	@:optional var ratingOffset:Int;
 	@:optional var guitarHeroSustains:Bool;
 	var replayVersion:Int;
-	/** 多k: 录制时的键数 (mania+1, 用于回放校验) */
+	/** Multi-key: key count while recording (mania+1, used to validate the replay). */
 	@:optional var mania:Int;
 }
 
 class Replay extends FlxBasic
 {
-	/** 临时调试日志 (排查回放无法进入/播放问题, 排查后可删除) */
+	/** Temporary debug log (for replay load/playback issues; can be removed once diagnosed). */
 	public static function dbgLog(msg:String):Void
 	{
 		#if sys
@@ -102,67 +102,67 @@ class Replay extends FlxBasic
 		#end
 	}
 
-	/** 帧数据 (录制时写入, 回放时读取) */
+	/** Frame data (written while recording, read during playback). */
 	private var frameData:Array<FrameSave> = [];
 
-	/** 是否正在录制 */
+	/** Whether recording is in progress. */
 	public var isRecording:Bool = true;
 
-	/** 当前加载的回放文件路径 */
+	/** Path of the replay file currently loaded. */
 	public static var preparedPath:String;
 
-	/** 当前按下的键 (回放时维护) */
+	/** Keys currently held (maintained during playback). */
 	private var keysHeld:Map<FlxKey, Bool> = new Map<FlxKey, Bool>();
 
-	/** FlxKey → 轨道索引 映射 */
+	/** FlxKey -> lane index map. */
 	private var keyToLane:Map<FlxKey, Int> = null;
 
-	/** 全部 FlxKey 值列表 (录制时直接遍历, 按下/释放才取键名, 无上限、无字符串分配) */
+	/** All FlxKey values (iterated directly while recording; key names are resolved only on press/release). */
 	private static var cachedKeyList:Array<FlxKey> = null;
 
-	// ---- 回放时模拟的按键状态 (供脚本 keyJustPressed/keyPressed/keyJustReleased 查询, 还原 mod 自定义机制键) ----
+	// ---- simulated key state during playback (backs the script keyJustPressed/keyPressed/keyJustReleased queries) ----
 	private var simPressed:Map<String, Bool> = new Map<String, Bool>();
 	private var simJustPressed:Map<String, Bool> = new Map<String, Bool>();
 	private var simJustReleased:Map<String, Bool> = new Map<String, Bool>();
 	private var simKnownKeys:Map<String, Bool> = new Map<String, Bool>();
 
-	/** 轨道数量 (4K = 4) */
+	/** Lane count (4K = 4). */
 	private var laneCount:Int = 0;
 
-	/** 临时数组 (避免GC) */
+	/** Scratch arrays (avoid GC). */
 	private var tmpPressLanes:Array<Int> = [];
 	private var tmpReleaseLanes:Array<Int> = [];
 	private var tmpHeldLanes:Array<Bool> = [];
 
-	/** 每帧"补长条/空闲动画"用的空事件数组 (避免每帧 GC) */
+	/** Empty event array used to pump sustain/idle logic every frame (avoid per-frame GC). */
 	private var tmpEmptyPress:Array<Int> = [];
 	private var tmpEmptyRelease:Array<Int> = [];
 
-	// ---- 高精度判定回放 ----
+	// ---- high-precision judgement replay ----
 	public var hasJudgments(default, null):Bool = false;
 	private var judgmentMap:Map<String, NoteJudgment> = new Map<String, NoteJudgment>();
 	public var replayVersion(default, null):Int = 1;
 
-	// ---- 回放判定手感提示 (LeatherEngine 移植) ----
-	/** 回放恢复的判定窗口与玩家当前设置不同时为 true */
+	// ---- judgement feel restored during replay ----
+	/** True when the windows restored by the replay differ from the player's current settings. */
 	public var judgementRestoredDifferent:Bool = false;
-	/** 回放实际使用的判定窗口描述, 例如 "25/50/70/100 (Marvelous)" */
+	/** Description of the judgement windows the replay actually used, e.g. "25/50/70/100 (Marvelous)". */
 	public var judgementRestoreInfo:String = '';
 
-	// ---- 回放状态 ----
+	// ---- replay state ----
 	private var globalTick:Int = 0;
 	private var lastFrameCount:Int = 0;
-	/** 回放时的当前帧时间 (用于 note 可击中判断) */
+	/** Current replay frame time (used for note-hit checks). */
 	public var replayTime:Float = 0;
 	private var lastReplayTimeForResync:Float = Math.NaN;
 
 	private var lastSongSpeed:Float = 1;
 	private var lastPlaybackRate:Float = 1;
 
-	// ---- 待写入的判定 (录制时跨帧累积) ----
+	// ---- pending judgements (accumulated across frames while recording) ----
 	private var pendingJudgments:Array<NoteJudgment> = [];
 
-	// 上一个写入帧的 songSpeed / playbackRate —— 用于只在变速时额外采样
+	// songSpeed / playbackRate of the last written frame -- sample an extra frame only on speed changes
 	private var lastRecordedSongSpeed:Float = 1;
 	private var lastRecordedPlaybackRate:Float = 1;
 
@@ -171,7 +171,7 @@ class Replay extends FlxBasic
 		super();
 	}
 
-	/** 开始录制 (清空旧数据) */
+	/** Starts recording (clears previous data). */
 	public function startRecording():Void
 	{
 		isRecording = true;
@@ -187,13 +187,13 @@ class Replay extends FlxBasic
 		lastReplayTimeForResync = Math.NaN;
 	}
 
-	/** 停止录制 */
+	/** Stops recording. */
 	public function stopRecording():Void
 	{
 		isRecording = false;
 	}
 
-	/** 从外部帧数组 + 状态记录加载回放 */
+	/** Loads a replay from an external frame array plus a state record. */
 	public function loadFromData(frames:Array<FrameSave>, ?stateRecord:StateRecord):Void
 	{
 		isRecording = false;
@@ -204,7 +204,7 @@ class Replay extends FlxBasic
 		ensureLaneMap();
 	}
 
-	/** 从文件加载回放 (宽容解析: 兼容 BOM/前后垃圾字节/多种帧字段名/缺字段帧) */
+	/** Loads a replay from a file (lenient: BOM, stray bytes, alternate frame field names, incomplete frames). */
 	public function loadFromFile(path:String):Void
 	{
 		#if sys
@@ -247,7 +247,7 @@ class Replay extends FlxBasic
 		#end
 	}
 
-	/** 清空回放模拟按键状态 (加载回放/开始录制时调用) */
+	/** Clears the simulated key state (on replay load / recording start). */
 	private function resetSimState():Void
 	{
 		simPressed.clear();
@@ -256,27 +256,27 @@ class Replay extends FlxBasic
 		simKnownKeys.clear();
 	}
 
-	// ======================== 回放模拟按键 (供脚本 API) ========================
+	// ======================== replay key simulation (script API) ========================
 
-	/** 回放中: 该键是否在录制数据中出现过 (决定脚本查询是否以模拟状态为准) */
+	/** Replay: whether the key appears in the recording (decides if script queries use the simulated state). */
 	public function keyExists(keyName:String):Bool
 	{
 		return simKnownKeys.exists(normalizeKeyName(keyName));
 	}
 
-	/** 回放中: 该键本帧是否刚按下 (与 keyJustPressed('space') 等脚本 API 对应) */
+	/** Replay: whether the key went down this frame (matches Script keyJustPressed('space') etc.). */
 	public function keyJustPressed(keyName:String):Bool
 	{
 		return simJustPressed.get(normalizeKeyName(keyName)) == true;
 	}
 
-	/** 回放中: 该键当前是否按住 */
+	/** Replay: whether the key is currently held. */
 	public function keyPressed(keyName:String):Bool
 	{
 		return simPressed.get(normalizeKeyName(keyName)) == true;
 	}
 
-	/** 回放中: 该键本帧是否刚释放 */
+	/** Replay: whether the key was released this frame. */
 	public function keyJustReleased(keyName:String):Bool
 	{
 		return simJustReleased.get(normalizeKeyName(keyName)) == true;
@@ -288,7 +288,7 @@ class Replay extends FlxBasic
 		return keyName.toUpperCase();
 	}
 
-	/** 构建判定映射 (用于精确回放) */
+	/** Builds the judgement map (for exact replay). */
 	private function buildJudgmentMap():Void
 	{
 		judgmentMap.clear();
@@ -305,19 +305,19 @@ class Replay extends FlxBasic
 		}
 	}
 
-	/** 获取指定 Note 的录制判定 (若存在) */
+	/** Recorded judgement of the given note, when present. */
 	public function getRecordedJudgment(strumTime:Float, noteData:Int):NoteJudgment
 	{
 		return judgmentMap.get('${strumTime}_${noteData}');
 	}
 
-	/** 从 StateRecord 恢复游戏设置 */
+	/** Restores game settings from a StateRecord. */
 	private function restoreState(stateRecord:Dynamic):Void
 	{
 		var ps = PlayState.instance;
 		if (ps == null) return;
 
-		// 记录恢复前的判定手感, 用于"仅在不相同的时候提醒"
+		// Remember the judgement feel before restoring, so a mismatch can be reported
 		var prevSick:Int = ClientPrefs.data.sickWindow;
 		var prevGood:Int = ClientPrefs.data.goodWindow;
 		var prevBad:Int = ClientPrefs.data.badWindow;
@@ -328,7 +328,7 @@ class Replay extends FlxBasic
 		var prevRatingOffset:Int = ClientPrefs.data.ratingOffset;
 		var prevGuitarHero:Bool = ClientPrefs.data.guitarHeroSustains;
 
-		// 数值/布尔字段统一经容错转换 (兼容字符串/缺失/类型异常, 不同版本录的回放都能进)
+		// Numeric/boolean fields go through lenient conversion (strings/missing/wrong types; replays from any version load)
 		if (stateRecord.songSpeed != null) ps.songSpeed = toFloat(stateRecord.songSpeed, ps.songSpeed);
 		if (stateRecord.playbackRate != null) ps.playbackRate = toFloat(stateRecord.playbackRate, ps.playbackRate);
 		if (stateRecord.healthGain != null) ps.healthGain = toFloat(stateRecord.healthGain, ps.healthGain);
@@ -341,8 +341,8 @@ class Replay extends FlxBasic
 		if (stateRecord.goodWindow != null) ClientPrefs.data.goodWindow = Std.int(toFloat(stateRecord.goodWindow, ClientPrefs.data.goodWindow));
 		if (stateRecord.badWindow != null) ClientPrefs.data.badWindow = Std.int(toFloat(stateRecord.badWindow, ClientPrefs.data.badWindow));
 		if (stateRecord.safeFrames != null) ClientPrefs.data.safeFrames = toFloat(stateRecord.safeFrames, ClientPrefs.data.safeFrames);
-		// LeatherEngine 移植: 回放时恢复录制时的判定手感, 保证评分/评级完全一致
-		// 清洗: 只接受合法数字数组, 长度不足/类型异常一律忽略, 不覆盖玩家当前设置
+		// Restore the recorded judgement windows so the replay scores exactly as it did live.
+		// Only a well-formed numeric array is accepted; anything else leaves the player's settings alone.
 		if (stateRecord.judgementTimings != null && Std.isOfType(stateRecord.judgementTimings, Array))
 		{
 			var rawTimings:Array<Dynamic> = cast stateRecord.judgementTimings;
@@ -364,13 +364,13 @@ class Replay extends FlxBasic
 			ClientPrefs.data.judgementPreset = backend.Ratings.presetNameForTimings(ClientPrefs.data.judgementTimings);
 		if (stateRecord.marvelousRatings != null) ClientPrefs.data.marvelousRatings = toBool(stateRecord.marvelousRatings);
 		if (stateRecord.marvelousWindow != null) ClientPrefs.data.marvelousWindow = Std.int(toFloat(stateRecord.marvelousWindow, ClientPrefs.data.marvelousWindow));
-		// osu! 尾判: 强制还原录制时的尾判开关与窗口, 保证尾判成绩可复现
+		// osu! tail judgement: force-restored from the recording so tail scores are reproducible
 		//if (stateRecord.osuTailJudgement != null)
 		//	ClientPrefs.data.osuTailJudgement = toBool(stateRecord.osuTailJudgement);
 		//else
-			// 老版本回放没有尾判字段: 按关闭处理, 与录制时 (无尾判) 的行为一致
+			// Older replays have no tail field: treat it as off, matching how it was recorded
 		//	ClientPrefs.data.osuTailJudgement = false;
-		// 尾判窗口倍率: 还原录制时的倍率 (非法值回退默认 2.0)
+		// Tail window multiplier: restore the recorded value (invalid values fall back to 2.0)
 		//if (stateRecord.tailWindowMult != null)
 		//{
 		//	var mult:Float = toFloat(stateRecord.tailWindowMult, 2.0);
@@ -381,7 +381,7 @@ class Replay extends FlxBasic
 		//}
 		//else
 		//	ClientPrefs.data.tailWindowMult = 2.0;
-		// 判定相关手感补全: 评级偏移 / 长条单音符判定 (此前未强制还原)
+		// Remaining judgement feel: rating offset / sustain-as-single-note (not force-restored before)
 		if (stateRecord.ratingOffset != null) ClientPrefs.data.ratingOffset = Std.int(toFloat(stateRecord.ratingOffset, ClientPrefs.data.ratingOffset));
 		if (stateRecord.guitarHeroSustains != null)
 		{
@@ -390,7 +390,7 @@ class Replay extends FlxBasic
 		}
 		if (stateRecord.replayVersion != null) replayVersion = Std.int(toFloat(stateRecord.replayVersion, 1));
 
-		// 判定手感变化检测: 只有在回放判定与当前设置不同时才提示
+		// Judgement-feel change detection: only report when the replay windows differ from the current settings
 		judgementRestoredDifferent =
 			(prevSick != ClientPrefs.data.sickWindow
 			|| prevGood != ClientPrefs.data.goodWindow
@@ -410,10 +410,10 @@ class Replay extends FlxBasic
 					ClientPrefs.data.judgementPreset + " (" + Std.string(t[0]) + "/" + Std.string(t[1]) + "/" + Std.string(t[2]) + "/" + Std.string(t[3]) + ")"
 					+ (ClientPrefs.data.marvelousRatings ? " (Marvelous)" : "");
 			else
-				// 窗口数据缺失/异常: 只提示预设名, 避免数组越界
+				// Missing / invalid window data: report only the preset name to avoid an out-of-bounds read
 				judgementRestoreInfo = ClientPrefs.data.judgementPreset + " (unknown windows)"
 					+ (ClientPrefs.data.marvelousRatings ? " (Marvelous)" : "");
-			// osu! 尾判 / 评级偏移 / 长条单音符判定 的还原信息 (仅列出入)
+			// Restore info for tail judgement / rating offset / sustain-as-single-note (list only the ones set)
 			var extra:Array<String> = [];
 			//if (prevTailOn != ClientPrefs.data.osuTailJudgement)
 			//	extra.push("osu! Tail: " + (ClientPrefs.data.osuTailJudgement ? "ON" : "OFF"));
@@ -425,12 +425,12 @@ class Replay extends FlxBasic
 				extra.push("Sustains as One Note: " + (ClientPrefs.data.guitarHeroSustains ? "ON" : "OFF"));
 			if (extra.length > 0)
 				judgementRestoreInfo += "\n" + extra.join("\n");
-			// 回放还原的窗口与玩家设置不同 → 判定类型标记为自定义
+			// Replay windows differ from the player's settings -> mark the judgement type custom
 			ClientPrefs.data.judgementPreset = backend.Ratings.presetNameForTimings(ClientPrefs.data.judgementTimings);
 		}
 		else
 			judgementRestoreInfo = '';
-		// 多k: 回放键数与当前谱面不一致时警告 (轨道映射会错位)
+		// Multi-key: warn when the replay key count does not match the chart (lane mapping would shift)
 		if (stateRecord.mania != null)
 		{
 			var replayMania:Int = Std.int(toFloat(stateRecord.mania, -1));
@@ -442,7 +442,7 @@ class Replay extends FlxBasic
 		lastPlaybackRate = ps.playbackRate;
 	}
 
-	/** 获取当前 StateRecord */
+	/** Current StateRecord. */
 	public function getStateRecord():StateRecord
 	{
 		var ps = PlayState.instance;
@@ -486,13 +486,7 @@ class Replay extends FlxBasic
 			ratingOffset: ClientPrefs.data.ratingOffset,
 			guitarHeroSustains: ClientPrefs.data.guitarHeroSustains,
 			replayVersion: ClientPrefs.data.saveReplayData ? 2 : 1,
-			mania: PlayState.mania,
-			#if ONLINE_ALLOWED
-			isOnline: PlayState.seiunOnline,
-			roomCode: online.client.OnlineSession.roomCode,
-			roomName: online.client.OnlineSession.roomName,
-			onlineMode: online.client.OnlineSession.mode
-			#end
+			mania: PlayState.mania
 		};
 	}
 
@@ -501,16 +495,16 @@ class Replay extends FlxBasic
 		super.destroy();
 	}
 
-	// ======================== 录制 ========================
+	// ======================== recording ========================
 
-	/** 每帧更新: 检测按键变化并录制帧 */
+	/** Per-frame update: detects key changes and records frames. */
 	override public function update(elapsed:Float):Void
 	{
 		super.update(elapsed);
 		if (!isRecording || PlayState.instance == null) return;
 
-		// 不保存回放数据时, 录制产物不会被消费 (Allscore 只在 saveReplayData 时取帧),
-		// 直接跳过整个录制管线, 避免狂按时每帧全键盘扫描造成掉帧。
+		// With replay saving off the recording is never consumed (Allscore only reads frames when saveReplayData is set),
+		// so skip the whole pipeline and avoid a full keyboard scan every frame while keys are hammered.
 		if (!ClientPrefs.data.saveReplayData)
 		{
 			_pendingPressKeys.resize(0);
@@ -519,9 +513,9 @@ class Replay extends FlxBasic
 		}
 
 		var ps = PlayState.instance;
-		// 只在"按键事件 / 判定 / 变速或倍速变化"时才录帧；
-		// 去掉了原先的强制 60fps 匀速采样，静默停顿帧不再重复写入，
-		// 能显著减小回放文件的体积与内存占用（回放端靠 press/release 事件维持按键状态，无需空帧）。
+		// Frames are recorded only on key events / judgements / speed changes;
+		// the old forced 60fps sampling is gone, so silent frames are not written and the replay file
+		// and its memory footprint shrink a lot (playback keeps key state from press/release events).
 		var hasChanges:Bool = false;
 		if (FlxG.keys.justPressed.ANY || FlxG.keys.justReleased.ANY)
 			hasChanges = true;
@@ -546,7 +540,7 @@ class Replay extends FlxBasic
 		}
 	}
 
-	/** 记录 Note 判定 (高精度回放用) */
+	/** Records a note judgement (for high-precision replay). */
 	public function recordJudgment(strumTime:Float, noteData:Int, hitDiff:Float, rating:String, isSustain:Bool):Void
 	{
 		if (!isRecording || !ClientPrefs.data.saveReplayData) return;
@@ -559,16 +553,16 @@ class Replay extends FlxBasic
 		});
 	}
 
-	/** 捕获当前帧的按键状态 */
+	/** Captures the key state of the current frame. */
 	private function captureFrame():FrameSave
 	{
 		ensureLaneMap();
 		var pressKey:Array<String> = [];
 		var releaseKey:Array<String> = [];
 
-		// 直接遍历全部键 (无上限, 任意 mod 自定义键都会被录制还原):
-		// 只做 checkStatus 查找, 按下/释放时才取键名字符串, 避免旧实现的
-		// 200+ 键 x (toUpperCase + 多次 Map 查找) 字符串分配开销。
+		// Iterate every key so any mod-defined binding is recorded:
+		// only checkStatus lookups run per frame; key names are resolved on press/release,
+		// avoiding the old 200+ keys x (toUpperCase + map lookups) string allocation cost.
 		if (cachedKeyList == null)
 			cachedKeyList = [for (k in FlxKey.toStringMap.keys()) k];
 		for (flxKey in cachedKeyList)
@@ -580,7 +574,7 @@ class Replay extends FlxBasic
 				releaseKey.push(FlxKey.toStringMap.get(flxKey));
 		}
 
-		// 合并由安卓控件直接通知的按键（不修改 FlxG.keys，避免 Controls 系统二次判定）
+		// Merge keys reported directly by the Android controls (without touching FlxG.keys, so Controls does not double-judge)
 		for (keyName in _pendingPressKeys)
 		{
 			if (pressKey.indexOf(keyName) < 0)
@@ -604,11 +598,11 @@ class Replay extends FlxBasic
 		};
 	}
 
-	// ---- 安卓控件直接通知 Replay 的录制方法（不模拟键盘，避免 Controls 二次判定） ----
+	// ---- recording entry points used by the Android controls (no keyboard simulation, so Controls does not double-judge) ----
 	private var _pendingPressKeys:Array<String> = [];
 	private var _pendingReleaseKeys:Array<String> = [];
 
-	/** 由安卓控件（Hitbox/VirtualPad）调用，记录按键按下 */
+	/** Called by the Android controls (hitbox / virtual pad) to record a key press. */
 	public function recordPress(keyName:String):Void
 	{
 		if (!isRecording) return;
@@ -616,7 +610,7 @@ class Replay extends FlxBasic
 			_pendingPressKeys.push(keyName);
 	}
 
-	/** 由安卓控件（Hitbox/VirtualPad）调用，记录按键释放 */
+	/** Called by the Android controls (hitbox / virtual pad) to record a key release. */
 	public function recordRelease(keyName:String):Void
 	{
 		if (!isRecording) return;
@@ -625,8 +619,8 @@ class Replay extends FlxBasic
 	}
 
 	/**
-	 * 静态通知方法：供 FlxHitbox / FlxVirtualPad 直接调用。
-	 * 根据设置键值将按键名传给当前 Replay 实例录制。
+	 * Static notification used by FlxHitbox / FlxVirtualPad directly.
+	 * Resolves the bind value and forwards the key name to the current Replay instance.
 	 */
 	public static function notifyPress(keyName:String):Void
 	{
@@ -642,9 +636,9 @@ class Replay extends FlxBasic
 			ps.replayExam.recordRelease(keyName);
 	}
 
-	// ======================== 回放 ========================
+	// ======================== playback ========================
 
-	/** 回放主逻辑: 由 PlayState.update() 每帧调用 */
+	/** Main replay logic: called every frame by PlayState.update(). */
 	public function replayUpdate(elapsed:Float):Void
 	{
 		if (isRecording || PlayState.instance == null) return;
@@ -661,7 +655,7 @@ class Replay extends FlxBasic
 		if (globalTick == 0)
 			Replay.dbgLog('[DEBUG-rpl] replayUpdate start, frames=' + frameData.length + ' songPos=' + targetSongPos);
 
-		// 每帧开始时清空"刚按下/刚释放"边缘状态 (按住状态保留到释放为止)
+		// Clear the just-pressed / just-released edge flags at the start of each frame (held state persists until release)
 		simJustPressed.clear();
 		simJustReleased.clear();
 
@@ -670,7 +664,7 @@ class Replay extends FlxBasic
 			var frame = frameData[lastFrameCount];
 			this.replayTime = frame.time;
 
-			// 速率重同步
+			// Rate resync
 			if (!Math.isNaN(lastReplayTimeForResync))
 			{
 				if (Math.abs(frame.songSpeed - lastSongSpeed) > 0.1)
@@ -686,7 +680,7 @@ class Replay extends FlxBasic
 			}
 			lastReplayTimeForResync = frame.time;
 
-			// 解析按键 → 轨道
+			// Resolve keys -> lanes
 			tmpPressLanes.resize(0);
 			tmpReleaseLanes.resize(0);
 
@@ -696,7 +690,7 @@ class Replay extends FlxBasic
 				var lane:Null<Int> = keyToLane.get(flxKey);
 				if (lane != null) tmpPressLanes.push(lane);
 				keysHeld.set(flxKey, true);
-				// 记录模拟按键状态 (供脚本 keyJustPressed/keyPressed 查询)
+				// Record the simulated key state (for script keyJustPressed/keyPressed queries)
 				var simName:String = normalizeKeyName(keyName);
 				simPressed.set(simName, true);
 				simJustPressed.set(simName, true);
@@ -709,17 +703,17 @@ class Replay extends FlxBasic
 				var lane:Null<Int> = keyToLane.get(flxKey);
 				if (lane != null) tmpReleaseLanes.push(lane);
 				keysHeld.remove(flxKey);
-				// 记录模拟按键状态 (供脚本 keyJustReleased 查询)
+				// Record the simulated key state (for script keyJustReleased queries)
 				var simName:String = normalizeKeyName(keyName);
 				simPressed.remove(simName);
 				simJustReleased.set(simName, true);
 				simKnownKeys.set(simName, true);
 			}
 
-			// 先应用完本帧 press/release 再生成 held 状态，避免释放帧仍把该轨道视为按住
+			// Apply this frame's press/release before building the held lanes, so a release frame is not still held
 			buildHeldLanes();
 
-			// 通知 PlayState 处理按键
+			// Hand the keys to PlayState
 			ps.replayApplyInput(frame.time, tmpPressLanes, tmpReleaseLanes, tmpHeldLanes);
 
 			lastFrameCount++;
@@ -728,15 +722,15 @@ class Replay extends FlxBasic
 				Replay.dbgLog('[DEBUG-rpl] replayUpdate progress lastFrameCount=' + lastFrameCount + '/' + frameData.length + ' songPos=' + targetSongPos);
 		}
 
-		// 关键：每帧都基于当前按键状态补一次"长条命中 / 空闲动画"。
-		// 录制瘦身之后，两帧按键事件之间不再有空帧，若只在 while 里调用 replayApplyInput，
-		// 长条 body 期间没有任何新事件时就不会再走长条判定 → 直接 miss；角色也不会回 idle。
-		// 这里用空 press/release + 当前 held-lanes 补跑一次，逻辑幂等且安全。
+		// Pump sustain hits / idle animations once per frame from the current key state.
+		// Recording is trimmed, so there are no empty frames between key events; if replayApplyInput only ran
+		// inside the while loop, a sustain body with no new events would never be judged and the character
+		// would not return to idle. The idempotent empty press/release pump below covers that case.
 		buildHeldLanes();
 		ps.replayApplyInput(Conductor.songPosition, tmpEmptyPress, tmpEmptyRelease, tmpHeldLanes);
 	}
 
-	/** 根据当前 keysHeld 构建按住轨道数组 (写入 tmpHeldLanes) */
+	/** Builds the held-lane array from keysHeld (written into tmpHeldLanes). */
 	private inline function buildHeldLanes():Void
 	{
 		tmpHeldLanes.resize(laneCount);
@@ -749,7 +743,7 @@ class Replay extends FlxBasic
 		}
 	}
 
-	/** 构建 FlxKey → 轨道映射 */
+	/** Builds the FlxKey -> lane map. */
 	private function ensureLaneMap():Void
 	{
 		var ps = PlayState.instance;
@@ -778,13 +772,13 @@ class Replay extends FlxBasic
 
 	// ======================== I/O ========================
 
-	/** 获取帧数据 (用于保存到 Allscore) */
+	/** Frame data for saving to Allscore. */
 	public function getFrameData():Array<FrameSave>
 	{
 		return frameData;
 	}
 
-	/** 保存回放到文件 */
+	/** Saves a replay to a file. */
 	public static function saveToFile(frames:Array<FrameSave>, stateRecord:StateRecord, path:String):Void
 	{
 		#if sys
@@ -797,7 +791,7 @@ class Replay extends FlxBasic
 		#end
 	}
 
-	/** 从文件加载回放 (宽容解析, 与 loadFromFile 同一套容错) */
+	/** Loads a replay from a file (same lenient parsing as loadFromFile). */
 	public static function loadFromFileStatic(path:String):{frames:Array<FrameSave>, state:StateRecord}
 	{
 		#if sys
@@ -819,9 +813,9 @@ class Replay extends FlxBasic
 		#end
 	}
 
-	// ======================== 容错解析 / 归一化 (兼容不同版本、不同来源的回放文件) ========================
+	// ======================== lenient parsing / normalisation ========================
 
-	/** 宽容解析回放 JSON: 去 BOM、容忍前后垃圾字节/注释, 返回 null 表示无法解析 */
+	/** Lenient replay JSON parsing: strips BOM, tolerates stray bytes/comments; null means unparseable. */
 	private static function parseReplayJson(content:String):Dynamic
 	{
 		if (content == null) return null;
@@ -833,7 +827,7 @@ class Replay extends FlxBasic
 		try { json = Json.parse(content); } catch (e:Dynamic) { json = null; }
 		if (json == null)
 		{
-			// 截取第一个 { 到最后一个 } 再试一次 (容忍前后垃圾内容)
+			// Retry from the first { to the last } (tolerates surrounding garbage)
 			var start:Int = content.indexOf('{');
 			var end:Int = content.lastIndexOf('}');
 			if (start >= 0 && end > start)
@@ -844,7 +838,7 @@ class Replay extends FlxBasic
 		return json;
 	}
 
-	/** 从解析结果中取出帧数组 (兼容 frameRecord / frames / frameData / 顶层就是数组) */
+	/** Extracts the frame array (frameRecord / frames / frameData / a top-level array). */
 	private static function extractFrames(json:Dynamic):Array<FrameSave>
 	{
 		var raw:Dynamic = null;
@@ -859,8 +853,8 @@ class Replay extends FlxBasic
 	}
 
 	/**
-	 * 把任意来源的帧数据归一化为结构完整的 FrameSave 数组。
-	 * 缺字段/字段类型不对的帧不会被丢弃, 而是补默认值, 尽量让回放能进得来、能播。
+	 * Normalises frames from any source into a complete FrameSave array.
+	 * Frames with missing or wrong-typed fields are patched with defaults rather than dropped, so more replays load and play.
 	 */
 	private static function normalizeFrames(raw:Dynamic):Array<FrameSave>
 	{
@@ -873,7 +867,7 @@ class Replay extends FlxBasic
 		}
 		else if (Type.typeof(raw) == TObject)
 		{
-			// 整个对象可能是 {frames:[...]} / {frameRecord:[...]} 的包装
+			// The whole value may be a {frames:[...]} / {frameRecord:[...]} wrapper
 			var inner:Dynamic = null;
 			if (Reflect.hasField(raw, 'frames')) inner = raw.frames;
 			else if (Reflect.hasField(raw, 'frameRecord')) inner = raw.frameRecord;
@@ -889,16 +883,16 @@ class Replay extends FlxBasic
 		return out;
 	}
 
-	/** 归一化单个帧 (非对象/损坏帧直接跳过) */
+	/** Normalises one frame (non-object / corrupt frames are skipped). */
 	private static function normalizeFrame(d:Dynamic, out:Array<FrameSave>):Void
 	{
 		if (d == null || Type.typeof(d) != TObject) return;
 
 		var rawTime:Dynamic = d.time;
 		var time:Float = toFloat(rawTime, 0);
-		// 没有时间戳/时间戳非数字的帧按上一帧顺序续排, 保证事件顺序不塌缩到 0ms。
-		// 注意不能把合法的倒计时时间（负数/0）当成缺失值改写，否则回放里倒计时期间的
-		// 按下事件会被提前到第一帧附近，而释放事件仍保留在原时间，导致按键看起来一直按住。
+		// Frames without a numeric timestamp continue after the previous frame so event order never collapses to 0ms.
+		// A legitimate countdown time (negative or 0) must not be treated as missing: presses during the
+		// countdown would move to the first frames while releases stayed put, leaving keys stuck held.
 		if ((rawTime == null || Math.isNaN(Std.parseFloat(Std.string(rawTime)))) && out.length > 0)
 			time = out[out.length - 1].time + 1;
 		var songSpeed:Float = toFloat(d.songSpeed, 1); if (songSpeed <= 0) songSpeed = 1;
@@ -914,7 +908,7 @@ class Replay extends FlxBasic
 		});
 	}
 
-	/** 数值容错: 数字/数字字符串/布尔都接受, 解析失败返回默认值 */
+	/** Numeric coercion: numbers, numeric strings and booleans; parse failures return the default. */
 	private static function toFloat(v:Dynamic, def:Float):Float
 	{
 		if (v == null) return def;
@@ -922,7 +916,7 @@ class Replay extends FlxBasic
 		return Math.isNaN(f) ? def : f;
 	}
 
-	/** 布尔容错: true/1/"true"/"1" 都算 true */
+	/** Boolean coercion: true/1/"true"/"1" all count as true. */
 	private static function toBool(v:Dynamic):Bool
 	{
 		if (v == null) return false;
@@ -931,7 +925,7 @@ class Replay extends FlxBasic
 		return (Std.string(v).toLowerCase() == 'true' || Std.string(v).toLowerCase() == '1');
 	}
 
-	/** 按键数组容错: 数组原样保留, 单个键名/键码也接受 */
+	/** Key-array coercion: arrays pass through; a single key name or keycode is accepted too. */
 	private static function toKeyArray(v:Dynamic):Array<String>
 	{
 		if (v == null) return [];
@@ -945,7 +939,7 @@ class Replay extends FlxBasic
 		return [Std.string(v)];
 	}
 
-	/** 判定数据容错: 只保留结构完整的判定, 其余忽略 */
+	/** Judgement coercion: only structurally complete judgements are kept. */
 	private static function toJudgments(v:Dynamic):Array<NoteJudgment>
 	{
 		if (v == null || !Std.isOfType(v, Array)) return null;
@@ -965,7 +959,7 @@ class Replay extends FlxBasic
 		return out.length > 0 ? out : null;
 	}
 
-	/** 生成回放文件名 */
+	/** Builds a replay file name. */
 	public static function generateFileName(songName:String, difficulty:Int):String
 	{
 		var safeName:String = Paths.formatToSongPath(songName);
@@ -974,7 +968,7 @@ class Replay extends FlxBasic
 		return '${safeName}_${difficulty}_${timestamp}_${random}.rsd';
 	}
 
-	/** 将 FrameSave 数组转为 Dynamic (用于 Allscore 序列化) */
+	/** Converts a FrameSave array to Dynamic (for Allscore serialisation). */
 	public static function framesToDynamic(frames:Array<FrameSave>):Array<Dynamic>
 	{
 		var result:Array<Dynamic> = [];
@@ -992,7 +986,7 @@ class Replay extends FlxBasic
 		return result;
 	}
 
-	/** 将 Dynamic 数组转回 FrameSave (从 Allscore 反序列化, 容错归一化) */
+	/** Converts a Dynamic array back to FrameSave (Allscore deserialisation, lenient normalisation). */
 	public static function dynamicToFrames(data:Array<Dynamic>):Array<FrameSave>
 	{
 		return normalizeFrames(data);

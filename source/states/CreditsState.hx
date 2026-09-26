@@ -94,10 +94,13 @@ class CreditsState extends MusicBeatState
 
 		var pisspoop:Array<Array<String>> = [ //Name - Icon name - Description - Link - BG Color
 			['Seiun Engine Team'],
-			['Mo_Hong',	'mohong','Main Programmer of Seiun Engine(Modified from Psych Engine)','https://space.bilibili.com/672029688',	'87ceeb'],
+			['mo_hong',	'mohong','Main Programmer of Seiun Engine(Modified from Psych Engine)','https://space.bilibili.com/672029688',	'87ceeb'],
 			['Li.tmc', 'Li.tmc', '(Old Mohong Engine)Engine icon', 'https://space.bilibili.com/3537117498051255', 'FF69B4'],
 			['None', 'none', 'Android port lol.', 'https://space.bilibili.com/392851046', 'A07275'],
 			['SeiunEngine 鸣谢名单', 'none', 'SeiunEngine 特别鸣谢人员（按确定查看）', '', 'FF69B4'],
+			[''],
+			['Online UI / Protocol Reference'],
+			['Snirozu (Funkin-Psych-Online)', 'none', 'Online menu UI and room/protocol model reference (Apache-2.0)', 'https://github.com/Snirozu/Funkin-Psych-Online', '7C5CFF'],
 			[''],
 			['Psych Engine Team'],
 			['Shadow Mario',		'shadowmario',		'Main Programmer of Psych Engine',								'https://twitter.com/Shadow_Mario_',	'444444'],

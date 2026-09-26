@@ -78,6 +78,14 @@ class OptionsState extends MusicBeatState
 
 	static var curSelected:Int = 0;
 	public static var onPlayState:Bool = false;
+	#if ONLINE_ALLOWED
+	// When set, pressing BACK returns into the online RoomState instead of the main menu. Set by
+	// `online.substates.RoomSettingsSubstate`, and cleared when options are opened from the main
+	// menu or from the pause menu, the same way `onPlayState` is handled in
+	// `source/states/MainMenuState.hx:521` / `source/substates/PauseSubState.hx:546`.
+	// Defaults to false, so the offline options screen keeps its original BACK behaviour.
+	public static var onOnlineRoom:Bool = false;
+	#end
 
 	var categorySprites:Array<FlxSprite>;
 	var settingsSprites:Array<FlxSprite>;
@@ -106,11 +114,11 @@ class OptionsState extends MusicBeatState
 	var setDescText:FlxText;
 	var setTitleText:FlxTextMenuItem;
 
-	/** 0.7.3+ Note 皮肤预览 (设置页顶部的四个 StrumNote)。 */
+	/** 0.7.3+ note-skin preview (four StrumNotes at the top of the options page). */
 	var settingsNotes:FlxTypedGroup<StrumNote> = null;
-	/** 预览滑入/滑出动画 (0.7.3 同款)。 */
+	/** Preview slide-in / slide-out tween. */
 	var settingsNotesTween:Array<FlxTween> = [];
-	/** noteSkin 选项在设置列表里的行号 (-1 = 本页没有)。 */
+	/** Row index of the noteSkin option in the list (-1 = absent on this page). */
 	var settingsNoteSkinID:Int = -1;
 
 	var currentMode:Int = MODE_CATEGORY;
@@ -153,7 +161,7 @@ class OptionsState extends MusicBeatState
 		playEnterAnimation();
 		syncDragToWheel();
 
-		// 不在 create() 里保存设置: 数据尚未变化, 同步 flush 在移动端只会白卡片一帧
+		// Settings are not saved in create(): nothing has changed yet, and a sync flush only costs a frame on mobile
 
 		#if (TOUCH_CONTROLS || desktop)
 		addVirtualPad(UP_DOWN, A_B_C);
@@ -418,6 +426,10 @@ class OptionsState extends MusicBeatState
 					LoadingState.loadAndSwitchState(new PlayState());
 					FlxG.sound.music.volume = 0;
 				}
+				#if ONLINE_ALLOWED
+				else if (onOnlineRoom)
+					LoadingState.loadAndSwitchState(new online.states.RoomState());
+				#end
 				else
 					MusicBeatState.switchState(new MainMenuState());
 			});
@@ -498,7 +510,7 @@ class OptionsState extends MusicBeatState
 					return;
 				}
 
-				// 触屏控制: 桌面端也直接打开安卓控件子状态 (同时强制编译该类)
+				// Touch controls: open the Android control substate on desktop too (also forces the class to compile)
 				if (foundCat.id == 'touch_controls')
 				{
 					transitioning = true;
@@ -508,7 +520,7 @@ class OptionsState extends MusicBeatState
 					return;
 				}
 
-				// 模组分类 → 使用 ModSubState（脚本驱动）
+				// Mod category -> ModSubState (script driven)
 				if (foundCat.modSource != null && foundCat.modSource.length > 0)
 				{
 					transitioning = true;
@@ -518,7 +530,7 @@ class OptionsState extends MusicBeatState
 					return;
 				}
 
-				// 内置分类 → 尝试编译类，失败则回退 ModSubState
+				// Built-in category -> try to resolve the class, fall back to ModSubState
 				var resolvedClass = Type.resolveClass(foundCat.substateClass);
 				if (resolvedClass != null)
 				{
@@ -543,14 +555,14 @@ class OptionsState extends MusicBeatState
 					return;
 				}
 
-				// 模组分类 → 使用 ModState（脚本驱动）
+				// Mod category -> ModState (script driven)
 				if (foundCat.modSource != null && foundCat.modSource.length > 0)
 				{
 					LoadingState.loadAndSwitchState(new states.ModState(foundCat.stateClass));
 					return;
 				}
 
-				// 内置分类 → 尝试编译类，失败则回退 ModState
+				// Built-in category -> try to resolve the class, fall back to ModState
 				var resolvedStateClass = Type.resolveClass(foundCat.stateClass);
 				if (resolvedStateClass != null)
 				{
@@ -581,7 +593,7 @@ class OptionsState extends MusicBeatState
 			case 'adjust':
 				LoadingState.loadAndSwitchState(new options.NoteOffsetState());
 			default:
-				// 未知分类，回退到分类视图
+				// Unknown category: fall back to the category view
 				FlxG.sound.play(Paths.sound('cancelMenu'));
 		}
 	}
@@ -615,7 +627,7 @@ class OptionsState extends MusicBeatState
 		setOptionsArray = optionsArray;
 		setCurSelected = 0;
 		setCurOption = null;
-		// setBoyfriend 不清空: bf 构建开销大 (角色 JSON+图集+全部动画), 跨页面复用
+		// setBoyfriend is not cleared: building bf is expensive (character JSON + atlas + animations), so it is reused
 		nextAccept = 5;
 		holdTime = 0;
 		holdValue = 0;
@@ -645,8 +657,8 @@ class OptionsState extends MusicBeatState
 		settingsSprites.push(setTitleText);
 
 		setDescText = new FlxText(50, 600, 1180, "", 32);
-		// OUTLINE_FAST: 描述文本每次选中行都会变, OUTLINE 边框一次重光栅要 16 次全宽位图拷贝,
-		// 移动端每次上下移动选项都卡; OUTLINE_FAST 由 shader 画边, 光栅成本约 1/4。
+		// OUTLINE_FAST: the description text changes on every selection and a normal OUTLINE border re-rasterizes
+		// the full width several times on mobile. OUTLINE_FAST draws the border in the shader and costs ~1/4.
 		setDescText.setFormat(Paths.optionsfont(), 32, FlxColor.WHITE, CENTER, FlxTextBorderStyle.OUTLINE_FAST, FlxColor.BLACK);
 		setDescText.scrollFactor.set();
 		setDescText.borderSize = 2.4;
@@ -783,7 +795,7 @@ class OptionsState extends MusicBeatState
 		if (setGrpOptions != null) { remove(setGrpOptions); setGrpOptions.destroy(); setGrpOptions = null; }
 		if (setGrpTexts != null) { remove(setGrpTexts); setGrpTexts.destroy(); setGrpTexts = null; }
 		if (setCheckboxGroup != null) { remove(setCheckboxGroup); setCheckboxGroup.destroy(); setCheckboxGroup = null; }
-		// bf 不销毁: 留在场景里隐藏待复用 (重建成本高), state 销毁时随场景一起释放
+		// bf is not destroyed: it is kept hidden and reused (rebuilding is expensive) and released with the state
 		if (setBoyfriend != null)
 		{
 			setBoyfriend.visible = false;
@@ -796,8 +808,8 @@ class OptionsState extends MusicBeatState
 	}
 
 	/**
-	 * 0.7.3+ Note 皮肤预览: 设置页存在 noteSkin 选项时, 顶部显示四个 StrumNote,
-	 * 切换皮肤时实时刷新 (与 0.6.3/0.7.3 VisualsUI 的行为一致)。
+	 * 0.7.3+ note-skin preview: when the options page has a noteSkin option, four StrumNotes are shown
+	 * at the top and refreshed on every skin change (same as the 0.6.3/0.7.3 VisualsUI).
 	 */
 	function settingsSetupNotePreview(optionsArray:Array<Option>)
 	{
@@ -810,11 +822,11 @@ class OptionsState extends MusicBeatState
 		for (i in 0...optionsArray.length)
 		{
 			var opt:Option = optionsArray[i];
-			// 预览跟随 Note 皮肤 + Note 风格 (Old=flat / New=0.7.3 材质) 两个选项
+			// The preview follows the note-skin and note-style options (Old = flat / New = 0.7.3 atlas)
 			if (opt.variable == 'noteSkin' || opt.variable == 'noteStyle')
 			{
 				hasNoteSkin = true;
-				// 预览滑入行: 优先 noteSkin, 只有 noteStyle 时用它
+				// Preview slide-in row: prefer noteSkin, fall back to noteStyle
 				if (opt.variable == 'noteSkin' || settingsNoteSkinID < 0)
 					settingsNoteSkinID = i;
 				var prevOnChange:Void->Void = opt.onChange;
@@ -832,7 +844,7 @@ class OptionsState extends MusicBeatState
 		for (i in 0...4)
 		{
 			var note:StrumNote = new StrumNote(370 + (560 / 4) * i, -200, i, 0);
-			// 预览材质跟随 noteStyle (Old=flat NOTE_assets, New=noteSkins/NOTE_assets)
+			// Preview texture follows noteStyle (Old = flat NOTE_assets, New = noteSkins/NOTE_assets)
 			note.texture = Note.defaultNoteSkin;
 			note.reloadNote();
 			note.centerOffsets();
@@ -844,16 +856,16 @@ class OptionsState extends MusicBeatState
 		settingsReloadNoteSkin();
 	}
 
-	/** 按当前 noteSkin 刷新预览 (StrumNote.reloadNote 已内置皮肤后缀解析)。 */
+	/** Refreshes the preview for the current noteSkin (StrumNote.reloadNote resolves the skin suffix). */
 	function settingsReloadNoteSkin()
 	{
 		if (settingsNotes == null) return;
 		for (note in settingsNotes)
 		{
-			// noteStyle 变化时基底材质也要跟着换, 不能只靠 reloadNote 拼皮肤后缀
+			// A noteStyle change needs the base texture swapped too; reloadNote alone only appends the skin suffix
 			note.texture = Note.defaultNoteSkin;
-			// 不能靠 texture setter: texture 一直是基底名 (NOTE_assets), 改皮肤时值不变,
-			// setter 会短路。reloadNote 内部会按 getNoteSkinPostfix 重新解析材质。
+			// The texture setter cannot be used: texture stays the base name (NOTE_assets), so changing the skin
+			// leaves the value unchanged and the setter short-circuits. reloadNote re-resolves it via getNoteSkinPostfix.
 			note.reloadNote();
 			note.centerOffsets();
 			note.centerOrigin();
@@ -876,7 +888,7 @@ class OptionsState extends MusicBeatState
 				FlxG.sound.play(Paths.sound('scrollMenu'));
 			}
 
-			// 虚拟按键上点击不穿透到选项行, 避免同时触发按键动作和行点击造成双重判定
+			// Clicks on the virtual pad must not fall through to the option row (double trigger)
 			if (FlxG.mouse.justPressed && !(virtualPad != null && virtualPad.isMouseOverAnyButton()))
 			{
 				for (checkbox in setCheckboxGroup)
@@ -907,7 +919,7 @@ class OptionsState extends MusicBeatState
 						}
 						else if (option.type == 'button')
 						{
-							// 触摸/鼠标点击动作行 = 按下 ACCEPT: 触发 onChange 执行动作。
+							// Touch / mouse click on an action row = ACCEPT, which runs its onChange.
 							FlxG.sound.play(Paths.sound('scrollMenu'));
 							option.setValue((option.getValue() == true) ? false : true);
 							option.change();
@@ -1039,7 +1051,7 @@ class OptionsState extends MusicBeatState
 				for (i in 0...setOptionsArray.length)
 				{
 					var leOption = setOptionsArray[i];
-					// button 是动作行, 没有默认值可恢复; RESET 不能触发它的 onChange (会执行动作)。
+					// A button row is an action with no default to restore; RESET must not run its onChange.
 					if (leOption.type == 'button')
 						continue;
 					leOption.setValue(leOption.defaultValue);
@@ -1069,7 +1081,7 @@ class OptionsState extends MusicBeatState
 		if (option.type == 'percent') val *= 100;
 		else if (option.type == 'string') val = option.localizedValueText(val);
 		var def:Dynamic = option.defaultValue;
-		// button 行的 child 是 "[Press ENTER]" 标签, 没有 %v 值可显示, 不能覆盖。
+		// A button row's child is the "[Press ENTER]" label, which has no %v to show and must not be overwritten.
 		if (option.type != 'button')
 			option.text = text.replace('%v', val).replace('%d', def);
 		if (option.child != null)
@@ -1128,10 +1140,10 @@ class OptionsState extends MusicBeatState
 
 		if (setBoyfriend != null)
 			setBoyfriend.visible = setOptionsArray[setCurSelected].showBoyfriend;
-		// 0.7.3+ Note 皮肤预览: 只有选中 noteSkin 那一行才显示
+		// 0.7.3+ note-skin preview: shown only while the noteSkin row is selected
 		if (settingsNotes != null && settingsNoteSkinID >= 0)
 		{
-			// 0.7.3 同款: 选中 Note 皮肤行时滑入预览, 离开滑出
+			// Slides in while the note-skin row is selected and out when it leaves
 			var targetY:Float = (setCurSelected == settingsNoteSkinID) ? 120 : -200;
 			for (i in 0...settingsNotes.members.length)
 			{
@@ -1150,8 +1162,8 @@ class OptionsState extends MusicBeatState
 
 	function settingsReloadBoyfriend()
 	{
-		// bf 构建要解析角色 JSON + 加载图集 + 重建全部动画, 移动端上一次就要几十毫秒。
-		// OptionsState 存活期间只构建一次, 之后进出设置页/来回切换直接复用同一实例。
+		// Building bf parses the character JSON, loads atlases and rebuilds every animation: tens of
+		// milliseconds on mobile. It is built once per OptionsState and reused across page visits.
 		if (setBoyfriend == null)
 		{
 			setBoyfriend = new Character(840, 170, 'bf', true);
@@ -1161,7 +1173,7 @@ class OptionsState extends MusicBeatState
 		}
 		else
 		{
-			// 之前可能挂过预览相机 (previewMode), 复用时回到默认相机
+			// The preview camera may still be attached from previewMode; restore the default ones
 			setBoyfriend.cameras = null;
 			setBoyfriend.active = true;
 		}
@@ -1472,8 +1484,8 @@ class OptionsState extends MusicBeatState
 
 				case 'borderless':
 				{
-					// 使用 SDL3 borderless desktop fullscreen：单次原生切换，避免手动 resize 的多次黑屏。
-					// 不额外操作 FlxG.fullscreen / window.borderless，减少重复切换和样式抖动。
+					// SDL3 borderless desktop fullscreen: one native switch instead of resizing through several black frames.
+					// FlxG.fullscreen / window.borderless are left alone to avoid duplicate switches and style flicker.
 					window.fullscreen = true;
 				}
 
@@ -1526,7 +1538,6 @@ class OptionsState extends MusicBeatState
 		onChangeHitsound();
 	}
 
-	// ── LeatherEngine 移植: 击打音效 / 判定手感 ──
 
 	function onChangeHitsound()
 	{
@@ -1541,14 +1552,14 @@ class OptionsState extends MusicBeatState
 		}
 		catch (e:Dynamic)
 		{
-			// 自定义音效文件缺失时回退到默认 hitsound
+			// Fall back to the default hit sound when the custom file is missing
 			try { FlxG.sound.play(Paths.sound('hitsound'), ClientPrefs.data.hitsoundVolume); } catch (_:Dynamic) {}
 		}
 	}
 
 	function onChangeMarvelousRatings()
 	{
-		// 只需要保存; ratingsData 会在下次进入 PlayState 时按此开关重建
+		// Only saving is needed; ratingsData is rebuilt from this toggle on the next PlayState entry
 		ClientPrefs.saveSettings();
 	}
 
@@ -1563,7 +1574,7 @@ class OptionsState extends MusicBeatState
 		ClientPrefs.data.judgementTimings = timings.copy();
 		backend.Ratings.syncWindows();
 
-		// 刷新所有选项显示 (窗口值会随预设改变)
+		// Refresh every option label (the window values change with the preset)
 		if (setOptionsArray != null)
 			for (opt in setOptionsArray) settingsUpdateText(opt);
 
@@ -1613,7 +1624,7 @@ class OptionsState extends MusicBeatState
 		ClientPrefs.saveSettings();
 	}
 */
-	/** 刷新"判定预设"选项的显示文本 (改为 Custom 后立即更新) */
+	/** Refreshes the judgement-preset label (updates immediately after it becomes Custom). */
 	function refreshJudgementPresetText()
 	{
 		if (setOptionsArray == null) return;
@@ -1668,7 +1679,7 @@ class OptionsState extends MusicBeatState
 		syncDragToWheel();
 	}
 
-	/** 「清除图片缓存」动作按钮: 释放所有未被引用的缓存图片并弹窗反馈。 */
+	/** "Clear image cache" action: releases every unreferenced cached image and reports back in a popup. */
 	function onClearImageCache()
 	{
 		var result = Paths.clearImageCache();

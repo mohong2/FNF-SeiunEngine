@@ -19,12 +19,6 @@ import flixel.tweens.FlxTween;
 import flixel.tweens.FlxEase;
 import flixel.math.FlxMath;
 
-#if ONLINE_ALLOWED
-import online.client.GameClient;
-import online.client.OnlineSession;
-import online.shared.SeiunProtocol;
-#end
-
 class PauseSubState extends MusicBeatSubstate
 {
 	public static var entries:ScoreEntry;
@@ -61,9 +55,6 @@ class PauseSubState extends MusicBeatSubstate
 	var substateCam:flixel.FlxCamera;
 	var backdropCam:flixel.FlxCamera;
 	var prevCamFilters:Array<openfl.filters.BitmapFilter> = null;
-	#if ONLINE_ALLOWED
-	var onlineNoticeText:FlxText;
-	#end
 
 	// 3D perspective properties
 	var perspAngleX:Float = 0;
@@ -110,29 +101,21 @@ class PauseSubState extends MusicBeatSubstate
 		}
 		
 		#if (TOUCH_CONTROLS || desktop)
-		if(!PlayState.seiunOnline)
-			menuItemsOG.insert(2, 'Chart Editor');
-		#end
-		#if ONLINE_ALLOWED
-		if (PlayState.seiunOnline)
-		{
-			menuItemsOG.remove('Restart Song');
-			menuItemsOG.remove('Change Difficulty');
-			menuItemsOG.remove('Options');
-			if (menuItemsOG.contains('Toggle Botplay'))
-				menuItemsOG.remove('Toggle Botplay');
-			if (menuItemsOG.contains('Toggle Practice Mode'))
-				menuItemsOG.remove('Toggle Practice Mode');
-			menuItemsOG.insert(1, 'Resume Online');
-			if (OnlineSession.mode == online.shared.OnlineTypes.OnlineConst.MODE_REALTIME
-				&& !PlayState.onlineCanPauseLocally())
-				menuItemsOG.remove('Resume Online');
-			menuItemsOG.remove('Resume');
-		}
+		menuItemsOG.insert(2, 'Chart Editor');
 		#end
 
 		
 		menuItems = menuItemsOG;
+
+		#if ONLINE_ALLOWED
+		// While online the pause menu is replaced with ['Resume', 'Exit to lobby']
+			// because Restart / Change Difficulty / Exit to menu would
+		// each drop the whole room unilaterally. Applied after the menu is built.
+		if (online.GameClient.isConnected()) {
+			menuItemsOG = ['Resume', 'Exit to lobby'];
+			menuItems = menuItemsOG;
+		}
+		#end
 
 		for (i in 0...CoolUtil.difficulties.length) {
 			difficultyChoices.push(CoolUtil.difficulties[i]);
@@ -342,31 +325,6 @@ class PauseSubState extends MusicBeatSubstate
 		backdropCam = FlxG.camera;
 		prevCamFilters = backdropCam.filters;
 		UIScreen.applyBlur(backdropCam, 8);
-		#if ONLINE_ALLOWED
-		if (PlayState.seiunOnline)
-		{
-			// 区分专用服务器 / 局域网托管 (专用服务器不再显示"局域网")。
-			var onlineMsg:String = OnlineSession.dedicated
-				? Language.get('online.pauseRoomDedicated', '专用服务器房间') + " " + OnlineSession.roomCode
-				: Language.get('online.pauseRoomLan', '局域网房间') + " " + OnlineSession.roomCode;
-			// 实时对战: 对方暂停时明确提示 (双方都在暂停中, 任何一方恢复都会继续)。
-			if (OnlineSession.mode == online.shared.OnlineTypes.OnlineConst.MODE_REALTIME
-				&& OnlineSession.pauseNickname != null && OnlineSession.pauseNickname.length > 0)
-				onlineMsg += " | " + Language.get('online.pausedByRemote', '对方 {name} 暂停了游戏，双方已暂停')
-					.replace('{name}', OnlineSession.pauseNickname);
-			// 暂停策略: 仅房主可暂停的房间, 非房主提示等待房主恢复。
-			if (OnlineSession.mode == online.shared.OnlineTypes.OnlineConst.MODE_REALTIME
-				&& PlayState.onlinePausePolicy() == online.shared.OnlineTypes.OnlineConst.PAUSE_HOST_ONLY
-				&& !OnlineSession.isHost)
-				onlineMsg += " | " + Language.get('online.pauseHostOnlyWait', '仅房主可暂停，等待房主恢复');
-			if (OnlineSession.lastDisconnectMessage.length > 0)
-				onlineMsg += " | " + OnlineSession.lastDisconnectMessage;
-			onlineNoticeText = new FlxText(0, FlxG.height - 42, FlxG.width, onlineMsg, 14);
-			onlineNoticeText.setFormat(Paths.languageFont(), 14, FlxColor.fromRGB(255, 210, 120), CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
-			onlineNoticeText.scrollFactor.set();
-			add(onlineNoticeText);
-		}
-		#end
 
 		
 		#if (TOUCH_CONTROLS || desktop)
@@ -400,46 +358,6 @@ class PauseSubState extends MusicBeatSubstate
 	override function update(elapsed:Float)
 	{
 		cantUnpause -= elapsed;
-		#if ONLINE_ALLOWED
-		if (PlayState.seiunOnline && GameClient.instance != null)
-		{
-			var gc:GameClient = GameClient.instance;
-			gc.update(elapsed);
-			var i:Int = 0;
-			while (i < gc.events.length)
-			{
-				var ev = gc.events[i];
-				if (ev.type == SeiunProtocol.MSG_GAME_RESUME && ev.channel == SeiunProtocol.CHANNEL_GAME
-					&& ev.data != null && ev.data.id != OnlineSession.selfId)
-				{
-					gc.events.remove(ev);
-					closeWithSlideAnimation();
-					return;
-				}
-				if (ev.type == SeiunProtocol.MSG_ROOM_ANNOUNCE && ev.data != null)
-				{
-					var notice:String = Std.string(Reflect.field(ev.data, "text"));
-					if (notice.indexOf("房主退出") >= 0 || notice.indexOf("房间已关闭") >= 0 || notice.indexOf("房主断开") >= 0)
-					{
-						gc.events.remove(ev);
-						leaveOnlineToMenu(notice);
-						return;
-					}
-				}
-				if (ev.type == SeiunProtocol.MSG_ERROR && ev.data != null)
-				{
-					var msg:String = ev.data.message == null ? "" : Std.string(ev.data.message);
-					if (msg.indexOf("移出房间") >= 0 || msg.indexOf("请出服务器") >= 0 || msg.indexOf("封禁") >= 0)
-					{
-						gc.events.remove(ev);
-						leaveOnlineToMenu(msg);
-						return;
-					}
-				}
-				i++;
-			}
-		}
-		#end
 		if (pauseMusic.volume < 0.5)
 			pauseMusic.volume += 0.01 * elapsed;
 
@@ -560,33 +478,13 @@ class PauseSubState extends MusicBeatSubstate
 
 		switch (daSelected)
 		{
+			#if ONLINE_ALLOWED
+			case "Exit to lobby":
+				// While online the pause menu only offers Resume / Exit to lobby (see new()).
+				// Switching state locally would drop the room, so it asks the server to broadcast endSong.
+				online.GameClient.send("requestEndSong");
+			#end
 			case "Resume", "Resume Online":
-				#if ONLINE_ALLOWED
-				if (PlayState.seiunOnline)
-				{
-					OnlineSession.pauseNickname = "";
-					if (OnlineSession.mode == online.shared.OnlineTypes.OnlineConst.MODE_REALTIME)
-					{
-						// 暂停策略: 仅房主/禁止暂停时, 非房主不能恢复 (防止本地恢复造成两端解同步)。
-						if (GameClient.instance != null && PlayState.onlineCanPauseLocally())
-							GameClient.instance.send(SeiunProtocol.MSG_GAME_RESUME, SeiunProtocol.CHANNEL_GAME, {at: Date.now().getTime()});
-						else
-						{
-							FlxG.sound.play(Paths.sound('cancelMenu'));
-							if (onlineNoticeText != null)
-							{
-								// 按策略给准确文案: 禁止暂停 = 谁都不能恢复; 仅房主 = 等房主。
-								onlineNoticeText.text = PlayState.onlinePausePolicy() == online.shared.OnlineTypes.OnlineConst.PAUSE_DISABLED
-									? Language.get('online.pauseDisabledWait', '本房间已禁止暂停，请退出对局')
-									: Language.get('online.pauseHostOnlyWait', '仅房主可以暂停/恢复，等待房主操作');
-							}
-							return;
-						}
-					}
-					// 异步排名模式: 暂停纯属本地画面, 直接恢复, 不发网络消息、不受暂停策略限制。
-				}
-				#end
-
 				closeWithSlideAnimation();
 			case 'Change Difficulty':
 				if (PlayState.replayMode)
@@ -597,9 +495,6 @@ class PauseSubState extends MusicBeatSubstate
 				menuItems = difficultyChoices;
 				regenMenu(true);
 			case 'Toggle Practice Mode':
-				#if ONLINE_ALLOWED
-				if (PlayState.seiunOnline) { FlxG.sound.play(Paths.sound('cancelMenu')); return; } // 联机禁止练习模式
-				#end
 				PlayState.instance.practiceMode = !PlayState.instance.practiceMode;
 				PlayState.changedDifficulty = true;
 				practiceText.visible = PlayState.instance.practiceMode;
@@ -631,9 +526,6 @@ class PauseSubState extends MusicBeatSubstate
 				closeWithSlideAnimation();
 				PlayState.instance.finishSong(true);
 			case 'Toggle Botplay':
-				#if ONLINE_ALLOWED
-				if (PlayState.seiunOnline) { FlxG.sound.play(Paths.sound('cancelMenu')); return; } // 联机禁止 Botplay
-				#end
 				PlayState.instance.cpuControlled = !PlayState.instance.cpuControlled;
 				PlayState.changedDifficulty = true;
 				PlayState.instance.botplayTxt.visible = PlayState.instance.cpuControlled;
@@ -650,31 +542,13 @@ class PauseSubState extends MusicBeatSubstate
 					FlxG.sound.music.time = pauseMusic.time;
 				}
 				OptionsState.onPlayState = true;
+				#if ONLINE_ALLOWED
+				// Mirrors source PauseSubState.hx:385
+				OptionsState.onOnlineRoom = false;
+				#end
 			case "Exit to menu":
 				PlayState.deathCounter = 0;
 				PlayState.seenCutscene = false;
-			#if ONLINE_ALLOWED
-			if (PlayState.seiunOnline)
-			{
-				var wasHost:Bool = OnlineSession.isHost;
-				if (GameClient.instance != null)
-				{
-					GameClient.instance.send(SeiunProtocol.MSG_BYE, SeiunProtocol.CHANNEL_CONTROL, {});
-					GameClient.instance.flush();
-					GameClient.instance.disconnect(false);
-				}
-				if (wasHost)
-					online.server.EmbeddedServerRunner.stop();
-				OnlineSession.clear();
-				PlayState.seiunOnline = false;
-				PlayState.seiunSkipLocalCountdown = false;
-				PlayState.startOnTime = 0;
-				PlayState.replayMode = false;
-				MusicBeatState.switchState(new states.MainMenuState());
-				return;
-			}
-			#end
-
 
 				Paths.currentModDirectory = MainMenuState.selectedModFolder;
 				if(PlayState.isStoryMode) {
@@ -844,24 +718,6 @@ class PauseSubState extends MusicBeatSubstate
 		FlxTween.tween(bg, {alpha: 0}, 0.4, {ease: FlxEase.quartIn});
 		FlxTween.tween(acrylicOverlay, {alpha: 0}, 0.4, {ease: FlxEase.quartIn});
 	}
-
-	#if ONLINE_ALLOWED
-	/** 联机房间已关闭/被移出: 断开连接并回到联机主界面 (暂停菜单里也要能退出)。 */
-	function leaveOnlineToMenu(reason:String):Void
-	{
-		if (reason != null && reason.length > 0)
-			OnlineSession.recordDisconnect(reason);
-		if (GameClient.instance != null)
-			GameClient.instance.disconnect(true);
-		OnlineSession.clear();
-		PlayState.seiunOnline = false;
-		PlayState.seiunSkipLocalCountdown = false;
-		PlayState.startOnTime = 0;
-		PlayState.replayMode = false;
-		close();
-		MusicBeatState.switchState(new online.states.OnlineState());
-	}
-	#end
 
 	function deleteSkipTimeText()
 	{

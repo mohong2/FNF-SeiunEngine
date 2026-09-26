@@ -110,6 +110,24 @@
 		"decimals": 1
 	},
 	{
+		"nameKey": "option.showFP",
+		"defaultName": "Show Funkin Points Counter",
+		"descKey": "option.showFP.desc",
+		"defaultDesc": "If checked, the current FP count will be shown in the score text, can be toggled in-game with F7",
+		"variable": "showFP",
+		"type": "bool",
+		"defaultValue": false
+	},
+	{
+		"nameKey": "option.newFPPreview",
+		"defaultName": "FP V5 Preview",
+		"descKey": "option.newFPPreview.desc",
+		"defaultDesc": "If enabled, new FP algorithm will be shown in the Counter",
+		"variable": "newFPPreview",
+		"type": "bool",
+		"defaultValue": false
+	},
+	{
 		"nameKey": "option.showFPS",
 		"defaultName": "FPS Counter",
 		"descKey": "option.showFPS.desc",

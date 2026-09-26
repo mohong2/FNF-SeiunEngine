@@ -76,7 +76,7 @@ class SystemDiag
 		out.push(GlErrorWatchdog.snapshot());
 
 		out.push('');
-		out.push('--- Native crash logs (crash/native_crash_*.txt) ---');
+		out.push('--- Crash logs (crash/native_crash_*.txt, crash/SeiunEngine_*.txt) ---');
 		nativeCrashLines(out);
 
 		out.push('');
@@ -113,7 +113,6 @@ class SystemDiag
 		out.push('Engine: SeiunEngine v' + safeString(() -> MainMenuState.seiunengineVersion, '?'));
 		out.push('Psych Engine Base: ' + MainMenuState.psychEngineVersion);
 		out.push('FNF Game Version: ' + MainMenuState.fnfGameVersion);
-		out.push('Online: ' + MainMenuState.seiunOnlineVersion);
 		out.push('HaxeFlixel: ' + safeString(() -> Std.string(FlxG.VERSION), '?'));
 
 		#if sys
@@ -146,7 +145,6 @@ class SystemDiag
 		#if HSCRIPT_ALLOWED feat.push('HSCRIPT_ALLOWED'); #end
 		#if VIDEOS_ALLOWED feat.push('VIDEOS_ALLOWED'); #end
 		#if ACHIEVEMENTS_ALLOWED feat.push('ACHIEVEMENTS_ALLOWED'); #end
-		#if ONLINE_ALLOWED feat.push('ONLINE_ALLOWED'); #end
 		#if separateUpdateDraw feat.push('separateUpdateDraw'); #end
 		#if mobile feat.push('mobile'); #end
 		#if html5 feat.push('html5'); #end
@@ -310,7 +308,7 @@ class SystemDiag
 	// Native crash logs & heartbeat
 	// ============================================================
 
-	/** Paste the latest crash/native_crash_*.txt contents (memory pointers included). */
+	/** Paste the newest crash dumps from crash/ (native + Haxe layer, memory pointers included). */
 	static function nativeCrashLines(out:Array<String>):Void
 	{
 		#if sys
@@ -322,8 +320,11 @@ class SystemDiag
 				return;
 			}
 			var files:Array<String> = [];
+			// Native dumps plus the Haxe-layer ones; the two legacy prefixes are kept so old
+			// files already sitting in crash/ still show up.
 			for (f in FileSystem.readDirectory('./crash/'))
-				if (f.indexOf('native_crash_') == 0 && f.endsWith('.txt'))
+				if (f.endsWith('.txt') && (f.indexOf('native_crash_') == 0 || f.indexOf('SeiunEngine_') == 0
+					|| f.indexOf('CrashReport_') == 0 || f.indexOf('MohonghEngine_') == 0))
 					files.push(f);
 			files.sort(Reflect.compare);
 

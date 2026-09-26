@@ -1,0 +1,264 @@
+package online.substates;
+
+import openfl.filters.BlurFilter;
+import online.util.OnlineLang;
+
+typedef MainDownload = {
+	name: String,
+	description: String,
+	url:String,
+	?size:Null<Float>
+}
+
+typedef SelectDownloads = {
+	mainFiles: Array<MainDownload>,
+	?altFiles: Null<Array<MainDownload>>,
+}
+
+class SelectDownloadSubstate extends MusicBeatSubstate {
+	public static var instance:SelectDownloadSubstate;
+
+	public var items:FlxTypedGroup<DownloadBox>;
+	public var selected(default, set):Int = 0;
+
+	var downloads:SelectDownloads;
+
+	var blurFilter:BlurFilter;
+	var coolCam:FlxCamera;
+
+	function set_selected(v) {
+		if (v >= items.length) {
+			v = items.length - 1;
+		}
+		else if (v < 0) {
+			v = 0;
+		}
+
+		return selected = v;
+	}
+
+	public function new(downloads:SelectDownloads) {
+        super();
+
+		instance = this;
+
+		this.downloads = downloads;
+    }
+
+	var bg:FlxSprite;
+
+	override function create() {
+		super.create();
+
+		blurFilter = new BlurFilter();
+		for (cam in FlxG.cameras.list) {
+			if (cam.filters == null)
+				cam.filters = [];
+			cam.filters.push(blurFilter);
+		}
+
+		coolCam = new FlxCamera();
+		coolCam.bgColor.alpha = 0;
+		FlxG.cameras.add(coolCam, false);
+
+		cameras = [coolCam];
+
+		var preBg = new FlxSprite();
+		preBg.makeGraphic(FlxG.width, FlxG.height, FlxColor.BLACK);
+		preBg.alpha = 0.5;
+		preBg.scrollFactor.set(0, 0);
+		add(preBg);
+
+		bg = new FlxSprite();
+		bg.makeGraphic(700, FlxG.height, FlxColor.BLACK);
+		bg.alpha = 0.4;
+		bg.scrollFactor.set(0, 0);
+		bg.screenCenter(X);
+		add(bg);
+
+		add(items = new FlxTypedGroup<DownloadBox>());
+		var i = -1;
+
+		var altText = new FlxText(bg.x, 0, bg.width);
+		altText.text = OnlineLang.L('selectDl.files', 'Files');
+		altText.setFormat(OnlineLang.font(), 20, FlxColor.WHITE, CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
+		altText.y = 30;
+		add(altText);
+
+		var endCoord = altText.y + altText.height;
+
+		if (downloads.mainFiles != null && downloads.mainFiles.length > 0) {
+			for (dl in downloads.mainFiles) {
+				if (dl.name.endsWith(".7z"))
+					continue;
+				
+				// description can be null (some GameBanana downloads have none); `null + ...` would
+				// draw the literal "null" on the entry. Show it only when present, with no blank line.
+				var descText = dl.description != null ? StringTools.trim(dl.description) : '';
+				var sizeText = dl.size != null ? 'Size: ' + DownloadAlert.prettyBytes(dl.size) : '';
+				if (descText == '')
+					descText = sizeText;
+				else if (sizeText != '')
+					descText += "\n" + sizeText;
+
+				var download = new DownloadBox(dl.name, descText, dl.url, ++i);
+				download.y = endCoord + 10;
+				endCoord = download.y + download.height;
+				download.camera = camera; //smh
+				items.add(download);
+			}
+		}
+
+		if (downloads.altFiles != null && downloads.altFiles.length > 0) {
+			var altText = new FlxText(bg.x, 0, bg.width);
+			altText.text = OnlineLang.L('selectDl.altFiles', 'Alternate File Sources');
+			altText.setFormat(OnlineLang.font(), 20, FlxColor.WHITE, CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
+			if (items.members.length > 0)
+				altText.y = endCoord + 20;
+			endCoord = altText.y + altText.height;
+			add(altText);
+
+			for (dl in downloads.altFiles) {
+				var download = new DownloadBox(dl.name, dl.description != null ? dl.description : '', dl.url, ++i);
+				download.y = endCoord + 10;
+				endCoord = download.y + download.height;
+				download.camera = camera; // smh
+				items.add(download);
+			}
+		}
+
+		var endScrollBound = endCoord + 20 > FlxG.height ? endCoord + 20 : FlxG.height;
+		coolCam.setScrollBounds(FlxG.width, FlxG.width, 0, endScrollBound);
+    }
+
+	override function destroy() {
+		super.destroy();
+
+		for (cam in FlxG.cameras.list) {
+			if (cam != null && cam.filters != null)
+				cam.filters.remove(blurFilter);
+		}
+		FlxG.cameras.remove(coolCam);
+	}
+
+	override function update(elapsed) {
+		if (controls.UI_UP_P)
+			selected--;
+		else if (controls.UI_DOWN_P)
+			selected++;
+
+		if (controls.BACK || (FlxG.mouse.justPressed && !FlxG.mouse.overlaps(bg, camera))) {
+			close();
+		}
+
+		super.update(elapsed);
+
+		if (items.length > 0)
+			coolCam.follow(items.members[selected], TOPDOWN, 0.1);
+	}
+}
+
+class DownloadBox extends FlxSpriteGroup {
+	public var code:String;
+
+	public var bg:FlxSprite;
+	var name:FlxText;
+	var description:FlxText;
+	var url:String;
+
+	public function new(daName:String, daDescription:String, url:String, id:Int) {
+		super();
+
+		// Callers may pass null (GameBanana's _sDescription can be missing, PE fallback sources
+		// have no description); the .trim() / .startsWith() calls below would crash on null.
+		if (daName == null)
+			daName = '';
+		if (daDescription == null)
+			daDescription = '';
+		if (url == null)
+			url = '';
+
+		this.url = url;
+		this.ID = id;
+
+		bg = new FlxSprite();
+		bg.makeGraphic(600, 1, 0xD3000000);
+		add(bg);
+
+		if (daName.trim().length <= 0) {
+			if (daDescription.trim().length > 0) {
+				daName = daDescription;
+				daDescription = '';
+			}
+			else {
+				daName = '(unknown)';
+			}
+		}
+
+		name = new FlxText(0, 0, bg.width - 20, daName.trim());
+		name.setFormat(OnlineLang.font(), 20, FlxColor.WHITE, LEFT);
+		name.setPosition(10, 10);
+		add(name);
+
+		if (daDescription.trim() != "") {
+			description = new FlxText(0, 0, bg.width - 20, daDescription);
+			description.setFormat(OnlineLang.font(), 16, FlxColor.WHITE, LEFT);
+			description.setPosition(10, name.y + name.height + 10);
+			add(description);
+
+			bg.scale.y = description.y + description.height + 10;
+			bg.updateHitbox();
+		}
+		else {
+			bg.scale.y = name.y + name.height + 10;
+			bg.updateHitbox();
+		}
+
+		if (url.startsWith('https://funkin.sniro.boo/')) {
+			name.color = FlxColor.MAGENTA;
+		}
+		else if (url.startsWith('https://drive.google.com/file/d/')) {
+			name.color = FlxColor.LIME;
+		}
+		else if (url.startsWith('https://gamebanana.com/') 
+			|| (url.startsWith('https://github.com/') && FileUtils.isArchiveSupported(url))
+			|| url.startsWith('https://www.mediafire.com/file/')) {
+			name.color = FlxColor.YELLOW;
+		}
+		else if (url.startsWith('https://drive.google.com/drive/folders/')
+			|| url.startsWith('https://gamejolt.com/')
+			|| url.startsWith('https://mega.nz/')
+			|| url.startsWith('https://mega.io/')
+			|| url.startsWith('https://github.com/')) {
+			name.color = FlxColor.RED;
+		}
+
+		screenCenter(X);
+	}
+
+	override function update(elapsed) {
+		super.update(elapsed);
+
+		if (FlxG.mouse.overlaps(bg, camera) && (FlxG.mouse.deltaX != 0 || FlxG.mouse.deltaY != 0 || FlxG.mouse.justPressed)) {
+			SelectDownloadSubstate.instance.selected = ID;
+		}
+
+		if (ID == SelectDownloadSubstate.instance.selected) {
+			alpha = 1.0;
+
+			@:privateAccess
+			if (SelectDownloadSubstate.instance.controls.ACCEPT || (FlxG.mouse.justPressed && FlxG.mouse.overlaps(bg, camera))) {
+				if (name.color == FlxColor.RED) {
+					RequestSubstate.requestURL(url, null, true);
+				}
+				else {
+					OnlineMods.downloadMod(url, true);
+				}
+				SelectDownloadSubstate.instance.close();
+			}
+		}
+		else {
+			alpha = 0.7;
+		}
+	}
+}

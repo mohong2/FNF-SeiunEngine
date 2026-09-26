@@ -1,5 +1,7 @@
 # SeiunEngine（中文）
 
+**作者：mo_hong** — [github.com/mohong2/FNF-SeiunEngine](https://github.com/mohong2/FNF-SeiunEngine)
+
 **你知道吗：** 如果你去催促一个开发者更新你想要的内容和优化，你可能等来的并不是你想要的更新，而是停更。我很想把这一个引擎做好，但我的实力就摆在那儿，请不要过度期待。
 
 基于 Psych Engine 0.6.3 的 Friday Night Funkin' 引擎，为 Mandela Funkin Night 模组构建。

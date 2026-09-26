@@ -1,5 +1,7 @@
 # SeiunEngine
 
+**Author / 作者：mo_hong** — [github.com/mohong2/FNF-SeiunEngine](https://github.com/mohong2/FNF-SeiunEngine)
+
 **你知道吗：** 如果你去催促一个开发者更新你想要的内容和优化，你可能等来的并不是你想要的更新，而是停更。我很想把这一个引擎做好，但我的实力就摆在那儿，请不要过度期待。
 
 A Friday Night Funkin' engine, forked from Psych Engine 0.6.3. Built for the Mandela Funkin Night mod.
@@ -48,7 +50,22 @@ See `hmm.json`. Seven of them are forks of mine:
 ### Classpath overrides (engine patches, tracked in `source/`)
 
 The engine patches a few library classes by overriding them on the `source/`
-classpath. The libraries themselves are **not** vendored into this repo.
+classpath. Apart from the online set described right below, the libraries
+themselves are **not** vendored into this repo.
+
+> **Exception — online client dependencies (`source/_online_libs/`)**
+>
+> The Colyseus online port vendors its third-party dependency sources
+> (`io.colyseus`, `org.msgpack`, `tink`, `json2object`, `hxjsonast`,
+> `htmlparser`, `httpstatus`, `haxe/net`) because the engine's pinned haxelib set
+> does not contain them and no new haxelib entries were added.
+>
+> They live on their **own classpath root**, declared in `Project.xml` as
+> `<classpath name="source/_online_libs" />` — never under `source/`, because
+> `source/import.hx` applies to a directory *and all its subdirectories* and would
+> leak engine imports into those third-party root packages.
+>
+> See `source/_online_libs/README.md` and `docs/ONLINE_PORT_HANDOFF.md`.
 
 | override file | patches |
 |---|---|

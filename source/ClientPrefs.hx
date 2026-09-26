@@ -17,8 +17,8 @@ import sys.io.Process;
 		[0xFF00FFFF, 0xFFFFFFFF, 0xFF1542B7],
 		[0xFF12FA05, 0xFFFFFFFF, 0xFF0A4447],
 		[0xFFF9393F, 0xFFFFFFFF, 0xFF651038],
-		// 多k: 后 5 项对应 space/leftex1/downex1/upex1/rightex1,
-		// 每轨独立一色 (与 0.6.3 多k noteColors 一致), 不是基底镜像
+		// Multi-key: the last five entries are space/leftex1/downex1/upex1/rightex1,
+		// one independent colour per lane rather than a mirror of the base colours
 		[0xFFCCCCCC, 0xFFFFFFFF, 0xFF4C4C4C],
 		[0xFFFFFF00, 0xFFFFFFFF, 0xFF4C4C00],
 		[0xFF8B4AFF, 0xFFFFFFFF, 0xFF2B0066],
@@ -29,7 +29,7 @@ import sys.io.Process;
 		[0xFF3DCAFF, 0xFFF4FFFF, 0xFF003060],
 		[0xFF71E300, 0xFFF6FFE6, 0xFF003100],
 		[0xFFFF884E, 0xFFFFFAF5, 0xFF6C0000],
-		// 多k: 每轨独立一色 (与 0.6.3 多k 语义一致)
+		// Multi-key: one independent colour per lane
 		[0xFFCCCCCC, 0xFFFFFFFF, 0xFF4C4C4C],
 		[0xFFFFFF00, 0xFFFFFFFF, 0xFF4C4C00],
 		[0xFF8B4AFF, 0xFFFFFFFF, 0xFF2B0066],
@@ -37,9 +37,9 @@ import sys.io.Process;
 		[0xFF0033FF, 0xFFFFFFFF, 0xFF00004C]];
 	public var noteSkin:String = 'Default';
 	public var splashSkin:String = 'Psych';
-	/** Note 风格: Old = 0.6.3 flat NOTE_assets, New = 0.7.3 noteSkins/NOTE_assets。独立于兼容模式。 */
+	/** Note style: Old = 0.6.3 flat NOTE_assets, New = 0.7.3 noteSkins/NOTE_assets. Independent of the compatibility mode. */
 	public var noteStyle:String = 'Old';
-	/** Note RGB 染色着色器: Chart = 跟随谱面 disableNoteRGB (默认), On = 强制开启, Off = 强制关闭。 */
+	/** Note RGB tint shader: Chart = follow the chart's disableNoteRGB (default), On = force on, Off = force off. */
 	public var noteRGBMode:String = 'Chart';
 
 	public var modSettings:Map<String, Map<String, Dynamic>> = new Map();
@@ -56,11 +56,11 @@ import sys.io.Process;
 	public var mobileCEx:Bool = false;
 	public var hitboxExtraToggle:Bool = true;
 	public var hitboxExtraPos:String = "Bottom";
-	/** 按下 Hitbox 色块时显示的透明度 (未按下时完全透明)。 */
+	/** Alpha of a pressed hitbox square (fully transparent while released). */
 	public var hitboxPressAlpha:Float = 0.6;
-	/** 是否在 Hitbox 各色块之间绘制边框, 帮助定位触摸区域。 */
+	/** Draws borders between the hitbox squares to help locate the touch areas. */
 	public var hitboxBorder:Bool = true;
-	/** 桌面端触屏支持: 开启后把安卓移动端控件(虚拟按键/Hitbox)带到电脑上, 可用鼠标或触屏操作。 */
+	/** Desktop touch support: brings the Android controls (virtual pad / hitbox) to desktop, usable with mouse or touch. */
 	public var touchControls:Bool = false;
 	public var downScroll:Bool = false;
 	public var middleScroll:Bool = false;
@@ -78,7 +78,7 @@ import sys.io.Process;
 	public var camZooms:Bool = true;
 	public var hideHud:Bool = false;
 	public var noteOffset:Int = 0;
-	// 多k: 前 4 项为 4K 基础色偏移, 后 5 项对应 space/leftex1/downex1/upex1/rightex1
+	// Multi-key: the first four entries are the 4K colour offsets; the last five are space/leftex1/downex1/upex1/rightex1
 	public var arrowHSV:Array<Array<Int>> = [
 		[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0],
 		[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]
@@ -90,7 +90,7 @@ import sys.io.Process;
 	public var healthBarAlpha:Float = 1;
 	public var controllerMode:Bool = #if !android false #else true #end;
 	public var hitsoundVolume:Float = 0;
-	// LeatherEngine 移植: 击打音效选择 (列表来自 data/hitsoundList.txt, 可被 mod 扩展)
+	// Hit sound selection (list from data/hitsoundList.txt, extensible by mods)
 	public var hitsound:String = "osu!mania";
 	public var trackAlpha:Float = 0;
 	public var pauseMusic:String = 'Tea Time';
@@ -106,29 +106,29 @@ import sys.io.Process;
 	public var opponentfe:Bool = true;
 	public var currentFont:String = "vcr.ttf"; 
 	public var windowedmode:String = "windowed";
-	// 关闭动画：样式 (off/squeeze/zoom/drop/slide) + 速度倍率
+	// Close animation: style (off/squeeze/zoom/drop/slide) plus speed multiplier
 	public var closeAnimStyle:String = 'squeeze';
 	public var closeAnimSpeed:Float = 1.0;
-	/** 三引擎兼容模式: Auto / 0.6.3 / 0.7.3 / 1.0.4 (见 backend.CompatEngine)。 */
+	/** Three-engine compatibility mode: Auto / 0.6.3 / 0.7.3 / 1.0.4 (see backend.CompatEngine). */
 	public var compatEngine:String = 'Auto';
-	/** 旧版 0.7.3 兼容开关, 保留用于老存档迁移; 新逻辑请走 CompatEngine。 */
+	/** Legacy 0.7.3 compatibility flag kept for save migration; new logic should use CompatEngine. */
 	public var compatibility_mode:Bool = false; 
 	public var guitarHeroSustains:Bool = false; 
 	public var smoothhpbar:Bool = false; 
 	public var unnotec:Bool = false;
 	public var cacheOnGPU:Bool = true;
 	public var preloadAssets:Bool = false;
-	/** H-Slice 性能总开关: 关闭时全部批量推进/合并重建/预算节流回到原版逐击行为。 */
+	/** Performance master switch: when off, batch advancing / merged rebuilds / budget throttling fall back to the stock per-hit behaviour. */
 	public var perfMode:Bool = false;
-	/** Turbo 终极总开关: 开启后强制锁定 botplay, 并启用高密度聚合/侧车缓存/数据级批量结算。 */
+	/** Turbo master switch: forces botplay and enables dense merging plus data-level batch settlement. */
 	public var turboMode:Bool = false;
-	/** H-Slice 性能项: 批量跳过已过期谱面 Note。 */
+	/** Performance option: batch skip chart notes that are already past. */
 	public var bulkSkip:Bool = false;
-	/** H-Slice 性能项: 只对可见存活 Note 做排序。 */
+	/** Performance option: sort only the visible living notes. */
 	public var fastSort:Bool = false;
-	/** H-Slice 性能项: 最大同时物化 Note 数, 0 = 无限 (谨慎使用)。 */
+	/** Performance option: maximum simultaneously materialised notes, 0 = unlimited (use with care). */
 	public var limitNotes:Int = 0;
-	/** H-Slice 性能项: 游玩期禁用 hxcpp GC, 用内存换帧时间 (默认关, 防泄漏)。 */
+	/** Performance option: disables the hxcpp GC during a song, trading memory for frame time (off by default, prevents leaks). */
 	public var disableGC:Bool = false;
 	/** Release CPU-side copies of large textures (>=2048px) only after confirming no live sprite/atlas/script references. */
 	public var gfxCpuRelease:Bool = true;
@@ -136,7 +136,7 @@ import sys.io.Process;
 	public var asyncImageLoading:Bool = true;
 	/** Store uploaded graphics in LRU cache upon song exit, with strict cache/atlas synchronization and reference-safe eviction. */
 	public var gfxLruCache:Bool = true;
-	/** 「清除图片缓存」动作按钮的状态占位: button 型选项必须绑定一个字段, 但此动作从不读取该值。 */
+	/** Placeholder state for the "clear image cache" action button: a button option must bind a field, but the action never reads it. */
 	public var clearImageCache:Bool = false;
 	/** Trim transparent borders and repack large sheets at runtime on the main thread, with XML/dimension validation. */
 	public var gfxRuntimeRepack:Bool = true;
@@ -159,14 +159,14 @@ import sys.io.Process;
 	public var goodWindow:Int = 90;
 	public var badWindow:Int = 130;
 	public var safeFrames:Float = 10;
-	// LeatherEngine 移植: 判定手感 (marvelous/sick/good/bad 的 ms 窗口)
+	// Judgement windows (marvelous/sick/good/bad ms windows)
 	public var judgementTimings:Array<Int> = [25, 50, 70, 100];
 	public var judgementPreset:String = 'Leather Engine';
 	public var marvelousRatings:Bool = true;
 	public var marvelousWindow:Int = 25;
-	/** osu! 尾判: 长条松键时按释放时机判定尾部 (开启后影响成绩/回放) */
+	/** osu! tail judgement: judge sustain tails on release instead of on hold (affects scores and replays). */
 	//public var osuTailJudgement:Bool = false;
-	/** osu! 尾判窗口倍率: 相对普通判定窗口的放宽倍数 (1.0 = 与普通音符一致, 默认 2.0)。 */
+	/** osu! tail window multiplier relative to a normal judgement window (1.0 = same, default 2.0). */
 	//public var tailWindowMult:Float = 2.0;
 
 	public var saveReplayData:Bool = true;
@@ -182,7 +182,7 @@ import sys.io.Process;
 	// Chart editor auto-save (off by default — player opts in)
 	public var chartAutosave:Bool = false;
 
-	// Trace Console 调试设置
+	// Trace Console debug settings
 	public var traceConsoleEnabled:Bool = false;
 	public var traceConsoleLevel:String = 'DEBUG';
 
@@ -207,6 +207,45 @@ import sys.io.Process;
 	// Lua / HScript error loop protection: ignore a script file after too many consecutive errors.
 	public var ignoreErrorLoopScripts:Bool = true;
 	public var scriptErrorLimit:Int = 50;
+	#if ONLINE_ALLOWED
+	// ─── Online support: save fields the online code needs ──────────────────
+	// Field names, types and defaults required by the online code. Single-player code never reads these fields,
+	// and the whole block is skipped when ONLINE_ALLOWED is undefined.
+	/** Local nickname cache, read and written only through getNickname()/setNickname(). */
+	private var nickname:String = "Boyfriend";
+	/** Player-entered online server address (null = use GameClient.serverAddresses[0]). */
+	public var serverAddress:String = null;
+	/** Online skin as [character name, ?, ?, mod directory]; null = not chosen. */
+	public var currentSkin:Array<String> = null;
+	/** Whitelist of URLs this client may request. */
+	public var trustedSources:Array<String> = ["https://gamebanana.com/"];
+	/** Disables automatic mod downloads. */
+	public var disableAutoDownloads:Bool = false;
+	/** Hides Freeplay icons. */
+	public var disableFreeplayIcons:Bool = false;
+	/** Hides the Freeplay alphabet animation (faster rendering). */
+	public var disableFreeplayAlphabet:Bool = false;
+	/** Notify when a chat message arrives. */
+	public var notifyOnChatMsg:Bool = false;
+	/** Disables private message notifications. */
+	public var disablePMs:Bool = false;
+	/** Disables room invite notifications. */
+	public var disableRoomInvites:Bool = false;
+	/** HTTPS certificate verification toggle; loadPrefs() writes it to sys.ssl. */
+	public var verifySSL:Bool = false;
+	/** Player-entered network server address. */
+	public var networkServerAddress:String = null;
+	/** Notify when a friend comes online. */
+	public var friendOnlineNotification:Bool = false;
+	/** Show FP (Funkin Points) on the score HUD. Default false leaves the engine display unchanged. */
+	public var showFP:Bool = false;
+	/** Preview FP with the V5 (devFP) formula instead of a percentage. */
+	public var newFPPreview:Bool = false;
+	/** Online score HUD form: false = compact one-liner (default), true = multi-line. */
+	public var onlineScoreDetails:Bool = false;
+	/** Favourite skins, formatted 'charactername-originfolder'. */
+	public var favSkins:Array<String> = []; //format: 'charactername-originfolder'
+	#end
 }
 
 class ClientPrefs {
@@ -330,7 +369,7 @@ class ClientPrefs {
 	static inline function get_hitboxBorder() return data.hitboxBorder;
 	static inline function get_touchControls() return data.touchControls;
 
-	/** 是否使用触屏 UI（安卓/iOS 恒为 true；桌面端跟随“触屏支持”开关）。 */
+	/** Whether the touch UI is used (always true on Android/iOS; on desktop it follows the touch support toggle). */
 	public static function touchUIEnabled():Bool
 	{
 		#if TOUCH_CONTROLS
@@ -415,10 +454,10 @@ class ClientPrefs {
 	static inline function get_scriptErrorLimit() return data.scriptErrorLimit;
 
 	/**
-	 * 存档是否已从磁盘加载 (loadPrefs 结束后置 true)。
-	 * 在此之前 data/keyBinds 仍是出厂默认值, saveSettings() 拒绝写盘,
-	 * 防止启动早期的保存调用 (如安卓 SUtil.getStorageDirectory) 用默认键位
-	 * 覆盖玩家已保存的 controls_v3 —— 安卓每次冷启动按键被重置的根因。
+	 * Whether the save file has been loaded from disk (set once loadPrefs finishes).
+ * Until then data/keyBinds are still factory defaults and saveSettings() refuses to write,
+ * so an early save (e.g. Android SUtil.getStorageDirectory) cannot overwrite the player's
+ * saved controls_v3 with defaults -- the cause of keys resetting on every Android cold start.
 	 */
 	public static var prefsLoaded:Bool = false;
 
@@ -429,7 +468,7 @@ class ClientPrefs {
 		'note_up'		=> [W, UP],
 		'note_right'	=> [D, RIGHT],
 
-		// 多k (extra keys) 键位, 移植自 EK 0.6.3
+		// Extra-key bindings
 		'note_one1'		=> [SPACE, NONE],
 
 		'note_two1'		=> [D, NONE],
@@ -623,6 +662,14 @@ class ClientPrefs {
 		'back'			=> [BACKSPACE, ESCAPE],
 		'pause'			=> [ENTER, ESCAPE],
 		'reset'			=> [R, NONE],
+		#if ONLINE_ALLOWED
+		// Sidebar toggle, default ` (GRAVEACCENT).
+		// A single key only: copyKey()/checkKey() iterate the array and do not require two entries.
+		'sidebar'		=> [GRAVEACCENT],
+		// taunt / fav (used by the online lobby and skin selection).
+		'taunt'			=> [SPACE, T],
+		'fav'			=> [Q],
+		#end
 		
 		'volume_mute'	=> [ZERO, NONE],
 		'volume_up'		=> [NUMPADPLUS, PLUS],
@@ -647,7 +694,13 @@ class ClientPrefs {
 		'accept'		=> [A, START],
 		'back'			=> [B],
 		'pause'			=> [START],
-		'reset'			=> [BACK]
+		#if ONLINE_ALLOWED
+		'reset'			=> [BACK],
+		// Online action gamepad defaults (same guard as the keyboard branch).
+		'taunt'			=> [RIGHT_STICK_CLICK],
+		'sidebar'		=> [],
+		'fav'			=> [Y]
+		#end
 	];
 	public static var defaultButtons:Map<String, Array<FlxGamepadInputID>> = null;
 
@@ -658,7 +711,7 @@ class ClientPrefs {
 				if(defaultKeys.exists(key))
 					keyBinds.set(key, defaultKeys.get(key).copy());
 
-		#if !android // Android上不允许重置手柄按键
+		#if !android // gamepad bindings cannot be reset on Android
 		if(controller != false)
 			for (button in gamepadBinds.keys())
 				if(defaultButtons.exists(button))
@@ -684,15 +737,16 @@ class ClientPrefs {
 		#end
 	}
 
-	// 上次写盘时的数据快照。设置菜单里每次返回/关弹窗都会调 saveSettings(),
-	// 同步 flush 在移动端是明显的掉帧源; 内容没变时直接跳过两次磁盘写入。
+	// Snapshot of the data last written to disk. Every return from the settings menu or popup
+	// calls saveSettings(), and a sync flush is a visible frame drop on mobile; if nothing
+	// changed the disk writes are skipped entirely.
 	static var _lastDataSnapshot:String = null;
 	static var _lastKeyBindsSnapshot:String = null;
 
 	public static function saveSettings()
 	{
-		// 启动早期保护: loadPrefs 之前写盘会把默认 data/keyBinds 存进存档,
-		// 直接覆盖玩家设置 (典型受害者的 controls_v3 键位, 且安卓每次开机必触发)。
+		// Early-startup guard: writing before loadPrefs would store default data/keyBinds and
+		// overwrite the player's settings (typically controls_v3, on every Android boot).
 		if (!prefsLoaded)
 		{
 			FlxG.log.warn("ClientPrefs.saveSettings() called before loadPrefs() - ignored to protect saved data");
@@ -702,7 +756,7 @@ class ClientPrefs {
 		for (key in Reflect.fields(data))
 			Reflect.setField(FlxG.save.data, key, Reflect.field(data, key));
 
-		// MusicBeatState 每帧把 fullscreen 写进 FlxG.save.data, 快照需覆盖它
+		// MusicBeatState writes fullscreen into FlxG.save.data every frame, so the snapshot must include it
 		var dataSnapshot:String = Std.string(FlxG.save.data) + '|' + (FlxG.fullscreen ? '1' : '0');
 		if (dataSnapshot != _lastDataSnapshot)
 		{
@@ -711,7 +765,7 @@ class ClientPrefs {
 		}
 
 		// Placing this in a separate save so that it can be manually deleted without removing your Score and stuff
-		// 键位只在改键/重置时变化, 未变化时跳过这整个存档的序列化+写盘。
+		// Key binds only change on rebind/reset; when unchanged the whole serialise + write is skipped.
 		var bindsSnapshot:String = keyBinds.toString()
 			+ (#if !android gamepadBinds.toString() #else '' #end);
 		if (bindsSnapshot != _lastKeyBindsSnapshot)
@@ -749,8 +803,8 @@ class ClientPrefs {
 		if (data.modSettings == null)
 			data.modSettings = new Map<String, Map<String, Dynamic>>();
 
-		// 多k: 老存档 arrowHSV 只有 4 项, 补足到 9 项 (对应 A~I 9 个颜色轨道),
-		// 保证 NotesSubState 轮播/游戏内取色不会越界。
+		// Multi-key: old saves only have four arrowHSV entries; pad to nine (one per A~I lane)
+		// so the NotesSubState carousel and in-game colour lookups cannot go out of bounds.
 		if (data.arrowHSV == null || data.arrowHSV.length < 9)
 		{
 			var padded:Array<Array<Int>> = [];
@@ -759,8 +813,8 @@ class ClientPrefs {
 			data.arrowHSV = padded;
 		}
 
-		// 多k: 老存档 arrowRGB 只有 4 项, 补足到 9 项 (与 arrowHSV 同布局:
-		// space 默认镜像 up, leftex1=left, downex1=down, upex1=up, rightex1=right)
+		// Multi-key: old saves only have four arrowRGB entries; pad to nine (same layout as arrowHSV:
+		// space mirrors up, leftex1=left, downex1=down, upex1=up, rightex1=right)
 		if (data.arrowRGB == null || data.arrowRGB.length < 9)
 		{
 			var paddedRGB:Array<Array<FlxColor>> = [];
@@ -778,19 +832,19 @@ class ClientPrefs {
 			data.arrowRGBPixel = paddedRGB;
 		}
 
-		// 判定手感迁移: 老存档没有 judgementTimings, 从原 Psych 窗口初始化
-		// (marvelous 默认 25ms, sick/good/bad 沿用玩家已保存的窗口值 → 视为自定义预设)
+		// Judgement-feel migration: old saves have no judgementTimings, so initialise from the
+		// stock Psych windows (marvelous 25ms; sick/good/bad reuse the player's saved values -> custom preset)
 		if (!Reflect.hasField(FlxG.save.data, 'judgementTimings'))
 		{
 			if (Reflect.hasField(FlxG.save.data, 'sickWindow') || Reflect.hasField(FlxG.save.data, 'goodWindow') || Reflect.hasField(FlxG.save.data, 'badWindow'))
 			{
-				// 老玩家: 保留已保存的 Psych 窗口, 判定类型标记为自定义
+				// Existing player: keep the saved Psych windows and mark the judgement type custom
 				data.judgementTimings = [25, data.sickWindow, data.goodWindow, data.badWindow];
 				data.judgementPreset = 'Custom';
 			}
 			else
 			{
-				// 新玩家: 使用 Leather Engine 预设
+				// New player: use the Leather Engine preset
 				data.judgementTimings = [25, 50, 70, 100];
 				data.judgementPreset = 'Leather Engine';
 			}
@@ -805,7 +859,7 @@ class ClientPrefs {
 		else
 		{
 			data.marvelousWindow = data.judgementTimings[0];
-			// 老版本已有 judgementTimings 但没有 judgementPreset 时, 按窗口值匹配预设
+			// Older versions have judgementTimings but no judgementPreset: match a preset by the window values
 			if (!Reflect.hasField(FlxG.save.data, 'judgementPreset'))
 			{
 				var t:Array<Int> = data.judgementTimings;
@@ -820,7 +874,7 @@ class ClientPrefs {
 			}
 		}
 
-		// osu! 尾判窗口倍率迁移: 老存档缺失/非法时用默认 2.0
+		// osu! tail window multiplier migration: missing/invalid old saves use the 2.0 default
 		//if (Math.isNaN(data.tailWindowMult) || data.tailWindowMult <= 0 || data.tailWindowMult > 8)
 		//	data.tailWindowMult = 2.0;
 
@@ -864,6 +918,17 @@ class ClientPrefs {
 		// Ensure draw wrapper is null (threaded rendering removed)
 		if (FlxG.game != null)
 			FlxG.game.drawWrapper = null;
+		#if ONLINE_ALLOWED
+		// The vanilla assignment
+		//   `sys.ssl.Socket.DEFAULT_VERIFY_CERT = data.verifySSL;`
+		// `data.verifySSL` defaults to **false** and `sys.ssl.Socket.DEFAULT_VERIFY_CERT` is a
+		// process-wide switch. Applying it would silently disable TLS certificate verification
+		// for *every* HTTPS connection this engine makes (update checks, GitHub / GameBanana /
+		// Drive downloads, ...), not just online traffic, because the switch is global.
+		// That is an engine-wide security and behaviour change, not a minimal change, so it
+		// needs an explicit decision before being enabled.
+		// Re-adding it is these 3 lines.
+		#end
 
 		// only tunes observation intensity; visuals stay with lowQuality.
 
@@ -925,21 +990,17 @@ class ClientPrefs {
 		if(gamepadBinds.get('volume_down') == null) gamepadBinds.set('volume_down', [NONE]);
 		#end
 
-		// 将加载的按键绑定同步到 Controls 系统，否则 PlayerSettings 始终使用默认值
+		// Sync the loaded key binds into the controls system; otherwise PlayerSettings keeps using the defaults
 		reloadControls();
 		reloadVolumeKeys();
 
-		// 存档加载完成, 此后 saveSettings() 允许写盘
+		// Save file loaded; saveSettings() may write from here on
 		prefsLoaded = true;
 	}
 
-	#if ONLINE_ALLOWED
-	public static var onlineMaskCheats:Bool = false;
-	#end
-
 	/**
-	 * Note RGB 染色着色器最终是否禁用: 合并玩家 noteRGBMode 与谱面 disableNoteRGB。
-	 * Chart (默认) = 跟随谱面; On = 强制启用 (忽略谱面关闭); Off = 强制关闭 (白底材质保持原色)。
+	 * Whether the note RGB tint shader ends up disabled: combines the player's noteRGBMode with the chart's disableNoteRGB.
+ * Chart (default) = follow the chart; On = force on (ignoring the chart); Off = force off (white textures keep their colour).
 	 */
 	public static function noteRGBDisabled(chartDisabled:Bool):Bool
 	{
@@ -959,10 +1020,6 @@ class ClientPrefs {
 		}
 		if (data == null || data.gameplaySettings == null)
 			return defaultValue;
-		#if ONLINE_ALLOWED
-		if (onlineMaskCheats && (name == 'botplay' || name == 'practice' || name == 'instakill'))
-			return false;
-		#end
 		return (data.gameplaySettings.exists(name) ? data.gameplaySettings.get(name) : defaultValue);
 	}
 
@@ -995,7 +1052,6 @@ class ClientPrefs {
 	
 	public static function copyKey(arrayToCopy:Array<FlxKey>):Array<FlxKey> {
 
-		//你猜我为什么要写这一段？
 		if (arrayToCopy == null) {
 			TraceManager.warn('trace.clientPrefs.copyKeyNull', 'copyKey called with null array (missing keybind?)');
 			return [];
@@ -1014,4 +1070,105 @@ class ClientPrefs {
 		}
 		return copiedArray;
 	}
+	#if ONLINE_ALLOWED
+	// ─── Online support: static members the online code needs ───────────────
+	// Methods required by the online code. Where an implementation needs an API this engine
+	// does not have, a minimal equivalent is used (see the method comments).
+	public static function isDebug():Bool
+	{
+		#if debug
+		return true;
+		#end
+
+		if (PlayState.chartingMode)
+			return true;
+
+		// The equivalent field here is
+		// `data.debugEnabled` (same type and default, this file L176).
+		// Haxe 4.2.5 has no null-coalescing operator, so `data?.debugMode ?? false` is expanded.
+		return data != null ? data.debugEnabled : false;
+	}
+
+	/**
+	 * Current nickname.
+	 */
+	public static function getNickname():String
+	{
+		if (online.network.FunkinNetwork.loggedIn)
+			return online.network.FunkinNetwork.nickname;
+
+		@:privateAccess
+		return data.nickname;
+	}
+
+	/**
+	 * Writes the nickname; an empty string falls back to "Boyfriend".
+	 */
+	public static function setNickname(name:String):String
+	{
+		if (online.network.FunkinNetwork.loggedIn)
+			return online.network.FunkinNetwork.updateName(name);
+
+		if (name == "")
+			return @:privateAccess data.nickname = "Boyfriend";
+
+		return @:privateAccess data.nickname = name;
+	}
+
+	/**
+	 * Note skin of the given player (online.backend.NoteSkinData and GameClient.getOptions()
+	 * both read it). Only the single-player semantics exist here: it returns the local note skin.
+	 * The `player` parameter is kept for signature compatibility (-1 = force the local setting).
+	 */
+	#if ONLINE_ALLOWED
+	public static function getNoteSkin(?player:Int = 0):String
+	{
+		return data != null ? data.noteSkin : 'Default';
+	}
+	#end
+
+	/**
+	 * Packs the player palette into a "full" map covering every key count.
+	 *
+	 * The engine has no per-mania `arrowRGBMap` / `arrowRGBPixelMap`, only the 9-slot palettes
+	 * `data.arrowRGB` / `data.arrowRGBPixel` indexed by lane letter; multi-key colours are
+	 * derived at render/tint time by `Note.initializeGlobalRGBShader()` / `StrumNote.hx`
+	 * through `EKData.letterColorIndex.get(EKData.getLetter(mania, lane))`. The same rule
+	 * generates the map for 1k..18k (`EKData.ammo`), matching the lane colours the engine
+	 * actually displays without hard-coding any colour.
+	 * The '4k' entry is therefore derived too (the 4 entries engine 4K really uses,
+	 * `arrowRGB[0..3]`) instead of the whole `data.arrowRGB`, to match the engine's
+	 * palette semantics.
+	 */
+	public static function getArrowRGBCompleteMaps():Array<Map<String, Array<Array<FlxColor>>>>
+	{
+		function buildPalette(palette:Array<Array<FlxColor>>, mania:Int):Array<Array<FlxColor>>
+		{
+			var arr:Array<Array<FlxColor>> = [];
+			if (palette == null || palette.length == 0)
+				return arr;
+
+			var arrLen:Int = palette.length;
+			for (lane in 0...EKData.ammo[mania])
+			{
+				var colorIdx:Int = lane % arrLen;
+				var mapped:Null<Int> = EKData.letterColorIndex.get(EKData.getLetter(mania, lane));
+				if (mapped != null && mapped >= 0 && mapped < arrLen)
+					colorIdx = mapped;
+				arr.push(palette[colorIdx]);
+			}
+			return arr;
+		}
+
+		var rgbMap:Map<String, Array<Array<FlxColor>>> = new Map();
+		var rgbPixelMap:Map<String, Array<Array<FlxColor>>> = new Map();
+		for (mania in 0...EKData.ammo.length)
+		{
+			var key:String = EKData.ammo[mania] + 'k';
+			rgbMap.set(key, buildPalette(data.arrowRGB, mania));
+			rgbPixelMap.set(key, buildPalette(data.arrowRGBPixel, mania));
+		}
+		return [rgbMap, rgbPixelMap];
+	}
+	#end
 }

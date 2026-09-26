@@ -183,7 +183,22 @@ class TitleState extends MusicBeatState
 		// Load preferences BEFORE super.create() so MusicBeatState → Language.load()
 		// picks up the user's saved language preference.
 		FlxG.save.bind('funkin', 'ninjamuffin99');
+
 		ClientPrefs.loadPrefs();
+
+#if ONLINE_ALLOWED
+		// Credentials are keyed by server-list entry now, so Auth reads the server list --
+			// which in turn seeds itself from the legacy address fields in ClientPrefs. The call is
+			// made below loadPrefs() because nothing in between ever read authID/authToken.
+		online.network.Auth.load();
+
+			// Must run right after ClientPrefs.loadPrefs().
+		// NoteSkinData.noteSkins starts as an empty array and GameClient.getOptions() does
+		// NoteSkinData.getCurrent(-1).skin -- without this call the first createRoom/joinRoom
+		// dereferences a null entry (native ACCESS_VIOLATION, crash map-located to
+		// ?getOptions@GameClient_obj@@ +0x430).
+		backend.NoteSkinData.reloadNoteSkins();
+#end
 
 		// Windows: Apply saved Trace Console preference (not before prefs are loaded).
 		#if windows
@@ -771,6 +786,28 @@ class TitleState extends MusicBeatState
 	var titleTextReady:Bool = false;
 	var entranceStarted:Bool = false;
 	var exitStarted:Bool = false;
+
+	#if ONLINE_ALLOWED
+		// Starts the standard menu theme and fades it in -- the same thing `startIntro()` already
+		// does. There is no "favourite song as the menu theme" mode here (this engine has neither
+		// ClientPrefs.data.favsAsMenuTheme / favSongs nor TrackSong), so only the standard theme is
+		// handled.
+		// The theme is a no-op while music is already playing. Guarded by ONLINE_ALLOWED so the
+		// macro-off build stays untouched.
+	public static function playFreakyMusic(?volume:Float = 0.7):Void
+	{
+		if (FlxG.sound.music != null && FlxG.sound.music.playing)
+			return;
+
+		if (FlxG.sound.music != null)
+			FlxG.sound.music.stop();
+
+		FreeplayState.destroyFreeplayVocals();
+
+		FlxG.sound.playMusic(Paths.music('freakyMenu'), 0);
+		FlxG.sound.music.fadeIn(4, 0, volume);
+	}
+	#end
 
 	function startIntro()
 	{
