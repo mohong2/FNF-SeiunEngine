@@ -228,8 +228,14 @@ class Main extends Sprite
 		// resolved against a stale symbol file again.
 		NativeCrash.setBuildInfo();
 		#end
-		#if android
-		NativeCrash.loadLinemap(SUtil.getStorageDirectory());
+		#if (android || windows)
+		// Windows looks the embedded linemap up by the running exe name, which is
+		// the same string the native annotation compares module names against.
+		var linemapLib:String = 'libApplicationMain';
+		#if windows
+		linemapLib = haxe.io.Path.withoutDirectory(Sys.programPath());
+		#end
+		NativeCrash.loadLinemap(SUtil.getStorageDirectory(), linemapLib);
 		#end
 
 		// Wire ClientPrefs framerate/drawFramerate into FlxGame (was 60/60).
