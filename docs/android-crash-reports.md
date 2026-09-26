@@ -45,9 +45,11 @@ adb pull /storage/emulated/0/Android/data/com.mohong.Seiunengine/files/crash/ ./
 powershell -ExecutionPolicy Bypass -File tools\build_android_symbols.ps1
 ```
 
-脚本按顺序做三件事并自我校验:① `-DHXCPP_DEBUG_LINK_AND_STRIP` 出未剥离的 .so;② `tools\gen_linemap.bat release` 生成 linemap;③ `-DCRASH_LINEMAP` 再构建一次把它嵌进 APK;④ 用第③步的 .so 重新生成一张表与嵌入的对比,证明地址一致。产物在 `export\release\android\`:`symbols\`(未剥离 .so + `<abi>.bin` + `build-info.txt`)与 `symbols-<abi>.zip`。
+脚本按顺序做三件事并自我校验:① `-DHXCPP_DEBUG_LINK_AND_STRIP` 出未剥离的 .so;② `tools\gen_linemap.bat release` 生成 linemap;③ 再构建一次把它嵌进 APK;④ 用第③步的 .so 重新生成一张表与嵌入的对比,证明地址一致。产物在 `export\release\android\`:`symbols\`(未剥离 .so + `<abi>.bin` + `build-info.txt`)与 `symbols-<abi>.zip`。
 
-> 必须**两次构建**:第一次构建时 `assets/linemap/*.bin` 还不存在,`Project.xml` 的 `if="CRASH_LINEMAP"` 就不会嵌任何东西。
+> linemap 现在是 `Project.xml` 里的**常驻资产**(不再受 `CRASH_LINEMAP` 门控,那个 define 已是空操作)。
+> **仍然必须两次构建**:第一次构建时 `assets/linemap/*.bin` 还不存在(或还是旧表),第二次才把它嵌进去。
+> ⚠ 表是 `embed="true"`,**表本身改变二进制地址** ⇒ 表必须与同一次构建的二进制配套。直接 `lime build` 会把上次的表编进去,给出**错误行号**,比没有行号更糟 —— **release 包一律走脚本**。
 
 ### 手工步骤
 
@@ -71,9 +73,9 @@ powershell -ExecutionPolicy Bypass -File tools\build_android_symbols.ps1
      引擎启动时自动从存储目录 `linemap/<abi>.bin` 加载。
    - **嵌入 APK**(发布包用,玩家无需做任何事):在生成 linemap 之后再构建一次:
      ```bash
-     haxelib run lime build android -DCRASH_LINEMAP
+     haxelib run lime build android
      ```
-     Project.xml 中对应的 `<assets if="CRASH_LINEMAP">` 条目会把 `.bin` 放进 APK 资产;引擎优先读磁盘版本,没有才读内嵌版本。
+     Project.xml 中常驻的 `<assets path="assets/linemap" ... embed="true">` 条目会把 `.bin` 放进 APK 资产;引擎优先读磁盘版本,没有才读内嵌版本。
 
 4. 复现崩溃,报告中即包含 `[source/backend/xxx.cpp:行号]`。
 

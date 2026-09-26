@@ -53,8 +53,11 @@ build in the release's `crash-symbols/`:
     powershell -ExecutionPolicy Bypass -File tools\build_windows_symbols.ps1
 
 Both run the same two-build recipe: build once with debug info, turn that into
-`assets/linemap/<abi>.bin`, build again with `-DCRASH_LINEMAP` so the table is
-embedded, then verify the embedded table against the built binary. A report's
+`assets/linemap/<abi>.bin`, build again so the (now resident) table is embedded,
+then verify the embedded table against the built binary. The table changes the
+binary's addresses, so it must come from the same build -- always release through
+these scripts, never a bare `lime build`. (`-DCRASH_LINEMAP` is still passed for
+compatibility with the older gated `Project.xml`; it is a no-op.) A report's
 `Build:` line (fingerprint of the running binary + the loaded linemap) is what
 you match against `build-info.txt` in the bundle.
 
@@ -76,7 +79,7 @@ category/option label is missing from any of the three languages.
 | File | Purpose |
 |---|---|
 | `symbolize-crash.ps1` + `mapresolve.py` | the older two-step map symboliser (PowerShell + Python); `crash_triage.py` supersedes it |
-| `gen_linemap.bat` / `gen_linemap.py` | Android: address -> source-line table from an unstripped `.so` (used by `-DCRASH_LINEMAP`) |
+| `gen_linemap.bat` / `gen_linemap.py` | Android: address -> source-line table from an unstripped `.so` (the resident crash linemap) |
 | `gen_linemap_msvc.py` | Windows: the same table out of an MSVC PDB via dbghelp (`--text-sha` compares two builds' .text) |
 | `fnv1a.py` | the build-fingerprint hash the C++/Haxe side uses (`file` = first/last 64 KB, `whole` = whole file) |
 | `build_android_symbols.ps1` | one command: APK + unstripped `.so` + `<abi>.bin` + `build-info.txt` |

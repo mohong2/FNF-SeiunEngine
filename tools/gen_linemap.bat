@@ -10,7 +10,8 @@ rem
 rem Outputs -> assets\linemap\arm64-v8a.bin + armeabi-v7a.bin
 rem   * push to device:  adb push assets\linemap\arm64-v8a.bin
 rem       /storage/emulated/0/Android/data/com.mohong.Seiunengine/files/linemap/
-rem   * or rebuild the APK with -DCRASH_LINEMAP to embed them
+rem   * the .bin files are a resident asset in Project.xml, so simply rebuilding
+rem     the APK (tools\build_android_symbols.ps1) embeds them
 rem ============================================================
 cd /d "%~dp0.."
 
@@ -54,7 +55,7 @@ if not "%SO7%"=="" (
 )
 
 echo.
-echo [gen_linemap] Done. Enable embedding by building with:  lime build android -DCRASH_LINEMAP
+echo [gen_linemap] Done. The table is a resident asset; embed it by rebuilding:  tools\build_android_symbols.ps1
 echo [gen_linemap] Or push to device:
 echo   adb push assets\linemap\arm64-v8a.bin /storage/emulated/0/Android/data/com.mohong.Seiunengine/files/linemap/
 endlocal

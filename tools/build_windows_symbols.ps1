@@ -13,12 +13,17 @@
     the linemap asset adds a translation unit, so the *first* build must already
     carry a linemap file (a stub on a fresh checkout). Then:
 
-      1. build with -DHXCPP_DEBUG_LINK -DCRASH_LINEMAP   (stub or stale table)
-      2. python tools/gen_linemap_msvc.py ...            (real table, PDB input)
-      3. build with -DHXCPP_DEBUG_LINK -DCRASH_LINEMAP   (real table embedded)
+      1. build with -DHXCPP_DEBUG_LINK                    (stub or stale table)
+      2. python tools/gen_linemap_msvc.py ...             (real table, PDB input)
+      3. build with -DHXCPP_DEBUG_LINK                    (real table embedded)
       4. verify: regenerate from exe 3's PDB and compare byte-for-byte
-      5. build WITHOUT -DHXCPP_DEBUG_LINK -DCRASH_LINEMAP (pristine release)
+      5. build WITHOUT -DHXCPP_DEBUG_LINK                 (pristine release)
       6. verify: .text SHA256 of 5 equals 3 -> the embedded table still applies
+
+    The linemap is a resident asset in Project.xml, so EVERY build embeds it (steps
+    3 and 5 included); -DCRASH_LINEMAP is still passed for compatibility with the
+    older gated Project.xml and is a no-op. Step 6 therefore compares two builds
+    that both carry the table.
 
     Step 5/6 are what let the published exe stay a normal release build (no
     debug directory, no PDB reference beyond a MISSING note); if step 6 fails the

@@ -197,7 +197,7 @@ class NativeCrash
 	 * Load the crash linemap for this build's ABI (exact cpp file:line at
 	 * crash time). Sources, in priority order:
 	 *   1. <storage>/linemap/<abi>.bin      (adb push, no APK changes)
-	 *   2. embedded asset assets/linemap/<abi>.bin (needs -DCRASH_LINEMAP)
+	 *   2. embedded asset assets/linemap/<abi>.bin (resident in Project.xml)
 	 * Generated from the unstripped .so by tools/gen_linemap.py.
 	 */
 	public static function loadLinemap(storageDir:String, libName:String = 'libApplicationMain'):Void
@@ -223,7 +223,7 @@ class NativeCrash
 		catch (e:Dynamic) {}
 		#end
 
-		// 2) embedded asset (opt-in via -DCRASH_LINEMAP in Project.xml)
+		// 2) embedded asset (resident in Project.xml; regenerated per build by the symbol scripts)
 		try
 		{
 			var assetPath:String = 'assets/linemap/' + abi + '.bin';

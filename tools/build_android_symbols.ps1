@@ -13,9 +13,11 @@
       2. tools\gen_linemap.bat release
          reads the DWARF line table of that copy and writes
          assets\linemap\<abi>.bin (python + pyelftools, installed on demand).
-      3. haxelib run lime build android -DCRASH_LINEMAP
-         Project.xml:144 embeds those .bin files, so an on-device crash report
-         carries "[source/File.cpp:123]" for every game frame.
+      3. haxelib run lime build android
+         Project.xml embeds assets/linemap/*.bin unconditionally (the linemap is a
+         resident asset now), so an on-device crash report carries
+         "[source/File.cpp:123]" for every game frame. -DCRASH_LINEMAP is still
+         passed for compatibility with the older gated Project.xml; it is a no-op.
       4. verify: the .bin embedded in step 3 must still equal the table the
          step-3 .so produces (the asset lives in the APK, not in the .so, so the
          addresses are expected to be identical; this proves it).
@@ -54,11 +56,12 @@ function Invoke-Lime {
     if ($LASTEXITCODE -ne 0) { throw "lime build failed (exit $LASTEXITCODE)" }
 }
 
-# -DCRASH_LINEMAP is passed to BOTH builds on purpose: the asset list (and the
-# generated asset manifest) is part of the code, so both builds must see the same
-# set of files or the addresses would move. On a fresh checkout the .bin files do
-# not exist yet, so a stub is written first and replaced with the real table
-# between the two builds.
+# The linemap asset list (and the generated asset manifest) is part of the code, so
+# BOTH builds must see the same set of files or the addresses would move. The asset
+# itself is now resident in Project.xml (no define gate); -DCRASH_LINEMAP is still
+# passed so this script also works against the older gated Project.xml. On a fresh
+# checkout the .bin files do not exist yet, so a stub is written first and replaced
+# with the real table between the two builds.
 function Get-LimeArgs {
     $a = New-Object System.Collections.Generic.List[string]
     $a.Add('build'); $a.Add('android')

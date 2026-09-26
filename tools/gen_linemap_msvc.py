@@ -10,7 +10,7 @@ a PDB, and the crash report needs it WITHOUT shipping that PDB (50+ MB):
   read every source line out of that PDB through dbghelp (SymEnumLinesW),
   write assets/linemap/windows-x64.bin in the same SELM format the C++ handler
   binary-searches at crash time,
-  build again with -DCRASH_LINEMAP so the table is embedded in the exe.
+  build again so the table -- a resident asset in Project.xml -- is embedded in the exe.
 
 The PDB is a build-time input only: it is never copied into bin/ and never
 published. The exe's own release layout is unchanged because the symbol build

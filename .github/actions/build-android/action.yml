@@ -113,7 +113,7 @@ runs:
 
     # Two lime builds plus the linemap generation, driven by one script: the
     # .bin files only exist after the first build, so the second one embeds them
-    # (-DCRASH_LINEMAP). The script also verifies the embedded table against the
+    # (the linemap is a resident Project.xml asset now). The script also verifies the embedded table against the
     # .so it was built from and stages export/release/android/symbols, which the
     # release workflow publishes as SeiunEngine-android-<abi>-symbols.
     - name: Build APK with matching crash symbols

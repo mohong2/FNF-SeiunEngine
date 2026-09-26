@@ -139,9 +139,13 @@
 	-->
 	<assets path="assets/fonts"/>
 	<assets path="assets/lang"/>
-	<!-- 崩溃行号映射(可选,调试用):先运行 tools\gen_linemap.bat 生成 .bin,再用
-	     "lime build android -DCRASH_LINEMAP" 打包嵌入 APK;不用该 define 时完全不影响包体。 -->
-	<assets path="assets/linemap" rename="assets/linemap" include="*.bin" embed="true" if="CRASH_LINEMAP" />
+	<!-- 崩溃行号映射(常驻): assets/linemap/*.bin 由 tools\build_*_symbols.ps1 生成并嵌进产物,
+	     崩溃报告的每一帧就直接带 [source/文件:行] —— 排查成本远低于省下的那点包体.
+	     ⚠ 表是 embed="true", 表本身会改变二进制地址 => 表必须与"同一次构建"的二进制配套.
+	     因此任何 release 构建都要走 tools\build_android_symbols.ps1 / tools\build_windows_symbols.ps1
+	     (它们重新生成表并用 tools\linemap_compare.py 校验); 直接 lime build 会把上一次的表编进去,
+	     给出**错误的行号**, 比没有行号更糟. 目录为空时只是没有行号, 不影响启动. -->
+	<assets path="assets/linemap" rename="assets/linemap" include="*.bin" embed="true"/>
 	<!-- _______________________________ Libraries ______________________________ -->
 
 	<haxelib name="flixel"/>
