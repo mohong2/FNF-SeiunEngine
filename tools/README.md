@@ -58,6 +58,19 @@ embedded, then verify the embedded table against the built binary. A report's
 `Build:` line (fingerprint of the running binary + the loaded linemap) is what
 you match against `build-info.txt` in the bundle.
 
+## Settings layout -- `verify_option_layout.py`
+
+Read-only gate for the built-in settings menu. Run it after touching
+`assets/preload/data/options/*` or `assets/lang/*/option.json`:
+
+    python tools/verify_option_layout.py
+
+It fails when an option `variable` appears twice, when the 87 historical
+options are not all still present (the baseline list is frozen in the script),
+when a category points at a page that does not exist (or a page has no
+category), when `language` is not the first entry of `general`, or when a
+category/option label is missing from any of the three languages.
+
 ## Other files
 
 | File | Purpose |
