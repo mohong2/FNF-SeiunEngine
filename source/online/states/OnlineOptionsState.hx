@@ -356,7 +356,7 @@ class OnlineOptionsState extends MusicBeatState {
 			mouseMoveTimeout -= elapsed;
 
 		if (!inputWait) {
-			if (controls.BACK) {
+			if (controls.BACK #if android || FlxG.android.justReleased.BACK #end) {
 				// Commit any pending onBlur input when leaving the screen.
 				commitInputsOnExit();
 				FlxG.sound.music.volume = 1;

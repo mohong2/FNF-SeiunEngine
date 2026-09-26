@@ -43,6 +43,7 @@ class LeavePie extends FlxTypedSpriteGroup<FlxSprite> {
 		// `Controls.instance`, so `controls.pressed('back')` alone is not trustworthy: global key
 		// state is read as well, making a held ESC or BACKSPACE equivalent to a held BACK.
 		var backHeld:Bool = getState().controls.pressed('back')
+			#if android || FlxG.android.pressed.BACK #end
 			|| FlxG.keys.pressed.ESCAPE
 			|| FlxG.keys.pressed.BACKSPACE;
 

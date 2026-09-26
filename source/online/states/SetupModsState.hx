@@ -114,7 +114,7 @@ class SetupModsState extends MusicBeatState {
 			else if (controls.UI_DOWN_P || FlxG.mouse.wheel == -1)
 				changeSelection(1);
 
-			if (controls.BACK || FlxG.mouse.justPressedRight) {
+			if (controls.BACK #if android || FlxG.android.justReleased.BACK #end || FlxG.mouse.justPressedRight) {
 				if (!FlxG.keys.pressed.SHIFT) {
 					var i = 0;
 					for (mod in swagMods) {

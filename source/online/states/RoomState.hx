@@ -697,7 +697,18 @@ class RoomState extends MusicBeatState /*#if interpret implements interpret.Inte
 			return;
 		}
 
-		var controlsBack:Bool = controls.pressed('back');
+		#if android
+		// The engine never maps the Android back key onto controls.BACK, and the system back gesture
+		// arrives as a quick press/release pair, so the hold below can never fill. Leave on release.
+		if (FlxG.android.justReleased.BACK && !leaveFallbackFired) {
+			leaveFallbackFired = true;
+			GameClient.leaveTrace('FALLBACK leaveRoom (Android back)');
+			GameClient.leaveRoom(null, true);
+			return;
+		}
+		#end
+
+		var controlsBack:Bool = controls.pressed('back') #if android || FlxG.android.pressed.BACK #end;
 		var held:Bool = FlxG.keys.pressed.ESCAPE || FlxG.keys.pressed.BACKSPACE || controlsBack;
 
 		leaveTraceTimer -= elapsed;

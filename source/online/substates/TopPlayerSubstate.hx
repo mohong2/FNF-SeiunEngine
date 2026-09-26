@@ -254,7 +254,7 @@ class TopPlayerSubstate extends MusicBeatSubstate {
 				curSelected = -2;
 			topShit.selectRow(curSelected);
 		}
-        else if (controls.BACK) {
+        else if (controls.BACK #if android || FlxG.android.justReleased.BACK #end) {
 			LoadingScreen.toggle(false);
             close();
         }

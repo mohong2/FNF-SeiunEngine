@@ -72,7 +72,7 @@ class VerifyCodeSubstate extends MusicBeatSubstate {
 
 		input.hasFocus = true;
 
-        if (input.text.length <= 0 && controls.BACK) {
+        if (input.text.length <= 0 && controls.BACK #if android || FlxG.android.justReleased.BACK #end) {
             if (!confirmBack) {
 				confirmBack = true;
                 return;

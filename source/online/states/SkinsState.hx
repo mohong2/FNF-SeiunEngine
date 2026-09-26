@@ -696,7 +696,7 @@ class SkinsState extends MusicBeatState {
 				character.members[0].playAnim("hey", true);
         }
 
-		if (controls.BACK || (!FlxG.keys.pressed.SHIFT && controls.ACCEPT)) {
+		if (controls.BACK #if android || FlxG.android.justReleased.BACK #end || (!FlxG.keys.pressed.SHIFT && controls.ACCEPT)) {
 			stopUpdates = true;
 			// Flixel 5.x has FlxTimer.wait; on 4.11 use new FlxTimer().start(...).
 			new FlxTimer().start(1, _ -> {

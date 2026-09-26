@@ -282,7 +282,7 @@ class DownloaderState extends MusicBeatState {
 
     override function update(elapsed:Float) {
 		if (!searchInput.hasFocus) {
-			if (controls.BACK) {
+			if (controls.BACK #if android || FlxG.android.justReleased.BACK #end) {
 				FlxG.sound.music.volume = 1;
 				// Flixel 5.6+ `FlxG.switchState` accepts a `NextState` lambda; this Flixel 4.11 build
 				// takes an FlxState, so the ternary is resolved first (same evaluation point).

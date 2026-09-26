@@ -147,7 +147,7 @@ class SelectDownloadSubstate extends MusicBeatSubstate {
 		else if (controls.UI_DOWN_P)
 			selected++;
 
-		if (controls.BACK || (FlxG.mouse.justPressed && !FlxG.mouse.overlaps(bg, camera))) {
+		if (controls.BACK #if android || FlxG.android.justReleased.BACK #end || (FlxG.mouse.justPressed && !FlxG.mouse.overlaps(bg, camera))) {
 			close();
 		}
 

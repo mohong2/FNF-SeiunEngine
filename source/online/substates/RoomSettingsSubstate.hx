@@ -277,7 +277,7 @@ class RoomSettingsSubstate extends MusicBeatSubstate {
 	}
 
     override function update(elapsed) {
-        if (controls.BACK) {
+        if (controls.BACK #if android || FlxG.android.justReleased.BACK #end) {
             close();
 			FlxG.mouse.visible = prevMouseVisibility;
         }

@@ -355,7 +355,7 @@ class OnlineState extends MusicBeatState {
 				}
 			}
 
-			if (controls.BACK) {
+			if (controls.BACK #if android || FlxG.android.justReleased.BACK #end) {
 				disableInput = true;
 
 				FlxG.stage.removeEventListener(KeyboardEvent.KEY_DOWN, onKeyDown);

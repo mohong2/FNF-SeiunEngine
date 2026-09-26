@@ -720,7 +720,7 @@ class ResultsState extends MusicBeatState {
 			if (back.animation.curAnim.name != "press")
 				back.animation.play('idle');
 
-			if (!chatBox.focused && (!FlxG.keys.justPressed.TAB && controls.BACK || FlxG.keys.justPressed.BACKSPACE || FlxG.keys.justPressed.ENTER)) {
+			if (!chatBox.focused && (!FlxG.keys.justPressed.TAB && controls.BACK #if android || FlxG.android.justReleased.BACK #end || FlxG.keys.justPressed.BACKSPACE || FlxG.keys.justPressed.ENTER)) {
 				FlxG.sound.music.stop();
 				FlxG.sound.play(Paths.sound('cancelMenu'));
 

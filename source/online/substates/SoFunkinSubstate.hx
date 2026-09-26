@@ -265,7 +265,7 @@ class SoFunkinSubstate extends MusicBeatSubstate {
 			changeSelection();
 		}
 
-		if (controls.BACK) {
+		if (controls.BACK #if android || FlxG.android.justReleased.BACK #end) {
 			close();
 		}
 

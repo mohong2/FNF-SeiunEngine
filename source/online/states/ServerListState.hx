@@ -392,7 +392,7 @@ class ServerListState extends MusicBeatState {
 			button.hovered = mouseOverButton(button);
 
 		if (!inputWait && !buttonHit) {
-			if (controls.BACK) {
+			if (controls.BACK #if android || FlxG.android.justReleased.BACK #end) {
 				FlxG.sound.music.volume = 1;
 				FlxG.switchState(new OnlineOptionsState());
 				FlxG.sound.play(Paths.sound('cancelMenu'));

@@ -83,7 +83,7 @@ class FindRoomState extends MusicBeatState {
 			@:privateAccess refreshTimer._timeCounter = 0;
 			refreshRooms();
         }
-		else if (controls.BACK) {
+		else if (controls.BACK #if android || FlxG.android.justReleased.BACK #end) {
 			refreshTimer.cancel();
             LoadingScreen.toggle(false);
 			FlxG.sound.music.volume = 1;
