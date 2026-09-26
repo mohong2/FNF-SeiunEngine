@@ -1340,6 +1340,12 @@ class OptionsState extends MusicBeatState
 		}
 		setSubGroupsVisible(true);
 
+		// The note-optimisation disclaimer belongs to this page, not to launch: raise it the
+		// first time the page is opened in this process. showCustom does not block on
+		// Android, so the slide-in transition below keeps running underneath either way.
+		if (page == 'note_optimization' && backend.NoteOptimisationNotice.shouldShow())
+			backend.NoteOptimisationNotice.show();
+
 		currentMode = MODE_SETTINGS;
 		currentSettingsPage = page;
 
@@ -1827,17 +1833,13 @@ class OptionsState extends MusicBeatState
 	}
 
 	/**
-	 * "Show the notice again" action row on the note-optimisation page: re-display the merged
-	 * cold-start notice (test build + note-optimisation disclaimer) without a restart. The same
-	 * body builder the boot state uses, so the two can never drift apart.
+	 * "Show the notice again" action row on the note-optimisation page: re-display the
+	 * disclaimer without a restart. Shares the body builder with the automatic popup
+	 * (backend.NoteOptimisationNotice), so the two can never drift apart.
 	 */
 	function onChangeShowNoteOptimizationNotice()
 	{
-		backend.Dialog.showCustom(
-			Language.get('TestBuildNotice.title', 'Before You Play'),
-			states.TestBuildNoticeState.noticeBody(),
-			[{name: Language.get('TestBuildNotice.continue', 'Continue'), callback: function() {}}],
-			false);
+		backend.NoteOptimisationNotice.showAgain();
 	}
 
 	function syncDragToWheel()

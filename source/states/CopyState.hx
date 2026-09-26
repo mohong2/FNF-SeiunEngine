@@ -461,9 +461,11 @@ class CopyState extends MusicBeatState
 		FlxTransitionableState.skipNextTransOut = true;
 
 		// Once per cold start, after the assets are verified (so fonts and language exist)
-		// and before the title: the merged test-build / note-optimisation notice. It hands
-		// over to TitleState itself, mod state redirect included. Deliberately not persisted,
-		// because the notice is wanted on every launch rather than once per install.
+		// and before the title: the test-build notice (shouldShow() is false on release
+		// builds, so those hand over directly). The notice hands over to TitleState itself,
+		// mod state redirect included. Deliberately not persisted, because it is wanted on
+		// every launch rather than once per install. The note-optimisation disclaimer is a
+		// different thing and is raised when that settings page is opened.
 		if (TestBuildNoticeState.shouldShow())
 		{
 			FlxG.switchState(new TestBuildNoticeState());

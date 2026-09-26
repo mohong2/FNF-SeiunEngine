@@ -266,9 +266,11 @@ class Main extends Sprite
 		if (drawFramerate < 30) drawFramerate = framerate;
 
 		#if !mobile
-		// Desktop has no extraction step, so the merged cold-start notice (test build +
-		// note-optimisation disclaimer) is simply the first state. It hands over to
-		// TitleState itself and owns the same prefs bootstrap CopyState does on mobile.
+		// Desktop has no extraction step, so the test-build notice is simply the first state
+		// (shouldShow() is false on release builds, so they start in TitleState as before).
+		// It hands over to TitleState itself and owns the same prefs bootstrap CopyState
+		// performs on mobile. The note-optimisation disclaimer is unrelated: it appears when
+		// the note-optimisation settings page is opened.
 		if (states.TestBuildNoticeState.shouldShow())
 			initialState = states.TestBuildNoticeState;
 		#end

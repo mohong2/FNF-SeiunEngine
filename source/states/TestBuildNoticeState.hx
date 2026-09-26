@@ -4,18 +4,22 @@ import flixel.FlxState;
 import flixel.addons.transition.FlxTransitionableState;
 
 /**
- * The single cold-start notice: the test-build warning (only when the version string
- * carries "pre"/"beta") followed by the note-optimisation disclaimer (every launch).
+ * Cold-start notice for TEST BUILDS ONLY: shown once per launch, before the title screen,
+ * when the version string carries "pre"/"beta" (BuildInfo.isTestBuild()). Release builds
+ * never see it (shouldShow() returns false and the boot goes straight to TitleState).
  *
- * It sits in the boot chain rather than in the options menu, because the user asked for
- * "once per cold start" rather than "once per visit to the note-optimisation page":
- * desktop boots straight into it (Main.setupGame replaces initialState) and mobile reaches
- * it from CopyState.handOver() once the assets are verified. It is un-skippable but never
- * dead-ends: ENTER / SPACE / BACK, a click or the virtual pad's A button hands over to the
+ * Kept separate from the note-optimisation disclaimer on purpose: this one is about the
+ * build itself and belongs at launch, that one is about one settings page and belongs
+ * where the player opens that page (backend.NoteOptimisationNotice).
+ *
+ * It sits in the boot chain rather than in the options menu: desktop boots straight into it
+ * (Main.setupGame replaces initialState) and mobile reaches it from CopyState.handOver()
+ * once the assets are verified. It is un-skippable but never dead-ends: ENTER / SPACE /
+ * BACK, the virtual pad's A button or a click on the Continue button hands over to the
  * title state.
  *
  * "Every cold start" is a process-local decision on purpose. Persisting it would turn it
- * into FlashingState's show-once behaviour, which is explicitly not what was asked for.
+ * into FlashingState's show-once behaviour, which is not what was asked for.
  *
  * The hand-over uses plain FlxG.switchState: the boot path must not create a
  * CustomFadeTransition substate (see the long comment in CopyState.handOver()).
@@ -25,53 +29,39 @@ class TestBuildNoticeState extends MusicBeatState
 	/** False until this process showed the notice; deliberately never written to disk. */
 	public static var shownThisSession:Bool = false;
 
-	/** Input is ignored for a moment so the click that launched the game cannot dismiss it. */
-	static inline var INPUT_GRACE:Float = 0.2;
+	/** Input is ignored for a moment so the window activation click cannot dismiss it. */
+	static inline var INPUT_GRACE:Float = 0.3;
+	static inline var BUTTON_WIDTH:Int = 340;
+	static inline var BUTTON_HEIGHT:Int = 64;
 
 	var leaving:Bool = false;
 	var age:Float = 0;
+	var continueButton:FlxSprite;
 
 	public function new()
 	{
 		super();
 	}
 
-	/** Whether this process still owes the player the cold-start notice. */
+	/** True when this process still owes the test-build notice. Never true on a release build. */
 	public static function shouldShow():Bool
 	{
-		return !shownThisSession;
+		return !shownThisSession && BuildInfo.isTestBuild();
 	}
 
 	/**
-	 * Body of the merged notice, shared by the blocking page and the "show the notice
-	 * again" action row in the note-optimisation page. English defaults are inlined so a
-	 * missing language file can never show an empty page (same style as FlashingState).
+	 * Body of the test-build notice. The English default is inlined so a missing language
+	 * file can never show an empty page (same style as FlashingState).
 	 */
-	public static function noticeBody():String
+	public static function body():String
 	{
-		var body:String = '';
-
-		if (BuildInfo.isTestBuild())
-		{
-			body += Language.get('TestBuildNotice.testBuild',
-				'Test build - {version} ({build}).\n'
-				+ 'This version is still in development: features may be incomplete, may change at any time, '
-				+ 'and save data may change format between builds.')
-				.replace('{version}', BuildInfo.appVersion())
-				.replace('{build}', BuildInfo.buildId())
-				+ '\n\n';
-		}
-
-		body += Language.get('TestBuildNotice.noteOptimization',
-			'Note optimisation - read this first\n'
-			+ 'The note optimisation in this engine is a side feature, not a product. It exists so that '
-			+ 'enormous charts (tens of millions of notes) can at least be played; it was not written by a '
-			+ 'dedicated note-optimisation project and does not try to match one.\n'
-			+ 'If it is slower or rougher than such an engine, that is expected. Please use that engine '
-			+ 'instead of filing a complaint here.\n'
-			+ '(Shown once on every launch.)');
-
-		return body;
+		return Language.get('TestBuildNotice.body',
+			'{version} ({build}) is a development build.\n'
+			+ 'Features may be incomplete or change at any time, and save data may change format '
+			+ 'between builds.\n'
+			+ 'Keep a backup of anything you care about.')
+			.replace('{version}', BuildInfo.appVersion())
+			.replace('{build}', BuildInfo.buildId());
 	}
 
 	override function create():Void
@@ -112,20 +102,29 @@ class TestBuildNoticeState extends MusicBeatState
 
 		var font:String = Paths.font('vcrcn.ttf');
 
-		var titleText:FlxText = new FlxText(40, 52, FlxG.width - 80, Language.get('TestBuildNotice.title', 'Before You Play'), 40);
-		titleText.setFormat(font, 40, FlxColor.WHITE, CENTER);
+		var titleText:FlxText = new FlxText(40, 96, FlxG.width - 80, Language.get('TestBuildNotice.title', 'Test Build'), 46);
+		titleText.setFormat(font, 46, 0xFFFFD24A, CENTER);
 		add(titleText);
 
-		var bodyText:FlxText = new FlxText(60, 128, FlxG.width - 120, noticeBody(), 22);
-		bodyText.setFormat(font, 22, FlxColor.WHITE, CENTER);
+		var bodyText:FlxText = new FlxText(80, 226, FlxG.width - 160, body(), 26);
+		bodyText.setFormat(font, 26, FlxColor.WHITE, CENTER);
 		bodyText.wordWrap = true;
 		add(bodyText);
 
-		var continueText:FlxText = new FlxText(0, FlxG.height - 88, FlxG.width, Language.get('TestBuildNotice.continue', 'Continue'), 28);
+		// A real button, because a click anywhere is too easy to trigger by accident (the
+		// window steals focus on launch and the first click would dismiss the notice).
+		continueButton = new FlxSprite().makeGraphic(BUTTON_WIDTH, BUTTON_HEIGHT, 0xFF23262E);
+		continueButton.x = Math.round((FlxG.width - BUTTON_WIDTH) / 2);
+		continueButton.y = FlxG.height - BUTTON_HEIGHT - 62;
+		add(continueButton);
+
+		var continueText:FlxText = new FlxText(continueButton.x, continueButton.y, BUTTON_WIDTH,
+			Language.get('TestBuildNotice.continue', 'Continue'), 28);
 		continueText.setFormat(font, 28, 0xFFFFD24A, CENTER);
+		continueText.y = continueButton.y + Math.round((BUTTON_HEIGHT - continueText.height) / 2);
 		add(continueText);
 
-		var hintText:FlxText = new FlxText(0, FlxG.height - 48, FlxG.width,
+		var hintText:FlxText = new FlxText(0, FlxG.height - 40, FlxG.width,
 			Language.get('TestBuildNotice.continueHint', 'Press ENTER / SPACE, or click Continue'), 16);
 		hintText.setFormat(font, 16, 0xFF9A9A9A, CENTER);
 		add(hintText);
@@ -146,7 +145,7 @@ class TestBuildNoticeState extends MusicBeatState
 
 		age += elapsed;
 
-		if (!leaving && age >= INPUT_GRACE && (controls.ACCEPT || controls.BACK || FlxG.mouse.justPressed))
+		if (!leaving && age >= INPUT_GRACE && wantsToLeave())
 		{
 			leaving = true;
 			FlxG.sound.play(Paths.sound('confirmMenu'));
@@ -164,6 +163,14 @@ class TestBuildNoticeState extends MusicBeatState
 		#if HSCRIPT_ALLOWED
 		callOnHscript('onUpdatePost', [elapsed]);
 		#end
+	}
+
+	/** Deliberate input only: confirm keys/pad, or a click on the Continue button. */
+	function wantsToLeave():Bool
+	{
+		if (controls.ACCEPT || controls.BACK)
+			return true;
+		return FlxG.mouse.justPressed && continueButton != null && FlxG.mouse.overlaps(continueButton);
 	}
 
 	/** What comes after the notice: the title screen, honouring mod state replacements. */

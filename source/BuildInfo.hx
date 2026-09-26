@@ -20,7 +20,7 @@ package;
 class BuildInfo
 {
 	/** Short git hash injected at build time by tools/gen_buildinfo.py. */
-	public static inline var COMMIT:String = "unknown";
+	public static inline var COMMIT:String = "8e7a13a";
 	/** Version read from Project.xml by tools/gen_buildinfo.py (runtime metadata wins). */
 	public static inline var VERSION:String = "0.2.2preonline1";
 	/** True when the tree had uncommitted changes at build time. */
