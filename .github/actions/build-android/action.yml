@@ -117,9 +117,16 @@ runs:
     - name: Read app version
       shell: pwsh
       run: |
+        # Accept version suffixes (0.2.2preonline1): the old digits-and-dots-only pattern
+        # matched nothing and shipped empty names such as "SeiunEngine-android-arm64-.apk".
         $xml = Get-Content -Raw Project.xml
-        $v = [regex]::Match($xml, '<app[^>]*version="([0-9][0-9.]*)"').Groups[1].Value
+        $v = [regex]::Match($xml, '<app[^>]*\sversion="([0-9][0-9A-Za-z._-]*)"').Groups[1].Value
+        if (-not $v) {
+          Write-Error 'Could not read <app ... version="..."> from Project.xml'
+          exit 1
+        }
         Add-Content -Path $env:GITHUB_ENV -Value "APP_VERSION=$v"
+        Write-Output "app version: $v"
 
     - name: Rebuild Lime Android ndll (SDL3)
       shell: pwsh

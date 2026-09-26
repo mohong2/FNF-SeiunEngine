@@ -51,6 +51,10 @@ jobs:
       - name: Package release assets
         run: |
           set -euo pipefail
+          if [ -z "${APP_VERSION:-}" ]; then
+            echo "::error::Empty APP_VERSION (Project.xml <app version=...>) - refusing to publish unversioned assets"
+            exit 1
+          fi
           rm -rf dist
           mkdir -p dist
           mkdir -p dist/crash-symbols
@@ -63,7 +67,7 @@ jobs:
             # game zip (the .map alone is tens of MB and only needed for triage).
             case "$d" in
               *-symbols)
-                zip -r "../dist/crash-symbols/${d}.zip" "$d"
+                zip -r "../dist/crash-symbols/${d}-${APP_VERSION}.zip" "$d"
                 continue
                 ;;
             esac
@@ -76,7 +80,7 @@ jobs:
               fi
             done
             if [ "$mobile" -eq 0 ] && [ -n "$(ls -A "$d" 2>/dev/null)" ]; then
-              zip -r "../dist/${d}.zip" "$d"
+              zip -r "../dist/${d}-${APP_VERSION}.zip" "$d"
             fi
           done
           cd ../dist
@@ -134,14 +138,17 @@ jobs:
           developer's local build matching the user's. The files under
           `crash-symbols/` are the symbols for exactly the APK/exe in this release:
 
-          - `SeiunEngine-windows-x64-symbols.zip`  (ApplicationMain.map + windows-x64.bin + build-info.txt)
-          - `SeiunEngine-android-arm64-symbols.zip` / `SeiunEngine-android-armv7-symbols.zip`
+          - `SeiunEngine-windows-x64-symbols-${{ env.APP_VERSION }}.zip`  (ApplicationMain.map + windows-x64.bin + build-info.txt)
+          - `SeiunEngine-android-arm64-symbols-${{ env.APP_VERSION }}.zip` / `SeiunEngine-android-armv7-symbols-${{ env.APP_VERSION }}.zip`
             (unstripped libApplicationMain.so + <abi>.bin + build-info.txt)
-          - `SeiunEngine-linux-x64-symbols.zip` / `SeiunEngine-mac-*-symbols.zip` (linker .map)
+          - `SeiunEngine-linux-x64-symbols-${{ env.APP_VERSION }}.zip` / `SeiunEngine-mac-*-symbols-${{ env.APP_VERSION }}.zip` (linker .map)
 
           Match them to the report via the report's `Build:` line and the
           `build-info.txt` of the matching zip. Offline fallback for desktop:
           `python tools/mapresolve.py ApplicationMain.map <fault offset>`.
+
+          Every download carries the version, so a file taken off the release page is self-identifying:
+          game builds are `SeiunEngine-<target>-<version>.<ext>` and crash symbols end in `-symbols-<version>.zip`.
 
           Checksums are included in `SHA256SUMS.txt`.
           EOF

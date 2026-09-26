@@ -88,7 +88,16 @@ runs:
     - name: Read app version
       shell: bash
       run: |
-        echo "APP_VERSION=$(sed -n 's/.*<app[^>]*version=\"\([0-9][0-9.]*\)\".*/\1/p' Project.xml | head -n1)" >> "$GITHUB_ENV"
+        # The version can carry a suffix (0.2.2preonline1), so the pattern has to accept
+        # letters/underscores/dashes. The old digits-and-dots-only class matched nothing and
+        # silently produced empty names such as "SeiunEngine-android-arm64-.apk".
+        APP_VERSION="$(sed -n 's/.*<app[^>]*version="\([0-9][0-9A-Za-z._-]*\)".*/\1/p' Project.xml | head -n1)"
+        if [ -z "$APP_VERSION" ]; then
+          echo '::error::Could not read <app ... version="..."> from Project.xml'
+          exit 1
+        fi
+        echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
+        echo "app version: $APP_VERSION"
 
     - name: Configure ad-hoc iOS signing
       shell: bash
