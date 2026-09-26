@@ -84,6 +84,55 @@ class HScript
 	 * English: Function-override backups: name → original function, used by restoreFunction(). */
 	var functionBackups:Map<String, Dynamic> = new Map<String, Dynamic>();
 
+	/**
+	 * Advanced whenever ANY HScript interpreter ran code or had one of its variables written.
+	 * FunkinLua consumes it to invalidate its negative callback caches: HScript code is the only
+	 * route into LuaApi, which writes Lua globals behind FunkinLua's back (LuaApi and the Lua
+	 * require/import loaders are deliberately untouched).
+	 */
+	public static var codeEpoch:Int = 0;
+	/** Number of HScript bodies (call()/execute()) currently on the stack. */
+	public static var execDepth:Int = 0;
+
+	/**
+	 * Negative callback cache for call(). name -> stamp at which interpGet() found nothing.
+	 * Only the empty result is cached: a variable that exists but is not a function must keep
+	 * taking the normal path, exactly as before.
+	 * Invalidation: any code that ran (varEpoch), any write to this interp's tables (set()
+	 * removes the exact name, the override/rename/restore/reload helpers bump varEpoch), and
+	 * probeStamp() returns -1 while HScript code is on the stack, so a re-entrant dispatch from
+	 * inside a script body can never read an entry that body may have invalidated.
+	 */
+	var nilVars:Map<String, Int> = null;
+	var varEpoch:Int = 0;
+	var foldedVars:Int = -1;
+	var nilStamp:Int = 0;
+
+	/** Any write to this interp's variable tables, or any HScript code that ran. */
+	inline function bumpVarEpoch():Void
+	{
+		varEpoch++;
+		codeEpoch++;
+	}
+
+	/** Stamp to compare against nilVars entries, or -1 when nothing may be cached/read. */
+	inline function probeStamp():Int
+	{
+		if (execDepth > 0) return -1;
+		if (foldedVars != varEpoch)
+		{
+			foldedVars = varEpoch;
+			nilStamp++;
+		}
+		// Long-session guard: the stamp only has to differ from every stored value.
+		if (nilStamp >= 0x20000000)
+		{
+			nilStamp = 0;
+			if (nilVars != null) nilVars.clear();
+		}
+		return nilStamp;
+	}
+
 	public var variables(get, never):Map<String, Dynamic>;
 	public var __importedPaths:Array<String> = [];
 
@@ -336,6 +385,8 @@ class HScript
 				closed = true;
 			}
 		}
+
+		bumpVarEpoch(); // loading the script + onCreate may have defined any global
 	}
 
 	/**
@@ -1104,7 +1155,17 @@ class HScript
 		@:privateAccess parser.line = 1;
 		parser.allowTypes = true;
 		var expr = parser.parseString(codeToRun);
-		var result:Dynamic = interp.execute(expr);
+		execDepth++;
+		var result:Dynamic;
+		try {
+			result = interp.execute(expr);
+			execDepth--;
+			bumpVarEpoch(); // the code may have written any global
+		} catch (e:Dynamic) {
+			execDepth--;
+			bumpVarEpoch();
+			throw e;
+		}
 		// 执行成功：重置连续错误计数。
 		errorLoopCount = 0;
 		return result;
@@ -1113,12 +1174,35 @@ class HScript
 	public function call(func:String, args:Array<Dynamic>):Dynamic {
 		if (closed) return FunkinLua.Function_StopHScript;
 		if (args == null) args = [];
+		// Negative callback cache (see nilVars): skip the lookup when this name was already
+		// observed to be absent and nothing could have defined it since.
+		var stamp:Int = probeStamp();
+		if (stamp >= 0 && nilVars != null)
+		{
+			var seen:Null<Int> = nilVars.get(func);
+			if (seen != null && seen == stamp) return FunkinLua.Function_Continue;
+		}
 		try {
 			var f:Dynamic = interpGet(func);
 			if (f != null && Reflect.isFunction(f)) {
 				// Successful call resets the consecutive-error counter.
 				errorLoopCount = 0;
-				return Reflect.callMethod(null, f, args);
+				execDepth++;
+				try {
+					var ret:Dynamic = Reflect.callMethod(null, f, args);
+					execDepth--;
+					bumpVarEpoch(); // the body may have written any global
+					return ret;
+				} catch (e:Dynamic) {
+					execDepth--;
+					bumpVarEpoch(); // a body that threw may still have written globals
+					throw e;
+				}
+			}
+			if (f == null && stamp >= 0)
+			{
+				if (nilVars == null) nilVars = new Map();
+				nilVars.set(func, stamp);
 			}
 			return FunkinLua.Function_Continue;
 		} catch (e:Dynamic) {
@@ -1129,7 +1213,7 @@ class HScript
 
 	public function set(variable:String, data:Dynamic):Void {
 		if (closed) return;
-		try { interp.variables.set(variable, data); }
+		try { interp.variables.set(variable, data); if (nilVars != null) nilVars.remove(variable); }
 		catch (e:Dynamic) { handleError('Failed to set "$variable": $e'); }
 	}
 
@@ -1192,6 +1276,7 @@ class HScript
 					if (expr != null) {
 						interp.exprReturn(expr);
 						__importedPaths.push(p);
+						bumpVarEpoch(); // imported code may have defined globals
 					}
 					return true;
 				}
@@ -1223,6 +1308,7 @@ class HScript
 				if (old != null) functionBackups.set(name, old);
 			}
 			interp.variables.set(name, fn);
+			bumpVarEpoch(); // a function may have appeared under any name
 			#if LUA_ALLOWED
 			if (syncToLua && LuaApi.addLuaFunction(name, fn, true)) {
 				TraceManager.info('trace.hscript.overrideSynced', 'HScript: "{}" override synced to Lua', [name]);
@@ -1254,6 +1340,7 @@ class HScript
 				functionBackups.set(name, interp.variables.get(name));
 			interp.variables.set(newName, interp.variables.get(name));
 			if (removeOld) interp.variables.remove(name);
+			bumpVarEpoch();
 			return true;
 		} catch (e:Dynamic) {
 			handleError('renameFunction("$name" → "$newName"): $e');
@@ -1273,6 +1360,7 @@ class HScript
 		if (closed || !functionBackups.exists(name)) return false;
 		try {
 			interp.variables.set(name, functionBackups.get(name));
+			bumpVarEpoch();
 			functionBackups.remove(name);
 			return true;
 		} catch (e:Dynamic) {
@@ -1301,6 +1389,7 @@ class HScript
 			interp.variables.set(k, v);
 
 		call('onCreate', []);
+		bumpVarEpoch();
 		TraceManager.info('trace.hscript.reloaded', 'Script reloaded: {}', [scriptName]);
 	}
 
