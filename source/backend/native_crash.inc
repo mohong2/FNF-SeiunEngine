@@ -229,10 +229,30 @@ void seiun_set_build_info(const char* info)
 	seiun_build_info[l] = 0;
 }
 
+/**
+ * Appends one identity fragment to the build fingerprint instead of replacing
+ * it. The Haxe layer calls this right after a linemap is installed, so a report
+ * can state which address->line table produced its "[source/File.cpp:123]"
+ * frames. The fragment is dropped (never truncated) when the buffer is full.
+ */
+void seiun_append_build_info(const char* part)
+{
+	if (part == NULL || part[0] == 0) return;
+	size_t used = strlen(seiun_build_info);
+	size_t add = strlen(part);
+	if (used + (used ? 3 : 0) + add >= sizeof(seiun_build_info)) return;
+	if (used)
+	{
+		memcpy(seiun_build_info + used, " | ", 3);
+		used += 3;
+	}
+	memcpy(seiun_build_info + used, part, add + 1);
+}
+
 // CPU ABI of the running build (compile-time constant, NOT the device's
 // primary ABI - an armeabi-v7a build on an arm64 device must still resolve to
 // the armeabi-v7a linemap). Used by the Haxe layer to pick the matching
-// linemap file.
+// linemap file (on Windows the linemap is named "windows-x64").
 const char* seiun_get_cpu_abi(void)
 {
 #if defined(__ANDROID__)
@@ -247,6 +267,10 @@ const char* seiun_get_cpu_abi(void)
 	#else
 		return "unknown";
 	#endif
+#elif defined(_WIN64)
+	return "windows-x64";
+#elif defined(_WIN32)
+	return "windows-x86";
 #else
 	return "unknown";
 #endif
@@ -374,6 +398,14 @@ static void seiun_append_engine_context(char* buf, size_t cap, int* len)
 		seiun_append(buf, cap, len, "App: %s\n", seiun_app_info);
 	if (seiun_ctx_line[0])
 		seiun_append(buf, cap, len, "Context: %s\n", seiun_ctx_line);
+#if !defined(_WIN32)
+	// Build fingerprint (abi / .so name / size / mtime / hash, plus the loaded
+	// linemap identity). The Windows path prints the same line from
+	// seiun_append_build_identity, so it is deliberately POSIX-only here to keep
+	// the Windows report byte-for-byte unchanged.
+	if (seiun_build_info[0])
+		seiun_append(buf, cap, len, "Build: %s\n", seiun_build_info);
+#endif
 	if (seiun_recent_logs[0])
 		seiun_append(buf, cap, len, "Recent engine logs (tail, newest last):\n%s\n\n", seiun_recent_logs);
 }
@@ -970,6 +1002,12 @@ static ULONG_PTR seiun_module_for_address(ULONG_PTR addr, char* outName, size_t 
 }
 
 // "<module>+0xRVA  <symbol>+0xdisp [file:line]" for one address.
+//
+// Two independent sources feed the "[file:line]" part:
+//  - dbghelp, when a matching PDB happens to sit next to the exe (debug builds);
+//  - the embedded linemap (the same SELM table the POSIX path uses), which needs
+//    no sidecar file at all: that is what makes a release report resolvable
+//    without shipping a ~50 MB PDB.
 static void seiun_annotate_address(char* dst, size_t cap, DWORD64 pc)
 {
 	char modName[128];
@@ -978,6 +1016,7 @@ static void seiun_annotate_address(char* dst, size_t cap, DWORD64 pc)
 		snprintf(dst, cap, "%s+0x%llX", modName, (unsigned long long)(pc - (DWORD64)base));
 	else
 		snprintf(dst, cap, "0x%llX (unmapped)", (unsigned long long)pc);
+	int haveSource = 0;
 	if (seiun_dbghelp.ready && seiun_dbghelp.symFromAddr != NULL)
 	{
 		char symBuf[sizeof(SYMBOL_INFO) + 384];
@@ -1004,8 +1043,22 @@ static void seiun_annotate_address(char* dst, size_t cap, DWORD64 pc)
 						fn = fn + (flen - 60);
 					size_t used2 = strlen(dst);
 					snprintf(dst + used2, cap - used2, " [%s:%lu]", fn, (unsigned long)line.LineNumber);
+					haveSource = 1;
 				}
 			}
+		}
+	}
+	// Exact cpp file:line from the linemap generated for this build
+	// (tools/gen_linemap_msvc.py). Only the module the table was made from is
+	// annotated; the module basename is compared as a prefix.
+	if (!haveSource && base != 0 && seiun_linemap != NULL && seiun_linemap_lib[0] != 0 &&
+		strncmp(modName, seiun_linemap_lib, strlen(seiun_linemap_lib)) == 0)
+	{
+		char src[256];
+		if (seiun_linemap_lookup((unsigned int)(pc - (DWORD64)base), src, sizeof(src)) && src[0] != 0)
+		{
+			size_t used = strlen(dst);
+			snprintf(dst + used, cap - used, " [%s]", src);
 		}
 	}
 }
@@ -1448,3 +1501,130 @@ static void seiun_install_native_crash_hooks()
 #endif
 }
 
+// -- pre-Haxe boot hooks -----------------------------------------------------
+//
+// The Haxe entry point (Main.main -> NativeCrash.install) runs after hxcpp's
+// class static initialisation (__boot_all), so a fault during that phase used to
+// leave no report at all - exactly what the ModDownloader boot crash did. These
+// hooks run while the library/executable is still initialising, before any Haxe
+// code, and make the crash logger usable from the very first instruction.
+// install() is idempotent; Haxe calls it again later, harmlessly.
+
+#if defined(__ANDROID__)
+static char seiun_android_pkg[192];
+
+// /proc/self/cmdline holds the process name, i.e. the package name (a ":suffix"
+// marks a secondary process and is cut off).
+static void seiun_android_read_package(void)
+{
+	seiun_android_pkg[0] = 0;
+	int fd = open("/proc/self/cmdline", O_RDONLY);
+	if (fd < 0) return;
+	char buf[256];
+	ssize_t r = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (r <= 0) return;
+	buf[r] = 0;
+	size_t i = 0;
+	while (i < (size_t)r && buf[i] != 0 && buf[i] != ':' && i < sizeof(seiun_android_pkg) - 1)
+	{
+		seiun_android_pkg[i] = buf[i];
+		i++;
+	}
+	seiun_android_pkg[i] = 0;
+}
+
+// Default crash directory under the app's own external files dir. The process
+// cwd on Android is "/" (not writable), so without this every crash before
+// Haxe's setCrashDir survived only in logcat. Never overwrites Haxe's choice.
+static void seiun_android_default_crash_dir(void)
+{
+	if (seiun_dir[0] != 0) return;
+	seiun_android_read_package();
+	if (seiun_android_pkg[0] == 0) return;
+	snprintf(seiun_dir, sizeof(seiun_dir),
+		"/storage/emulated/0/Android/data/%s/files/crash/", seiun_android_pkg);
+	seiun_ensure_crash_dir();
+}
+
+// Fingerprint of the exact .so that is running: name, size, mtime and an FNV-1a
+// hash of its first/last 64 KB (same constants as fnv1aFile in NativeCrash.hx).
+// Only written when nothing was set yet, so the more detailed Haxe-fed info is
+// never overwritten.
+static void seiun_android_self_build_id(void)
+{
+	if (seiun_build_info[0] != 0) return;
+	Dl_info dli;
+	memset(&dli, 0, sizeof(dli));
+	if (dladdr((const void*)&seiun_install_native_crash_hooks, &dli) == 0 || dli.dli_fname == NULL)
+		return;
+	struct stat st;
+	if (stat(dli.dli_fname, &st) != 0) return;
+
+	unsigned int h = 0x811C9DC5u;
+	int round;
+	for (round = 0; round < 2; round++)
+	{
+		off_t off = 0;
+		if (round == 1)
+		{
+			if (st.st_size <= 65536 * 2) break;
+			off = st.st_size - 65536;
+		}
+		int fd = open(dli.dli_fname, O_RDONLY);
+		if (fd < 0) break;
+		if (lseek(fd, off, SEEK_SET) < 0) { close(fd); break; }
+		unsigned char chunk[65536];
+		ssize_t got = read(fd, chunk, sizeof(chunk));
+		close(fd);
+		if (got <= 0) break;
+		ssize_t i;
+		for (i = 0; i < got; i++)
+		{
+			h ^= chunk[i];
+			h *= 0x01000193u;
+		}
+	}
+	const char* lib = seiun_posix_basename(dli.dli_fname);
+	snprintf(seiun_build_info, sizeof(seiun_build_info),
+		"abi=%s | so=%s | size=%lldB@%llds#%08x",
+		seiun_get_cpu_abi(), lib ? lib : "?",
+		(long long)st.st_size, (long long)st.st_mtime, (unsigned int)h);
+}
+
+__attribute__((constructor)) static void seiun_android_boot_hooks(void)
+{
+	seiun_android_default_crash_dir();
+	seiun_android_self_build_id();
+	seiun_install_native_crash_hooks();
+}
+#endif // __ANDROID__
+
+#if defined(_WIN32)
+// MSVC has no __attribute__((constructor)); a pointer in the CRT's C++ init
+// table runs before main() and before hxcpp's __boot_all(). The object is linked
+// straight into the executable, so this only exists there - which is where it is
+// needed.
+static void seiun_windows_boot_hooks(void)
+{
+	// Default dir "<exe dir>/crash/" so even a fault before Haxe's setCrashDir
+	// lands next to the binary instead of in whatever the cwd happened to be.
+	if (seiun_dir[0] == 0)
+	{
+		char exePath[MAX_PATH];
+		exePath[0] = 0;
+		if (GetModuleFileNameA(NULL, exePath, (DWORD)sizeof(exePath)))
+		{
+			char* slash = strrchr(exePath, '\\');
+			if (slash != NULL)
+			{
+				*(slash + 1) = 0;
+				snprintf(seiun_dir, sizeof(seiun_dir), "%scrash\\", exePath);
+			}
+		}
+	}
+	seiun_install_native_crash_hooks();
+}
+#pragma section(".CRT$XCU", read)
+__declspec(allocate(".CRT$XCU")) static void (*seiun_windows_boot_hook_ptr)(void) = seiun_windows_boot_hooks;
+#endif // _WIN32

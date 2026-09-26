@@ -159,6 +159,18 @@ class NativeCrash
 		}
 	}
 
+	/** FNV-1a over arbitrary bytes; same constants as fnv1aFile above. */
+	static function fnv1aBytes(bytes:Bytes):String
+	{
+		var h:Int = 0x811C9DC5;
+		for (i in 0...bytes.length)
+		{
+			h ^= bytes.get(i);
+			h = (h * 0x01000193) & 0xFFFFFFFF;
+		}
+		return StringTools.hex(h, 8);
+	}
+
 	/**
 	 * Current engine situation (state / song / GL errors). Refreshed every few
 	 * seconds by SystemDiag so a native crash report shows the exact gameplay
@@ -237,6 +249,10 @@ class NativeCrash
 			// operator-> reaches Array_obj::Pointer() for the raw uchar storage.
 			untyped __cpp__('::seiun_set_linemap((const void*){0}->Pointer(), (unsigned int){1}, {2}.__CStr())',
 				bytes.getData(), bytes.length, libName);
+			// Record which linemap produced this report's file:line frames, so a
+			// report can be matched to the exact table shipped with its build.
+			untyped __cpp__('::seiun_append_build_info({0}.__CStr())',
+				'linemap=' + getCpuAbi() + ':' + bytes.length + 'B#' + fnv1aBytes(bytes));
 		}
 		catch (e:Dynamic)
 		{
