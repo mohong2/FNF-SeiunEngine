@@ -284,6 +284,10 @@ class OnlineState extends MusicBeatState {
 		FlxG.stage.addEventListener(KeyboardEvent.KEY_DOWN, onKeyDown);
 
 		FlxG.mouse.visible = true;
+		#if (TOUCH_CONTROLS || desktop)
+		addVirtualPad(UP_DOWN, A_B);
+		addPadCamera();
+		#end
     }
 
 	override function destroy() {
