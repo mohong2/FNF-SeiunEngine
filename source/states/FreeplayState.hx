@@ -68,6 +68,8 @@ class FreeplayState extends SeiunMenuState
 	public var scoreBG:FlxSprite;
 	public var scoreText:FlxText;
 	public var diffText:FlxText;
+	/** Multi-file (segmented) chart state of the selected song; see ChartParts. */
+	public var multiFileText:FlxText;
 	public var lerpScore:Int = 0;
 	public var lerpRating:Float = 0;
 	public var intendedScore:Int = 0;
@@ -318,6 +320,16 @@ class FreeplayState extends SeiunMenuState
 		diffText.font = Paths.font("vcr.ttf"); 
 		add(diffText);
 
+		// Which multi-file mode this song will load with, toggled in place with M (PC) / the
+		// on-screen D button (Android). Screen-wide and right aligned, so neither a long localised
+		// label nor the key hint can leave the screen; see updateMultiFileText().
+		// Paths.languageFont(), not vcr.ttf: the label is localised, and vcrcn (the Chinese font the
+		// language files select through their "ttf" key) is what carries the CJK glyphs.
+		multiFileText = new FlxText(6, diffText.y + 28, FlxG.width - 12, "", 18);
+		multiFileText.setFormat(Paths.languageFont(), 18, FlxColor.WHITE, RIGHT);
+		multiFileText.alpha = 0.75;
+		add(multiFileText);
+
 		add(scoreText);
 
 		missingTextBG = new FlxSprite().makeGraphic(FlxG.width, FlxG.height, FlxColor.BLACK);
@@ -426,7 +438,7 @@ class FreeplayState extends SeiunMenuState
 		text.scrollFactor.set();
 		add(text);
 		#if (TOUCH_CONTROLS || desktop)
-		addVirtualPad(LEFT_FULL, A_B_C_V_X_Y);
+		addVirtualPad(LEFT_FULL, A_B_C_V_X_Y_D);
 		#end
 		super.create();
 
@@ -449,7 +461,7 @@ class FreeplayState extends SeiunMenuState
 		canInput = true;
 		#if (TOUCH_CONTROLS || desktop)
 		removeVirtualPad();
-		addVirtualPad(LEFT_FULL, A_B_C_V_X_Y);
+		addVirtualPad(LEFT_FULL, A_B_C_V_X_Y_D);
 		#end
 		super.closeSubState();
 	}
@@ -805,6 +817,8 @@ class FreeplayState extends SeiunMenuState
 		var space = #if (TOUCH_CONTROLS || desktop) (virtualPad != null && virtualPad.buttonX.justPressed)  || #end	FlxG.keys.justPressed.SPACE;
 		var ctrl = #if (TOUCH_CONTROLS || desktop) (virtualPad != null && virtualPad.buttonC.justPressed)   || #end FlxG.keys.justPressed.CONTROL;
 		var history = #if (TOUCH_CONTROLS || desktop) (virtualPad != null && virtualPad.buttonV.justPressed) || #end FlxG.keys.justPressed.H;
+		// Multi-file chart toggle: M (PC) / the on-screen D button (Android, addVirtualPad above).
+		var multiFileToggle = #if (TOUCH_CONTROLS || desktop) (virtualPad != null && virtualPad.buttonD.justPressed) || #end FlxG.keys.justPressed.M;
 		// === Mod folder switching: TAB (PC) / G button (Android) to open selection overlay ===
 		if (!playingMusic)
 		{
@@ -1056,6 +1070,17 @@ class FreeplayState extends SeiunMenuState
 			persistentUpdate = false;
     		openSubState(new ScoreHistorySubstate(getCurrentSong().songName, curDifficulty));
 		}
+		else if(multiFileToggle && canInput)
+		{
+			// Per-song, on the spot: the next chart load of this song uses the new mode.
+			var multiFileSong:String = currentMultiFileSongKey();
+			if (multiFileSong != null)
+			{
+				ChartParts.cycleSongOverride(multiFileSong, ClientPrefs.segmentedChartMode());
+				updateMultiFileText();
+				FlxG.sound.play(Paths.sound('scrollMenu'), 0.6);
+			}
+		}
 		else if(space && canInput)
 		{
 			var realIdx = getRealSelectedIndex();
@@ -1251,6 +1276,7 @@ class FreeplayState extends SeiunMenuState
 		diffText.text = '< ' + CoolUtil.difficultyString() + ' >';
 
 		positionHighscore();
+		updateMultiFileText();
 		missingText.visible = false;
 		missingTextBG.visible = false;
 		isShowingError = false;
@@ -1696,6 +1722,94 @@ class FreeplayState extends SeiunMenuState
 		updatePreviewTexts();
 	}
 
+	/**
+	 * Song key for the per-song multi-file choice: the same value Song.loadFromJson() receives as its
+	 * folder, so a choice made here is picked up by the next chart load of this song.
+	 */
+	function currentMultiFileSongKey():String
+	{
+		var song = getCurrentSong();
+		return (song == null) ? null : Paths.formatToSongPath(song.songName);
+	}
+
+	/**
+	 * Labels the selected song's multi-file state: whether it is a segmented chart at all, which mode
+	 * it will load with, and the key that switches it. Non-segmented songs are labelled too, so the
+	 * two kinds can be told apart at a glance -- but dimmed, and without a key hint that would do
+	 * nothing there.
+	 */
+	function updateMultiFileText():Void
+	{
+		if (multiFileText == null) return;
+
+		var key:String = currentMultiFileSongKey();
+		var segmented:Bool = songHasSegmentedChart(key);
+		var label:String;
+		if (!segmented)
+		{
+			label = Language.get('FreeplayState.multiFileNone', 'MULTI-FILE: NONE');
+		}
+		else
+		{
+			var mode:String = ChartParts.effectiveSongMode(key, ClientPrefs.segmentedChartMode());
+			if (mode == ChartParts.MODE_OFF)
+				label = Language.get('FreeplayState.multiFileSegments', 'MULTI-FILE: SEGMENTS ONLY');
+			else if (mode == ChartParts.MODE_MANIFEST)
+				label = Language.get('FreeplayState.multiFileManifest', 'MULTI-FILE: MANIFEST ONLY');
+			else
+				label = Language.get('FreeplayState.multiFileMerged', 'MULTI-FILE: MERGED');
+
+			// "*" marks a choice made for this song rather than the saved option.
+			if (ChartParts.songOverride(key) != null) label += ' *';
+			// The key that switches it, shown next to the state it switches (touch UI uses its button).
+			label += '  ' + (ClientPrefs.touchUIEnabled()
+				? Language.get('FreeplayState.multiFileKeyHint.android', '[D]')
+				: Language.get('FreeplayState.multiFileKeyHint', '[M]'));
+		}
+
+		multiFileText.text = label;
+		multiFileText.y = diffText.y + 28;
+		// Dim the "nothing to merge here" case so segmented songs stay the ones that stand out.
+		multiFileText.alpha = segmented ? 0.75 : 0.4;
+		multiFileText.visible = true;
+	}
+
+	/** Per-session cache of "does this song's chart folder hold a segmented chart". */
+	static var segmentedSongCache:Map<String, Bool> = new Map<String, Bool>();
+
+	/**
+	 * Whether the selected song's chart folder holds a segmented chart (see ChartParts), so the state
+	 * line and its key hint appear exactly when they are useful instead of on every song.
+	 */
+	function songHasSegmentedChart(songKey:String):Bool
+	{
+		if (songKey == null || songKey.length == 0) return false;
+		if (segmentedSongCache.exists(songKey)) return segmentedSongCache.get(songKey);
+
+		var song:Dynamic = getCurrentSong();
+		var dirs:Array<String> = [];
+		#if MODS_ALLOWED
+		if (song != null && song.folder != null && song.folder.length > 0)
+			dirs.push(Paths.mods(song.folder + '/data/' + songKey));
+		dirs.push(Paths.mods('data/' + songKey));
+		#end
+		dirs.push(Paths.getPreloadPath('data/' + songKey));
+
+		// MODE_AUTO on purpose: the question is "does this song have parts at all", independent of
+		// the mode in use (MODE_OFF would hide the parts and mislabel the song as not segmented).
+		var found:Bool = false;
+		for (dir in dirs)
+		{
+			if (ChartParts.resolveForChart(dir, songKey, songKey, ChartParts.MODE_AUTO) != null)
+			{
+				found = true;
+				break;
+			}
+		}
+		segmentedSongCache.set(songKey, found);
+		return found;
+	}
+
 	public function updatePreviewTexts()
 	{
 		if (!playingMusic) return;
@@ -1750,10 +1864,12 @@ class FreeplayState extends SeiunMenuState
 		wasVisible.set(scoreBG, scoreBG.visible);
 		wasVisible.set(scoreText, scoreText.visible);
 		wasVisible.set(diffText, diffText.visible);
+		wasVisible.set(multiFileText, multiFileText.visible);
 		
 		scoreBG.visible = false;
 		scoreText.visible = false;
 		diffText.visible = false;
+		multiFileText.visible = false;
 	}
 
 	public function restoreNonPreviewElements()
@@ -1772,6 +1888,7 @@ class FreeplayState extends SeiunMenuState
 		if (wasVisible.exists(scoreBG)) scoreBG.visible = wasVisible.get(scoreBG);
 		if (wasVisible.exists(scoreText)) scoreText.visible = wasVisible.get(scoreText);
 		if (wasVisible.exists(diffText)) diffText.visible = wasVisible.get(diffText);
+		if (wasVisible.exists(multiFileText)) multiFileText.visible = wasVisible.get(multiFileText);
 	}
 
 	override function onMenuBeat(beat:Int):Void

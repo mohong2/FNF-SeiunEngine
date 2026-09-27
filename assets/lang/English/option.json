@@ -98,6 +98,8 @@
     "option.oldmodsmenu": "Old Mods Menu",
     "option.newchartingstate" : "New Charting State",
     "option.newchartingstate.desc" : "If checked, the new charting state will be used instead of the old one.",
+    "option.segmentedCharts": "Multi-file Charts",
+    "option.segmentedCharts.desc": "How charts that were split across several files are loaded.\nAuto: <song>-0.json, <song>-1.json, ... are played as one song.\nManifest: only the parts listed in <song>.parts.json are merged.\nOff: every chart file stays its own difficulty (the stock behavior).\nAt song select, press M (the on-screen D button on Android) to override this for one song.",
     "option.chartAutosave" : "Chart Auto-save",
     "option.chartAutosave.desc" : "If checked, chart editors will automatically save backups and create autosave data (also when entering Playtest). Unchecked by default so your chart is NEVER saved without you pressing Save manually.",
     "option.oldPauseMenu": "Old Pause Menu",

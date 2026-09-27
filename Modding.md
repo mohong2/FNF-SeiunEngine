@@ -278,3 +278,106 @@ constructors (states. package); for states that need arguments use
 
 把 example_mods 整个复制成 `mods/<你的模组名>/` 再启用即可体验。
 Copy the whole example_mods folder to `mods/<your-mod-name>/` and enable it to try.
+
+# 分段谱面（一张谱面拆成多个文件）/ Segmented charts (one chart, several files)
+
+一张谱面可以拆成多个文件而仍然作为**一首歌**播放。引擎自己找到这些分片并合并，不需要脚本、
+不需要改 Song，也不需要任何拼接步骤。
+
+A chart can be split across several files and still play as one song. The engine finds the parts
+itself: no script, no Song patch, no concatenation step.
+
+## 自动识别 / Automatic layout
+
+把分片放在同一首歌的谱面目录下、按序号命名：
+
+    mods/<mod>/data/<song>/<song>-0.json
+    mods/<mod>/data/<song>/<song>-1.json
+    ...
+    mods/<mod>/data/<song>/<song>-28.json
+
+自动识别的条件 / rules for the automatic form:
+
+* 序号从 0 开始、**不能断号**，且至少两个文件。
+  Numbered from 0 with **no gap**, and at least two files.
+* 歌曲**不能**同时存在 `data/<song>/<song>.json`。那个文件永远优先，所以难度名刚好是数字的
+  普通歌曲不会被误合并。
+  The plain `data/<song>/<song>.json` must not exist; it always wins, so a normal song whose
+  difficulty names happen to be numbers is never merged by accident.
+* miragist 这类模组把 `<song>-0..28` 当成难度列表（week 里
+  `"difficulties": "0,1,...,28"`），此时点进任意一个难度，播放的都是**全部分片合并后**的整首歌。
+  In a mod like miragist, where `<song>-0..28` *is* the difficulty list, selecting any of those
+  difficulties plays the whole song merged from every part.
+
+## 显式清单 / Explicit manifest
+
+分片名字不连续、不在同一目录时，用 `data/<song>/<song>.parts.json` 自己列出顺序：
+
+    ["intro", "verse-1", "verse-2"]
+
+或 / or
+
+    {"parts": ["intro", "verse-1", "verse-2"]}
+
+条目可以省略 `.json`，也可以带子目录。清单是显式声明，优先于自动识别，因此它和普通单文件谱面
+可以共存。
+
+Entries may omit `.json` and may point into a subdirectory. A manifest is explicit intent, so it
+wins over the automatic form and can coexist with an ordinary one-file chart.
+
+## 合并规则 / What the engine does with the parts
+
+* `notes[]` 按分片顺序依次拼接（第 0 片的全部 section，然后第 1 片……）。
+  `notes[]` is the concatenation of every part's `notes[]`, in part order.
+* 歌曲级字段（`bpm`、`speed`、`stage`、`player1/player2`、`mania`、皮肤等）取自第 0 片。
+  Song-level fields come from part 0.
+* 各片谱面级 `events` 会合并并去重（完全相同的条目只保留一次），所以"每一片都塞了一份完整
+  events"的谱面不会把事件触发 N 次。
+  Chart-level `events` from all parts are merged with exact duplicates dropped.
+* sectionNotes 不会常驻内存：演奏到哪一段就从**它所属的那个文件**里读出来（复用大谱面的
+  `__seiunStream` + `ChartSectionReader` 流式路径）。
+  Section notes are never held in memory: each section is read from the file that owns it.
+* 每次进歌都会重新读盘，分片文件必须留在磁盘上。
+
+## 玩家的选择 / The player's choice
+
+引擎不会替玩家决定怎么用分段谱面。**Options → Advanced → Multi-file Charts** 有三个档：
+
+* **Auto**（默认）：自动识别 `<song>-0..N.json`，同时认 `<song>.parts.json` 清单。miragist 这
+  种把分段当难度列表的模组，点任意难度都会播放合并后的整首。
+* **Manifest**：只认作者写的 `<song>.parts.json`，不把数字难度自动当成分段。
+* **Off**：完全不合并（连清单也忽略），每个文件仍然是一个独立难度 —— 想单独玩某一段就切成这个。
+
+### 每首歌当场切换 / Per-song override at song select
+
+在 Freeplay 里对当前歌曲按 **M**（安卓是屏幕上的 **D** 键）就能当场切换，循环顺序是：
+
+    跟随全局设置 -> 强制合并 -> 只播当前这段 -> 跟随全局设置
+
+难度文字下面会显示当前状态（`MULTI-FILE: MERGED / SEGMENTS ONLY / MANIFEST ONLY`），带 `*`
+表示这是这首歌单独的设置而不是全局设置。这是**本次运行内**的临时选择，重启游戏后回到全局设置。
+
+Press **M** at song select (the on-screen **D** button on Android) to override the mode for the
+selected song in place: follow-global → merge → segments only → follow-global. The state shows up
+under the difficulty text; a `*` marks a per-song choice. The override lasts for the session.
+
+The engine never decides on its own. **Options → Advanced → Multi-file Charts** offers:
+
+* **Auto** (default): finds `<song>-0..N.json` automatically and also honours `<song>.parts.json`.
+  A mod like miragist, whose difficulty list *is* the part list, plays the whole merged song from
+  any difficulty.
+* **Manifest**: only the author's `<song>.parts.json` is merged; numbered difficulties are left
+  alone.
+* **Off**: no merging at all, manifests included -- every chart file is its own difficulty again,
+  which is how a single segment can still be played on its own.
+
+## 注意事项 / Caveats
+
+* 加载时会扫描全部文件一次：29 个 ~300MB 的分片要几十秒，音符总量是各片之和；这种规模靠 Turbo
+  模式才能跑得动。
+  The whole set is scanned once at load; 29 parts of ~300 MB take tens of seconds and the note
+  count is the sum of all parts. Turbo mode is what keeps such a chart playable.
+* 谱面编辑器（ChartingState / NewChartingState）和在线校验仍然只读**单个**文件，所以分段谱面目前
+  是"可游玩"格式，不是"可编辑/可上传"格式。
+  The chart editor and online verification still read a single file, so a segmented chart is a
+  gameplay format today, not an editable/uploadable one.

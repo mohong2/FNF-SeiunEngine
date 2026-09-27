@@ -29,9 +29,10 @@ LANG_DIR = os.path.join(ROOT, 'assets', 'lang')
 LANGUAGES = ['English', 'ChineseSimplified', 'ChineseTraditional']
 
 # Options added after the reshuffle on purpose: the A5 storage-location warning
-# toggle, the "show the note-optimisation notice again" action row and the
-# bottom-right version watermark toggle.
-EXPECTED_NEW_VARIABLES = {'showStorageRootWarning', 'showNoteOptimizationNotice', 'showWatermark'}
+# toggle, the "show the note-optimisation notice again" action row, the
+# bottom-right version watermark toggle and the multi-file chart mode
+# (ChartParts / ClientPrefs.segmentedCharts).
+EXPECTED_NEW_VARIABLES = {'showStorageRootWarning', 'showNoteOptimizationNotice', 'showWatermark', 'segmentedCharts'}
 
 # The only five switches that belong to the note-optimisation page (plus action rows).
 NOTE_OPTIMISATION_VARIABLES = {'perfMode', 'turboMode', 'limitNotes', 'fastSort', 'bulkSkip'}

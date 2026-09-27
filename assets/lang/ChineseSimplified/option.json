@@ -97,6 +97,8 @@
     "option.oldmodsmenu" : "旧模组菜单",
     "option.newchartingstate" : "新谱面编辑器",
     "option.newchartingstate.desc" : "如果选中,将使用新的谱面编辑器而不是旧的谱面编辑器",
+    "option.segmentedCharts": "分段谱面",
+    "option.segmentedCharts.desc": "被拆成多个文件的谱面如何载入。\n自动: <song>-0.json、<song>-1.json… 合并成一首歌播放。\n仅清单: 只合并 <song>.parts.json 里列出的分片。\n关闭: 每个文件仍是一个独立难度（原版行为）。\n在选歌界面按 M（安卓为屏幕上的 D 键）可只对当前歌曲临时切换。",
     "option.chartAutosave" : "谱面自动保存",
     "option.chartAutosave.desc" : "如果选中，谱面编辑器将自动保存备份并创建自动保存数据（进入试玩时也会保存）。默认关闭，这样你的谱面在你手动按下保存之前绝不会被自动保存。",
     "option.oldPauseMenu": "旧版暂停界面",

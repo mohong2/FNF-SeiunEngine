@@ -237,6 +237,68 @@ class Song
 	}
 	#end
 
+	#if sys
+	/**
+	 * Part files of a segmented chart, or null for an ordinary one-file chart (ChartParts).
+	 *
+	 * `chartFile` is the one-file chart that resolved, when one did: its directory is
+	 * authoritative, so parts are only looked for next to it. ChartParts.detect() itself refuses
+	 * to auto-detect while `<song>.json` exists, which is what keeps the numeric difficulties of
+	 * a normal song from being merged into one chart.
+	 *
+	 * When no chart file exists at all -- the shape every segmented chart has -- the engine's
+	 * normal lookup order is walked instead, because there is no file to derive the directory
+	 * from.
+	 *
+	 * Parts are named after the SONG folder, not after the difficulty-suffixed chart key: Freeplay
+	 * asks for "miragist-0" inside "miragist", and the parts are miragist-0.json .. miragist-28.json.
+	 */
+	static function resolveChartParts(formattedFolder:String, formattedSong:String, chartFile:String):Array<String>
+	{
+		// The player decides how much to trust the layout (Options > Advanced, see ChartParts.MODE_*).
+		// MODE_OFF short-circuits to the stock one-chart-per-file behavior before anything is probed,
+		// so a player who wants the old per-difficulty layout pays nothing for this feature.
+		// A choice made at song select (the multi-file hotkey in Freeplay) wins over the saved option.
+		var mode:String = ChartParts.effectiveSongMode(formattedFolder, ClientPrefs.segmentedChartMode());
+		if (ChartParts.normalizeMode(mode) == ChartParts.MODE_OFF) return null;
+
+		// formattedFolder is the song and formattedSong is the requested chart key ("miragist" vs
+		// "miragist-0"); ChartParts.resolveForChart() tries both, song first.
+		if (chartFile != null)
+			return ChartParts.resolveForChart(dirOf(chartFile), formattedFolder, formattedSong, mode);
+
+		for (dir in splitChartDirs(formattedFolder))
+		{
+			var parts:Array<String> = ChartParts.resolveForChart(dir, formattedFolder, formattedSong, mode);
+			if (parts != null && parts.length > 0) return parts;
+		}
+		return null;
+	}
+
+	/** Directories a chart could live in, in the order Paths resolves them, for the file-less case above. */
+	static function splitChartDirs(formattedFolder:String):Array<String>
+	{
+		var dirs:Array<String> = [];
+		#if MODS_ALLOWED
+		if (Paths.currentModDirectory != null && Paths.currentModDirectory.length > 0)
+			dirs.push(Paths.mods(Paths.currentModDirectory + '/data/' + formattedFolder));
+		dirs.push(Paths.mods('data/' + formattedFolder));
+		#end
+		dirs.push(Paths.getPreloadPath('data/' + formattedFolder));
+		return dirs;
+	}
+
+	/** Directory part of a path, separator included; null when `path` is null. */
+	static function dirOf(path:String):String
+	{
+		if (path == null) return null;
+		var cut:Int = path.lastIndexOf('/');
+		var backslash:Int = path.lastIndexOf('\\');
+		if (backslash > cut) cut = backslash;
+		return cut < 0 ? '' : path.substr(0, cut + 1);
+	}
+	#end
+
 	/**
 	 * Byte-streaming load for large charts (ChartStream).
 	 *
@@ -246,6 +308,9 @@ class Song
 	 *   - convertTo is psych_v1;
 	 *   - the events array is readable from the top level;
 	 *   - not CNE format.
+	 *
+	 * A segmented chart (several part files, no `<song>.json`) is loaded through the same route
+	 * whatever the part sizes are, because merging it needs the byte ranges only a scan produces.
 	 *
 	 * The returned SwagSong has empty notes[].sectionNotes: the real notes are read per section
 	 * in PlayState.generateSong from the byte ranges recorded in __seiunStream, then dropped.
@@ -279,29 +344,45 @@ class Song
 
 		var formattedFolder:String = Paths.formatToSongPath(folder);
 		var formattedSong:String = Paths.formatToSongPath(jsonInput);
-		var path:String = null;
 
+		// One-file chart, if the song has one. Kept separate from the size test below because a
+		// segmented chart has no such file at all and this is what tells the two apart.
+		var chartFile:String = null;
 
 		#if MODS_ALLOWED
 		var moddyFile:String = Paths.modsJson(formattedFolder + '/' + formattedSong);
-		if (FileSystem.exists(moddyFile) && ChartStream.isLargeChart(moddyFile))
-			path = moddyFile;
+		if (FileSystem.exists(moddyFile))
+			chartFile = moddyFile;
 		#end
 
-
-		if (path == null)
+		if (chartFile == null)
 		{
 			var plainFile:String = Paths.json(formattedFolder + '/' + formattedSong);
-			if (FileSystem.exists(plainFile) && ChartStream.isLargeChart(plainFile))
-				path = plainFile;
+			if (FileSystem.exists(plainFile))
+				chartFile = plainFile;
 		}
-		if (path == null) return null;
+
+		var path:String = (chartFile != null && ChartStream.isLargeChart(chartFile)) ? chartFile : null;
+
+		// ── Segmented chart ──
+		// A chart whose sections live in several files (see ChartParts) is ONE chart, not one
+		// chart per file: the whole set is scanned into a single skeleton and PlayState reads
+		// every section from the part that owns it. This is also the only route for such a song,
+		// since it has no <song>.json for the resolution above to find.
+		var parts:Array<String> = resolveChartParts(formattedFolder, formattedSong, chartFile);
+		var scanningParts:Bool = (parts != null && parts.length > 0);
+		if (scanningParts)
+			path = parts[0];
+		else if (path == null)
+			return null;
+		else
+			parts = [path];
 
 
 		var scan:ChartStream.ChartScanResult = null;
 		try
 		{
-			scan = ChartStream.scan(path);
+			scan = scanningParts ? ChartStream.scanParts(parts) : ChartStream.scan(path);
 		}
 		catch (e:Dynamic)
 		{
@@ -328,7 +409,16 @@ class Song
 
 
 		var ev:Dynamic = Reflect.field(chart, 'events');
-		if (ev == null || !Std.isOfType(ev, Array)) return null;
+		if (ev == null || !Std.isOfType(ev, Array))
+		{
+			// A segmented chart has no one-file fallback -- its sections exist only as separate
+			// parts -- so an explicit events array is supplied instead of refusing to load. (Note
+			// that a legacy chart encoding its events as negative-data notes cannot be recovered
+			// from a skeleton: sectionNotes are never materialised, so it does not stream.)
+			if (!scanningParts) return null;
+			ev = [];
+			Reflect.setField(chart, 'events', ev);
+		}
 
 
 		// Format normalisation: run the same convert() on the skeleton. Its sectionNotes are
@@ -353,6 +443,9 @@ class Song
 		}
 
 
+		if (scanningParts)
+			trace('Segmented chart: ' + parts.length + ' part file(s) -> ' + scan.ranges.length + ' sections');
+
 		if (jsonInput != 'events') StageData.loadDirectory(chart);
 		onLoadJson(chart);
 
@@ -374,6 +467,7 @@ class Song
 
 		Reflect.setField(chart, '__seiunStream', {
 			path: path,
+			paths: parts,
 			ranges: scan.ranges,
 			ammo: ammo,
 			rewrite: needRewrite

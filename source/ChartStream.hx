@@ -27,6 +27,8 @@ typedef ChartSectionRange = {
 	var start:Float;
 	/** Byte length of that value. */
 	var len:Int;
+	/** Index into the chart's part list; 0 for an ordinary one-file chart. */
+	var part:Int;
 }
 
 typedef ChartScanResult = {
@@ -76,15 +78,21 @@ class ChartStream
 		#end
 	}
 
-	/** Scans the skeleton and records each section's sectionNotes byte range. */
+	/** Scans the skeleton of a one-file chart and records each section's sectionNotes byte range. */
 	public static function scan(path:String):ChartScanResult
+	{
+		return scanPart(path, 0);
+	}
+
+	/** scan() for part `part` of a segmented chart: every recorded range carries that index. */
+	static function scanPart(path:String, part:Int):ChartScanResult
 	{
 		var cur = new Cursor(path);
 		var ranges:Array<ChartSectionRange> = [];
 		try
 		{
 			cur.skipWs();
-			var root:Dynamic = scanObject(cur, ranges, true);
+			var root:Dynamic = scanObject(cur, ranges, true, part);
 			cur.skipWs();
 			cur.close();
 			return { chart: root, ranges: ranges };
@@ -94,6 +102,103 @@ class ChartStream
 			cur.close();
 			throw e;
 		}
+	}
+
+	/**
+	 * Scans several part files and merges them into ONE logical chart skeleton:
+	 *
+	 *   - notes[] is the concatenation of every part's notes[] in the given order;
+	 *   - every range keeps the index of the file it came from (range.part), so
+	 *     ChartSectionReader can seek in the right file;
+	 *   - top-level metadata comes from the first part, because it describes the whole song;
+	 *   - chart-level events from all parts are merged with exact duplicates dropped, so a real
+	 *     time-split keeps its later events while a chart that was copied verbatim into every
+	 *     part does not fire each event once per part.
+	 *
+	 * The caller unwraps the merged chart exactly once (see Song.tryLoadStreamingInner), so all
+	 * parts have to use the same JSON shape -- psych 1.0 `{"song":{...}}` or flat.
+	 */
+	public static function scanParts(paths:Array<String>):ChartScanResult
+	{
+		if (paths == null || paths.length == 0)
+			throw new haxe.Exception('ChartStream: no chart part to scan');
+		var base:ChartScanResult = scanPart(paths[0], 0);
+		if (paths.length < 2) return base;
+
+		var sections:Array<Dynamic> = sectionArray(base.chart);
+		if (sections == null)
+			throw new haxe.Exception('ChartStream: chart part 0 has no notes[]');
+		var ranges:Array<ChartSectionRange> = base.ranges;
+
+		var eventsOwner:Dynamic = eventsSubObject(base.chart);
+		var events:Array<Dynamic> = (eventsOwner != null) ? fieldArray(eventsOwner, 'events') : null;
+		// The field is written back only when some part actually had one. Inventing an empty array
+		// would make Song.convert() see a non-null events field and skip its extraction of events
+		// that a legacy chart encodes as negative-data notes.
+		var hadEvents:Bool = (events != null);
+		if (events == null) events = [];
+		var seen:Map<String, Bool> = new Map<String, Bool>();
+		for (event in events) seen.set(Json.stringify(event), true);
+
+		for (i in 1...paths.length)
+		{
+			var part:ChartScanResult = scanPart(paths[i], i);
+			var partSections:Array<Dynamic> = sectionArray(part.chart);
+			if (partSections == null)
+				throw new haxe.Exception('ChartStream: chart part ' + i + ' has no notes[]');
+			for (section in partSections) sections.push(section);
+			for (range in part.ranges) ranges.push(range);
+
+			var partEvents:Array<Dynamic> = (eventsOwner != null) ? fieldArray(eventsSubObject(part.chart), 'events') : null;
+			if (partEvents != null)
+			{
+				hadEvents = true;
+				for (event in partEvents)
+				{
+					var key:String = Json.stringify(event);
+					if (seen.exists(key)) continue;
+					seen.set(key, true);
+					events.push(event);
+				}
+			}
+			// The part's own skeleton is dropped from here on: only its section objects and byte
+			// ranges survive, which is what keeps a 29-part chart's skeleton at tens of MB.
+		}
+
+		if (eventsOwner != null && hadEvents) Reflect.setField(eventsOwner, 'events', events);
+		return base;
+	}
+
+	/**
+	 * The section array of a scanned chart: `song.notes` for psych 1.0 charts, `notes` otherwise.
+	 * Mirrors the unwrap Song.tryLoadStreamingInner() performs on the very same object.
+	 */
+	static function sectionArray(chart:Dynamic):Array<Dynamic>
+	{
+		if (chart == null) return null;
+		var sub:Dynamic = Reflect.field(chart, 'song');
+		if (sub != null && Type.typeof(sub) == TObject)
+		{
+			var subNotes:Array<Dynamic> = fieldArray(sub, 'notes');
+			if (subNotes != null) return subNotes;
+		}
+		return fieldArray(chart, 'notes');
+	}
+
+	/** The object that owns `events` in a scanned chart (the `song` sub-object when present). */
+	static function eventsSubObject(chart:Dynamic):Dynamic
+	{
+		if (chart == null) return null;
+		var sub:Dynamic = Reflect.field(chart, 'song');
+		if (sub != null && Type.typeof(sub) == TObject) return sub;
+		return chart;
+	}
+
+	static function fieldArray(obj:Dynamic, name:String):Array<Dynamic>
+	{
+		if (obj == null) return null;
+		var value:Dynamic = Reflect.field(obj, name);
+		return Std.isOfType(value, Array) ? cast value : null;
 	}
 
 	// ── byte-level note parsing ─────────────────────────────────────────────
@@ -274,7 +379,7 @@ class ChartStream
 
 	// ── skeleton scan ───────────────────────────────────────────────────────
 
-	static function scanObject(cur:Cursor, ranges:Array<ChartSectionRange>, allowNotes:Bool):Dynamic
+	static function scanObject(cur:Cursor, ranges:Array<ChartSectionRange>, allowNotes:Bool, part:Int):Dynamic
 	{
 		cur.expect(123); // {
 		var obj:Dynamic = {};
@@ -292,9 +397,9 @@ class ChartStream
 			cur.expect(58); // :
 			cur.skipWs();
 			if (allowNotes && key == 'notes' && cur.peek() == 91)
-				Reflect.setField(obj, key, scanNotes(cur, ranges));
+				Reflect.setField(obj, key, scanNotes(cur, ranges, part));
 			else if (cur.peek() == 123)
-				Reflect.setField(obj, key, scanObject(cur, ranges, key == 'song'));
+				Reflect.setField(obj, key, scanObject(cur, ranges, key == 'song', part));
 			else
 				Reflect.setField(obj, key, cur.captureValue());
 
@@ -306,7 +411,7 @@ class ChartStream
 		return obj;
 	}
 
-	static function scanNotes(cur:Cursor, ranges:Array<ChartSectionRange>):Array<Dynamic>
+	static function scanNotes(cur:Cursor, ranges:Array<ChartSectionRange>, part:Int):Array<Dynamic>
 	{
 		cur.expect(91); // [
 		var arr:Array<Dynamic> = [];
@@ -322,12 +427,12 @@ class ChartStream
 			if (cur.peek() == 123)
 			{
 				var sec:Dynamic = {};
-				ranges.push(scanSection(cur, sec, ranges));
+				ranges.push(scanSection(cur, sec, ranges, part));
 				arr.push(sec);
 			}
 			else
 			{
-				ranges.push({ start: 0, len: 0 });
+				ranges.push({ start: 0, len: 0, part: part });
 				arr.push(cur.captureValue());
 			}
 			cur.skipWs();
@@ -338,10 +443,10 @@ class ChartStream
 		return arr;
 	}
 
-	static function scanSection(cur:Cursor, sec:Dynamic, ranges:Array<ChartSectionRange>):ChartSectionRange
+	static function scanSection(cur:Cursor, sec:Dynamic, ranges:Array<ChartSectionRange>, part:Int):ChartSectionRange
 	{
 		cur.expect(123); // {
-		var range:ChartSectionRange = { start: 0, len: 0 };
+		var range:ChartSectionRange = { start: 0, len: 0, part: part };
 		cur.skipWs();
 		if (cur.peek() == 125)
 		{
@@ -361,14 +466,14 @@ class ChartStream
 				// full read for GB-sized sectionNotes.
 				var startPos:Float = cur.pos;
 				cur.skipValueFast();
-				range = { start: startPos, len: Std.int(cur.pos - startPos) };
+				range = { start: startPos, len: Std.int(cur.pos - startPos), part: part };
 				// The field must be an empty array, not missing: tryLoadStreaming() runs
 				// Song.convert() on this skeleton and convert() iterates sectionNotes, so a null
 				// field crashes hxcpp with an ACCESS_VIOLATION that Haxe cannot catch.
 				Reflect.setField(sec, 'sectionNotes', []);
 			}
 			else if (cur.peek() == 123)
-				Reflect.setField(sec, key, scanObject(cur, ranges, false));
+				Reflect.setField(sec, key, scanObject(cur, ranges, false, part));
 			else
 				Reflect.setField(sec, key, cur.captureValue());
 
@@ -385,22 +490,70 @@ class ChartStream
 }
 
 /**
- * Per-section reader: opens the file once and seeks + parses on demand.
- * The seek state is shared, so it is only safe to use sequentially on one thread.
+ * Per-section reader: keeps one chart file open and seeks + parses on demand.
+ *
+ * A chart may be split across several files (see ChartParts): `paths` lists them in the order
+ * the ranges were recorded and every range names the part it lives in. Only one file is open at
+ * a time -- sections are read in order, so the file changes at most once per part -- and the
+ * seek state is shared, so it is only safe to use sequentially on one thread.
  */
 class ChartSectionReader
 {
 	static inline final MAX_RANGE_BYTES:Int = 64 * 1024 * 1024;
 
-	var input:FileInput;
+	/** One file per chart part, indexed by ChartSectionRange.part. */
+	var paths:Array<String>;
 	var ranges:Array<ChartSectionRange>;
+	var input:FileInput;
+	/** Part whose file `input` holds; -1 while closed. */
+	var openPart:Int = -1;
 	/** Last failure reason (for the caller to trace); null on success. */
 	public var lastError:String = null;
 
-	public function new(path:String, ranges:Array<ChartSectionRange>)
+	/**
+	 * `paths` describes the whole chart: a one-file chart just passes a single-element array.
+	 * Nothing is opened here, so a part that cannot be read is reported by the first read that
+	 * needs it rather than by the constructor.
+	 */
+	public function new(paths:Array<String>, ranges:Array<ChartSectionRange>)
 	{
-		input = File.read(path, true);
+		this.paths = paths;
 		this.ranges = ranges;
+	}
+
+	/** How many sections this reader can serve (one range per section). */
+	public function sectionCount():Int
+		return (ranges == null) ? 0 : ranges.length;
+
+	/** File that holds section `index`, or null when the index is out of range. */
+	public function pathOf(index:Int):String
+	{
+		if (ranges == null || index < 0 || index >= ranges.length) return null;
+		var r:ChartSectionRange = ranges[index];
+		if (r == null || paths == null || r.part < 0 || r.part >= paths.length) return null;
+		return paths[r.part];
+	}
+
+	/** Opens the part file `part` belongs to, closing whatever was open before. */
+	function handle(part:Int):FileInput
+	{
+		if (input != null && part == openPart) return input;
+		closeInput();
+		if (paths == null || part < 0 || part >= paths.length)
+			throw new haxe.Exception('ChartStream: no file for chart part ' + part);
+		input = File.read(paths[part], true);
+		openPart = part;
+		return input;
+	}
+
+	function closeInput():Void
+	{
+		if (input != null)
+		{
+			input.close();
+			input = null;
+		}
+		openPart = -1;
 	}
 
 	/** Raw note array of section `index`; empty array when the range is missing or empty, null on read failure. */
@@ -412,9 +565,10 @@ class ChartSectionReader
 		if (r.len > MAX_RANGE_BYTES) return null;
 		try
 		{
-			input.seek(Std.int(r.start), sys.io.FileSeek.SeekBegin);
+			var source:FileInput = handle(r.part);
+			source.seek(Std.int(r.start), sys.io.FileSeek.SeekBegin);
 			var b:Bytes = Bytes.alloc(r.len);
-			input.readFullBytes(b, 0, r.len);
+			source.readFullBytes(b, 0, r.len);
 			lastError = null;
 			return cast Json.parse(b.toString());
 		}
@@ -438,9 +592,10 @@ class ChartSectionReader
 		if (r.len > MAX_RANGE_BYTES) return null;
 		try
 		{
-			input.seek(Std.int(r.start), sys.io.FileSeek.SeekBegin);
+			var source:FileInput = handle(r.part);
+			source.seek(Std.int(r.start), sys.io.FileSeek.SeekBegin);
 			var b:Bytes = Bytes.alloc(r.len);
-			input.readFullBytes(b, 0, r.len);
+			source.readFullBytes(b, 0, r.len);
 			lastError = null;
 			return ChartStream.parseSectionNotes(b, 0, r.len);
 		}
@@ -453,11 +608,7 @@ class ChartSectionReader
 
 	public function close():Void
 	{
-		if (input != null)
-		{
-			input.close();
-			input = null;
-		}
+		closeInput();
 	}
 }
 

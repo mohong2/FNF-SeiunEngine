@@ -35,6 +35,8 @@ enum FlxActionMode
 	A_B_C_X_Y;
 	A_B_C_X_Y_Z;
 	A_B_C_V_X_Y;
+	/** Freeplay/Story plus one spare button (D) for the multi-file chart toggle. */
+	A_B_C_V_X_Y_D;
 	A_B_C_D_V_X_Y_Z;
 	CHART_EDITOR;
 	NEW_CHART_EDITOR;
@@ -219,6 +221,19 @@ class FlxVirtualPad extends FlxTypedSpriteGroup<FlxButton>
 				buttonEx.onUp.callback = function() { @:privateAccess FlxG.keys._keyListMap.get(FlxKey.TAB).release(); };
 				buttonEx.onOut.callback = function() { @:privateAccess FlxG.keys._keyListMap.get(FlxKey.TAB).release(); };
 				add(buttonEx);
+			case A_B_C_V_X_Y_D:
+				add(buttonV = createButton(FlxG.width - 132, FlxG.height - 251, 'v', 0x49A9B2));
+				add(buttonD = createButton(FlxG.width - 522, FlxG.height - 131, 'd', 0x0078FF));
+				add(buttonX = createButton(FlxG.width - 392, FlxG.height - 251, 'x', 0x99062D));
+				add(buttonC = createButton(FlxG.width - 392, FlxG.height - 131, 'c', 0x44FF00));
+				add(buttonY = createButton(FlxG.width - 262, FlxG.height - 251, 'y', 0x4A35B9));
+				add(buttonB = createButton(FlxG.width - 262, FlxG.height - 131, 'b', 0xFFCB00));
+				add(buttonEx = createButton(FlxG.width - 522, FlxG.height - 251, 'g', 0x3D3722));
+				buttonEx.onDown.callback = function() { @:privateAccess FlxG.keys._keyListMap.get(FlxKey.TAB).press(); };
+				buttonEx.onUp.callback = function() { @:privateAccess FlxG.keys._keyListMap.get(FlxKey.TAB).release(); };
+				buttonEx.onOut.callback = function() { @:privateAccess FlxG.keys._keyListMap.get(FlxKey.TAB).release(); };
+				add(buttonEx);
+				add(buttonA = createButton(FlxG.width - 132, FlxG.height - 131, 'a', 0xFF0000));
 			case A_B_C_D_V_X_Y_Z:
 				add(buttonV = createButton(FlxG.width - 522, FlxG.height - 251, 'v', 0x49A9B2));
 				add(buttonD = createButton(FlxG.width - 522, FlxG.height - 131, 'd', 0x0078FF));

@@ -3644,11 +3644,16 @@ class PlayState extends MusicBeatState
 		// when needed and dropped right after, so the peak is a single section DOM.
 		var chartStreamInfo:Dynamic = Reflect.field(songData, '__seiunStream');
 		var chartStream:ChartStream.ChartSectionReader = null;
+		// Part files of a segmented chart (see ChartParts); one entry for a one-file chart.
+		var chartPaths:Array<String> = null;
 		if (chartStreamInfo != null && noteData != null)
 		{
+			chartPaths = cast Reflect.field(chartStreamInfo, 'paths');
+			if (chartPaths == null && chartStreamInfo.path != null) chartPaths = [chartStreamInfo.path];
 			try
 			{
-				chartStream = new ChartStream.ChartSectionReader(chartStreamInfo.path, chartStreamInfo.ranges);
+				chartStream = (chartPaths != null)
+					? new ChartStream.ChartSectionReader(chartPaths, chartStreamInfo.ranges) : null;
 			}
 			catch (e:Dynamic)
 			{
@@ -3718,10 +3723,16 @@ class PlayState extends MusicBeatState
 			// Streaming: read this section's notes from disk. A failed read must not be skipped.
 			if (chartStream != null)
 			{
+				// A range list shorter than the chart would silently drop every missing section's
+				// notes (readNotes() returns [] for an out-of-range index), so it throws instead.
+				if (chartSectionIndex >= chartStream.sectionCount())
+					throw new haxe.Exception('chart stream: ' + chartStream.sectionCount() + ' section ranges for '
+						+ noteData.length + ' sections (' + (chartPaths != null ? chartPaths.length : 0)
+						+ ' part file(s), section ' + chartSectionIndex + ')');
 				var rawNotes:Array<ChartStream.ChartRawNote> = chartStream.readNotes(chartSectionIndex);
 				if (rawNotes == null)
 					throw new haxe.Exception('chart stream: cannot read section ' + chartSectionIndex
-						+ ' of ' + chartStreamInfo.path + ' (' + chartStream.lastError + ')');
+						+ ' of ' + chartStream.pathOf(chartSectionIndex) + ' (' + chartStream.lastError + ')');
 				section.sectionNotes = cast rawNotes;
 			}
 			chartSectionIndex++;
@@ -3906,6 +3917,17 @@ class PlayState extends MusicBeatState
 
 		}
 
+		if (chartStream != null)
+		{
+			// One line that says whether every part really was read and turned into notes. A note
+			// count of ~13M for a 29-part chart means only part 0 was generated.
+			trace('Chart stream: ' + chartSectionIndex + ' sections from '
+				+ (chartPaths != null ? chartPaths.length : 0) + ' part file(s), ranges='
+				+ chartStream.sectionCount() + ', notes='
+				+ (collapser != null ? collapser.fedCount : preloadedNotes.length)
+				+ ', turbo=' + turboModeActive + ', mania=' + mania);
+		}
+
 		// Load song events (legacy format)
 		if (songData.events != null)
 		{
@@ -3997,6 +4019,29 @@ class PlayState extends MusicBeatState
 		// Notes are built by the spawn loop only when they enter the generation window, so peak memory is the living notes, not the whole chart.
 		unspawnNotes = preloadedNotes;
 		lastSpawnedNote = new Map<Int, Note>();
+
+		if (chartStream != null)
+		{
+			// Per-30s note counts over the materialised chart, so a load log alone shows where the
+			// notes actually are (the split parts leave long empty stretches on purpose).
+			var bucketMs:Float = 30000;
+			var buckets:Array<Int> = [];
+			for (pn in unspawnNotes)
+			{
+				if (pn == null) continue;
+				var bucket:Int = Std.int(pn.strumTime / bucketMs);
+				if (bucket < 0) bucket = 0;
+				while (buckets.length <= bucket) buckets.push(0);
+				buckets[bucket]++;
+			}
+			var histogram:StringBuf = new StringBuf();
+			for (i in 0...buckets.length)
+			{
+				if (histogram.length > 0) histogram.add(' ');
+				histogram.add(Std.string(i * 30) + 's=' + buckets[i]);
+			}
+			trace('Chart notes per 30s: ' + histogram.toString());
+		}
 		_chartHasHolds = false;
 		for (pn in preloadedNotes)
 		{

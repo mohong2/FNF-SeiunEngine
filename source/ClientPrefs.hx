@@ -185,6 +185,14 @@ import sys.io.Process;
 	public var autoExtractAssets:Bool = true;
 	// Chart editor auto-save (off by default — player opts in)
 	public var chartAutosave:Bool = false;
+	/**
+	 * How charts split across several files are loaded; the player picks this in Options > Advanced.
+	 * Auto   -- the engine finds <song>-0.json, -1, ... and plays them as one song;
+	 * Manifest -- only the parts listed in <song>.parts.json are merged;
+	 * Off    -- every chart file is its own chart, the stock behavior.
+	 * Kept as a String (not an enum) so an unknown value from an old/newer save degrades to Auto.
+	 */
+	public var segmentedCharts:String = 'Auto';
 
 	// Trace Console debug settings
 	public var traceConsoleEnabled:Bool = false;
@@ -355,6 +363,20 @@ class ClientPrefs {
 
 	public static var ignoreErrorLoopScripts(get, never):Bool;
 	public static var scriptErrorLimit(get, never):Int;
+
+	/**
+	 * The player's multi-file chart choice, read at chart-load time.
+	 * Returns one of "Auto" / "Manifest" / "Off" and never dereferences null: a few load paths
+	 * (and any tool that builds a Song outside the game) run before loadPrefs().
+	 * The strings are spelled out instead of referencing ChartParts.MODE_* on purpose -- ChartParts
+	 * is a sys-only module and ClientPrefs compiles for every target.
+	 */
+	public static function segmentedChartMode():String
+	{
+		if (data == null || data.segmentedCharts == null) return 'Auto';
+		return data.segmentedCharts;
+	}
+
 	static inline function get_arrowRGB() return data.arrowRGB;
 	static inline function get_arrowRGBPixel() return data.arrowRGBPixel;
 	static inline function get_noteSkin() return data.noteSkin;
