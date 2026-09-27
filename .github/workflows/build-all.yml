@@ -25,6 +25,12 @@ permissions:
   contents: write
   actions: write
 
+# 中国大陆镜像与加速入口；留空则不生成对应内容
+env:
+  MIRROR_GITEE_REPO: https://gitee.com/lmo_hongz/FNF-SeiunEngine
+  MIRROR_ACCEL_BASE: https://gh.b52m.cn
+  MIRROR_ACCEL_LABEL: gh.b52m.cn
+
 jobs:
   prepare:
     runs-on: ubuntu-latest
@@ -209,6 +215,14 @@ jobs:
 
           Checksums are included in `SHA256SUMS.txt`.
           EOF
+
+      - name: Append China mirror links
+        uses: ./.github/actions/append-mirror-links
+        with:
+          tag: ${{ env.TAG_NAME }}
+          gitee-repo: ${{ env.MIRROR_GITEE_REPO }}
+          accel-base: ${{ env.MIRROR_ACCEL_BASE }}
+          accel-label: ${{ env.MIRROR_ACCEL_LABEL }}
 
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
