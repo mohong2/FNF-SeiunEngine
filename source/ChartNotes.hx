@@ -322,6 +322,23 @@ class ChartNotesData
 
 	public var length(default, null):Int = 0;
 
+	/**
+	 * Rows a script has written to.
+	 *
+	 * get() hands out a fresh DTO, and a write to that DTO cannot be written back -- which is fine
+	 * for the engine, but it silently swallows the way Psych mods register custom note types:
+	 *
+	 *     for i = 0, getProperty('unspawnNotes.length') - 1 do
+	 *         if getPropertyFromGroup('unspawnNotes', i, 'noteType') == '1' then
+	 *             setPropertyFromGroup('unspawnNotes', i, 'texture', 'gunnote') ...
+	 *
+	 * So the first write to a row parks a live DTO here, and every later read of that row (the Lua
+	 * bridge and the spawn loop) hands out that same object. That is the old Array<Note> behaviour
+	 * the mods were written against. A chart no script touches never allocates this map, so the
+	 * column layout keeps its memory win.
+	 */
+	var parkedRows:Map<Int, PreloadedChartNote>;
+
 	var fStrumTime:NumCol = new NumCol();
 	var fSustainLength:NumCol = new NumCol();
 	var fParentST:NumCol = new NumCol();
@@ -454,6 +471,18 @@ class ChartNotesData
 	public function get(i:Int):PreloadedChartNote
 	{
 		if (i < 0 || i >= length) return null;
+		if (parkedRows != null)
+		{
+			var parked = parkedRows.get(i);
+			if (parked != null)
+			{
+				// wasHit / noteDensity stay real stored state (setWasHit / setNoteDensity write the
+				// columns), so mirror them onto the parked DTO rather than freezing them at park time.
+				parked.wasHit = flags.get(i, 11);
+				parked.noteDensity = fNoteDensity.get(i);
+				return parked;
+			}
+		}
 		var hue:Float = fSplashHue.get(i);
 		var sat:Float = fSplashSat.get(i);
 		var brt:Float = fSplashBrt.get(i);
@@ -530,6 +559,26 @@ class ChartNotesData
 		return a;
 	}
 
+	/**
+	 * Live DTO for one row: materialised on first use and parked, so writes through it survive
+	 * (see parkedRows). This is what the Lua bridge writes notes through.
+	 */
+	public function liveAt(i:Int):PreloadedChartNote
+	{
+		if (i < 0 || i >= length) return null;
+		var dto:PreloadedChartNote = (parkedRows != null) ? parkedRows.get(i) : null;
+		if (dto != null) return dto;
+		dto = get(i);
+		if (dto == null) return null;
+		if (parkedRows == null) parkedRows = new Map<Int, PreloadedChartNote>();
+		parkedRows.set(i, dto);
+		return dto;
+	}
+
+	/** How many rows a script has written to (diagnostics: 0 unless a mod edits unspawnNotes). */
+	public inline function parkedCount():Int
+		return (parkedRows == null) ? 0 : Lambda.count(parkedRows);
+
 	public inline function getWasHit(i:Int):Bool
 		return i >= 0 && i < length && flags.get(i, 11);
 
@@ -572,6 +621,10 @@ abstract ChartNotes(ChartNotesData)
 
 	public inline function getWasHit(i:Int):Bool return this.getWasHit(i);
 	public inline function setWasHit(i:Int, v:Bool):Void this.setWasHit(i, v);
+
+	/** Live row for the script bridge (see ChartNotesData.liveAt). */
+	public inline function liveAt(i:Int):PreloadedChartNote return this.liveAt(i);
+	public inline function parkedCount():Int return this.parkedCount();
 
 	public function iterator():Iterator<PreloadedChartNote>
 	{

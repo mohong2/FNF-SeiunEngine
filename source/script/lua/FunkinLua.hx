@@ -1637,6 +1637,25 @@ class FunkinLua {
 			// 1.0.4 保持原行为，不改变 nil 语义
 			if (CompatEngine.is104())
 			{
+				// unspawnNotes 现在是 ChartNotes (列式存储): 每一行 get() 出来都是一次性 DTO,
+				// 必须从 store 取行 —— 模组 custom_notetypes 脚本正是靠
+				// getPropertyFromGroup('unspawnNotes', i, 'noteType') 认出自己的音符的。
+				if(Std.isOfType(realObject, ChartNotes.ChartNotesData))
+				{
+					var store:ChartNotes.ChartNotesData = cast realObject;
+					var row:Dynamic = store.get(index);
+					if(row == null)
+					{
+						luaTrace("getPropertyFromGroup: Object #" + index + " from group: " + obj + " doesn't exist!", false, false, FlxColor.RED);
+						Lua.pushnil(lua);
+						return null;
+					}
+					var rowResult:Dynamic = (Type.typeof(variable) == ValueType.TInt)
+						? Reflect.getProperty(row, Std.string(variable))
+						: getGroupStuff(row, variable);
+					if(rowResult == null) Lua.pushnil(lua);
+					return rowResult;
+				}
 				if(Std.isOfType(realObject, FlxTypedGroup))
 				{
 					var result104:Dynamic = getGroupStuff(realObject.members[index], variable);
@@ -1663,6 +1682,23 @@ class FunkinLua {
 			// 0.6.3/0.7.3 旧加载顺序下组可能还没创建，返回安全默认值避免脚本顶层崩溃。
 			if(realObject == null) return 0;
 
+			// 同上: ChartNotes 列式存储要走 store.get() 取行。
+			if(Std.isOfType(realObject, ChartNotes.ChartNotesData))
+			{
+				var store:ChartNotes.ChartNotesData = cast realObject;
+				var row:Dynamic = store.get(index);
+				if(row == null)
+				{
+					luaTrace("getPropertyFromGroup: Object #" + index + " from group: " + obj + " doesn't exist!", false, false, FlxColor.RED);
+					return 0;
+				}
+				var rowResult:Dynamic = (Type.typeof(variable) == ValueType.TInt)
+					? Reflect.getProperty(row, Std.string(variable))
+					: getGroupStuff(row, variable);
+				if(rowResult == null) return 0;
+				return rowResult;
+			}
+
 			if(Std.isOfType(realObject, FlxTypedGroup))
 			{
 				if(realObject.members == null || index < 0 || index >= realObject.members.length)
@@ -1686,11 +1722,23 @@ class FunkinLua {
 			luaTrace("getPropertyFromGroup: Object #" + index + " from group: " + obj + " doesn't exist!", false, false, FlxColor.RED);
 			return 0;
 		});
-		Lua_helper.add_callback(lua, "setPropertyFromGroup", function(obj:String, index:Int, variable:Dynamic, value:Dynamic) {
+		Lua_helper.add_callback(lua, "setPropertyFromGroup", function(obj:String, index:Int, variable:Dynamic, value:Dynamic, ?allowMaps:Bool = false, ?allowInstances:Bool = false) {
+			if (allowInstances) value = parseInstanceValue(value);
 			var shitMyPants:Array<String> = obj.split('.');
 			var realObject:Dynamic = Reflect.getProperty(getInstance(), obj);
 			if(shitMyPants.length>1)
 				realObject = getPropertyLoopThingWhatever(shitMyPants, true, false);
+
+			// unspawnNotes 是 ChartNotes (列式存储): 直接写 get() 出来的一次性 DTO 会丢,
+			// 表现就是"custom_notetypes 的贴图/属性全部变回原版"。liveAt() 把这一行钉住,
+			// 之后读取、出谱拿到的都是同一个对象 —— 与旧版 Array<Note> 行为一致。
+			if(Std.isOfType(realObject, ChartNotes.ChartNotesData))
+			{
+				var store:ChartNotes.ChartNotesData = cast realObject;
+				var row:Dynamic = store.liveAt(index);
+				if(row != null) setGroupStuff(row, variable, value);
+				return;
+			}
 
 			if(Std.isOfType(realObject, FlxTypedGroup)) {
 				setGroupStuff(realObject.members[index], variable, value);
@@ -4709,6 +4757,11 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 			stateVars.set(variable, value);
 			return value;
 		}
+		// ChartNotes: 整行赋值写不回列式存储(也没有意义), 直接忽略 —— 同时避免
+		// Reflect.setProperty 抛 Invalid field:<下标> 把整个脚本回调打断。
+		if(instance != null && Std.isOfType(instance, ChartNotes.ChartNotesData) && Std.parseInt(variable) != null)
+			return value;
+
 		Reflect.setProperty(instance, variable, value);
 		return value;
 	}
@@ -4752,12 +4805,22 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 				return retVal;
 		}
 
+		// unspawnNotes 等 ChartNotes 列式存储: 数字段是行下标, Reflect 取不到, 要走 store。
+		if(instance != null && Std.isOfType(instance, ChartNotes.ChartNotesData))
+		{
+			var rowIdx:Null<Int> = Std.parseInt(variable);
+			if(rowIdx != null) return (cast instance : ChartNotes.ChartNotesData).get(rowIdx);
+		}
+
 		return Reflect.getProperty(instance, variable);
 	}
 	static function parseInstances(args:Array<Dynamic>)
 	{
 		for (i in 0...args.length)
 		{
+			// 安全: Lua 传进来的数字是 Float, 直接 cast 成 String 再取 .length 在 cpp 上会
+			// 读非法内存。只有真正的字符串才需要走 instanceArg 还原。
+			if(!Std.isOfType(args[i], String)) continue;
 			var myArg:String = cast args[i];
 			if(myArg != null && myArg.length > instanceStr.length)
 			{
