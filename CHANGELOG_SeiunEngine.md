@@ -1,7 +1,7 @@
 # SeiunEngine 更新日志 · Changelog
 
-> 完整记录 2026年6月19日 至 8月30日 的所有改进、修复与突破
-> A comprehensive record of every improvement, fix, and breakthrough from June 19 to August 30, 2026.
+> 完整记录 2026年6月19日 至 10月1日 的所有改进、修复与突破
+> A comprehensive record of every improvement, fix, and breakthrough from June 19 to October 1, 2026.
 
 ---
 
@@ -398,6 +398,40 @@
 - ⚠ **lime / flixel 两处补丁必须上游化到 `mohong2/lime` 与 `mohong2/flixel`**，否则 CI 重新克隆依赖后，打出来的包又会带上这两个缺陷。
 
 （2026-09-12，日志还是 AI 代笔。）
+
+---
+
+### 2026年10月1日（0.2.2 Pre-Online.2 · 第一部分）
+
+> 本次更新**尚未完成**：下面是 0.2.2 Pre-Online.2 已经落地的第一部分，后续提交会继续追加。完整公告见 `release-notes/0.2.2preonline2.md`。
+
+#### 谱面缓存
+
+- 新增 `chart_cache/`（可执行文件旁）：把流式谱面 Note 循环的**输出**（完整 DTO）按列压缩落盘，第二次进同一张谱面直接回放，跳过骨架扫描 / 逐小节解析 / 折叠 / 排序。
+- 失效判据是「每个分段文件的大小 + 修改时间 + 调用方配置串」，任何一项变化即 miss 并重写。
+- 实测：12,608,616 条 Note 的列表里 7/12 个 Float 列、5/5 个 String 列与 splash 块恒定 ⇒ 1.78 GB 压到几 MB（设置项实测 290 MB → 2 MB），读写时最多持 1 MB 块；45 GB 的 amphotercity（2,064,278,444 taps → 4,291,710 代表点）缓存为 `.skel` 14,215,997 B + `.notes` 12,855,326 B。
+- 新增设置：Huge Chart Cache / Compress the Chart Cache / Clear the Chart Cache（三语）。
+
+#### 谱面加载
+
+- 选歌预览不再解析整张谱面：`PRELOAD_ALL` 下每次选中都会 `loadFromJson()`，2 GB 谱面要几秒；现在识别为流式尺寸就跳过预览解析并 trace。
+- 没有 `events` 字段的谱面也能流式加载（字节级负索引判据），slide20（2,105,875,665 B / 153,955,328 notes）不再退回整份 DOM 解析 —— 那正是 Freeplay 卡死的原因。
+- 分段谱面识别放宽：任意起始编号（miragist 从 0、amphotercity 从 1，以后从 5 或 100 起同理），断号只 trace 不作废，编号文件少于 2 个仍按单文件；`<song>.json` 闸与 `.parts.json` 清单不变。11 例回归（合成 7 + 真实 4）全部符合预期。
+
+#### Turbo / Botplay 与结算界面
+
+- Turbo 下 Botplay 标签显示 `TURBO BOTPLAY`；分数行改为 H-Slice 风格：对手命中 + bf 命中 = 合计、两侧 NPS（当前/峰值）与合计、HP（仅自动打谱，手动模式逐字节不变）。
+- NPS 用 1 秒滑动窗口（100×10ms）+ 快起慢落弹道：一帧 5000 的突发约 1.47 秒平滑回零；峰值取窗口真值；脚本写 `opCombo` 不会伪造爆发。
+- 结算界面：评分图标把「超完美」计入总数（此前 Turbo 全判超完美 ⇒ 总数 0 ⇒ 落到 `FALSE` 兜底图）并按 240×90 的框缩放（兜底图 660×256 不再压满卡片）；统计图例改 `fieldWidth = 0` 永不换行（此前折行还会在文字域上画出一块 155×46 的纯黑），数字过长自动紧凑化；顺带隐藏 camOther 上的 side HUD 与 BOTPLAY/REPLAY/ms/判定文字。
+
+#### Lua / HScript 兼容
+
+- 补上 `addWiggleEffect` / `removeWiggleEffect`（H-Slice 签名）。
+- `setProperty` 写未知 state 字段不再抛 `Invalid field:...` 中断回调，改为存为脚本变量 + trace。
+- `cameraFade` 补上第 5 个 `?fadeOut` 参数（4 参数行为不变，实测 mod 里 8 处调用只有 1 处用 5 参数）。
+- 脚本错误循环保护：只有每帧 / 每步回调计入连续错误计数。
+
+（2026-10-01，日志还是 AI 代笔。）
 
 ---
 
@@ -806,11 +840,45 @@ Bundled regression harness (temp/touch-fix-test/TouchFixTest.hx): replicates the
 
 ---
 
+### October 1, 2026 (0.2.2 Pre-Online.2, first slice)
+
+> The update is **not finished yet**: this is the first slice of 0.2.2 Pre-Online.2 that has landed, and later commits keep appending to it. Full announcement: `release-notes/0.2.2preonline2.md`.
+
+#### Chart cache
+
+- New `chart_cache/` next to the executable: the *output* of a streamed chart's note loop (complete DTOs) is written column-compressed, so the next load replays it and skips the skeleton scan, the per-section parse, the fold and the sort.
+- Validity is "every chart part's size and modification time plus the caller's configuration string"; anything else is a miss and the file is rewritten.
+- Measured: on a 12,608,616-note list 7/12 Float columns, all 5 String columns and the splash block were constant, so 1.78 GB became a few MB (the option text measures 290 MB against 2 MB compressed); at most one 1 MB block is held in memory. amphotercity (45 GB, 2,064,278,444 taps -> 4,291,710 representatives) caches to `.skel` 14,215,997 B + `.notes` 12,855,326 B.
+- New options: Huge Chart Cache / Compress the Chart Cache / Clear the Chart Cache (three languages).
+
+#### Chart loading
+
+- Song select no longer parses a whole chart to preview it: under `PRELOAD_ALL` every selection ran `loadFromJson()` (seconds for a 2 GB chart); a streaming-sized chart now skips the preview parse and traces the skip.
+- Charts without an `events` field can stream too (byte-level negative-index test), so slide20 (2,105,875,665 B / 153,955,328 notes) no longer falls back to a whole-file DOM parse -- the reason Freeplay used to freeze on it.
+- Split-chart detection accepts any starting number (miragist from 0, amphotercity from 1, and 5 or 100 would work the same), a hole is only traced instead of refusing the set, and fewer than two numbered files still means a single chart. The `<song>.json` gate and the `.parts.json` manifest are unchanged. All 11 regression cases (7 synthetic + 4 real) behave as intended.
+
+#### Turbo / Botplay and the results screen
+
+- Turbo's botplay label reads `TURBO BOTPLAY`; the score line became H-Slice style: opponent hits + bf hits = total, per-side NPS (current/max) and the combined pair, plus HP (botplay only; manual play is byte-identical).
+- NPS uses a one-second sliding window (100 x 10 ms) with fast attack / slow release: a single-frame burst of 5000 fades out over about 1.47 s, the maxima keep the exact window peaks, and a script writing `opCombo` cannot fake a burst.
+- Results screen: the rating icon now counts the marvelous bucket (Turbo judged everything marvelous, so the total was zero and the icon fell back to the `FALSE` asset) and is fitted into a 240x90 box (the 660x256 fallback no longer covers the card); the hit legend uses `fieldWidth = 0` so it never wraps (a wrapped row painted a 155x46 pure-black box over its own field) and compacts long counts; the side HUD and the BOTPLAY/REPLAY/ms/judge labels on camOther are hidden too.
+
+#### Lua / HScript compatibility
+
+- `addWiggleEffect` / `removeWiggleEffect` added with H-Slice's signature.
+- `setProperty` on an unknown state field no longer throws `Invalid field:...` and aborts the callback; the value is kept as a script variable and traced.
+- `cameraFade` gained the fifth `?fadeOut` argument (the four-argument form is unchanged; only 1 of the 8 calls in the installed mods uses five).
+- Script error-loop protection: only per-frame / per-step callbacks count towards the consecutive-error counter.
+
+(2026-10-01, changelog written by AI as usual.)
+
+---
+
 ### Acknowledgments
 
 A huge thank you to all testers — your feedback has been invaluable in shaping SeiunEngine into what it is today.
 
 ---
 
-*本日志覆盖 SeiunEngine 自 6.19 至 9.12 全部主要变动。*
-*This changelog covers all significant changes from June 19 to September 12, 2026.*
+*本日志覆盖 SeiunEngine 自 6.19 至 10.1 全部主要变动。*
+*This changelog covers all significant changes from June 19 to October 1, 2026.*

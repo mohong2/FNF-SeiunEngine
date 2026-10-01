@@ -88,7 +88,7 @@ class MainMenuState extends SeiunMenuState
 				if (v != null && Std.string(v).length > 0) return Std.string(v);
 			}
 		} catch (e:Dynamic) {}
-		return '0.2.2preonline1';
+		return '0.2.2preonline2';
 	}
 
 	override function create()
