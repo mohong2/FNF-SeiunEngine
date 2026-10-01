@@ -156,6 +156,14 @@ Remove-Item $verify -Force -ErrorAction SilentlyContinue
 if ($h1 -ne $h2) { throw "linemap mismatch: the table does not match the exe it was embedded in" }
 Write-Host "[symbols] linemap verified against the embedding build ($h1)"
 
+# Park the map of THIS link. Step 5 relinks without -DHXCPP_DEBUG_LINK, which
+# overwrites obj\ApplicationMain.map; if that relink turns out to move .text we
+# ship the step-3 exe instead, and it must be shipped together with the step-3
+# map. Keeping only the newest map is how a release ends up publishing symbols
+# for a binary nobody has.
+$matchedMap = Join-Path $env:TEMP ('seiun_win_map_' + [Guid]::NewGuid().ToString('N') + '.map')
+Copy-Item (Join-Path $objDir 'ApplicationMain.map') $matchedMap -Force
+
 # ---- 5/6: pristine release build with the same .text -----------------------
 if (-not $KeepDebugLink) {
     $debugExe = Join-Path $env:TEMP ('seiun_win_debugexe_' + [Guid]::NewGuid().ToString('N') + '.exe')
@@ -175,6 +183,10 @@ if (-not $KeepDebugLink) {
     if ($Matches[1] -ne $dbgV -or $Matches[2] -ne $dbgS) {
         Write-Warning "release .text differs from the linemap build - shipping the debug-info exe instead"
         Copy-Item $debugExe $exe -Force
+        # The release relink overwrote the map; put back the one that describes the
+        # exe we are actually shipping, or every resolved frame would be wrong.
+        Copy-Item $matchedMap (Join-Path $objDir 'ApplicationMain.map') -Force
+        Write-Host "[symbols] restored the map that matches the shipped debug-info exe"
     } else {
         Write-Host "[symbols] release .text matches the linemap build; shipping the pristine exe"
     }
@@ -182,10 +194,28 @@ if (-not $KeepDebugLink) {
 }
 
 # ---- collect the bundle -----------------------------------------------------
+# The parked step-3 map has served its purpose (the fallback above restores it when
+# it is needed); the map collected below is always obj\ApplicationMain.map, fresh
+# from the link that produced the exe now sitting in bin\.
+Remove-Item $matchedMap -Force -ErrorAction SilentlyContinue
+
 New-Item -ItemType Directory -Force -Path $symbolsDir | Out-Null
 Get-ChildItem (Join-Path $outDir 'bin') -Filter '*.pdb' -ErrorAction SilentlyContinue | Remove-Item -Force
 Copy-Item (Join-Path $objDir 'ApplicationMain.map') $symbolsDir -Force -ErrorAction SilentlyContinue
 Copy-Item $linemap $symbolsDir -Force
+
+# The published map is only useful if it describes the published exe. Linking is
+# the only thing that can change this, so check it here, once, and fail the build
+# rather than hand out symbols that resolve every frame to the wrong function.
+$mapPath = Join-Path $symbolsDir 'ApplicationMain.map'
+if (-not (Test-Path $mapPath)) { throw "no ApplicationMain.map in $objDir - cannot publish symbols" }
+$mapVerdict = (& python (Join-Path $PSScriptRoot 'verify_map.py') $exe $mapPath) -join [Environment]::NewLine
+Write-Host $mapVerdict
+if ($LASTEXITCODE -ne 0) {
+    throw "the map does not match the exe being published - refusing to continue"
+}
+if ($mapVerdict -match 'map Timestamp=0x([0-9A-F]+)') { $mapStamp = $Matches[1] } else { $mapStamp = '?' }
+Write-Host "[symbols] map verified against the exe (Timestamp=$mapStamp)"
 
 $exeFp = (& python (Join-Path $PSScriptRoot 'fnv1a.py') file $exe).Trim()
 $exeWhole = (& python (Join-Path $PSScriptRoot 'fnv1a.py') whole $exe).Trim()
@@ -211,6 +241,7 @@ $info = @(
     "exe-whole: SeiunEngine.exe $exeWhole",
     "linemap: windows-x64.bin $linemapFp",
     "map: ApplicationMain.map $mapFp",
+    "map-verified: yes (Timestamp=0x$mapStamp matches the exe above)",
     "text-sha256: $text"
 )
 $buildInfo = Join-Path $symbolsDir 'build-info.txt'

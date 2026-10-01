@@ -57,12 +57,27 @@ jobs:
         id: symbols
         shell: bash
         run: |
-          if [ -d export/release/windows/symbols ] && [ -n "$(ls -A export/release/windows/symbols)" ]; then
-            echo "present=1" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=0" >> "$GITHUB_OUTPUT"
-            echo "::warning::crash symbols missing - release debugging will not be possible"
+          # The bundle is the only thing that can turn a user's `Fault offset` into a
+          # function name, so it is a hard requirement, not a warning: a release
+          # without it is a release nobody can debug. The map/exe pair was already
+          # verified in the build step (tools/build_windows_symbols.ps1); this only
+          # confirms the three files actually made it into the artifact directory.
+          DIR=export/release/windows/symbols
+          missing=0
+          for f in ApplicationMain.map windows-x64.bin build-info.txt; do
+            if [ -s "$DIR/$f" ]; then
+              echo "ok: $f ($(stat -c%s "$DIR/$f" 2>/dev/null || wc -c < "$DIR/$f") bytes)"
+            else
+              echo "::error::missing crash symbol file: $DIR/$f"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::crash symbols incomplete - refusing to publish a build that cannot be debugged"
+            exit 1
           fi
+          echo "present=1" >> "$GITHUB_OUTPUT"
+          cat "$DIR/build-info.txt"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: steps.symbols.outputs.present == '1'

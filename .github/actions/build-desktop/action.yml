@@ -183,13 +183,38 @@ runs:
         # Only the .map: with HXCPP_DEBUG_LINK off the linker never runs /DEBUG,
         # so no PDB is regenerated and whatever .pdb sits in obj/ belongs to some
         # older build. Shipping it would actively mislead - resolve against the map.
-        for f in "$OUT"/obj/ApplicationMain.map; do
-          if [ -e "$f" ]; then
-            cp -R "$f" "$OUT/symbols/"
-            found=1
-            echo "collected: $f"
+        if [ "$TARGET" = "windows" ]; then
+          # tools/build_windows_symbols.ps1 already wrote this bundle, and it holds
+          # the map of the link that produced bin/SeiunEngine.exe. Re-collecting the
+          # newest map from obj/ is exactly how a release ends up publishing symbols
+          # for a binary nobody has, so verify the pair that is about to be
+          # published instead of guessing.
+          EXE="$OUT/bin/SeiunEngine.exe"
+          MAP="$OUT/symbols/ApplicationMain.map"
+          if [ ! -f "$EXE" ]; then
+            echo "::error::$EXE is missing - cannot check the crash symbols against it"
+            exit 1
           fi
-        done
+          if [ ! -f "$MAP" ]; then
+            echo "::error::$MAP is missing - crash reports would not be symbolizable"
+            exit 1
+          fi
+          if ! python tools/verify_map.py "$EXE" "$MAP" --quiet; then
+            python tools/verify_map.py "$EXE" "$MAP" || true
+            echo "::error::the published ApplicationMain.map does not belong to the published exe"
+            exit 1
+          fi
+          echo "crash symbols verified: $MAP describes $EXE"
+          found=1
+        else
+          for f in "$OUT"/obj/ApplicationMain.map; do
+            if [ -e "$f" ]; then
+              cp -R "$f" "$OUT/symbols/"
+              found=1
+              echo "collected: $f"
+            fi
+          done
+        fi
 
         if [ "$found" -eq 0 ]; then
           echo "::warning::No symbol files found for $TARGET - crash reports will not be symbolizable"
@@ -213,9 +238,14 @@ runs:
         How to use
         ----------
         1. Get crash/native_crash_*.txt from the affected user.
-        2. Confirm the report is from THIS build: its "Main module stamp:
-           TimeDateStamp=0x..." line must match the TimeDateStamp of the exe these
-           symbols were produced with. Symbols only resolve against their own build.
+        2. Confirm the map belongs to this build - it is checked automatically at
+           release time, and you can re-check any pair yourself:
+
+             python tools/verify_map.py SeiunEngine.exe ApplicationMain.map
+
+           It compares the map's recorded Timestamp and image base with the exe's
+           PE header and the .text extent of both. A mismatch means every frame
+           would resolve to the wrong function - get the right bundle instead.
         3. Resolve the offsets (the report may contain several, from the backtrace):
 
              python tools/mapresolve.py ApplicationMain.map 0x1340289 0x133429A

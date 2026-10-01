@@ -153,6 +153,12 @@ jobs:
           `build-info.txt` of the matching zip. Offline fallback for desktop:
           `python tools/mapresolve.py ApplicationMain.map <fault offset>`.
 
+          The Windows `ApplicationMain.map` is verified against the published exe before it
+          ships (`python tools/verify_map.py SeiunEngine.exe ApplicationMain.map`), so a
+          resolved frame is exact and not merely plausible. Re-check any pair yourself
+          before trusting it - a map from a different link resolves every frame to the
+          wrong function.
+
           Every download carries the version, so a file taken off the release page is self-identifying:
           game builds are `SeiunEngine-<target>-<version>.<ext>` and crash symbols end in `-symbols-<version>.zip`.
 
