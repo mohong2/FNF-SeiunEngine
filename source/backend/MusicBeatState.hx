@@ -275,6 +275,12 @@ class MusicBeatState extends FlxUIState
 		}
 
 		if (FlxG.save.data != null) FlxG.save.data.fullscreen = FlxG.fullscreen;
+
+		// 组容器成员守卫: 已死掉的成员会让 FlxTypedGroup.update 里的 Dynamic->FlxBasic
+		// 转换读到空 vtable, 主线程直接 ACCESS_VIOLATION。这里在最外层 update 之前
+		// 把它摘掉 —— 详见 backend.GroupGuard。
+		GroupGuard.tick(this);
+
 		super.update(elapsed);
 	}
 
@@ -486,6 +492,10 @@ class MusicBeatState extends FlxUIState
 			if (script.closed) continue;
 			if (exclusions.contains(script.scriptName)) continue;
 			if (excludeValues.contains(script)) continue;
+
+			// 只记录一次性的创建回调，便于确认某个脚本到底有没有收到 onCreate/onCreatePost。
+			if (funcToCall == 'onCreate' || funcToCall == 'onCreatePost')
+				backend.ScriptLog.write('callback', funcToCall + ' -> ' + script.scriptName);
 
 			var ret = script.call(funcToCall, args);
 			if (ret == FunkinLua.Function_StopLua && !ignoreStops) { returnVal = ret; break; }
