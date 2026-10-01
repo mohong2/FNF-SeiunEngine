@@ -274,6 +274,7 @@
     "trace.crashCatcher.saveFailed": "CrashCatcher - 保存报告失败: {}",
     "trace.freeplay.currentWeek": "当前周: {}",
     "trace.freeplay.loadError": "错误！{}",
+    "trace.freeplay.previewSkip": "已跳过预览谱面解析：谱面文件属于流式读取规模（{} / {}）",
     "trace.editor.vortexPress": "Vortex 编辑器按键，时间: {}",
     "trace.editor.noteSelected": "已选中的音符: {}",
     "trace.editor.noteRemoved": "已移除 {}，时间: {}",

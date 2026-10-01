@@ -20,10 +20,14 @@ import sys.io.File;
  *      Entries may omit the .json suffix and may point into a subdirectory. A manifest is
  *      explicit intent, so it wins even when a one-file chart exists.
  *
- *   2. Automatic numbering: `data/<song>/<song>-0.json`, `<song>-1.json`, ... numbered from
- *      0 with no gap and at least MIN_PARTS files. This is only accepted when
- *      `data/<song>/<song>.json` does NOT exist, so the numeric difficulties of a normal song
- *      are never mistaken for the parts of a segmented one.
+ *   2. Automatic numbering: the `<song>-<n>.json` files in the directory, ordered by n, however
+ *      the author started counting (miragist numbers its 29 parts from 0, amphotercity its 33
+ *      from 1, an export cut from a later slice may start anywhere). The parts used are the
+ *      numbers actually shipped between the lowest and the highest one; at least MIN_PARTS files
+ *      must exist. A hole in the middle is traced but never a refusal. This is only accepted when
+ *      `data/<song>/<song>.json` does NOT exist, so the numeric difficulties of a normal song are
+ *      never mistaken for the parts of a segmented one (a `<song>.parts.json` manifest is the
+ *      explicit way to override that).
  *
  * Deliberately flixel-free: probes compile this file without the engine.
  */
@@ -150,12 +154,31 @@ class ChartParts
 	 */
 	public static function resolveForChart(dir:String, songName:String, chartKey:String, ?mode:String):Array<String>
 	{
-		for (name in nameCandidates(songName, chartKey))
+		var parts:Array<String> = resolve(dir, songName, mode);
+		if (parts != null && parts.length > 0)
 		{
-			var parts:Array<String> = resolve(dir, name, mode);
-			if (parts != null && parts.length > 0) return parts;
+			// ...unless the requested chart key has a file of its own that is NOT one of those parts.
+			// That is a chart the author wrote by hand next to them -- amphotercity ships an "empty"
+			// placeholder beside its 33 parts -- and selecting that difficulty has to load that file,
+			// not the whole merged set.
+			if (ownsSeparateChart(dir, chartKey, parts)) return null;
+			return parts;
 		}
-		return null;
+		return resolve(dir, chartKey, mode);
+	}
+
+	/** Whether `chartKey` has its own `<chartKey>.json` in `dir` that is not one of `parts`. */
+	static function ownsSeparateChart(dir:String, chartKey:String, parts:Array<String>):Bool
+	{
+		if (chartKey == null || chartKey.length == 0) return false;
+		var own:String = join(dir, chartKey + JSON_EXT);
+		if (!FileSystem.exists(own)) return false;
+		// The parts were built from the directory entries, so the comparison has to ignore case:
+		// Windows resolves `Amphotercity-1.json` and `amphotercity-1.json` to the same file.
+		var lower:String = own.toLowerCase();
+		for (p in parts)
+			if (p != null && p.toLowerCase() == lower) return false;
+		return true;
 	}
 
 	/**
@@ -207,9 +230,18 @@ class ChartParts
 	}
 
 	/**
-	 * Auto-detected parts: `<song>-0.json` .. `<song>-N.json` with no gap, in ascending order.
-	 * Returns null when `<song>.json` exists (an ordinary chart owns the name) or the numbering
-	 * is not a complete run from 0.
+	 * Auto-detected parts: every `<song>-<n>.json` in `dir`, ascending by n.
+	 *
+	 * The numbering may start anywhere -- miragist numbers its 29 parts from 0, amphotercity its 33
+	 * from 1, and a layout cut from a later slice (say from 17) is just as valid. The parts are the
+	 * numbers the author actually shipped between the lowest and the highest one. A hole in the middle
+	 * is traced, not refused: re-cut exports must not silently fall back to "one difficulty per
+	 * file" because a middle file is missing.
+	 *
+	 * The one thing that still turns this off is a `<song>.json` in the same directory: that is what
+	 * separates a normal chart with numeric difficulties from a segmented set. Returns null when
+	 * `<song>.json` exists, when fewer than MIN_PARTS numbered files exist, or when the directory
+	 * cannot be read.
 	 */
 	public static function detect(dir:String, song:String):Array<String>
 	{
@@ -222,7 +254,7 @@ class ChartParts
 
 		var pattern:EReg = new EReg('^' + EReg.escape(song) + '-(\\d+)\\' + JSON_EXT + '$', 'i');
 		var found:Map<Int, String> = new Map<Int, String>();
-		var highest:Int = -1;
+		var indices:Array<Int> = [];
 		for (name in entries)
 		{
 			if (!pattern.match(name)) continue;
@@ -230,16 +262,27 @@ class ChartParts
 			if (index == null || index < 0) continue;
 			if (found.exists(index)) continue;
 			found.set(index, join(dir, name));
-			if (index > highest) highest = index;
+			indices.push(index);
 		}
 
-		// A complete run from 0: exactly highest + 1 entries, every index present.
-		if (highest < MIN_PARTS - 1 || found.exists(0) == false) return null;
-		for (i in 0...highest + 1)
-			if (!found.exists(i)) return null;
+		if (indices.length < MIN_PARTS) return null;
+		indices.sort(function(a, b) return a - b);
+
+		var lowest:Int = indices[0];
+		var highest:Int = indices[indices.length - 1];
+		// Report holes (only for a sane range: a stray "<song>-999999.json" must not build a huge array).
+		if (highest - lowest + 1 <= 256)
+		{
+			var missing:Array<Int> = [];
+			for (i in lowest...highest + 1)
+				if (!found.exists(i)) missing.push(i);
+			if (missing.length > 0)
+				trace('ChartParts: "' + song + '" parts ' + lowest + '..' + highest + ' have no file for '
+					+ missing.join(', ') + '; using the files that exist');
+		}
 
 		var out:Array<String> = [];
-		for (i in 0...highest + 1) out.push(found.get(i));
+		for (i in indices) out.push(found.get(i));
 		return out;
 	}
 

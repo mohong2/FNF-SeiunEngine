@@ -238,7 +238,7 @@ class PlayState extends MusicBeatState
 
 	public var notes:FlxTypedGroup<Note>;
 	public var sustainNotes:FlxTypedGroup<Note>; // Kept for Lua compatibility (empty)
-	public var unspawnNotes:Array<PreloadedChartNote> = [];
+	public var unspawnNotes:ChartNotes = ChartNotes.empty();
 	public var eventNotes:Array<EventNote> = [];
 
 	public var notesAddedCount:Int = 0;
@@ -377,6 +377,24 @@ class PlayState extends MusicBeatState
 	// ── Turbo: screen-pixel-level chart merging ──
 	/** Whether Turbo is active for this play. */
 	public var turboModeActive:Bool = false;
+
+	// ── Streamed-chart load budget ──
+	/**
+	 * Notes a streamed chart may materialise as PreloadedChartNote objects. One such object is
+	 * 358 bytes (64-bit), so this budget is ~4.3 GB of note list. A chart above it is not refused:
+	 * its notes are folded to screen-distinguishable representatives the way Turbo does (see the
+	 * collapser setup in generateSong), which keeps memory bounded and the chart playable.
+	 */
+	public static inline final MAX_CHART_NOTES:Float = 12000000;
+	/**
+	 * Workers ChartPrefetch uses. 1 on purpose: it is an async pipeline, not a parallel reader --
+	 * one worker parses the next chunk while this thread consumes the previous one, which already
+	 * hides the parse behind the note-list build. More workers allocate concurrently against the
+	 * collector and were measured to stall well before they help, so re-measure before raising it.
+	 */
+	public static inline final PREFETCH_WORKERS:Int = 1;
+	/** Streamed payload below this stays on the inline single-threaded read path. */
+	public static inline final PREFETCH_MIN_PAYLOAD_BYTES:Float = 16 * 1024 * 1024;
 	/** perfMode/bulkSkip/fastSort saved before the song and restored afterwards (Turbo never persists its overrides). */
 	private var _turboPrevPerf:Bool = false;
 	private var _turboPrevBulk:Bool = false;
@@ -454,6 +472,39 @@ class PlayState extends MusicBeatState
 	/** 0.7.3 compatibility: icon hurt animation toggle (read by scripts such as iconShake). */
 	public var iconsAnimations:Bool = true;
 	public var combo:Int = 0;
+
+	// ── Botplay / Turbo side readout (H-Slice-style score text) ──
+	/** Opponent-side notes hit so far. Turbo fold groups add their whole noteDensity, so this counts original taps. */
+	public var opCombo:Float = 0;
+	/** NPS window: NPS_BUCKETS buckets of NPS_BUCKET_MS each (100 * 10 ms = 1 s; 10 ms resolution). */
+	static inline var NPS_BUCKET_MS:Float = 10;
+	static inline var NPS_BUCKETS:Int = 100;
+	var _npsOp:Array<Float> = null;
+	var _npsBf:Array<Float> = null;
+	var _npsOpVal:Float = 0;
+	var _npsBfVal:Float = 0;
+	var _npsOpMax:Float = 0;
+	var _npsBfMax:Float = 0;
+	var _npsSumMax:Float = 0;
+	var _npsSlot:Int = -1;
+	var _npsSeenOp:Float = 0;
+	var _npsSeenBf:Float = 0;
+	/**
+	 * Private, monotone copy of the opponent-side hit count. The NPS window reads this instead of
+	 * `opCombo`, because scripts can write the public field (H-Slice parity) and an upward write
+	 * would otherwise be indistinguishable from a burst of real hits. Only addOpponentHit() bumps it.
+	 */
+	var _opHitCount:Float = 0;
+	/**
+	 * Display ballistics for the readout (see updateBotplayReadout). The window value is exact, but
+	 * Turbo settles a whole burst into one bucket, so when that bucket leaves the window the raw
+	 * value snaps to 0 in a single frame. Fast attack + slow release: it rises with the real rate
+	 * and falls back smoothly (a stopped burst fades out over ~1.5 s instead of blinking to zero).
+	 */
+	static inline var NPS_ATTACK_PER_SEC:Float = 14;
+	static inline var NPS_RELEASE_PER_SEC:Float = 6;
+	var _npsOpShown:Float = 0;
+	var _npsBfShown:Float = 0;
 
 	public var healthBarBG:AttachedSprite;
 	public var healthBar:Dynamic;
@@ -603,6 +654,12 @@ class PlayState extends MusicBeatState
 
 	public var bgGirls:BackgroundGirls;
 	public var wiggleShit:WiggleEffect = new WiggleEffect();
+	/**
+	 * Lua wiggle effects (addWiggleEffect), keyed by the sprite tag they were requested for. Only the
+	 * uTime advance needs the map -- the shader itself sits on the sprite -- so a re-add on the same
+	 * tag replaces its entry and removeLuaSprite drops it (same shape as H-Slice's wiggleMap).
+	 */
+	public var wiggleMap:Map<String, WiggleEffect> = new Map<String, WiggleEffect>();
 	public var bgGhouls:BGSprite;
 
     public var trackBackground:FlxSprite;
@@ -1305,6 +1362,11 @@ class PlayState extends MusicBeatState
 		addAndroidControls(false, true);
 
 		generateSong(SONG.song);
+
+		// Do not add a Gc.run()/compact() here: hxcpp only returns block groups when
+		// HXCPP_GC_MOVING is on (it is not), and create() holds live state reachable only from
+		// native code, so a major collect here can sweep it and leave a dangling pointer.
+
 		// 1.0.4: global/stage scripts are loaded after the characters and chart are generated
 		if (CompatEngine.is104())
 			loadGlobalAndStageScripts();
@@ -1469,7 +1531,7 @@ class PlayState extends MusicBeatState
 		}
 		#end
 
-		botplayTxt = new FlxText(400, timeBarBG.y + 55, FlxG.width - 800, "BOTPLAY", 32);
+		botplayTxt = new FlxText(400, timeBarBG.y + 55, FlxG.width - 800, turboModeActive ? "TURBO BOTPLAY" : "BOTPLAY", 32);
 		botplayTxt.setFormat(Paths.font("vcr.ttf"), 32, FlxColor.WHITE, CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 		botplayTxt.scrollFactor.set();
 		botplayTxt.borderSize = 2;
@@ -3036,9 +3098,10 @@ class PlayState extends MusicBeatState
 		var i:Int = unspawnNotes.length - 1;
 		while (i >= 0) {
 			var daNote:PreloadedChartNote = unspawnNotes[i];
-			if(daNote.strumTime - 350 < time)
+			if(daNote != null && daNote.strumTime - 350 < time)
 			{
-				daNote.wasHit = true;
+				// The DTO above is a copy, so stored state has to go through the store.
+				unspawnNotes.setWasHit(i, true);
 			}
 			--i;
 		}
@@ -3084,7 +3147,7 @@ class PlayState extends MusicBeatState
 			if (preResult == LuaUtils.Function_Stop || preResult == FunkinLua.Function_Stop)
 				return;
 
-			scoreTxt.text = buildScoreText();
+			applyScoreText();
 			if(ClientPrefs.data.scoreZoom && !miss && !cpuControlled)
 				bounceScoreTxt();
 			callOnScripts('onUpdateScore', [miss]);
@@ -3093,7 +3156,7 @@ class PlayState extends MusicBeatState
 
 		if (!ClientPrefs.data.perfMode)
 		{
-			scoreTxt.text = buildScoreText();
+			applyScoreText();
 			if(ClientPrefs.data.scoreZoom && !miss && !cpuControlled)
 				bounceScoreTxt();
 			return;
@@ -3104,8 +3167,13 @@ class PlayState extends MusicBeatState
 	}
 
 	/** Builds the score HUD text (the pure part of updateScore). */
-	inline function buildScoreText():String
+	function buildScoreText():String
 	{
+		// Botplay (Turbo forces botplay): the H-Slice-style readout replaces the normal line. Manual
+		// play returns the exact string below, so nothing mod-visible changes there.
+		if (cpuControlled)
+			return buildBotplayScoreText();
+
 		#if ONLINE_ALLOWED
 			/*
 			 * The FP readout is folded into this one pure builder, because this engine does not
@@ -3120,9 +3188,10 @@ class PlayState extends MusicBeatState
 			 * `pointsPercent` field here), and the "V5" branch's percentage is rebuilt from the live
 			 * numbers.
 			 *
-			 * The whole body of this inline function lives inside the guard: `inline` forbids returning
-			 * from two different places, so the base string and the single `return` must share one
-			 * branch. With the macro off, the original one-line body is what compiles.
+			 * The base string and the FP suffix share one branch per guard: the function used to be
+			 * `inline`, which is why the two macro branches still carry their own `return` (the botplay
+			 * early return above is the only other one). With the macro off, the original one-line body
+			 * is what compiles.
 			 */
 		var txt:String = Language.get("scorelangtxt", "Score") + ': $songScore'
 		+ " | " + Language.get("combobtxt", "Combo Breaks") + ': $songMisses'
@@ -3152,6 +3221,154 @@ class PlayState extends MusicBeatState
 		+ " | " + Language.get("combobtxt", "Combo Breaks") + ': $songMisses'
 		+  " | " + Language.get("acclangtxt", "Accuracy") + ':' + (ratingName != '?' ? ' ${Highscore.floorDecimal(ratingPercent * 100, 2)}% | $ratingFC ' : '') + '($ratingName)';
 		#end
+	}
+
+	/**
+	 * H-Slice-style botplay readout: both sides' hit notes, the live NPS of each side (current/max,
+	 * the current value is the 1 s window with the attack/release filter of updateBotplayReadout)
+	 * then the combined current/max, plus HP. Only the cpuControlled branch of
+	 * buildScoreText() uses it, so manual play's line is untouched.
+	 *
+	 * Score is deliberately absent: botplay zeroes songScore/songHits every frame (see update()), so
+	 * it would always read 0.
+	 *
+	 * @param compact keep only the combined NPS (used when the full line would not fit the HUD width).
+	 */
+	function buildBotplayScoreText(?compact:Bool = false):String
+	{
+		var op:Float = opCombo;
+		var bf:Float = bfNotesHit();
+		var line:String = Language.get("botscore_notes", "Notes") + ': '
+			+ readoutNum(op) + ' + ' + readoutNum(bf) + ' = ' + readoutNum(op + bf)
+			+ ' | ' + Language.get("botscore_nps", "NPS") + ': ';
+		if (!compact)
+			line += readoutNum(_npsOpShown) + '/' + readoutNum(_npsOpMax)
+				+ ' + ' + readoutNum(_npsBfShown) + '/' + readoutNum(_npsBfMax) + ' = ';
+		return line + readoutNum(_npsOpShown + _npsBfShown) + '/' + readoutNum(_npsSumMax)
+			+ ' | ' + Language.get("botscore_hp", "HP") + ': ' + CoolUtil.floorDecimal(health * 50, 1) + '%';
+	}
+
+	/** Notes hit on the player's side: the engine's own judged-note accounting (totalPlayed) minus the misses. */
+	inline function bfNotesHit():Float
+		return (totalPlayed : Float) - songMisses;
+
+	/** Readout number: whole notes / NPS (Turbo counts are far past display precision anyway). */
+	inline function readoutNum(v:Float):String
+		return Std.string(Math.ffloor(v + 0.5));
+
+	/**
+	 * Writes the score line into scoreTxt. In botplay the readout has to stay one centered line, so the
+	 * full form is measured first and the compact form used when it would wrap (scoreTxt's fieldWidth
+	 * is FlxG.width, which turns wordWrap on).
+	 */
+	function applyScoreText():Void
+	{
+		if (!cpuControlled)
+		{
+			scoreTxt.text = buildScoreText();
+			return;
+		}
+
+		scoreTxt.wordWrap = false;
+		scoreTxt.text = buildBotplayScoreText();
+		if (scoreTxt.textField.textWidth > FlxG.width)
+			scoreTxt.text = buildBotplayScoreText(true);
+	}
+
+	/**
+	 * Botplay/Turbo readout: slides the 1 s NPS window to the current song time, adds the notes hit since
+	 * the last frame on each side, then filters the displayed current values (fast attack, slow release)
+	 * so a burst leaving the window fades the readout out instead of snapping it to 0. Allocation-free
+	 * after the first call and only run while cpuControlled, so manual play pays nothing.
+	 */
+	function updateBotplayReadout(elapsed:Float):Void
+	{
+		var idx:Int = Std.int(Conductor.songPosition / NPS_BUCKET_MS);
+		if (_npsOp == null)
+		{
+			_npsOp = [for (i in 0...NPS_BUCKETS) 0.0];
+			_npsBf = [for (i in 0...NPS_BUCKETS) 0.0];
+			_npsSlot = idx;
+			_npsSeenOp = _opHitCount;
+			_npsSeenBf = bfNotesHit();
+			return;
+		}
+
+		if (idx != _npsSlot)
+		{
+			if (idx < _npsSlot)
+			{
+				// The song clock moved backwards. Only a real seek/restart (further back than the whole
+				// window) makes the contents meaningless; a small step happens every time the engine
+				// re-syncs the song position to the music (unpause, after a video), and blanking the
+				// window there would snap the readout to 0 for no reason. Re-entered buckets are already
+				// zero, so keeping them cannot double count.
+				if (_npsSlot - idx > NPS_BUCKETS)
+				{
+					for (i in 0...NPS_BUCKETS)
+					{
+						_npsOp[i] = 0;
+						_npsBf[i] = 0;
+					}
+					_npsOpVal = 0;
+					_npsBfVal = 0;
+				}
+			}
+			else
+			{
+				// Clear every bucket the window leaves behind; a jump longer than the window clears all of them.
+				var steps:Int = Std.int(Math.min(idx - _npsSlot, NPS_BUCKETS));
+				for (i in 0...steps)
+				{
+					var s:Int = ((_npsSlot + 1 + i) % NPS_BUCKETS + NPS_BUCKETS) % NPS_BUCKETS;
+					_npsOpVal -= _npsOp[s];
+					_npsBfVal -= _npsBf[s];
+					_npsOp[s] = 0;
+					_npsBf[s] = 0;
+				}
+			}
+			if (_npsOpVal < 0) _npsOpVal = 0;
+			if (_npsBfVal < 0) _npsBfVal = 0;
+			_npsSlot = idx;
+		}
+
+		var slot:Int = ((idx % NPS_BUCKETS) + NPS_BUCKETS) % NPS_BUCKETS;
+		// Hits since the last frame land in the current bucket. The opponent side reads the private
+		// counter, so a script writing `opCombo` shows up in the total but never as a fake NPS burst;
+		// the player side only accepts positive deltas for the same reason (a script writing
+		// totalPlayed/songMisses must not look like hits).
+		var dOp:Float = _opHitCount - _npsSeenOp;
+		if (dOp > 0)
+		{
+			_npsOp[slot] += dOp;
+			_npsOpVal += dOp;
+		}
+		_npsSeenOp = _opHitCount;
+
+		var bf:Float = bfNotesHit();
+		var dBf:Float = bf - _npsSeenBf;
+		if (dBf > 0)
+		{
+			_npsBf[slot] += dBf;
+			_npsBfVal += dBf;
+		}
+		_npsSeenBf = bf;
+
+		// Maxima are recorded from the exact window values (true peaks), the displayed current values
+		// get the ballistics filter.
+		if (_npsOpVal > _npsOpMax) _npsOpMax = _npsOpVal;
+		if (_npsBfVal > _npsBfMax) _npsBfMax = _npsBfVal;
+		var sum:Float = _npsOpVal + _npsBfVal;
+		if (sum > _npsSumMax) _npsSumMax = sum;
+
+		var kUp:Float = elapsed * NPS_ATTACK_PER_SEC;
+		var kDown:Float = elapsed * NPS_RELEASE_PER_SEC;
+		if (kUp > 1) kUp = 1;
+		if (kDown > 1) kDown = 1;
+		_npsOpShown += (_npsOpVal - _npsOpShown) * (_npsOpVal >= _npsOpShown ? kUp : kDown);
+		_npsBfShown += (_npsBfVal - _npsBfShown) * (_npsBfVal >= _npsBfShown ? kUp : kDown);
+		if (_npsOpShown < 0.5) _npsOpShown = 0;
+		if (_npsBfShown < 0.5) _npsBfShown = 0;
 	}
 
 	/** Score text bounce (the zoom tween block from updateScore). */
@@ -3317,7 +3534,7 @@ class PlayState extends MusicBeatState
 		if (_scoreTextDirty)
 		{
 			_scoreTextDirty = false;
-			scoreTxt.text = buildScoreText();
+			applyScoreText();
 			if (_scoreZoomDirty)
 			{
 				_scoreZoomDirty = false;
@@ -3576,8 +3793,37 @@ class PlayState extends MusicBeatState
 
 	/** Pre-allocated reusable fields for Note creation to reduce GC pressure. */
 	static var NOTE_HIT_HEALTH:Float = 0.023;
+	/**
+	 * Everything except the chart bytes that decides what the note loop in generateSong() produces:
+	 * the fold settings, the per-note interpretation switches and the tables the loop reads.
+	 * ChartCache stores this string with the note list and compares it on the next load, so a changed
+	 * setting is a cache miss rather than a wrong note list. Keep it in step with the loop.
+	 */
+	static function cacheConfig(mania:Int, songSpeed:Float, playOpponent:Bool, turboModeActive:Bool,
+		streamRewrite:Bool, streamAmmo:Int):String
+	{
+		var ammo:Int = (mania >= 0 && mania < Note.ammo.length) ? Note.ammo[mania] : -1;
+		return 'v1'
+			+ '|speed=' + FlxMath.roundDecimal(songSpeed, 2)
+			+ '|mania=' + mania
+			+ '|ammo=' + ammo
+			+ '|opp=' + playOpponent
+			+ '|newver=' + Song.isNewVersion
+			+ '|turbo=' + turboModeActive
+			+ '|budget=' + MAX_CHART_NOTES
+			+ '|gap=' + TurboDensity.DEFAULT_MIN_GAP_PX
+			+ '|rep=' + TurboDensity.MAX_REPRESENTED
+			+ '|rewrite=' + streamRewrite
+			+ '|sAmmo=' + streamAmmo
+			+ '|ntypes=' + Note.defaultNoteTypes.join(',');
+	}
+
 	private function generateSong(dataPath:String):Void
 	{
+		// Chart-load phase timers, reported by the 'Chart load phases' trace at the end of this
+		// function: the only way to tell a slow parse from a slow note-list build without a profiler.
+		var __t0:Float = haxe.Timer.stamp();
+		var __tLoop:Float = __t0;
 		songSpeedType = ClientPrefs.getGameplaySetting('scrolltype','multiplicative');
 		if (!(replayMode && replayExam != null)) {
 			switch(songSpeedType) {
@@ -3637,6 +3883,8 @@ class PlayState extends MusicBeatState
 		_noteSlotCursor = 0;
 
 		var preloadedNotes:Array<PreloadedChartNote> = [];
+		// Streaming turbo fold writes straight into packed columns (see the collapser branch).
+		var packed:ChartNotes = null;
 		var noteData:Array<SwagSection> = songData.notes;
 		var songName:String = Paths.formatToSongPath(SONG.song);
 
@@ -3666,11 +3914,50 @@ class PlayState extends MusicBeatState
 		var streamAmmo:Int = (chartStream != null && chartStreamInfo.ammo != null && Std.int(chartStreamInfo.ammo) > 0)
 			? Std.int(chartStreamInfo.ammo) : 4;
 
+		// Sidecar cache (ChartCache): the note list below is a pure function of the chart bytes and
+		// the settings cacheConfig() collects, so a second load of the same chart replays it instead
+		// of parsing, folding and sorting again. Streamed charts only, so ordinary charts are never
+		// affected; ClientPrefs.data.chartCache turns it off completely.
+		var notesCacheConfig:String = null;
+		var cachedNotes:ChartCache.CachedNotes = null;
+		if (chartStream != null && chartPaths != null && ClientPrefs.data.chartCache)
+		{
+			notesCacheConfig = cacheConfig(mania, songSpeed, playOpponent, turboModeActive, streamRewrite, streamAmmo);
+			cachedNotes = ChartCache.loadNotes(chartPaths, notesCacheConfig);
+		}
+		var cacheHit:Bool = (cachedNotes != null);
+
+		// Async section prefetch (ChartPrefetch): the per-section parse is pure data work, so it runs
+		// on a worker while this thread builds the note list. Below PREFETCH_MIN_PAYLOAD_BYTES the
+		// inline read is cheaper; a failure to start silently falls back to it.
+		var chartPrefetch:ChartPrefetch = null;
+		var streamPayloadBytes:Float = 0;
+		if (!cacheHit && chartStream != null && chartStreamInfo.ranges != null)
+		{
+			var streamRanges:Array<ChartStream.ChartSectionRange> = cast chartStreamInfo.ranges;
+			for (r in streamRanges) if (r != null) streamPayloadBytes += r.len;
+			if (streamPayloadBytes >= PREFETCH_MIN_PAYLOAD_BYTES && chartPaths != null)
+			{
+				try chartPrefetch = new ChartPrefetch(chartPaths, streamRanges, PREFETCH_WORKERS)
+				catch (e:Dynamic) chartPrefetch = null;
+			}
+		}
+
 		// Fold incrementally while streaming: building every DTO first would peak at GBs of
 		// intermediate array that Immix never returns to the OS.
 		var collapser:TurboDensity.GhostCollapser = null;
-		if (turboModeActive && chartStream != null)
+		if (!cacheHit && turboModeActive && chartStream != null)
 			collapser = new TurboDensity.GhostCollapser(Note.ammo[mania], 1.0, songSpeed, mania);
+		else if (!cacheHit && chartStream != null && chartStreamInfo.noteCount != null
+			&& chartStreamInfo.noteCount > MAX_CHART_NOTES)
+		{
+			// A note list this large cannot be materialised (358 bytes per note), so fold to the
+			// representatives that are actually distinguishable on screen instead of attempting the
+			// allocation. Same fold Turbo uses, so the path is already exercised.
+			collapser = new TurboDensity.GhostCollapser(Note.ammo[mania], 1.0, songSpeed, mania);
+			trace('Chart has ' + Std.int(chartStreamInfo.noteCount) + ' notes (> ' + MAX_CHART_NOTES
+				+ '); folding to screen-distinguishable representatives (chart-budget fallback, see PlayState.MAX_CHART_NOTES)');
+		}
 
 		// Load event notes from events.json
 		var file:String = Paths.json(songName + '/events');
@@ -3718,8 +4005,30 @@ class PlayState extends MusicBeatState
 
 		// Multi-key: Change Mania events make the chart use a new key count from that point on; each note is
 		// interpreted with the key count in effect at its own time, so notes before and after the event keep their own counts.
-		for (section in noteData)
+		// Prefetched chunks: section index -> parsed notes, refilled by ChartPrefetch when exhausted.
+		var prefetched:Array<Array<ChartStream.ChartRawNote>> = null;
+		var prefetchedPos:Int = 0;
+
+		__tLoop = haxe.Timer.stamp();
+		// Loop split: time blocked on the section parse vs time consuming that section's notes.
+		var __tWait:Float = 0;
+		var __tBody:Float = 0;
+		if (cacheHit)
 		{
+			// Cache hit: the note list, the fold count and the note types come back exactly as the
+			// loop below produced them. Nothing here reads a chart file, and the Conductor ends up
+			// in the same state because the loop's per-section changeBPM() is overwritten by the
+			// changeBPM(songData.bpm) after the loop regardless.
+			packed = cachedNotes.notes;
+			// 0 means "that load was not folded", in which case the phase trace below reports the
+			// list length -- reproduce that here so a cached load logs the same number as a fresh one.
+			_turboRawTapCount = (cachedNotes.fedNotes > 0) ? cachedNotes.fedNotes : packed.length;
+			for (cachedType in cachedNotes.noteTypes) noteTypeMap.set(cachedType, true);
+			chartSectionIndex = (noteData == null) ? 0 : noteData.length;
+		}
+		else for (section in noteData)
+		{
+			var __tw:Float = haxe.Timer.stamp();
 			// Streaming: read this section's notes from disk. A failed read must not be skipped.
 			if (chartStream != null)
 			{
@@ -3729,12 +4038,29 @@ class PlayState extends MusicBeatState
 					throw new haxe.Exception('chart stream: ' + chartStream.sectionCount() + ' section ranges for '
 						+ noteData.length + ' sections (' + (chartPaths != null ? chartPaths.length : 0)
 						+ ' part file(s), section ' + chartSectionIndex + ')');
-				var rawNotes:Array<ChartStream.ChartRawNote> = chartStream.readNotes(chartSectionIndex);
+				var rawNotes:Array<ChartStream.ChartRawNote> = null;
+				if (chartPrefetch != null)
+				{
+					// ChartPrefetch hands over whole chunks in chart order and starts the next chunk
+					// before returning, so the worker threads parse ahead of this loop.
+					if (prefetched == null || prefetchedPos >= prefetched.length)
+					{
+						prefetched = chartPrefetch.nextChunk();
+						prefetchedPos = 0;
+					}
+					if (prefetched != null && prefetchedPos < prefetched.length) rawNotes = prefetched[prefetchedPos++];
+				}
+				else
+				{
+					rawNotes = chartStream.readNotes(chartSectionIndex);
+				}
 				if (rawNotes == null)
 					throw new haxe.Exception('chart stream: cannot read section ' + chartSectionIndex
 						+ ' of ' + chartStream.pathOf(chartSectionIndex) + ' (' + chartStream.lastError + ')');
 				section.sectionNotes = cast rawNotes;
 			}
+			__tWait += haxe.Timer.stamp() - __tw;
+			var __tb:Float = haxe.Timer.stamp();
 			chartSectionIndex++;
 
 			if (section.changeBPM && section.bpm > 0 && Math.isFinite(section.bpm))
@@ -3821,6 +4147,16 @@ class PlayState extends MusicBeatState
 				var isNoAnim:Bool = (noteType == 'No Animation');
 				var isAltSuffix:String = isAlt ? '-alt' : '';
 
+				// Fold/Turbo raw path (GhostCollapser.wantsRepresentative): decide from the note's own
+				// fields whether this tap becomes a representative BEFORE building a PreloadedChartNote,
+				// so the notes that merge are never allocated at all. The merge rules are
+				// GhostCollapser.feed()'s. Holds (susLen > 0) never merge and go through pushHold()
+				// once their DTO exists.
+				var foldHold:Bool = (collapser != null) && susLen > 0;
+				if (collapser != null && !foldHold
+					&& !collapser.wantsRepresentative(rawStrum, noteDataIdx, gottaHitNote))
+					continue;
+
 				// Build PreloadedChartNote (lightweight data transfer object)
 				var swagNote:PreloadedChartNote = {
 					strumTime: rawStrum,
@@ -3860,7 +4196,11 @@ class PlayState extends MusicBeatState
 					noteSplashBrt: null,
 					hitsoundDisabled: false
 				};
-				if (collapser != null) collapser.feed(swagNote) else preloadedNotes.push(swagNote);
+				if (collapser != null)
+				{
+					if (foldHold) collapser.pushHold(swagNote) else collapser.commitRepresentative(swagNote);
+				}
+				else preloadedNotes.push(swagNote);
 
 				var susLen:Float = swagNote.sustainLength;
 				if (susLen < 1) continue;
@@ -3909,12 +4249,13 @@ class PlayState extends MusicBeatState
 						noteSplashBrt: null,
 						hitsoundDisabled: false
 					};
-					if (collapser != null) collapser.feed(sustainNote) else preloadedNotes.push(sustainNote);
+					if (collapser != null) collapser.pushHold(sustainNote) else preloadedNotes.push(sustainNote);
 				}
 			}
 
 			if (chartStream != null) section.sectionNotes = [];
 
+		__tBody += haxe.Timer.stamp() - __tb;
 		}
 
 		if (chartStream != null)
@@ -3924,7 +4265,8 @@ class PlayState extends MusicBeatState
 			trace('Chart stream: ' + chartSectionIndex + ' sections from '
 				+ (chartPaths != null ? chartPaths.length : 0) + ' part file(s), ranges='
 				+ chartStream.sectionCount() + ', notes='
-				+ (collapser != null ? collapser.fedCount : preloadedNotes.length)
+				+ (cacheHit ? cachedNotes.fedNotes
+					: (collapser != null ? collapser.fedCount : preloadedNotes.length))
 				+ ', turbo=' + turboModeActive + ', mania=' + mania);
 		}
 
@@ -3969,7 +4311,12 @@ class PlayState extends MusicBeatState
 		}
 		if (hasNullSlot)
 			preloadedNotes = preloadedNotes.filter(function(n) return n != null);
-		if (chartStream != null)
+		if (cacheHit)
+		{
+			// A cached list is stored in its final order; sorting it again could permute notes that
+			// share a strum time, so only a freshly generated list goes through the sort below.
+		}
+		else if (chartStream != null)
 		{
 			// Streaming path: bucket sort, since Array.sort needs ~2.8s for 11.8M notes.
 			// See ChartSort and tools/online_probe/ChartSortProbe.
@@ -3984,7 +4331,13 @@ class PlayState extends MusicBeatState
 			});
 		}
 		lastChartNoteTime = 0;
-		if (preloadedNotes.length > 0 && preloadedNotes[preloadedNotes.length - 1] != null)
+		if (packed != null)
+		{
+			// A hit hands over packed columns; reading the end from the empty Array would leave
+			// lastChartNoteTime at 0 and the "chart finished" check would fire on frame one.
+			if (packed.length > 0) lastChartNoteTime = packed.strumTimeAt(packed.length - 1);
+		}
+		else if (preloadedNotes.length > 0 && preloadedNotes[preloadedNotes.length - 1] != null)
 			lastChartNoteTime = preloadedNotes[preloadedNotes.length - 1].strumTime;
 
 		// Turbo: fold taps by screen pixel gap -- at low scroll speed the visible band spans several seconds,
@@ -3992,24 +4345,21 @@ class PlayState extends MusicBeatState
 		// (same lane and direction, only a few pixels apart), so materialising them all is pure waste.
 		// After folding, the living sprite count depends only on speed x screen geometry x lane count.
 		// This is a pure data transform: no caller objects are mutated, nothing is cached and repeated calls are identical.
-		_turboRawTapCount = 0;
+		if (!cacheHit) _turboRawTapCount = 0;
 		if (collapser != null)
 		{
 			// Streaming emits notes in file order, so re-sort by strum time for the consumers
 			// (spawn / fastSkipPastNotes) that assume ascending order. The array is already
 			// collapsed, so this sort is cheap.
 			_turboRawTapCount = collapser.fedCount;
-			preloadedNotes = collapser.finish();
-			preloadedNotes.sort(function(a, b) {
-				if (a == null || b == null)
-					return 0;
-				return FlxSort.byValues(FlxSort.ASCENDING, a.strumTime, b.strumTime);
-			});
+			// The fold appends into packed columns; sorting permutes them via the key column.
+			packed = collapser.finish();
+			packed.sortByStrumTime();
 			lastChartNoteTime = 0;
-			if (preloadedNotes.length > 0 && preloadedNotes[preloadedNotes.length - 1] != null)
-				lastChartNoteTime = preloadedNotes[preloadedNotes.length - 1].strumTime;
+			if (packed.length > 0)
+				lastChartNoteTime = packed.strumTimeAt(packed.length - 1);
 		}
-		else if (turboModeActive)
+		else if (turboModeActive && !cacheHit)
 		{
 			_turboRawTapCount = preloadedNotes.length;
 			preloadedNotes = TurboDensity.collapseGhostNotes(preloadedNotes, Note.ammo[mania], 1.0, songSpeed, mania);
@@ -4017,8 +4367,22 @@ class PlayState extends MusicBeatState
 
 		// Lightweight chart data: notes are no longer materialised up front.
 		// Notes are built by the spawn loop only when they enter the generation window, so peak memory is the living notes, not the whole chart.
-		unspawnNotes = preloadedNotes;
+		// A fold already produced packed columns; every other path hands over an Array, which
+		// ChartNotes converts once here.
+		if (packed != null) unspawnNotes = packed;
+		else unspawnNotes = preloadedNotes;
+
 		lastSpawnedNote = new Map<Int, Note>();
+
+		// Miss on a streamed chart: keep the finished list so the next load of this chart with these
+		// settings does not parse, fold and sort it again. Written here, before any consumer can
+		// touch the DTOs, so what lands on disk is exactly what the loop produced (see ChartCache).
+		if (!cacheHit && notesCacheConfig != null)
+		{
+			var cachedTypes:Array<String> = [for (key in noteTypeMap.keys()) key];
+			ChartCache.saveNotes(chartPaths, notesCacheConfig, unspawnNotes, _turboRawTapCount,
+				collapser != null, cachedTypes, ClientPrefs.data.chartCacheCompress);
+		}
 
 		if (chartStream != null)
 		{
@@ -4026,10 +4390,9 @@ class PlayState extends MusicBeatState
 			// notes actually are (the split parts leave long empty stretches on purpose).
 			var bucketMs:Float = 30000;
 			var buckets:Array<Int> = [];
-			for (pn in unspawnNotes)
+			for (i in 0...unspawnNotes.length)
 			{
-				if (pn == null) continue;
-				var bucket:Int = Std.int(pn.strumTime / bucketMs);
+				var bucket:Int = Std.int(unspawnNotes.strumTimeAt(i) / bucketMs);
 				if (bucket < 0) bucket = 0;
 				while (buckets.length <= bucket) buckets.push(0);
 				buckets[bucket]++;
@@ -4042,15 +4405,7 @@ class PlayState extends MusicBeatState
 			}
 			trace('Chart notes per 30s: ' + histogram.toString());
 		}
-		_chartHasHolds = false;
-		for (pn in preloadedNotes)
-		{
-			if (pn.isSustainNote || pn.sustainLength > 0)
-			{
-				_chartHasHolds = true;
-				break;
-			}
-		}
+		_chartHasHolds = unspawnNotes.hasHolds();
 
 		if (turboModeActive)
 		{
@@ -4116,15 +4471,43 @@ class PlayState extends MusicBeatState
 		// On the streaming path songData.notes[].sectionNotes is empty (the DOM is not resident), so
 		// the analysis reads the generated PreloadedChartNote list instead.
 		difficultyInfo = (chartStream != null)
-			? online.ChartAnalyzer.calcFromPreloaded(preloadedNotes, playsAsBF())
+			? online.ChartAnalyzer.calcFromPreloaded(unspawnNotes, playsAsBF())
 			: online.ChartAnalyzer.calc(songData, playsAsBF());
 		#end
+
+		// Captured before the close()/null below: the phase trace has to report whether the async
+		// prefetch actually ran, and reading chartPrefetch after this point always said false.
+		var __usedPrefetch:Bool = chartPrefetch != null;
+		if (chartPrefetch != null)
+		{
+			chartPrefetch.close();
+			chartPrefetch = null;
+		}
 
 		if (chartStream != null)
 		{
 			chartStream.close();
 			chartStream = null;
 		}
+
+		// One line per chart load that says where the notes went (the phase timers at the top of
+		// generateSong). parse+build is the section parse plus one PreloadedChartNote per surviving
+		// note; when 'folded=true' the merged notes are decided from raw fields and never allocated.
+		trace('Chart load phases: scan+setup=' + FlxMath.roundDecimal(__tLoop - __t0, 3) + 's'
+			+ ' parse+build=' + FlxMath.roundDecimal(haxe.Timer.stamp() - __tLoop, 3) + 's'
+			+ ' sectionWait=' + FlxMath.roundDecimal(__tWait, 3) + 's'
+			+ ' perNoteBody=' + FlxMath.roundDecimal(__tBody, 3) + 's'
+			+ ' total=' + FlxMath.roundDecimal(haxe.Timer.stamp() - __t0, 3) + 's'
+			+ ' notesFed=' + Std.int(cacheHit ? _turboRawTapCount
+				: (collapser != null ? collapser.fedCount : unspawnNotes.length))
+			+ ' representatives=' + unspawnNotes.length
+			+ ' folded=' + (cacheHit ? cachedNotes.folded : collapser != null)
+			+ ' prefetch=' + __usedPrefetch
+			+ ' cache=' + (cacheHit ? 'hit' : (notesCacheConfig != null ? 'miss' : 'off')));
+
+		// Pack the chart into columns and drop the DTO array: this is the only place unspawnNotes
+		// is filled, and everything afterwards reads it through ChartNotes.
+		preloadedNotes = null;
 
 		generatedMusic = true;
 	}
@@ -4746,6 +5129,10 @@ class PlayState extends MusicBeatState
 		callOnScripts('onUpdate', [elapsed]);
 		_probeScriptT1(_probeScA);
 
+		// Lua wiggle effects (addWiggleEffect in FunkinLua) advance with the same clock the scripts
+		// get: the shader is already on the sprite, this is only its uTime.
+		for(wig in wiggleMap) wig.update(elapsed);
+
 		keyboardDisplay.dataUpdate(elapsed);
 		/*
 		lerpSongScore = FlxMath.lerp(lerpSongScore, songScore, CoolUtil.boundTo(elapsed * 10, 0, 1));
@@ -4830,6 +5217,14 @@ class PlayState extends MusicBeatState
 			botplayTxt.alpha = 1 - Math.sin((Math.PI * botplaySine) / 180 * playbackRate);
 		}
 		if(botplayTxt != null && cpuControlled && !botplayUsed) botplayUsed = true;
+
+		// Botplay/Turbo readout: keep the 1 s NPS window current and the score line live (outside
+		// botplay scoreTxt is only rebuilt per hit). flushHitPresentation() runs later in this update.
+		if (cpuControlled)
+		{
+			updateBotplayReadout(elapsed);
+			_scoreTextDirty = true;
+		}
 		if(replayTxt.visible) {
 			replaySine += 180 * elapsed;
 			replayTxt.alpha = 1 - Math.sin((Math.PI * replaySine) / 180);
@@ -5026,7 +5421,7 @@ class PlayState extends MusicBeatState
 					continue;
 				}
 
-				if (turboModeActive && !turboKeepNote(targetData) && bulkSettleNote(targetData, _bulkAcc))
+				if (turboModeActive && !turboKeepNote(targetData) && bulkSettleNote(targetData, _bulkAcc, notesAddedCount))
 				{
 					notesAddedCount++;
 					if (notesAddedCount < unspawnNotes.length)
@@ -6080,7 +6475,7 @@ class PlayState extends MusicBeatState
 			notePool = [];
 			activeNotes.resize(0);
 
-			unspawnNotes = [];
+			unspawnNotes = ChartNotes.empty();
 			_chartHasHolds = false;
 			notesAddedCount = 0;
 			limitNC = 0;
@@ -7634,8 +8029,10 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		// taps count (no sustain tails) and none of the score / hit stats / judgement / rating are
 		// touched; the popup draws the combo only, never the judgement icon.
 		// opponent paths, with the popup still bounded by the per-frame POPUP_IMMEDIATE_HITS budget.
-		// Both the counter and the popup live in addOpponentHit, the shared entry for all three
-		if (turboModeActive && !note.isSustainNote)
+		// Both the counter and the popup live in addOpponentHit, the shared entry for all three.
+		// Called for every tap, not only under Turbo: the same entry feeds the score text's
+		// opponent-side note count; the combo/popup part inside stays Turbo-only.
+		if (!note.isSustainNote)
 			addOpponentHit(1);
 		if (!note.isSustainNote)
 			recycleNote(note);
@@ -8270,7 +8667,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 			// Data-level settlement (including expanding a Turbo fold group). Not-yet-due / non-player / sustain notes
 			// return false with the cursor untouched -- this is also the only path that may advance the settlement cursor,
 			// so any early-consume path that forgets to advance it would block every following note forever.
-			if (!bulkSettleNote(d, acc))
+			if (!bulkSettleNote(d, acc, notesAddedCount))
 				break;
 			drainTotal++;
 			notesAddedCount++;
@@ -8373,10 +8770,15 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 	 * Patching only one always misses the other two; under Turbo the tap path is (2), so a fix
 	 * that only covers path (1) still leaves the taps uncounted.
 	 * It is a no-op outside Turbo, so existing behaviour is unchanged.
+	 * The opCombo side counter is not Turbo-gated: it is display-only and feeds the botplay score text.
 	 */
 	inline function addOpponentHit(den:Int):Void
 	{
-		if (!turboModeActive || den <= 0) return;
+		if (den <= 0) return;
+		// Opponent-side readout (botplay/Turbo score text); display-only, no score/judgement/rating counter.
+		opCombo += den;
+		_opHitCount += den;
+		if (!turboModeActive) return;
 		combo += den;
 		if (combo > maxcombo) maxcombo = combo;
 		notehitlol += den;          // the side HUD's "Total Notes Hit" grows too
@@ -8400,7 +8802,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		showRatingPopup(ratingPopup, '', combo, FlxG.width * 0.35, false, showComboNum);
 	}
 
-	function bulkSettleNote(d:PreloadedChartNote, acc:BulkAccumulator):Bool
+	function bulkSettleNote(d:PreloadedChartNote, acc:BulkAccumulator, srcIndex:Int):Bool
 	{
 		if (d == null || d.wasHit)
 			return false;
@@ -8415,7 +8817,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 
 		if (!d.mustPress)
 		{
-			d.wasHit = true;
+			unspawnNotes.setWasHit(srcIndex, true);
 			acc.oppDrained += den;
 			// Turbo: opponent-side unmaterialised taps are consumed here (folded groups by noteDensity).
 			addOpponentHit(den);
@@ -8426,7 +8828,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 
 		if (onTime)
 		{
-			d.wasHit = true;
+			unspawnNotes.setWasHit(srcIndex, true);
 			if (d.blockHit)
 			{
 				// Stuck-key notes never judge: consume silently (final effect matches the original path)
@@ -8474,7 +8876,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		if (!cpuControlled)
 			return false;
 
-		d.wasHit = true;
+		unspawnNotes.setWasHit(srcIndex, true);
 		if (!d.ignoreNote && !d.blockHit)
 		{
 			acc.skippedHit += den;
@@ -9291,8 +9693,8 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		if (NoteTime != null) NoteTime = [];
 
 		// unspawnNotes now holds lightweight PreloadedChartNote data, not Note objects.
-		if (unspawnNotes != null)
-			unspawnNotes = [];
+		// ChartNotes is a value wrapper: replacing it drops every column in one go.
+		unspawnNotes = ChartNotes.empty();
 		lastSpawnedNote = new Map<Int, Note>();
 
 		// Destroy notes that are still alive; shells already destroyed are removed directly.
@@ -10723,6 +11125,27 @@ function calculateResetTime():Float {
 		return isBF ? 'boyfriend' : 'dad';
 	}
 
+	/**
+	 * Hides the play-HUD pieces that PlayStateResultsSubstate does not cover with its own panels.
+	 *
+	 * The results screen hides healthBar/scoreTxt/icons/timeBar/keyboardDisplay/strumLineNotes, but the
+	 * side HUD and the BOTPLAY/REPLAY/ms/judge labels live on camOther, which it keeps visible, so they
+	 * were drawn straight over the results panels (the side HUD's 20px text with a 2px black outline
+	 * reads as a black box behind its numbers, and the raw counts collided with the results values).
+	 * Nothing restores them: at that point the song is over and the PlayState is discarded, exactly like
+	 * the other hides the results screen already performs.
+	 */
+	public function hideTransientHud():Void
+	{
+		for (t in [tnh, cm, marv, sick, good, bad, shit, miss])
+			if (t != null) t.visible = false;
+		if (msTxtKade != null) msTxtKade.visible = false;
+		if (atkText != null) atkText.visible = false;
+		if (botplayTxt != null) botplayTxt.visible = false;
+		if (replayTxt != null) replayTxt.visible = false;
+		if (judgeRestoreTxt != null) judgeRestoreTxt.visible = false;
+	}
+
 	/** Shows the BOTPLAY label. */
 	function showBotplay():Void {
 		if (botplayTxt == null)
@@ -11293,4 +11716,3 @@ class PlayStatePlayer {
 	}
 }
 #end
-

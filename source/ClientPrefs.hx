@@ -128,6 +128,12 @@ import sys.io.Process;
 	public var fastSort:Bool = false;
 	/** Performance option: maximum simultaneously materialised notes, 0 = unlimited (use with care). */
 	public var limitNotes:Int = 0;
+	/** Performance option: keep the note list of streamed (64 MB+) charts on disk and replay it on the next load. */
+	public var chartCache:Bool = true;
+	/** Performance option: deflate the cached note list (much smaller files, ~1s more on load). */
+	public var chartCacheCompress:Bool = true;
+	/** Placeholder state for the "clear chart cache" action button: the action never reads it. */
+	public var clearChartCache:Bool = false;
 	/** Performance option: disables the hxcpp GC during a song, trading memory for frame time (off by default, prevents leaks). */
 	public var disableGC:Bool = false;
 	/** Release CPU-side copies of large textures (>=2048px) only after confirming no live sprite/atlas/script references. */

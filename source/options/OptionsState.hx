@@ -230,6 +230,7 @@ class OptionsState extends MusicBeatState
 			'onClearImageCache'            => onClearImageCache,
 			'onChangeShowWatermark'        => onChangeShowWatermark,
 			'onChangeShowNoteOptimizationNotice' => onChangeShowNoteOptimizationNotice,
+			'onClearChartCache'            => onClearChartCache,
 			'onChangeStorageType'          => onChangeStorageType,
 			'onChangeAutoExtractAssets'    => onChangeAutoExtractAssets,
 		];
@@ -1840,6 +1841,16 @@ class OptionsState extends MusicBeatState
 	function onChangeShowNoteOptimizationNotice()
 	{
 		backend.NoteOptimisationNotice.showAgain();
+	}
+
+	/** "Clear the chart cache" action: drops every cached note list and reports the freed space. */
+	function onClearChartCache()
+	{
+		var freed:Float = ChartCache.clear();
+		var mbStr:String = Std.string(Math.round(freed / 1048576 * 10) / 10);
+		var msg:String = Language.get('option.clearChartCache.done', 'Deleted every cached chart note list (~{mb} MB).')
+			.replace('{mb}', mbStr);
+		backend.Dialog.show(Language.get('option.clearChartCache.doneTitle', 'Chart Cache'), msg, 'Info');
 	}
 
 	function syncDragToWheel()

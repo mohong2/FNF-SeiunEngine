@@ -272,6 +272,7 @@
     "trace.crashCatcher.saveFailed": "CrashCatcher - 保存報告失敗: {}",
     "trace.freeplay.currentWeek": "當前週: {}",
     "trace.freeplay.loadError": "錯誤！{}",
+    "trace.freeplay.previewSkip": "已跳過預覽譜面解析：譜面檔案屬於串流讀取規模（{} / {}）",
     "trace.editor.vortexPress": "Vortex 編輯器按鍵，時間: {}",
     "trace.editor.noteSelected": "已選中的音符: {}",
     "trace.editor.noteRemoved": "已移除 {}，時間: {}",

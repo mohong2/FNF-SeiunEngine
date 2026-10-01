@@ -275,6 +275,7 @@
     "trace.crashCatcher.saveFailed": "CrashCatcherState - Failed to save report: {}",
     "trace.freeplay.currentWeek": "CURRENT WEEK: {}",
     "trace.freeplay.loadError": "ERROR! {}",
+    "trace.freeplay.previewSkip": "preview chart parse skipped, the chart file is streaming-sized: {} / {}",
     "trace.editor.vortexPress": "Vortex editor press at time: {}",
     "trace.editor.noteSelected": "Notes selected: {}",
     "trace.editor.noteRemoved": "Removed {} at time: {}",

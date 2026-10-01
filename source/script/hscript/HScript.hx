@@ -41,6 +41,7 @@ import script.FunkinText;
 import script.FunkinSprite;
 import script.FunkinButton;
 import script.FunkinBar;
+import script.ScriptErrorGuard;
 
 #if LUA_ALLOWED
 import script.lua.FunkinLua;
@@ -1166,8 +1167,7 @@ class HScript
 			bumpVarEpoch();
 			throw e;
 		}
-		// 执行成功：重置连续错误计数。
-		errorLoopCount = 0;
+		// execute() 不是每帧回调：这里不重置连续错误计数（计数只归每帧/每步回调，见 ScriptErrorGuard）。
 		return result;
 	}
 
@@ -1185,8 +1185,8 @@ class HScript
 		try {
 			var f:Dynamic = interpGet(func);
 			if (f != null && Reflect.isFunction(f)) {
-				// Successful call resets the consecutive-error counter.
-				errorLoopCount = 0;
+				// 只有每帧/每步回调的成功才重置连续错误计数（见 ScriptErrorGuard）。
+				if (ScriptErrorGuard.isLoopCallback(func)) errorLoopCount = 0;
 				execDepth++;
 				try {
 					var ret:Dynamic = Reflect.callMethod(null, f, args);
@@ -1206,7 +1206,7 @@ class HScript
 			}
 			return FunkinLua.Function_Continue;
 		} catch (e:Dynamic) {
-			handleError('Error calling "$func": $e');
+			handleError('Error calling "$func": $e', func);
 			return FunkinLua.Function_StopHScript;
 		}
 	}
@@ -1402,7 +1402,7 @@ class HScript
 
 	// ==================== Error Handling ====================
 
-	function handleError(message:String):Void {
+	function handleError(message:String, callback:String = null):Void {
 		if (closed) return;
 
 		// Always log via TraceManager so we can see the error in the console
@@ -1414,7 +1414,10 @@ class HScript
 
 		// Error-loop protection (default): count consecutive errors, silently ignore the
 		// script once it hits the limit instead of spamming a dialog every frame.
+		// 只有每帧/每步回调参与计数（见 ScriptErrorGuard）：一次性回调报错只打印，
+		// 不会因为别处的报错把整个脚本关掉。
 		if (ClientPrefs.data.ignoreErrorLoopScripts) {
+			if (!ScriptErrorGuard.isLoopCallback(callback)) return;
 			errorLoopCount++;
 			if (errorLoopCount >= ClientPrefs.data.scriptErrorLimit) {
 				closed = true;

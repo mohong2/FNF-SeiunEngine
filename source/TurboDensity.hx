@@ -236,12 +236,10 @@ class TurboDensity
 	 * Converts a tap sequence (with sustains/tails already excluded) into "how many notes each representative stands for".
 	 * Diagnostics / tests only.
 	 */
-	public static function representedTotal(notes:Array<PreloadedChartNote>):Int
+	public static function representedTotal(notes:ChartNotes):Int
 	{
 		var t:Int = 0;
-		if (notes == null) return 0;
-		for (pn in notes)
-			if (pn != null) t += Std.int(Math.max(1, Math.round(pn.noteDensity)));
+		for (i in 0...notes.length) t += Std.int(Math.max(1, Math.round(notes.noteDensityAt(i))));
 		return t;
 	}
 }
@@ -260,7 +258,9 @@ class TurboDensity
  */
 class GhostCollapser
 {
-	public var out:Array<PreloadedChartNote> = [];
+	// Packed columns, not an Array: a dense chart folds to millions of representatives and the
+	// array form of that is what grows hxcpp's block pool to several GB for the whole song.
+	public var out:ChartNotes = ChartNotes.builder(4096);
 	/** Total notes fed in (diagnostic). */
 	public var fedCount:Int = 0;
 
@@ -273,6 +273,14 @@ class GhostCollapser
 	var lastRate:Array<Float>;
 	var lastSlowRate:Array<Float>;
 	var anchor:Array<Int>;
+	/** Pending noteDensity of each slot's current representative. Kept in a plain Float array while
+	 *  folding and only written into the column when the representative is finalised: on a dense
+	 *  chart the merge path runs ~311M times, and a column read+write per merge made the load ~50s
+	 *  slower than the old "increment a field through a pointer" version. */
+	var lastDensity:Array<Float>;
+	/** Slot/rate stashed by wantsRepresentative() for the commitRepresentative() that must follow. */
+	var pendingIdx:Int = 0;
+	var pendingRate:Float = 0;
 
 	public function new(laneCount:Int, rangeMs:Float = 1.0, songSpeed:Float = 1.0, mania:Int = -1,
 		minGapPx:Float = TurboDensity.DEFAULT_MIN_GAP_PX)
@@ -297,6 +305,19 @@ class GhostCollapser
 		lastRate = [for (i in 0...slots) 0.0];
 		lastSlowRate = [for (i in 0...slots) 0.0];
 		anchor = [for (i in 0...slots) -1];
+		lastDensity = [for (i in 0...slots) 0.0];
+	}
+
+	/** Writes a slot's pending count back to the column it belongs to. */
+	inline function flushDensity(slot:Int):Void
+	{
+		var at:Int = anchor[slot];
+		if (at >= 0 && lastDensity[slot] > 0) out.setNoteDensity(at, lastDensity[slot]);
+	}
+
+	inline function flushAllDensity():Void
+	{
+		for (i in 0...slots) flushDensity(i);
 	}
 
 	public function feed(pn:PreloadedChartNote):Void
@@ -307,7 +328,7 @@ class GhostCollapser
 		// Sustains, tails and sustain heads never merge: tail trimming and the prev/next chain must stay intact.
 		if (pn.isSustainNote || pn.sustainLength > 0)
 		{
-			out.push(pn);
+			out.append(pn);
 			return;
 		}
 
@@ -329,22 +350,97 @@ class GhostCollapser
 			}
 		}
 
-		var prev:Null<PreloadedChartNote> = (anchor[idx] >= 0) ? out[anchor[idx]] : null;
-		if (mergeable && prev != null && prev.noteDensity < TurboDensity.MAX_REPRESENTED)
+		// The fold increments the density of a representative appended earlier, so it has to go
+		// through the column: a DTO read back from the store cannot be written through.
+		if (mergeable && lastDensity[idx] > 0 && lastDensity[idx] < TurboDensity.MAX_REPRESENTED)
 		{
-			prev.noteDensity += 1;
+			lastDensity[idx] += 1;
 			return;
 		}
 
 		var rep:PreloadedChartNote = TurboDensity.cloneNote(pn);
 		rep.noteDensity = 1;
-		out.push(rep);
+		flushDensity(idx);
+		out.append(rep);
 		anchor[idx] = out.length - 1;
+		lastDensity[idx] = 1;
 		lastTime[idx] = rep.strumTime;
 		lastRate[idx] = rate;
 		lastSlowRate[idx] = rate;
 	}
 
-	public function finish():Array<PreloadedChartNote> return out;
-}
+	// ── allocation-free raw path ──────────────────────────────────────────
+	// feed() needs a PreloadedChartNote to decide whether a note merges, so a chart on which almost
+	// every note merges still builds one DTO per note. The raw path makes the same decision from the
+	// note's own fields, so the caller only materialises a DTO for the notes that survive. The merge
+	// rules are feed()'s; feed() is kept for callers that already have a DTO.
 
+	/**
+	 * Raw front half of feed(): merges a tap into the previous representative when feed() would and
+	 * reports whether the caller must materialise a new one.
+	 *
+	 * False: the tap was merged (the previous representative's noteDensity was incremented) and
+	 * nothing must be allocated. True: build a PreloadedChartNote and pass it to
+	 * commitRepresentative(). Holds and sustain segments never merge -- use pushHold() for those.
+	 */
+	public function wantsRepresentative(strumTime:Float, lane:Int, mustPress:Bool, multSpeed:Float = 1):Bool
+	{
+		fedCount++;
+		lane = Std.int(Math.abs(lane));
+		if (lane >= laneCount) lane = lane % laneCount;
+		var idx:Int = (mustPress ? 1 : 0) * laneCount + lane;
+		var rate:Float = pxPerMs * (multSpeed > 0 ? multSpeed : 1.0);
+
+		var mergeable:Bool = false;
+		if (anchor[idx] >= 0 && lastRate[idx] == rate && lastSlowRate[idx] > 0)
+		{
+			var dt:Float = strumTime - lastTime[idx];
+			if (dt >= 0)
+			{
+				if (dt <= rangeMs)
+					mergeable = true;
+				else if (minGapPx > 0 && dt * lastSlowRate[idx] < minGapPx)
+					mergeable = true;
+			}
+		}
+
+		if (mergeable && lastDensity[idx] > 0 && lastDensity[idx] < TurboDensity.MAX_REPRESENTED)
+		{
+			lastDensity[idx] += 1;
+			return false;
+		}
+
+		pendingIdx = idx;
+		pendingRate = rate;
+		return true;
+	}
+
+	/** Second half of the raw path: registers the representative built after wantsRepresentative() returned true. */
+	public function commitRepresentative(rep:PreloadedChartNote):Void
+	{
+		if (rep == null) return;
+		rep.noteDensity = 1;
+		flushDensity(pendingIdx);
+		out.append(rep);
+		anchor[pendingIdx] = out.length - 1;
+		lastDensity[pendingIdx] = 1;
+		lastTime[pendingIdx] = rep.strumTime;
+		lastRate[pendingIdx] = pendingRate;
+		lastSlowRate[pendingIdx] = pendingRate;
+	}
+
+	/** Holds, sustain heads and sustain segments: never merged, always materialised by the caller. */
+	public function pushHold(pn:PreloadedChartNote):Void
+	{
+		if (pn == null) return;
+		fedCount++;
+		out.append(pn);
+	}
+
+	/** Finalises: the last representative of every slot still has its count in the slot array. */
+	public function finish():ChartNotes
+	{
+		flushAllDensity();
+		return out;
+	}
+}

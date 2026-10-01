@@ -36,6 +36,15 @@ typedef ChartScanResult = {
 	var chart:Dynamic;
 	/** One range per chart.notes (or chart.song.notes) entry. */
 	var ranges:Array<ChartSectionRange>;
+	/** Note entries counted while scanning; see Cursor.noteCount. Feeds PlayState's load budget. */
+	var noteCount:Float;
+	/**
+	 * Whether any note entry contained a negative number. Only a legacy chart (<= 0.3.2) writes
+	 * those: it stores events as negative-data notes, which Song.convert() / onLoadJson() turn back
+	 * into events -- and that needs a materialised sectionNotes array, which a scan never builds.
+	 * See Cursor.sawNegativeNote and maySynthesizeEvents().
+	 */
+	var sawNegativeNote:Bool;
 }
 
 /** One raw entry of a sectionNotes array, produced by ChartSectionReader.readNotes(). */
@@ -94,8 +103,9 @@ class ChartStream
 			cur.skipWs();
 			var root:Dynamic = scanObject(cur, ranges, true, part);
 			cur.skipWs();
+			var counted:Float = cur.noteCount;
 			cur.close();
-			return { chart: root, ranges: ranges };
+			return { chart: root, ranges: ranges, noteCount: counted, sawNegativeNote: cur.sawNegativeNote };
 		}
 		catch (e:Dynamic)
 		{
@@ -143,6 +153,8 @@ class ChartStream
 		for (i in 1...paths.length)
 		{
 			var part:ChartScanResult = scanPart(paths[i], i);
+			base.noteCount += part.noteCount;
+			if (part.sawNegativeNote) base.sawNegativeNote = true;
 			var partSections:Array<Dynamic> = sectionArray(part.chart);
 			if (partSections == null)
 				throw new haxe.Exception('ChartStream: chart part ' + i + ' has no notes[]');
@@ -167,6 +179,31 @@ class ChartStream
 
 		if (eventsOwner != null && hadEvents) Reflect.setField(eventsOwner, 'events', events);
 		return base;
+	}
+
+	/**
+	 * Whether a missing (or non-array) `events` field may be replaced with an empty array, i.e.
+	 * whether the chart can still be streamed.
+	 *
+	 * `events` is optional in every Psych format and Song.onLoadJson() fills it in, so its absence is
+	 * ordinary -- but it used to be the reason the streaming route was refused for a one-file chart,
+	 * and a refused route means a full Json.parse of the file (for a 2 GB chart that is minutes and
+	 * tens of GB: it is what froze song select on a chart without an events field).
+	 *
+	 * The one thing a skeleton cannot rebuild is a legacy chart (<= 0.3.2) that hides its events
+	 * inside sectionNotes as negative-data notes: convert() / onLoadJson() move those into `events`,
+	 * and sectionNotes are never materialised at scan time. The scan does see every byte of them, so
+	 * it reports whether a note element was ever negative (sawNegativeNote) and only then is a full
+	 * parse still required.
+	 *
+	 * `scanningParts`: a segmented chart has no one-file fallback at all, so refusing to stream it
+	 * would not load it any other way either -- parts are scanned together and synthesising events
+	 * has always been the accepted behaviour there, so the negative-note rule does not apply.
+	 */
+	public static function maySynthesizeEvents(scan:ChartScanResult, scanningParts:Bool):Bool
+	{
+		if (scan == null) return false;
+		return scanningParts || !scan.sawNegativeNote;
 	}
 
 	/**
@@ -288,16 +325,99 @@ class ChartStream
 		return p;
 	}
 
+	/**
+	 * Byte-level JSON number parser for note fields.
+	 *
+	 * Sign, integer digits and fraction digits are collected into one integer mantissa plus a
+	 * fraction-digit count, then divided by an exact power of ten: for <= 15 significant digits
+	 * (what chart numbers are) the mantissa and 10^frac are both exactly representable, so the
+	 * single IEEE division is correctly rounded and matches Std.parseFloat() bit for bit -- without
+	 * the per-number substring String that Std.parseFloat() would allocate for every note field.
+	 *
+	 * Exponents and > 15-digit mantissas are rare in charts and fall back to Std.parseFloat().
+	 */
 	static inline function noteNumber(b:Bytes, p:Int, end:Int):{v:Float, p:Int}
 	{
 		var s:Int = p;
+		var neg:Bool = false;
+		if (p < end && b.get(p) == 45)
+		{
+			neg = true;
+			p++;
+		}
+		else if (p < end && b.get(p) == 43) p++;
+
+		var mant:Float = 0;
+		var digits:Int = 0;
 		while (p < end)
 		{
 			var c:Int = b.get(p);
-			if ((c >= 48 && c <= 57) || c == 45 || c == 43 || c == 46 || c == 101 || c == 69) p++;
+			if (c >= 48 && c <= 57)
+			{
+				mant = mant * 10 + (c - 48);
+				digits++;
+				p++;
+			}
 			else break;
 		}
-		return { v: Std.parseFloat(b.getString(s, p - s)), p: p };
+
+		var frac:Int = 0;
+		if (p < end && b.get(p) == 46)
+		{
+			p++;
+			while (p < end)
+			{
+				var c:Int = b.get(p);
+				if (c >= 48 && c <= 57)
+				{
+					mant = mant * 10 + (c - 48);
+					frac++;
+					digits++;
+					p++;
+				}
+				else break;
+			}
+		}
+
+		if (digits == 0 || digits > 15 || (p < end && (b.get(p) == 101 || b.get(p) == 69)))
+		{
+			var stop:Int = p;
+			while (stop < end)
+			{
+				var c:Int = b.get(stop);
+				if ((c >= 48 && c <= 57) || c == 45 || c == 43 || c == 46 || c == 101 || c == 69) stop++;
+				else break;
+			}
+			return { v: Std.parseFloat(b.getString(s, stop - s)), p: stop };
+		}
+
+		var v:Float = (frac > 0) ? mant / pow10(frac) : mant;
+		return { v: neg ? -v : v, p: p };
+	}
+
+	/** 10^n, exact as a double for n <= 22; anything else falls back to Math.pow. */
+	static inline function pow10(n:Int):Float
+	{
+		return switch (n)
+		{
+			case 0: 1.0;
+			case 1: 10.0;
+			case 2: 100.0;
+			case 3: 1000.0;
+			case 4: 10000.0;
+			case 5: 100000.0;
+			case 6: 1000000.0;
+			case 7: 10000000.0;
+			case 8: 100000000.0;
+			case 9: 1000000000.0;
+			case 10: 10000000000.0;
+			case 11: 100000000000.0;
+			case 12: 1000000000000.0;
+			case 13: 10000000000000.0;
+			case 14: 100000000000000.0;
+			case 15: 1000000000000000.0;
+			default: Math.pow(10, n);
+		}
 	}
 
 	static function noteString(b:Bytes, p:Int, end:Int):{s:String, p:Int}
@@ -624,6 +744,10 @@ private class Cursor
 	var bufLen:Int = 0;
 	var atEof:Bool = false;
 	var collect:BytesBuffer = null;
+	/** Note entries seen by skipValueFast(); see ChartScanResult.noteCount. */
+	public var noteCount:Float = 0;
+	/** Negative note elements seen by skipValueFast(); see ChartScanResult.sawNegativeNote. */
+	public var sawNegativeNote:Bool = false;
 	/** Bytes consumed == absolute offset of the next byte to read. */
 	public var pos:Float = 0;
 
@@ -769,7 +893,16 @@ private class Cursor
 					else if (c == 34) inStr = false;
 				}
 				else if (c == 34) inStr = true;
-				else if (c == 123 || c == 91) depth++;
+				// '-' at note-element depth. A note element is never negative in a current chart, so
+				// this is the legacy "event stored as a note" marker; only a leading sign counts, so an
+				// exponent (1e-5) is not mistaken for one.
+				else if (c == 45 && depth == 2 && numberSign(b, p - 2, chunkStart)) sawNegativeNote = true;
+				else if (c == 123 || c == 91)
+				{
+					// A '[' at depth 1 is one note entry of the sectionNotes array being skipped.
+					if (c == 91 && depth == 1) noteCount++;
+					depth++;
+				}
 				else if (c == 125 || c == 93)
 				{
 					depth--;
@@ -856,6 +989,19 @@ private class Cursor
 			if (c != StringTools.fastCodeAt(word, i))
 				throw new haxe.Exception('ChartStream: bad literal at byte ' + pos);
 		}
+	}
+
+	/**
+	 * Whether the byte at `idx` ends a value boundary, i.e. a '-' after it starts a new number
+	 * rather than continuing one ("1e-5"). `chunkStart` is the first index of the current buffer
+	 * chunk: a sign there has no readable byte before it, and counting it as a sign errs towards the
+	 * safe answer (a fallback to the full parse).
+	 */
+	static function numberSign(b:Bytes, idx:Int, chunkStart:Int):Bool
+	{
+		if (idx < chunkStart) return true;
+		var c:Int = b.get(idx);
+		return c == 91 || c == 44 || c == 32 || c == 9 || c == 10 || c == 13; // '[' ',' or whitespace
 	}
 
 	function skipNumber():Void

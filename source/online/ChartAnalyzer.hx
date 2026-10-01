@@ -146,7 +146,7 @@ class ChartAnalyzer {
 	 *   - side: calc() calls PlayState.getMustPressFromRaw(); here pn.mustPress directly;
 	 *   - type: calc() accepts a numeric noteType; here pn.noteType is already a string.
 	 */
-	public static function calcFromPreloaded(notes:Array<PreloadedChartNote>, mustPress:Bool):FunkinDiffInfo {
+	public static function calcFromPreloaded(notes:ChartNotes, mustPress:Bool):FunkinDiffInfo {
 		var unsortedChords:Map<String, Int> = [];
 		if (notes != null) {
 			for (pn in notes) {

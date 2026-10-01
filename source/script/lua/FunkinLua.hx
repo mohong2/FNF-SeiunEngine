@@ -7,6 +7,7 @@ import Achievements;
 import backend.Difficulty;
 import haxe.Constraints.Function;
 import script.hscript.HScript;
+import script.ScriptErrorGuard;
 import substates.PauseSubState;
 import states.FreeplayState;
 import states.StoryMenuState;
@@ -33,6 +34,7 @@ import flixel.tweens.FlxTween.FlxTweenType;
 import flixel.tweens.FlxEase.EaseFunction;
 import flixel.addons.transition.FlxTransitionableState;
 import flixel.system.FlxAssets.FlxShader;
+import WiggleEffect.WiggleEffectType;
 import haxe.io.Path;
 
 #if flxanimate
@@ -100,7 +102,7 @@ class FunkinLua {
 	public var scriptName:String = '';
 	public var closed:Bool = false;
 
-	/** 连续报错计数：脚本在 update 循环里连续报错达到上限时会被静默忽略。 */
+	/** 连续报错计数：脚本的每帧/每步回调（见 ScriptErrorGuard）连续报错达到上限时会被静默忽略。 */
 	public var errorLoopCount:Int = 0;
 
 	#if HSCRIPT_ALLOWED
@@ -483,6 +485,7 @@ class FunkinLua {
 
 			if(leObj != null) {
 				var arr:Array<String> = (PlayState.instance != null) ? PlayState.instance.runtimeShaders.get(shader) : null;
+				ensureSpriteFrame(leObj);
 				leObj.shader = new FlxRuntimeShader(arr[0], arr[1]);
 				return true;
 			}
@@ -490,6 +493,34 @@ class FunkinLua {
 			luaTrace("setSpriteShader: Platform unsupported for Runtime Shaders!", false, false, FlxColor.RED);
 			#end
 			return false;
+		});
+		// Wiggle effect (source/WiggleEffect.hx): the engine has shipped the shader since 0.6.3 but
+		// had no way in from Lua, so a stage script asking for a wiggling background died on
+		// "attempt to call global 'addWiggleEffect' (a nil value)" -- and every line after that one
+		// in the same onCreate (the sprites and the background shader) never ran.
+		// Signature and behaviour are the PE fork H-Slice's: speed, frequency, amplitude, then the
+		// effect type by name ('FLAG' default), the effect registered in PlayState.wiggleMap so its
+		// uTime advances once per frame.
+		Lua_helper.add_callback(lua, "addWiggleEffect", function(tag:String, ?spd:Float = 2.25, ?freq:Float = 5, ?amp:Float = 0.1, ?type:String = 'FLAG') {
+			var shit:FlxSprite = resolveSpriteByTag(tag);
+			if(shit == null) {
+				luaTrace('addWiggleEffect: no sprite named "$tag"', false, false, FlxColor.RED);
+				return false;
+			}
+			var neoWiggle:WiggleEffect = new WiggleEffect();
+			neoWiggle.effectType = wiggleTypeFromName(type);
+			neoWiggle.waveSpeed = spd;
+			neoWiggle.waveFrequency = freq;
+			neoWiggle.waveAmplitude = amp;
+			shit.shader = neoWiggle.shader;
+			if(PlayState.instance != null) PlayState.instance.wiggleMap.set(tag, neoWiggle);
+			return true;
+		});
+		Lua_helper.add_callback(lua, "removeWiggleEffect", function(tag:String) {
+			if(PlayState.instance == null) return false;
+			var shit:FlxSprite = resolveSpriteByTag(tag);
+			if(shit != null) shit.shader = null;
+			return PlayState.instance.wiggleMap.remove(tag);
 		});
 		Lua_helper.add_callback(lua, "removeSpriteShader", function(obj:String) {
 			var killMe:Array<String> = obj.split('.');
@@ -2619,10 +2650,18 @@ class FunkinLua {
 			if(!color.startsWith('0x')) colorNum = Std.parseInt('0xff' + color);
 			cameraFromString(camera).flash(colorNum, duration,null,forced);
 		});
-		Lua_helper.add_callback(lua, "cameraFade", function(camera:String, color:String, duration:Float,forced:Bool) {
+		// The 5th argument is Psych 1.0.4's (?fadeOut, H-Slice has the same): it is handed straight to
+		// FlxCamera.fade() as its FadeIn flag, so true means "the colour is already covering the
+		// screen and fades away over duration" while the default false means "fade out to it".
+		// 0.6.3/0.7.3 only ever had 4 arguments and were hardcoded to false, which inverted every
+		// 5-argument script: ampho.lua's cameraFade('hud','000000', 20, true, true) is meant to be a
+		// 20s reveal from the black frame its onCreate sets up, and instead darkened the screen to
+		// black over 20s. Default false keeps 4-argument scripts byte-for-byte unchanged.
+		// (Upstream names it fadeOut even though it is passed as FadeIn -- kept for compatibility.)
+		Lua_helper.add_callback(lua, "cameraFade", function(camera:String, color:String, duration:Float,forced:Bool, ?fadeOut:Bool = false) {
 			var colorNum:Int = Std.parseInt(color);
 			if(!color.startsWith('0x')) colorNum = Std.parseInt('0xff' + color);
-			cameraFromString(camera).fade(colorNum, duration,false,null,forced);
+			cameraFromString(camera).fade(colorNum, duration,fadeOut,null,forced);
 		});
 		Lua_helper.add_callback(lua, "setRatingPercent", function(value:Float) {
 			PlayState.instance.ratingPercent = value;
@@ -2885,6 +2924,9 @@ class FunkinLua {
 			var sprites = getStateModchartSprites();
 			if(sprites == null || !sprites.exists(tag)) return;
 			var shit:ModchartSprite = sprites.get(tag);
+			// Same reason as setSpriteShader: an added sprite with no frame at all is never drawn
+			// (and flixel's own safety net, checkEmptyFrame()'s flixel logo, is not in this build).
+			ensureSpriteFrame(shit);
 			if(!shit.wasAdded) {
 				if(front) {
 					getTargetInstance().add(shit);
@@ -2989,6 +3031,7 @@ class FunkinLua {
 			if(destroy) {
 				pee.destroy();
 				PlayState.instance.modchartSprites.remove(tag);
+				PlayState.instance.wiggleMap.remove(tag);
 			}
 		});
 
@@ -4407,6 +4450,23 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 			stateVars.set(variable, value);
 			return value;
 		}
+
+		// Symmetric with getProperty's compatibility fallback: a script may prime counters this
+		// engine simply does not have (Amphotercity-Reformed's InitState.lua sets opCombo / npsMod /
+		// opNpsAdd / ... for the fork it was written for). Reflect.setProperty throws
+		// "Invalid field:x" for an unknown field of a class instance, the throw escapes the Lua
+		// callback and aborts it, so everything after the first such line is lost. Under the old
+		// compatibility modes the value is kept as a script variable instead -- where getProperty()
+		// and getVar() read it back, which is what a HUD script does anyway -- and reported once.
+		// Only when the target is the state itself: a dotted path, a group element or another class
+		// still gets the original error, because there a missing field is a mistake worth stopping on.
+		// 1.0.4 mode keeps the strict behaviour, exactly like the getProperty branch above.
+		if(!CompatEngine.is104() && stateVars != null && instance == getTargetInstance())
+		{
+			trace('FunkinLua: setProperty: "' + variable + '" is not a field, kept as a script variable');
+			stateVars.set(variable, value);
+			return value;
+		}
 		Reflect.setProperty(instance, variable, value);
 		return value;
 	}
@@ -5045,10 +5105,15 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 	/**
 	 * 记录一次脚本报错：连续报错达到 scriptErrorLimit 时静默忽略（closed）这个脚本，
 	 * 防止在 update 循环里因同一个错误每帧刷屏、白白占用性能。
+	 * 只有每帧/每步回调参与计数（见 ScriptErrorGuard）：一次性回调（onEvent、onKeyPress…）
+	 * 报错照常打印，但不会把整个脚本关掉 —— 否则它在别的回调里本该正常工作的功能会一起失效。
+	 * @param callback 触发报错的回调名，缺省取最近一次 call() 的函数名
 	 * @return true = 已达到上限已被忽略
 	 */
-	function registerError():Bool {
+	function registerError(callback:String = null):Bool {
 		if (!ClientPrefs.data.ignoreErrorLoopScripts) return false;
+		if (callback == null) callback = lastCalledFunction;
+		if (!ScriptErrorGuard.isLoopCallback(callback)) return false;
 		errorLoopCount++;
 		if (errorLoopCount >= ClientPrefs.data.scriptErrorLimit) {
 			closed = true;
@@ -5057,7 +5122,7 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 		}
 		return false;
 	}
-	/** 脚本成功执行过一次调用后，重置连续报错计数（只有"持续报错"才算循环）。 */
+	/** 每帧/每步回调成功执行后重置连续报错计数（只有"持续报错"才算循环）。 */
 	inline function resetErrors():Void {
 		errorLoopCount = 0;
 	}
@@ -5094,7 +5159,7 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 						luaTrace(errMsg, false, false, FlxColor.RED);
 						TraceManager.error('trace.lua.callNotFunction', 'ERROR ({}): attempt to call a {} value', [func, typeName]);
 					}
-					if (registerError()) { Lua.pop(lua, 1); return Function_Continue; }
+					if (registerError(func)) { Lua.pop(lua, 1); return Function_Continue; }
 				}
 
 				// Only "absent" is cached; a non-nil, non-function value must keep hitting the
@@ -5135,7 +5200,7 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 					luaTrace(errMsg, false, false, FlxColor.RED);
 					TraceManager.error('trace.lua.callRuntimeError', 'ERROR ({}): {}', [func, error]);
 				}
-				if (registerError()) return Function_Continue;
+				if (registerError(func)) return Function_Continue;
 				return Function_Continue;
 			}
 
@@ -5144,7 +5209,7 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 			if (result == null) result = Function_Continue;
 
 			Lua.pop(lua, 1);
-			resetErrors();
+			if (ScriptErrorGuard.isLoopCallback(func)) resetErrors();
 			return result;
 		}
 		catch (e:Dynamic) {
@@ -5154,7 +5219,7 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 			} else {
 				TraceManager.error('trace.lua.callError', '{}', [e]);
 			}
-			registerError();
+			registerError(lastCalledFunction);
 		}
 		#end
 		return Function_Continue;
@@ -5209,6 +5274,58 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 			coverMeInPiss = getVarInArray(getInstance(), objectName);
 
 		return coverMeInPiss;
+	}
+
+	/**
+	 * Gives a frame to a sprite a script built without an image: called when it is added to the state
+	 * (addLuaSprite) and when a shader is put on it (setSpriteShader), the two moments such a sprite
+	 * has to work.
+	 *
+	 * `makeLuaSprite(tag, '')` (what the "shader background" stages write) leaves the sprite with no
+	 * frame at all, and `FlxSprite.draw()` returns on `_frame.type == EMPTY` before it ever runs a
+	 * shader -- so such a sprite is invisible and the whole phase it was meant to fill is black, no
+	 * matter how correct the shader is. The shader also cannot work without a texture: the
+	 * Shadertoy-converted ones (`neruneru`, `void`, ...) read `openfl_TextureSize` for their
+	 * coordinates and take the output alpha from `texture(bitmap, uv).a`.
+	 *
+	 * A 1x1 opaque white frame is the minimum that satisfies both and stays out of the way: the
+	 * shader's own maths normalises by the texture size, so a square 1x1 gives the plain [-1,1]
+	 * domain, the alpha comes out 1 (opaque), and the on-screen size is still whatever the script's
+	 * setGraphicSize/scaleObject asks for. Mods that get this right make the frame themselves
+	 * (`makeGraphic(tag, screenWidth, screenHeight)`) and are untouched: this only runs when the
+	 * sprite has no graphic.
+	 */
+	public static function ensureSpriteFrame(sprite:FlxSprite):Void
+	{
+		if(sprite == null || sprite.graphic != null) return;
+		sprite.makeGraphic(1, 1, FlxColor.WHITE);
+	}
+
+	/** Sprite named by a Lua tag or object path, resolved exactly like setSpriteShader(). */
+	public static function resolveSpriteByTag(obj:String):FlxSprite
+	{
+		if(obj == null || obj.length == 0) return null;
+		var killMe:Array<String> = obj.split('.');
+		var leObj:Dynamic = getObjectDirectly(killMe[0]);
+		if(killMe.length > 1)
+			leObj = getVarInArray(getPropertyLoopThingWhatever(killMe), killMe[killMe.length-1]);
+		return (leObj != null && Std.isOfType(leObj, FlxSprite)) ? cast leObj : null;
+	}
+
+	/**
+	 * Effect name -> WiggleEffectType, following H-Slice's addWiggleEffect mapping: the PE fork
+	 * names the heat waves HORIZONTAL/VERTICAL and has no GLITCH, so everything that is not one of
+	 * the four named looks is the flag look (which is also H-Slice's default).
+	 */
+	public static function wiggleTypeFromName(type:String):WiggleEffectType
+	{
+		if(type != null) switch(type.toUpperCase()) {
+			case 'WAVY' | 'WAVE': return WiggleEffectType.WAVY;
+			case 'DREAMY': return WiggleEffectType.DREAMY;
+			case 'HORIZONTAL' | 'HEAT_WAVE_HORIZONTAL': return WiggleEffectType.HEAT_WAVE_HORIZONTAL;
+			case 'VERTICAL' | 'HEAT_WAVE_VERTICAL': return WiggleEffectType.HEAT_WAVE_VERTICAL;
+		}
+		return WiggleEffectType.FLAG;
 	}
 
 	function typeToString(type:Int):String {

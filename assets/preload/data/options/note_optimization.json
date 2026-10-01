@@ -57,5 +57,33 @@
 		"variable": "bulkSkip",
 		"type": "bool",
 		"defaultValue": false
+	},
+	{
+		"nameKey": "option.chartCache",
+		"defaultName": "Huge Chart Cache",
+		"descKey": "option.chartCache.desc",
+		"defaultDesc": "Keeps the note list of very large charts (64 MB and up) on disk, so re-entering the song\nskips parsing, folding and sorting it again. Only charts that already load through the\nstreaming reader are affected; turning this off always reads the chart file from scratch.",
+		"variable": "chartCache",
+		"type": "bool",
+		"defaultValue": true
+	},
+	{
+		"nameKey": "option.chartCacheCompress",
+		"defaultName": "Compress the Chart Cache",
+		"descKey": "option.chartCacheCompress.desc",
+		"defaultDesc": "Deflates the cached note list in 1 MB blocks. The same list measured 290 MB plain\nand 2 MB compressed, at the cost of about one extra second per load and per save.\nTurn this off for the fastest possible load if the disk usage does not bother you.",
+		"variable": "chartCacheCompress",
+		"type": "bool",
+		"defaultValue": true
+	},
+	{
+		"nameKey": "option.clearChartCache",
+		"defaultName": "Clear the Chart Cache",
+		"descKey": "option.clearChartCache.desc",
+		"defaultDesc": "Press ENTER to delete every cached chart note list. Do it after editing a chart in place:\nan edited chart is detected by its size and timestamp, but a tool that preserves both\nwould leave the old note list in use.",
+		"variable": "clearChartCache",
+		"type": "button",
+		"defaultValue": false,
+		"onChange": "onClearChartCache"
 	}
 ]

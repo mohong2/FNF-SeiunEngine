@@ -1095,18 +1095,33 @@ class FreeplayState extends SeiunMenuState
 				var prevModDir:String = Paths.currentModDirectory;
 				Paths.currentModDirectory = getCurrentSong().folder;
 				var poop:String = Highscore.formatSong(getCurrentSong().songName.toLowerCase(), curDifficulty);
-				PlayState.SONG = Song.loadFromJson(poop, getCurrentSong().songName.toLowerCase());
-				if (PlayState.SONG.needsVoices)
-					vocals = new FlxSound().loadEmbedded(Paths.voices(PlayState.SONG.song));
-				else
-					vocals = new FlxSound();
+				// A streaming-sized chart is not parsed just to preview the song: this block runs on
+				// every selection (PRELOAD_ALL) and loadFromJson() scans the whole chart file, which is
+				// seconds for a 2 GB chart and minutes for a segmented 8 GB one. The preview only needs
+				// the song name and needsVoices, so the parse is skipped and the selection still counts
+				// as handled (instPlaying is advanced below).
+				var previewSongName:String = getCurrentSong().songName.toLowerCase();
+				if (!chartFileIsLarge(previewSongName, poop))
+				{
+					PlayState.SONG = Song.loadFromJson(poop, previewSongName);
+					if (PlayState.SONG.needsVoices)
+						vocals = new FlxSound().loadEmbedded(Paths.voices(PlayState.SONG.song));
+					else
+						vocals = new FlxSound();
 
-				FlxG.sound.list.add(vocals);
-				FlxG.sound.playMusic(Paths.inst(PlayState.SONG.song), 0.7);
-				vocals.play();
-				vocals.persist = true;
-				vocals.looped = true;
-				vocals.volume = 0.7;
+					FlxG.sound.list.add(vocals);
+					FlxG.sound.playMusic(Paths.inst(PlayState.SONG.song), 0.7);
+					vocals.play();
+					vocals.persist = true;
+					vocals.looped = true;
+					vocals.volume = 0.7;
+				}
+				else
+				{
+					TraceManager.info('trace.freeplay.previewSkip',
+						'preview chart parse skipped, chart file is streaming-sized: {} / {}',
+						[previewSongName, poop]);
+				}
 				Paths.currentModDirectory = prevModDir;
 				instPlaying = realIdx;
 				#end
@@ -1772,6 +1787,51 @@ class FreeplayState extends SeiunMenuState
 		// Dim the "nothing to merge here" case so segmented songs stay the ones that stand out.
 		multiFileText.alpha = segmented ? 0.75 : 0.4;
 		multiFileText.visible = true;
+	}
+
+	/**
+	 * Whether the chart a preview would load is large enough that parsing it would stall the menu.
+	 *
+	 * Mirrors Song.loadFromJson()'s lookup order (mod file, then the plain path) and falls back to
+	 * the segmented-chart part list, because a segmented chart has no one-file chart at all. The
+	 * threshold is ChartStream's own streaming threshold, so preview and loader agree on "large".
+	 */
+	static function chartFileIsLarge(songLowercase:String, chartKey:String):Bool
+	{
+		#if sys
+		var oneFile:Array<String> = [];
+		#if MODS_ALLOWED
+		oneFile.push(Paths.modsJson(songLowercase + '/' + chartKey));
+		#end
+		oneFile.push(Paths.json(songLowercase + '/' + chartKey));
+		for (c in oneFile)
+		{
+			if (c == null || !FileSystem.exists(c)) continue;
+			if (ChartStream.isLargeChart(c)) return true;
+		}
+
+		// Segmented chart: every part counts, and there is no <song>.json to find.
+		var dirs:Array<String> = [];
+		#if MODS_ALLOWED
+		if (Paths.currentModDirectory != null && Paths.currentModDirectory.length > 0)
+			dirs.push(Paths.mods(Paths.currentModDirectory + '/data/' + songLowercase));
+		dirs.push(Paths.mods('data/' + songLowercase));
+		#end
+		dirs.push(Paths.getPreloadPath('data/' + songLowercase));
+		for (dir in dirs)
+		{
+			var parts:Array<String> = ChartParts.resolveForChart(dir, songLowercase, chartKey, ChartParts.MODE_AUTO);
+			if (parts == null) continue;
+			var total:Float = 0;
+			for (part in parts)
+			{
+				var st = FileSystem.stat(part);
+				if (st != null) total += st.size;
+			}
+			if (total >= ChartStream.MIN_STREAM_BYTES) return true;
+		}
+		#end
+		return false;
 	}
 
 	/** Per-session cache of "does this song's chart folder hold a segmented chart". */

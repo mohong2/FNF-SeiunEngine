@@ -76,6 +76,9 @@ class Song
 
 	static public var isNewVersion:Bool = false;
 
+	/** Identity of a cached chart skeleton: the chart bytes are covered by the source signature. */
+	static inline final SKELETON_CACHE_CONFIG:String = 'chartstream-scan-v1';
+
 	private static function onLoadJson(songJson:Dynamic) // Convert old charts to newest format
 	{
 		if (songJson.mania == null)
@@ -339,6 +342,11 @@ class Song
 	static function tryLoadStreamingInner(jsonInput:String, ?folder:String, convertTo:String):SwagSong
 	{
 		#if sys
+		// Scan/convert timers: generateSong's trace only starts once PlayState builds the note list,
+		// so everything before it (scan + convert + events) is measured here.
+		var __tSong0:Float = haxe.Timer.stamp();
+		var __tScan:Float = __tSong0;
+		var __tConvert:Float = __tSong0;
 		if (jsonInput == 'events') return null;
 		if (convertTo != null && convertTo.length > 0 && convertTo != 'psych_v1') return null;
 
@@ -379,16 +387,32 @@ class Song
 			parts = [path];
 
 
+		// Skeleton cache (ChartCache): a scan reads every byte of the chart, so an unchanged chart
+		// reuses its skeleton, section ranges and note count instead of scanning again. Only the
+		// scanned value is stored, so everything below runs exactly as it does after a fresh scan.
+		var cacheEnabled:Bool = ClientPrefs.data.chartCache;
+		var scanFromCache:Bool = false;
 		var scan:ChartStream.ChartScanResult = null;
-		try
+		if (cacheEnabled)
 		{
-			scan = scanningParts ? ChartStream.scanParts(parts) : ChartStream.scan(path);
+			scan = cast ChartCache.loadSkeleton(parts, SKELETON_CACHE_CONFIG);
+			scanFromCache = (scan != null);
 		}
-		catch (e:Dynamic)
+		if (scan == null)
 		{
-			return null;
+			try
+			{
+				scan = scanningParts ? ChartStream.scanParts(parts) : ChartStream.scan(path);
+			}
+			catch (e:Dynamic)
+			{
+				return null;
+			}
+			if (scan == null || scan.chart == null) return null;
+			if (cacheEnabled) ChartCache.saveSkeleton(parts, SKELETON_CACHE_CONFIG, scan);
 		}
-		if (scan == null || scan.chart == null) return null;
+		if (scan.chart == null) return null;
+		__tScan = haxe.Timer.stamp();
 
 
 		var chart:Dynamic = scan.chart;
@@ -411,11 +435,17 @@ class Song
 		var ev:Dynamic = Reflect.field(chart, 'events');
 		if (ev == null || !Std.isOfType(ev, Array))
 		{
-			// A segmented chart has no one-file fallback -- its sections exist only as separate
-			// parts -- so an explicit events array is supplied instead of refusing to load. (Note
-			// that a legacy chart encoding its events as negative-data notes cannot be recovered
-			// from a skeleton: sectionNotes are never materialised, so it does not stream.)
-			if (!scanningParts) return null;
+			// An absent events field is normal data, not a reason to give up on streaming -- onLoadJson()
+			// fills it in anyway. Refusing here sent a multi-GB chart through the full Json.parse below,
+			// which is what froze song select on charts that simply omit the field.
+			// ChartStream.maySynthesizeEvents() names the one case that still needs the materialised
+			// chart: a legacy chart whose events are negative-data notes inside sectionNotes.
+			if (!ChartStream.maySynthesizeEvents(scan, scanningParts))
+			{
+				trace('Chart ' + jsonInput + ': has negative note data (legacy events) and no events array;'
+					+ ' not streaming, falling back to a full parse');
+				return null;
+			}
 			ev = [];
 			Reflect.setField(chart, 'events', ev);
 		}
@@ -469,9 +499,18 @@ class Song
 			path: path,
 			paths: parts,
 			ranges: scan.ranges,
+			// Note entries counted while scanning; PlayState uses it as its materialisation budget.
+			noteCount: scan.noteCount,
 			ammo: ammo,
 			rewrite: needRewrite
 		});
+		__tConvert = haxe.Timer.stamp();
+		trace('Chart load phases (Song): scan=' + Std.int((__tScan - __tSong0) * 1000) + 'ms'
+			+ ' convert+events=' + Std.int((__tConvert - __tScan) * 1000) + 'ms'
+			+ ' total=' + Std.int((__tConvert - __tSong0) * 1000) + 'ms'
+			+ ' parts=' + ((parts != null) ? parts.length : 1)
+			+ ' sections=' + scan.ranges.length + ' notes=' + Std.int(scan.noteCount)
+			+ ' cache=' + (scanFromCache ? 'hit' : (cacheEnabled ? 'miss' : 'off')));
 		return cast chart;
 		#else
 		return null;
