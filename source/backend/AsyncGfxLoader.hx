@@ -21,14 +21,21 @@ typedef GfxJob =
 	cacheKey:String,   
 	filePath:String,  
 	enqueuedAt:Float,
-	gen:Int           
+	gen:Int,          
+	// 加固: 结果记录由主线程在这里预先分配并立刻挂进 pendingResults,
+	// 工作线程只负责往里填字段 —— 跨线程传递的就只有解码出来的 Bytes,
+	// 不再有"工作线程 new 一个容器、之后才挂到共享表上"的窗口。
+	slot:GfxWorkerResult
 }
 
 typedef GfxWorkerResult =
 {
 	bytes:Null<haxe.io.Bytes>, 
 	filePath:String,
-	gen:Int              
+	gen:Int,             
+	/** 工作线程写完后置 true（在 mutex 里写，作为发布屏障）。 */
+	done:Bool,
+	failed:Bool
 }
 
 class AsyncGfxLoader
@@ -54,6 +61,10 @@ class AsyncGfxLoader
 	static var callbacks:Map<String, Void->Void> = [];
 	static var workersStarted:Bool = false;
 	static var generation:Int = 0;
+	/** 强制 GC 期间: worker 不再开始新任务。 */
+	static var quiesced:Bool = false;
+	/** 正在读文件/填结果的 worker 数(在 mutex 里维护)。 */
+	static var workersBusy:Int = 0;
 	#end
 
 	public static function available():Bool
@@ -87,7 +98,9 @@ class AsyncGfxLoader
 			return;
 		}
 
-		queue.push({cacheKey: cacheKey, filePath: filePath, enqueuedAt: haxe.Timer.stamp(), gen: generation});
+		var slot:GfxWorkerResult = {bytes: null, filePath: filePath, gen: generation, done: false, failed: false};
+		pendingResults.set(cacheKey, slot);
+		queue.push({cacheKey: cacheKey, filePath: filePath, enqueuedAt: haxe.Timer.stamp(), gen: generation, slot: slot});
 		inflight.set(cacheKey, true);
 		callbacks.set(cacheKey, onDone);
 		lastBatchEnqueued++;
@@ -110,6 +123,7 @@ class AsyncGfxLoader
 			if ((now - job.enqueuedAt) * 1000 > ASYNC_TIMEOUT_MS)
 			{
 				inflight.remove(job.cacheKey);
+				pendingResults.remove(job.cacheKey);
 				failedOffThreadTotal++;
 				var cb = callbacks.get(job.cacheKey);
 				callbacks.remove(job.cacheKey);
@@ -137,6 +151,8 @@ class AsyncGfxLoader
 				pendingResults.remove(k);
 				continue;
 			}
+			// 记录在 enqueue 时就挂上了, done 由工作线程在 mutex 里置位。
+			if (!res.done) continue;
 			if (taken >= MAX_PER_DRAIN) break;
 			doneKeys.push(k);
 			doneRes.push(res);
@@ -166,6 +182,15 @@ class AsyncGfxLoader
 					bmp = null;
 				}
 				decodeMsTotal += (haxe.Timer.stamp() - t0) * 1000;
+				// 崩溃报告只留最后 N 条日志: 把这张图的解码结果也写进去,
+				// 下一次 GC / 原生崩溃就能看到"最后成功解码的是哪张图、多大"。
+				if (bmp != null)
+					TraceManager.info('trace.asyncGfx.decoded', 'AsyncGfxLoader decoded {} ({}x{}, {} MB) in {} ms',
+						[key, Std.string(bmp.width), Std.string(bmp.height),
+						 Std.string(Math.round(bmp.width * bmp.height * 4 / 1048576 * 10) / 10),
+						 Std.string(Math.round((haxe.Timer.stamp() - t0) * 1000))]);
+				else
+					TraceManager.warn('trace.asyncGfx.decodeNull', 'AsyncGfxLoader got no bitmap for {}', [key]);
 			}
 
 			var packedXml:Null<String> = null;
@@ -174,7 +199,8 @@ class AsyncGfxLoader
 				var rep = GfxRepack.process(key, res.filePath, bmp);
 				if (rep != null)
 				{
-					if (bmp != rep.bmp) bmp.dispose();
+					// 释放失败(例如已经被释放过)不能让异常冒出 drain(), 否则整个加载界面会中断。
+					if (bmp != rep.bmp) { try bmp.dispose() catch (e:Dynamic) {} }
 					bmp = rep.bmp;
 					packedXml = rep.xml;
 					TraceManager.info('trace.gfx.repack',
@@ -192,7 +218,8 @@ class AsyncGfxLoader
 
 			if (bmp != null && !isCached(key))
 			{
-				if (!materialize(key, bmp))
+				var storedInCache:Bool = materialize(key, bmp);
+				if (!storedInCache)
 				{
 					mutex.acquire();
 					ready.set(key, bmp);
@@ -200,8 +227,14 @@ class AsyncGfxLoader
 				}
 				decodedOffThreadTotal++;
 				lastBatchOffThread++;
+				TraceManager.info('trace.asyncGfx.settled', 'AsyncGfxLoader settled {} as {}',
+					[key, storedInCache ? 'tracked-graphic' : 'ready-pending']);
 			}
-			else if (bmp == null)
+			else if (bmp != null)
+			{
+				TraceManager.info('trace.asyncGfx.alreadyCached', 'AsyncGfxLoader dropped {} (already cached)', [key]);
+			}
+			else
 			{
 				failedOffThreadTotal++;
 			}
@@ -252,6 +285,57 @@ class AsyncGfxLoader
 		#end
 	}
 
+	/**
+	 * 让工作线程停在任务边界上, 不再开始新的解码/分配。
+	 *
+	 * 强制 GC (cpp.vm.Gc.run / compact) 之前调用: 收集期间不该有第二个线程正在
+	 * new hxcpp 对象或往共享表里写指针。回收与"另一个线程持有/发布对象"重叠,
+	 * 就是对象被回收后地址又被复用的来源。
+	 *
+	 * 返回 true = 已经没有 worker 在任务里; 超时返回 false, 调用方继续执行
+	 * (不能因为等不到一个卡住的文件读取就卡住加载流程)。
+	 */
+	public static function quiesce(timeoutMs:Float = 3000):Bool
+	{
+		#if sys
+		mutex.acquire();
+		quiesced = true;
+		var deadline = haxe.Timer.stamp() + timeoutMs / 1000;
+		var clean = (workersBusy == 0);
+		while (!clean && haxe.Timer.stamp() < deadline)
+		{
+			mutex.release();
+			Sys.sleep(0.002);
+			mutex.acquire();
+			clean = (workersBusy == 0);
+		}
+		mutex.release();
+		return clean;
+		#else
+		return true;
+		#end
+	}
+
+	/** 恢复 worker 取任务(必须和 quiesce() 成对调用)。 */
+	public static function resume():Void
+	{
+		#if sys
+		mutex.acquire();
+		quiesced = false;
+		mutex.release();
+		#end
+	}
+
+	/** 当前是否处于静默状态(诊断用)。 */
+	public static function isQuiesced():Bool
+	{
+		#if sys
+		return quiesced;
+		#else
+		return false;
+		#end
+	}
+
 	static var pendingResults:Map<String, GfxWorkerResult> = [];
 
 	static function startWorkersOnce():Void
@@ -268,12 +352,24 @@ class AsyncGfxLoader
 					// haxe/hxcpp has no global uncaught handler, so the process dies (crash report Exception
 					// code 0xE06D7363, a C++ throw with hxThreadFunc at the stack bottom). This catch keeps the
 					// worker running after a dropped job instead of taking the whole game down.
+					var tookJob:Bool = false;
 					try
 					{
 						var job:GfxJob = null;
 						mutex.acquire();
+						// quiesce() 期间不许再开始新任务(强制 GC 要求没有第二个线程在分配)。
+						if (quiesced)
+						{
+							mutex.release();
+							Sys.sleep(0.002);
+							continue;
+						}
 						if (queue.length > 0)
+						{
 							job = queue.shift();
+							workersBusy++;
+							tookJob = true;
+						}
 						mutex.release();
 
 						if (job == null)
@@ -295,12 +391,25 @@ class AsyncGfxLoader
 						}
 
 						mutex.acquire();
-						if (job.gen == generation)
-							pendingResults.set(job.cacheKey, {bytes: bytes, filePath: job.filePath, gen: job.gen});
+						// 只在同一个加载世代里填; 记录本身是主线程分配并已经挂在表上的。
+						if (job.gen == generation && job.slot != null)
+						{
+							job.slot.bytes = bytes;
+							job.slot.failed = (bytes == null);
+							job.slot.done = true;
+						}
+						workersBusy--;
+						tookJob = false;
 						mutex.release();
 					}
 					catch (e:Dynamic)
 					{
+						if (tookJob)
+						{
+							mutex.acquire();
+							if (workersBusy > 0) workersBusy--;
+							mutex.release();
+						}
 						try TraceManager.warn('trace.asyncGfx.workerFail',
 							'AsyncGfxLoader worker error: {}', [Std.string(e)]) catch (_:Dynamic) {}
 					}

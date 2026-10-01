@@ -322,7 +322,12 @@ class GfxPolicy
 		if (resolved == null) return false;
 
 		var bytes:Float = bmp.width * bmp.height * 4;
-		bmp.disposeImage();
+		// 释放失败就不要记账(否则 cpuReleased 会认为这张图已经释放, 之后不再补回来)。
+		try { bmp.disposeImage(); } catch (e:Dynamic) { return false; }
+		// 把"释放了哪张图的 CPU 副本"也写进引擎日志: 原生崩溃报告会带上最后 150 条,
+		// 这样"崩溃前最后动过的大图"是可查的。
+		TraceManager.info('trace.gfx.cpuReleased', 'GfxPolicy released CPU copy of {} ({}x{}, {} MB)',
+			[regKey, Std.string(bmp.width), Std.string(bmp.height), Std.string(Math.round(bytes / 1048576 * 10) / 10)]);
 
 		cpuReleased.set(regKey, {assetId: regKey, realPath: resolved, bytes: bytes});
 		releasedCountTotal++;

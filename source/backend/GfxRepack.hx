@@ -55,6 +55,7 @@ class GfxRepack
 	public static var triedTotal:Int = 0;
 	public static var okTotal:Int = 0;
 	public static var fallbackTotal:Int = 0;
+	static var lastBoundsSkips:Int = 0;
 	public static var oldBytesTotal:Float = 0;
 	public static var newBytesTotal:Float = 0;
 	public static var msTotal:Float = 0;
@@ -299,7 +300,22 @@ class GfxRepack
 				f.py = c.py;
 			}
 
+			// 源图没有可读像素时, 逐块跳过只会得到一张全透明的图集 —— 那比不打包更糟。
+			// 整块放弃, 调用方保留原图。
+			if (src == null || !src.readable)
+				abort('source-not-readable');
+
 			var packed = new BitmapData(canvasW, canvasH, true, 0);
+			// 加固: 打包画布是这一整套里唯一的大块写入目标。如果分配被平台钳制
+			// (尺寸超过 GPU/驱动上限时 lime 可能给一个更小的位图), 后面每一次 copyPixels
+			// 都会写到真正的缓冲区外面 —— 那是直接踩坏堆、随后在 GC 标记阶段炸成
+			// ACCESS_VIOLATION (read at 0xFFFFFFFFFFFFFFFF) 的典型路径。
+			// 宁可放弃重打包(调用方保留原图)也绝不越界写。
+			if (packed == null || packed.width != canvasW || packed.height != canvasH)
+			{
+				abort('canvas-clamped ' + (packed == null ? 'null' : (packed.width + 'x' + packed.height))
+					+ ' requested ' + canvasW + 'x' + canvasH);
+			}
 			for (f in order)
 			{
 				if (f.empty) continue;
@@ -313,8 +329,7 @@ class GfxRepack
 				if (validH < 0) validH = 0;
 
 				if (validW > 0 && validH > 0)
-					packed.copyPixels(src, new Rectangle(sxp, syp, validW, validH),
-						new Point(f.px, f.py));
+					blit(packed, src, sxp, syp, validW, validH, f.px, f.py, canvasW, canvasH);
 
 				// Out-of-bounds bands: replicate the last real row/column,
 				// matching what CLAMP_TO_EDGE sampling shows in the original.
@@ -323,16 +338,14 @@ class GfxRepack
 				{
 					var colX = sxp + validW - 1;
 					for (cx in 0...extR)
-						packed.copyPixels(src, new Rectangle(colX, syp, 1, validH),
-							new Point(f.px + validW + cx, f.py));
+						blit(packed, src, colX, syp, 1, validH, f.px + validW + cx, f.py, canvasW, canvasH);
 				}
 				var extB = f.dh - validH;
 				if (extB > 0 && validW > 0)
 				{
 					var rowY = syp + validH - 1;
 					for (cy in 0...extB)
-						packed.copyPixels(src, new Rectangle(sxp, rowY, validW, 1),
-							new Point(f.px, f.py + validH + cy));
+						blit(packed, src, sxp, rowY, validW, 1, f.px, f.py + validH + cy, canvasW, canvasH);
 				}
 				if (extR > 0 && extB > 0)
 				{
@@ -340,8 +353,7 @@ class GfxRepack
 					var cY = syp + validH - 1;
 					for (cy in 0...extB)
 						for (cx in 0...extR)
-							packed.copyPixels(src, new Rectangle(cX, cY, 1, 1),
-								new Point(f.px + validW + cx, f.py + validH + cy));
+							blit(packed, src, cX, cY, 1, 1, f.px + validW + cx, f.py + validH + cy, canvasW, canvasH);
 				}
 			}
 
@@ -390,6 +402,13 @@ class GfxRepack
 			if (selfCheckFail != null)
 				abort(selfCheckFail);
 
+			if (boundsSkips != lastBoundsSkips)
+			{
+				TraceManager.warn('trace.gfx.repackBounds',
+					'GfxRepack skipped {} out-of-bounds blit(s) for {} -- packed canvas kept clean',
+					[Std.string(boundsSkips - lastBoundsSkips), filePath]);
+				lastBoundsSkips = boundsSkips;
+			}
 			msTotal += (haxe.Timer.stamp() - t0) * 1000;
 			okTotal++;
 			oldBytesTotal += oldB;
@@ -412,6 +431,27 @@ class GfxRepack
 		}
 		#end
 		return null;
+	}
+
+	/** 画布/源矩形越界次数: 正常输入下永远是 0, 一旦不为 0 就是打包算法出问题了。 */
+	public static var boundsSkips:Int = 0;
+
+	/**
+	 * 唯一允许写入打包画布的入口。
+	 * 目标矩形必须完整落在画布里、源矩形必须完整落在原图里, 否则跳过并计数 ——
+	 * 绝不把像素写到缓冲区外面(那是堆破坏, 之后会在 GC 里以 ACCESS_VIOLATION 呈现)。
+	 * 合法输入下与原来直接 copyPixels 完全等价。
+	 */
+	static inline function blit(packed:BitmapData, src:BitmapData, sx:Int, sy:Int, sw:Int, sh:Int,
+		dx:Int, dy:Int, canvasW:Int, canvasH:Int):Void
+	{
+		if (sw <= 0 || sh <= 0) return;
+		// 源图必须还带着 CPU 像素: gfxCpuRelease 会把大图的 CPU 副本释放掉,
+		// 对着一张只剩显存纹理的位图 copyPixels 就是读已经释放的内存。
+		if (src == null || !src.readable) { boundsSkips++; return; }
+		if (dx < 0 || dy < 0 || dx + sw > canvasW || dy + sh > canvasH) { boundsSkips++; return; }
+		if (sx < 0 || sy < 0 || sx + sw > src.width || sy + sh > src.height) { boundsSkips++; return; }
+		packed.copyPixels(src, new Rectangle(sx, sy, sw, sh), new Point(dx, dy));
 	}
 
 	static function abort(reason:String):Void
