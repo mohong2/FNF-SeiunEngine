@@ -1553,8 +1553,13 @@ class FunkinLua {
 			var split:Array<String> = variable.split('.');
 
 			var result:Dynamic = null;
-			if(split.length > 1)
-				result = getVarInArray(getPropertyLoop(split, true, true, allowMaps), split[split.length-1], allowMaps);
+			if(split.length > 1) {
+				var target:Dynamic = getPropertyLoop(split, true, true, allowMaps);
+				var lastProp:String = split[split.length-1];
+				result = getVarInArray(target, lastProp, allowMaps);
+				// 判定名按 1.0.4 的口径给脚本(见 ratingForScripts 的说明)。
+				result = ratingForScripts(target, lastProp, result);
+			}
 			else
 				result = getVarInArray(getTargetInstance(), variable, allowMaps);
 
@@ -5089,7 +5094,37 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 		return false;
 	}
 
-	function getGroupStuff(leArray:Dynamic, variable:String) {
+	/**
+	 * 1.0.4 兼容: Psych 的 0.6.3 / 0.7.3 / 1.0.4 三个版本都**没有** 'marvelous' 这一档判定 ——
+	 * 参考源码里 `marvelous` 零命中, `Rating.loadDefault()` 只给 sick/good/bad/shit, 最好的判定
+	 * 就是 'sick'。而本引擎默认打开了 marvelouse 窗口 (ClientPrefs.marvelousRatings = true),
+	 * 于是 ≤25ms 的命中会得到 'marvelous'。
+	 *
+	 * 模组按名字映射判定时(实测 SonicTheFunkChinese/scripts/sonic UI.lua:
+	 * `if rating == 'sick' / 'good' / 'bad' / 'shit'`)超完美命中不落任何一档:
+	 * `numnoteshit` 照样 +1 但没有对应的计数, 准确率被拉低, 而连击计数只在 ratingAnim() 里
+	 * 自增 —— 所以连击也不涨。两个数一起不对, 根因就是这一个名字。
+	 *
+	 * 这里只把**脚本读到的**判定名还原成 1.0.4 会给出的那个(≤25ms 在 1.0.4 就是 sick),
+	 * 由设置项 `judgementNameCompat`(默认开)控制, 只在 1.0.4 兼容模式下生效;
+	 * 引擎自己的 HUD / 结算 / hitsound / 在线仍然用真实判定, 超完美不丢。
+	 * 想在开着的时候拿到原始判定名, 读 `Note.ratingRaw`(或 PlayState 的 `marvelouses`)。
+	 */
+	public static function ratingForScripts(target:Dynamic, variable:String, value:Dynamic):Dynamic
+	{
+		if (value == null || !CompatEngine.is104()) return value;
+		if (!ClientPrefs.data.judgementNameCompat) return value;
+		if (variable != 'rating') return value;
+		if (Std.string(value) != 'marvelous') return value;
+		if (target == null || !Std.isOfType(target, Note)) return value;
+		return 'sick';
+	}
+
+	function getGroupStuff(leArray:Dynamic, variable:String):Dynamic {
+		return ratingForScripts(leArray, variable, getGroupStuffRaw(leArray, variable));
+	}
+
+	function getGroupStuffRaw(leArray:Dynamic, variable:String) {
 		var killMe:Array<String> = variable.split('.');
 		if(killMe.length > 1) {
 			var coverMeInPiss:Dynamic = Reflect.getProperty(leArray, killMe[0]);

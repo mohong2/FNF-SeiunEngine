@@ -6652,6 +6652,9 @@ class PlayState extends MusicBeatState
 		note.ratingMod = daRating.ratingMod;
 		if(!note.ratingDisabled) daRating.increase();
 		note.rating = daRating.name;
+		// 原始判定名(含 'marvelous'): 给需要超完美档的脚本读,
+		// 见 ClientPrefs.judgementNameCompat 与 Note.ratingRaw。
+		note.ratingRaw = daRating.name;
 		score = daRating.score;
 		if(daRating.noteSplash && !note.noteSplashDisabled)
 		{

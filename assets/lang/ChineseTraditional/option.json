@@ -15,6 +15,8 @@
     "option.hitsound.desc": "選擇擊中音符時播放的音效。\n列表來自 data/hitsoundList.txt, 你可以往這個 txt 裡添加名字,\n然後把音訊檔案放到 sounds/hitsounds/ 裡即可自訂音效。",
     "option.marvelousRatings": "Marvelous 評級",
     "option.marvelousRatings.desc": "勾選後會在 Sick 之前增加一檔 Marvelous 評級。",
+    "option.judgementNameCompat": "模組判定名相容 (超完美→完美)",
+    "option.judgementNameCompat.desc": "Psych 0.6.3/0.7.3/1.0.4 都沒有 Marvelous 這一檔; 按名字映射判定的模組(如 rating == 'sick')會漏掉所有超完美命中, 表現為準確率偏低、連擊不漲。\n勾選後腳本讀到的判定名按 1.0.4 口徑給出(超完美→完美); 引擎自身的 HUD / 結算 / 計分 / 打擊音仍用真實判定, 腳本也可以用 Note.ratingRaw 拿原始判定名。\n只影響 1.0.4 相容模式。",
     "option.judgementPreset": "判定預設",
     "option.judgementPreset.Custom": "自訂",
     "option.judgementPreset.desc": "套用預設判定區間 (Leather Engine / Psych Engine / Friday Night Funkin')。\n手動修改下方任一視窗後會自動變為自訂。",

@@ -256,6 +256,12 @@ class Note extends FlxSprite {
     public var hitHealth:Float = 0.023;
     public var missHealth:Float = 0.0475;
     public var rating:String = 'unknown';
+    /**
+     * 原始判定名(引擎内部真实判定, 例如 'marvelous')。
+     * `rating` 会按 ClientPrefs.judgementNameCompat 的 1.0.4 口径改写后给脚本读,
+     * 这个字段永远是引擎当时判出来的名字, 模组需要超完美档时读它。
+     */
+    public var ratingRaw:String = 'unknown';
     public var ratingMod:Float = 0;
     public var ratingDisabled:Bool = false;
 
@@ -804,6 +810,7 @@ class Note extends FlxSprite {
         eventVal2 = '';
         eventLength = 0;
         rating = 'unknown';
+        ratingRaw = 'unknown';
         ratingMod = 0;
         ratingDisabled = false;
         sourceIndex = -1;

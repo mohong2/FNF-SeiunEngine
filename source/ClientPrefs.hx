@@ -174,6 +174,14 @@ import sys.io.Process;
 	public var judgementPreset:String = 'Leather Engine';
 	public var marvelousRatings:Bool = true;
 	public var marvelousWindow:Int = 25;
+	/**
+	 * Psych 的 0.6.3 / 0.7.3 / 1.0.4 都**没有** 'marvelous' 这一档判定, 模组按名字映射判定时
+	 * 超完美命中不落任何一档(准确率被拉低、连击计数不涨)。开启后模组脚本读到的判定名按 1.0.4
+	 * 的口径给出(≤25ms → 'sick'); 关闭后脚本读到原始判定名。
+	 * 引擎自身的 HUD / 结算 / 计分 / hitsound / 在线始终使用真实判定, 不受此开关影响;
+	 * 想拿原始判定名的脚本还可以读 `Note.ratingRaw` 或 PlayState 的 `marvelouses` 计数。
+	 */
+	public var judgementNameCompat:Bool = true;
 	/** osu! tail judgement: judge sustain tails on release instead of on hold (affects scores and replays). */
 	//public var osuTailJudgement:Bool = false;
 	/** osu! tail window multiplier relative to a normal judgement window (1.0 = same, default 2.0). */
@@ -362,6 +370,7 @@ class ClientPrefs {
 	public static var judgementPreset(get, never):String;
 	public static var marvelousRatings(get, never):Bool;
 	public static var marvelousWindow(get, never):Int;
+	public static var judgementNameCompat(get, never):Bool;
 	//public static var osuTailJudgement(get, never):Bool;
 	//public static var tailWindowMult(get, never):Float;
 	public static var touchSwipeEnabled(get, never):Bool;
@@ -481,6 +490,7 @@ class ClientPrefs {
 	static inline function get_judgementTimings() return data.judgementTimings;
 	static inline function get_judgementPreset() return data.judgementPreset;
 	static inline function get_marvelousRatings() return data.marvelousRatings;
+	static inline function get_judgementNameCompat() return data.judgementNameCompat;
 	static inline function get_marvelousWindow() return data.marvelousWindow;
 	//static inline function get_osuTailJudgement() return data.osuTailJudgement;
 	//static inline function get_tailWindowMult() return data.tailWindowMult;

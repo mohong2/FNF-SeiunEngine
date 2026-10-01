@@ -15,6 +15,8 @@
     "option.hitsound.desc": "Select which sound plays when you hit a note.\nThe list comes from data/hitsoundList.txt, so you can add your own\nby appending a name to that txt and putting the sound file in sounds/hitsounds/.",
     "option.marvelousRatings": "Marvelous Ratings",
     "option.marvelousRatings.desc": "If checked, a 'Marvelous' rating is added before Sick.",
+    "option.judgementNameCompat": "1.0.4 Judgement Names for Mods",
+    "option.judgementNameCompat.desc": "Psych 0.6.3/0.7.3/1.0.4 have no 'Marvelous' judgement, so mods that map judgements by name (rating == 'sick') drop every Marvelous hit: accuracy falls and combo stops rising.\nIf checked, scripts read the 1.0.4 name (Marvelous -> Sick); the engine's own HUD, results, scoring and hitsounds still use the real judgement, and scripts can still read Note.ratingRaw.\nOnly affects 1.0.4 compat mode.",
     "option.judgementPreset": "Judgement Preset",
     "option.judgementPreset.Custom": "Custom",
     "option.judgementPreset.desc": "Apply a preset judgement timing (Leather Engine / Psych Engine / Friday Night Funkin').\nManually changing any window below will switch this to Custom.",
