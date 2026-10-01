@@ -509,6 +509,16 @@ class HScript
 		vars.set("ClientPrefs", ClientPrefs);
 		vars.set("ModConfig", ModConfig);
 
+		// 1.0.4: getModSetting (HScript 侧) —— 读取模组 data/settings.json 里的设置值。
+		// modName 省略时使用当前激活的模组目录。
+		#if MODS_ALLOWED
+		vars.set("getModSetting", function(saveTag:String, ?modName:String = null):Dynamic {
+			if (modName == null || modName.length == 0) modName = Paths.currentModDirectory;
+			if (modName == null || modName.length == 0) return null;
+			return FunkinLua.getModSetting(saveTag, modName);
+		});
+		#end
+
 		// 多k API (hscript)
 		vars.set("getMania", function():Int return (PlayState.instance != null) ? PlayState.instance.getManiaK() : -1);
 		vars.set("setMania", function(k:Int, ?skipTween:Bool = false, ?animStyle:String = null):Bool {
@@ -968,8 +978,12 @@ class HScript
 		#end
 
 		// Input
-		set('keyJustPressed', function(name:String) {
+		// 1.0.4: name 可省略, 且统一小写后查表。
+		set('keyJustPressed', function(?name:String = null) {
 			if (PlayState.instance == null) return false;
+			if (name == null) name = '';
+			if (!backend.CompatEngine.is063()) name = name.toLowerCase().trim();
+			if (name.length == 0) return false;
 			// 回放时: 录制中出现过的键以模拟状态为准 (还原 mod 自定义机制键, 如空格闪避)
 			if (PlayState.replayMode && PlayState.instance.replayExam != null && PlayState.instance.replayExam.keyExists(name))
 				return PlayState.instance.replayExam.keyJustPressed(name);
@@ -986,8 +1000,11 @@ class HScript
 				default: false;
 			}
 		});
-		set('keyPressed', function(name:String) {
+		set('keyPressed', function(?name:String = null) {
 			if (PlayState.instance == null) return false;
+			if (name == null) name = '';
+			if (!backend.CompatEngine.is063()) name = name.toLowerCase().trim();
+			if (name.length == 0) return false;
 			if (PlayState.replayMode && PlayState.instance.replayExam != null && PlayState.instance.replayExam.keyExists(name))
 				return PlayState.instance.replayExam.keyPressed(name);
 			return switch(name) {
@@ -999,8 +1016,11 @@ class HScript
 				default: false;
 			}
 		});
-		set('keyReleased', function(name:String) {
+		set('keyReleased', function(?name:String = null) {
 			if (PlayState.instance == null) return false;
+			if (name == null) name = '';
+			if (!backend.CompatEngine.is063()) name = name.toLowerCase().trim();
+			if (name.length == 0) return false;
 			if (PlayState.replayMode && PlayState.instance.replayExam != null && PlayState.instance.replayExam.keyExists(name))
 				return PlayState.instance.replayExam.keyJustReleased(name);
 			return switch(name) {
@@ -1405,26 +1425,27 @@ class HScript
 	function handleError(message:String, callback:String = null):Void {
 		if (closed) return;
 
-		// Always log via TraceManager so we can see the error in the console
-		// even when ClientPrefs / Language are not yet initialized.
-		var fullMessage:String = scriptDir + '/' + scriptName + '\n' + message;
-		TraceManager.error('trace.hscript.error', fullMessage);
+		// Error-loop protection: 只有每帧/每步回调参与计数（见 ScriptErrorGuard）。
+		// 达到上限后只是安静下来（不再打印 / 不再弹窗），脚本**继续运行** —— 1.0.4 并没有
+		// "因报错停掉整个脚本"这种行为，关掉会让它在别的回调里本该正常工作的功能一起失效。
+		var silenced:Bool = false;
+		if (ClientPrefs.data != null && ClientPrefs.data.ignoreErrorLoopScripts && ScriptErrorGuard.isLoopCallback(callback)) {
+			errorLoopCount++;
+			if (errorLoopCount >= ClientPrefs.data.scriptErrorLimit) silenced = true;
+		}
+
+		if (!silenced) {
+			// Always log via TraceManager so we can see the error in the console
+			// even when ClientPrefs / Language are not yet initialized.
+			var fullMessage:String = scriptDir + '/' + scriptName + '\n' + message;
+			TraceManager.error('trace.hscript.error', fullMessage);
+		}
 
 		if (ClientPrefs.data == null) return;
 
-		// Error-loop protection (default): count consecutive errors, silently ignore the
-		// script once it hits the limit instead of spamming a dialog every frame.
-		// 只有每帧/每步回调参与计数（见 ScriptErrorGuard）：一次性回调报错只打印，
-		// 不会因为别处的报错把整个脚本关掉。
 		if (ClientPrefs.data.ignoreErrorLoopScripts) {
-			if (!ScriptErrorGuard.isLoopCallback(callback)) return;
-			errorLoopCount++;
-			if (errorLoopCount >= ClientPrefs.data.scriptErrorLimit) {
-				closed = true;
-				TraceManager.warn('trace.script.ignoredAfterErrors', 'Script ignored after {} repeated errors: {}', [errorLoopCount, scriptName]);
-				interp = null;
-				parser = null;
-			}
+			if (silenced && (errorLoopCount == ClientPrefs.data.scriptErrorLimit || errorLoopCount % 600 == 0))
+				TraceManager.warn('trace.script.errorLoopSilenced', 'Repeated errors silenced ({} times, script still running): {} :: {}', [errorLoopCount, scriptName, callback]);
 			return;
 		}
 

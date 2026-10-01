@@ -99,6 +99,9 @@ class Main extends Sprite
 	{
 		// Install native crash hooks first, so even early startup faults leave a log with memory pointers.
 		NativeCrash.install();
+		// 脚本诊断日志（logs/script_log.txt）：记录每个被加载的脚本、被扫描的脚本目录、
+		// 每次脚本报错，以及 onCreate / onCreatePost 分发给了谁。排查"模组脚本没生效"必备。
+		backend.ScriptLog.begin();
 
 		#if mac
 		// macOS: .app 由 Finder 双击启动时，进程工作目录是根目录 "/"，

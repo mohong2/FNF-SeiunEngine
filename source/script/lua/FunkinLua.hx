@@ -105,6 +105,27 @@ class FunkinLua {
 	/** 连续报错计数：脚本的每帧/每步回调（见 ScriptErrorGuard）连续报错达到上限时会被静默忽略。 */
 	public var errorLoopCount:Int = 0;
 
+	/**
+	 * 当前正在执行回调的脚本实例。
+	 *
+	 * 为什么需要它: `Lua_helper.callbacks` 是 linc_luajit 里的一个 **静态** name→function 表,
+	 * 每个 Lua state 都往同一张表里注册同名回调, 于是**最后创建的那个实例赢** ——
+	 * `Lua_helper.add_callback(lua, "close", ...)` 里闭包捕获的 `this` 并不一定是
+	 * 调用 `close()` 的那个脚本。
+	 *
+	 * Psych 1.0.4 的 `addLocalCallback` 把实例函数存在自己的 `callbacks` 表里、只往全局表
+	 * 塞 null, 所以没有这个问题; 本引擎为了兼容旧的 linc_luajit 行为往全局表塞了真实闭包,
+	 * 这才暴露出来。实测后果: 一个脚本里调用 `close()` 会把**最后加载的那个脚本**关掉 ——
+	 * 例如 SonicTheFunkChinese 的 `scripts/MetalJet.lua` 在 onCreatePost 里 `close()`,
+	 * 结果关掉了最后加载的 `data/menu/menu.lua`, 自定义菜单因此永远不构建。
+	 *
+	 * 这里记录"谁在跑", 让 `close()` 这类**实例作用域**的回调作用于正确的脚本。
+	 * English: the script whose callback is currently executing, so instance-scoped
+	 * callbacks (close / getModSetting) act on the caller instead of on whichever
+	 * instance happened to register last in linc_luajit's static callback map.
+	 */
+	public static var executing:FunkinLua = null;
+
 	#if HSCRIPT_ALLOWED
 	public static var hscript:HScript = null;
 	#end
@@ -1393,6 +1414,16 @@ class FunkinLua {
 			else
 			return Language.get(key);
 		});
+
+		// ---- Psych Engine 1.0.4 翻译 API ----
+		// 1.0.4 的 `.lang` 文本词组 + 带 {1}/{2} 占位符的 getTranslationPhrase。
+		Lua_helper.add_callback(lua, "getFileTranslation", function(key:String) {
+			return Language.getFileTranslation(key);
+		});
+
+		Lua_helper.add_callback(lua, "getTranslationPhrase", function(key:String, ?defaultPhrase:String = null, ?values:Array<Dynamic> = null) {
+			return Language.getTranslationPhrase(key, defaultPhrase, values);
+		});
 			
 
 		Lua_helper.add_callback(lua, "loadGraphic", function(variable:String, image:String, ?gridX:Int = 0, ?gridY:Int = 0) {
@@ -1409,7 +1440,8 @@ class FunkinLua {
 				spr.loadGraphic(Paths.image(image), animated, gridX, gridY);
 			}
 		});
-		Lua_helper.add_callback(lua, "loadFrames", function(variable:String, image:String, spriteType:String = "sparrow") {
+		Lua_helper.add_callback(lua, "loadFrames", function(variable:String, image:String, ?spriteType:String = null) {
+			if(spriteType == null || spriteType.length == 0) spriteType = CompatEngine.defaultSpriteType();
 			var killMe:Array<String> = variable.split('.');
 			var spr:FlxSprite = getObjectDirectly(killMe[0]);
 			if(killMe.length > 1) {
@@ -1441,6 +1473,8 @@ class FunkinLua {
 		// FlxAnimate sprites (0.7.3+) — requires the flxanimate library
 		#if (LUA_ALLOWED && flxanimate)
 		Lua_helper.add_callback(lua, "makeFlxAnimateSprite", function(tag:String, ?x:Float = 0, ?y:Float = 0, ?loadFolder:String = null) {
+			// 少传 tag 时安全跳过，而不是在 cpp 上触发空指针崩溃。
+			if(tag == null) return;
 			tag = tag.replace('.', '');
 			var stateVars = getStateVars();
 			if(stateVars == null) return;
@@ -1543,7 +1577,9 @@ class FunkinLua {
 			}
 			return result;
 		});
-		Lua_helper.add_callback(lua, "setProperty", function(variable:String, value:Dynamic, allowMaps:Bool = false) {
+		Lua_helper.add_callback(lua, "setProperty", function(variable:String, value:Dynamic, allowMaps:Bool = false, ?allowInstances:Bool = false) {
+			// 1.0.4: allowInstances —— 允许把 instanceArg() 生成的字符串还原成对象。
+			if (allowInstances) value = parseInstanceValue(value);
 			if (CompatEngine.compatMode()) {
 				if (extraMap.exists(variable)) {
 					for (item in extraMap.get(variable)) {
@@ -1587,7 +1623,7 @@ class FunkinLua {
 			return true;
 			});
 		}*/
-		Lua_helper.add_callback(lua, "getPropertyFromGroup", function(obj:String, index:Int, variable:Dynamic):Dynamic {
+		Lua_helper.add_callback(lua, "getPropertyFromGroup", function(obj:String, index:Int, variable:Dynamic, ?allowMaps:Bool = false):Dynamic {
 			var shitMyPants:Array<String> = obj.split('.');
 			var realObject:Dynamic = Reflect.getProperty(getInstance(), obj);
 			if(shitMyPants.length>1)
@@ -1665,17 +1701,79 @@ class FunkinLua {
 				setGroupStuff(leArray, variable, value);
 			}
 		});
-		Lua_helper.add_callback(lua, "removeFromGroup", function(obj:String, index:Int, dontDestroy:Bool = false) {
-			if(Std.isOfType(Reflect.getProperty(getInstance(), obj), FlxTypedGroup)) {
-				var sex = Reflect.getProperty(getInstance(), obj).members[index];
-				if(!dontDestroy)
-					sex.kill();
-				Reflect.getProperty(getInstance(), obj).remove(sex, true);
-				if(!dontDestroy)
-					sex.destroy();
+		// removeFromGroup —— 同时支持两套签名:
+		//   0.6.3/0.7.3: removeFromGroup(group, index, dontDestroy:Bool)
+		//   1.0.4      : removeFromGroup(group, ?index = -1, ?tag = null, ?destroy:Bool = true)
+		// 第三个参数是 Bool 时按旧签名处理(旧模组不受影响), 否则按 1.0.4 处理。
+		Lua_helper.add_callback(lua, "removeFromGroup", function(obj:String, ?index:Any = null, ?tagOrDontDestroy:Any = null, ?destroy:Bool = true) {
+			var groupOrArray:Dynamic = Reflect.getProperty(getInstance(), obj);
+			if(groupOrArray == null)
+			{
+				luaTrace('removeFromGroup: Group/Array ' + obj + ' is not valid!', false, false, FlxColor.RED);
 				return;
 			}
-			Reflect.getProperty(getInstance(), obj).remove(Reflect.getProperty(getInstance(), obj)[index]);
+
+			// 一律用 Dynamic 取 members/下标: hxcpp 上 Array<T> 的元素布局随 T 变化,
+			// 把 x.members 硬 cast 成 Array<Dynamic> 会读到错误内存。Lua 的 table 与
+			// FlxTypedGroup 都能通过 Dynamic 访问正确处理。
+			if(Std.isOfType(tagOrDontDestroy, Bool))
+			{
+				// ---- 旧签名 (0.6.3 / 0.7.3): (group, index, dontDestroy) ----
+				var dontDestroy:Bool = cast tagOrDontDestroy;
+				var idx:Int = anyToInt(index, 0);
+				var members:Dynamic = Reflect.field(groupOrArray, "members");
+				if(members != null)
+				{
+					if(idx < 0 || idx >= members.length) return;
+					var sex:Dynamic = members[idx];
+					if(sex == null) return;
+					if(!dontDestroy && Reflect.hasField(sex, "kill")) sex.kill();
+					Reflect.callMethod(groupOrArray, Reflect.field(groupOrArray, "remove"), [sex, true]);
+					if(!dontDestroy && Reflect.hasField(sex, "destroy")) sex.destroy();
+					return;
+				}
+				if(idx >= 0 && idx < groupOrArray.length)
+					Reflect.callMethod(groupOrArray, Reflect.field(groupOrArray, "remove"), [groupOrArray[idx]]);
+				return;
+			}
+
+			// ---- 1.0.4 签名: (group, ?index = -1, ?tag = null, ?destroy = true) ----
+			var target:Dynamic = null;
+			if(tagOrDontDestroy != null)
+			{
+				var tag:String = Std.string(tagOrDontDestroy);
+				target = getObjectDirectly(tag);
+				if(target == null || !Reflect.hasField(target, "destroy"))
+				{
+					luaTrace('removeFromGroup: Object ' + tag + ' is not valid!', false, false, FlxColor.RED);
+					return;
+				}
+			}
+
+			var idx104:Int = anyToInt(index, -1);
+			var members104:Dynamic = Reflect.field(groupOrArray, "members");
+			if(members104 != null)
+			{
+				if(target == null)
+				{
+					if(idx104 < 0 || idx104 >= members104.length) return;
+					target = members104[idx104];
+				}
+				if(target == null) return;
+				Reflect.callMethod(groupOrArray, Reflect.field(groupOrArray, "remove"), [target, true]);
+				if(destroy && Reflect.hasField(target, "destroy")) target.destroy();
+				return;
+			}
+
+			if(target != null)
+			{
+				Reflect.callMethod(groupOrArray, Reflect.field(groupOrArray, "remove"), [target]);
+				if(destroy && Reflect.hasField(target, "destroy")) target.destroy();
+			}
+			else if(idx104 >= 0 && idx104 < groupOrArray.length)
+			{
+				Reflect.callMethod(groupOrArray, Reflect.field(groupOrArray, "remove"), [groupOrArray[idx104]]);
+			}
 		});
 
 		// 1.0.4: addToGroup（把已创建的 Lua 对象塞进任意 Group/Array）
@@ -1709,7 +1807,8 @@ class FunkinLua {
 		});
 
 		Lua_helper.add_callback(lua, "callMethod", function(funcToRun:String, ?args:Array<Dynamic> = null) {
-			return callMethodFromObject(PlayState.instance, funcToRun, parseInstances(args));
+			// 传原始 args: callMethodFromObject 需要知道哪个参数是 instanceArg, 才能判断它是否解析成功。
+			return callMethodFromObject(PlayState.instance, funcToRun, args);
 			
 		});
 		Lua_helper.add_callback(lua, "callMethodFromClass", function(className:String, funcToRun:String, ?args:Array<Dynamic> = null) {
@@ -1718,9 +1817,10 @@ class FunkinLua {
 				resolvedClass = Type.resolveClass(className.substr(8));
 			else if(resolvedClass == null && StringTools.startsWith(className, 'objects.'))
 				resolvedClass = Type.resolveClass(className.substr(8));
-			return callMethodFromObject(resolvedClass, funcToRun, parseInstances(args));
+			return callMethodFromObject(resolvedClass, funcToRun, args);
 		});
 		Lua_helper.add_callback(lua, "createInstance", function(variableToSave:String, className:String, ?args:Array<Dynamic> = null) {
+			if(variableToSave == null || className == null) return false;
 			variableToSave = variableToSave.trim().replace('.', '');
 			if(!PlayState.instance.variables.exists(variableToSave))
 			{
@@ -1792,7 +1892,8 @@ class FunkinLua {
 			}
 			return getVarInArray(myClass, variable, allowMaps);
 		});
-		Lua_helper.add_callback(lua, "setPropertyFromClass", function(classVar:String, variable:String, value:Dynamic, ?allowMaps:Bool = false) {
+		Lua_helper.add_callback(lua, "setPropertyFromClass", function(classVar:String, variable:String, value:Dynamic, ?allowMaps:Bool = false, ?allowInstances:Bool = false) {
+			if (allowInstances) value = parseInstanceValue(value);
 			if (classPathMap.exists(classVar)) {
 				classVar = classPathMap[classVar];
 			}
@@ -1817,7 +1918,7 @@ class FunkinLua {
 		});
 
 		//shitass stuff for epic coders like me B)  *image of obama giving himself a medal*
-		Lua_helper.add_callback(lua, "getObjectOrder", function(obj:String) {
+		Lua_helper.add_callback(lua, "getObjectOrder", function(obj:String, ?group:String = null) {
 			var killMe:Array<String> = obj.split('.');
 			var leObj:FlxBasic = getObjectDirectly(killMe[0]);
 			if(killMe.length > 1) {
@@ -1826,12 +1927,20 @@ class FunkinLua {
 
 			if(leObj != null)
 			{
-				return getInstance().members.indexOf(leObj);
+				// 1.0.4: 可选 group 参数 —— 指定时在该 group 内取顺序，否则用 state 本身。
+				// 用 Dynamic 取 members (不做 Array<Dynamic> 硬 cast, 见 removeFromGroup 的说明)。
+				var container:Dynamic = (group != null && group.length > 0) ? Reflect.getProperty(getInstance(), group) : null;
+				if(container == null) container = getInstance();
+				var members:Dynamic = Reflect.field(container, "members");
+				if(members == null) members = container;
+				if(members == null) return -1;
+				for(i in 0...members.length) if(members[i] == leObj) return i;
+				return -1;
 			}
 			luaTrace("getObjectOrder: Object " + obj + " doesn't exist!", false, false, FlxColor.RED);
 			return -1;
 		});
-		Lua_helper.add_callback(lua, "setObjectOrder", function(obj:String, position:Int) {
+		Lua_helper.add_callback(lua, "setObjectOrder", function(obj:String, position:Int, ?group:String = null) {
 			var killMe:Array<String> = obj.split('.');
 			var leObj:FlxBasic = getObjectDirectly(killMe[0]);
 			if(killMe.length > 1) {
@@ -1839,6 +1948,13 @@ class FunkinLua {
 			}
 
 			if(leObj != null) {
+				// 1.0.4: 可选 group 参数 —— 指定时在 group/array 内部重排。
+				var container:Dynamic = (group != null && group.length > 0) ? Reflect.getProperty(getInstance(), group) : null;
+				if(container != null) {
+					Reflect.callMethod(container, Reflect.field(container, "remove"), [leObj, true]);
+					Reflect.callMethod(container, Reflect.field(container, "insert"), [position, leObj]);
+					return;
+				}
 				getInstance().remove(leObj, true);
 				getInstance().insert(position, leObj);
 				return;
@@ -1847,13 +1963,13 @@ class FunkinLua {
 		});
 
 		// gay ass tweens
-		Lua_helper.add_callback(lua, "doTweenX", function(tag:String, vars:String, value:Dynamic, duration:Float, ease:String) {
+		Lua_helper.add_callback(lua, "doTweenX", function(tag:String, vars:String, value:Dynamic, duration:Float, ?ease:String = 'linear') {
 			var penisExam:Dynamic = tweenShit(tag, vars);
 			if(penisExam != null) {
 				var tweens = getStateModchartTweens();
 				if(tweens != null) tweens.set(tag, FlxTween.tween(penisExam, {x: value}, duration, {ease: getFlxEaseByString(ease),
 					onComplete: function(twn:FlxTween) {
-						callOnStateLuas('onTweenCompleted', [tag]);
+						callOnStateLuas('onTweenCompleted', [tag, vars]);
 						if(tweens != null) tweens.remove(tag);
 					}
 				}));
@@ -1861,13 +1977,13 @@ class FunkinLua {
 				luaTrace('doTweenX: Couldnt find object: ' + vars, false, false, FlxColor.RED);
 			}
 		});
-		Lua_helper.add_callback(lua, "doTweenY", function(tag:String, vars:String, value:Dynamic, duration:Float, ease:String) {
+		Lua_helper.add_callback(lua, "doTweenY", function(tag:String, vars:String, value:Dynamic, duration:Float, ?ease:String = 'linear') {
 			var penisExam:Dynamic = tweenShit(tag, vars);
 			if(penisExam != null) {
 				var tweens = getStateModchartTweens();
 				if(tweens != null) tweens.set(tag, FlxTween.tween(penisExam, {y: value}, duration, {ease: getFlxEaseByString(ease),
 					onComplete: function(twn:FlxTween) {
-						callOnStateScripts('onTweenCompleted', [tag]);
+						callOnStateScripts('onTweenCompleted', [tag, vars]);
 						if(tweens != null) tweens.remove(tag);
 					}
 				}));
@@ -1875,13 +1991,13 @@ class FunkinLua {
 				luaTrace('doTweenY: Couldnt find object: ' + vars, false, false, FlxColor.RED);
 			}
 		});
-		Lua_helper.add_callback(lua, "doTweenAngle", function(tag:String, vars:String, value:Dynamic, duration:Float, ease:String) {
+		Lua_helper.add_callback(lua, "doTweenAngle", function(tag:String, vars:String, value:Dynamic, duration:Float, ?ease:String = 'linear') {
 			var penisExam:Dynamic = tweenShit(tag, vars);
 			if(penisExam != null) {
 				var tweens = getStateModchartTweens();
 				if(tweens != null) tweens.set(tag, FlxTween.tween(penisExam, {angle: value}, duration, {ease: getFlxEaseByString(ease),
 					onComplete: function(twn:FlxTween) {
-						callOnStateLuas('onTweenCompleted', [tag]);
+						callOnStateLuas('onTweenCompleted', [tag, vars]);
 						if(tweens != null) tweens.remove(tag);
 					}
 				}));
@@ -1889,13 +2005,13 @@ class FunkinLua {
 				luaTrace('doTweenAngle: Couldnt find object: ' + vars, false, false, FlxColor.RED);
 			}
 		});
-		Lua_helper.add_callback(lua, "doTweenAlpha", function(tag:String, vars:String, value:Dynamic, duration:Float, ease:String) {
+		Lua_helper.add_callback(lua, "doTweenAlpha", function(tag:String, vars:String, value:Dynamic, duration:Float, ?ease:String = 'linear') {
 			var penisExam:Dynamic = tweenShit(tag, vars);
 			if(penisExam != null) {
 				var tweens = getStateModchartTweens();
 				if(tweens != null) tweens.set(tag, FlxTween.tween(penisExam, {alpha: value}, duration, {ease: getFlxEaseByString(ease),
 					onComplete: function(twn:FlxTween) {
-						callOnStateScripts('onTweenCompleted', [tag]);
+						callOnStateScripts('onTweenCompleted', [tag, vars]);
 						if(tweens != null) tweens.remove(tag);
 					}
 				}));
@@ -1903,13 +2019,13 @@ class FunkinLua {
 				luaTrace('doTweenAlpha: Couldnt find object: ' + vars, false, false, FlxColor.RED);
 			}
 		});
-		Lua_helper.add_callback(lua, "doTweenZoom", function(tag:String, vars:String, value:Dynamic, duration:Float, ease:String) {
+		Lua_helper.add_callback(lua, "doTweenZoom", function(tag:String, vars:String, value:Dynamic, duration:Float, ?ease:String = 'linear') {
 			var penisExam:Dynamic = tweenShit(tag, vars);
 			if(penisExam != null) {
 				var tweens = getStateModchartTweens();
 				if(tweens != null) tweens.set(tag, FlxTween.tween(penisExam, {zoom: value}, duration, {ease: getFlxEaseByString(ease),
 					onComplete: function(twn:FlxTween) {
-						callOnStateLuas('onTweenCompleted', [tag]);
+						callOnStateLuas('onTweenCompleted', [tag, vars]);
 						if(tweens != null) tweens.remove(tag);
 					}
 				}));
@@ -1917,11 +2033,10 @@ class FunkinLua {
 				luaTrace('doTweenZoom: Couldnt find object: ' + vars, false, false, FlxColor.RED);
 			}
 		});
-		Lua_helper.add_callback(lua, "doTweenColor", function(tag:String, vars:String, targetColor:String, duration:Float, ease:String) {
+		Lua_helper.add_callback(lua, "doTweenColor", function(tag:String, vars:String, targetColor:String, duration:Float, ?ease:String = 'linear') {
 			var penisExam:Dynamic = tweenShit(tag, vars);
 			if(penisExam != null) {
-				var color:Int = Std.parseInt(targetColor);
-				if(!targetColor.startsWith('0x')) color = Std.parseInt('0xff' + targetColor);
+				var color:Int = safeColor(targetColor);
 
 				var curColor:FlxColor = penisExam.color;
 				curColor.alphaFloat = penisExam.alpha;
@@ -1929,7 +2044,7 @@ class FunkinLua {
 				if(tweens != null) tweens.set(tag, FlxTween.color(penisExam, duration, curColor, color, {ease: getFlxEaseByString(ease),
 					onComplete: function(twn:FlxTween) {
 						if(tweens != null) tweens.remove(tag);
-						callOnStateScripts('onTweenCompleted', [tag]);
+						callOnStateScripts('onTweenCompleted', [tag, vars]);
 					}
 				}));
 			} else {
@@ -1995,7 +2110,7 @@ class FunkinLua {
 		});
 
 		//Tween shit, but for strums
-		Lua_helper.add_callback(lua, "noteTweenX", function(tag:String, note:Int, value:Dynamic, duration:Float, ease:String) {
+		Lua_helper.add_callback(lua, "noteTweenX", function(tag:String, note:Int, value:Dynamic, duration:Float, ?ease:String = 'linear') {
 			cancelTween(tag);
 			if(note < 0) note = 0;
 			var testicle:StrumNote = PlayState.instance.strumLineNotes.members[note % PlayState.instance.strumLineNotes.length];
@@ -2009,7 +2124,7 @@ class FunkinLua {
 				}));
 			}
 		});
-		Lua_helper.add_callback(lua, "noteTweenY", function(tag:String, note:Int, value:Dynamic, duration:Float, ease:String) {
+		Lua_helper.add_callback(lua, "noteTweenY", function(tag:String, note:Int, value:Dynamic, duration:Float, ?ease:String = 'linear') {
 			cancelTween(tag);
 			if(note < 0) note = 0;
 			var testicle:StrumNote = PlayState.instance.strumLineNotes.members[note % PlayState.instance.strumLineNotes.length];
@@ -2023,7 +2138,7 @@ class FunkinLua {
 				}));
 			}
 		});
-		Lua_helper.add_callback(lua, "noteTweenAngle", function(tag:String, note:Int, value:Dynamic, duration:Float, ease:String) {
+		Lua_helper.add_callback(lua, "noteTweenAngle", function(tag:String, note:Int, value:Dynamic, duration:Float, ?ease:String = 'linear') {
 			cancelTween(tag);
 			if(note < 0) note = 0;
 			var testicle:StrumNote = PlayState.instance.strumLineNotes.members[note % PlayState.instance.strumLineNotes.length];
@@ -2037,7 +2152,7 @@ class FunkinLua {
 				}));
 			}
 		});
-		Lua_helper.add_callback(lua, "noteTweenDirection", function(tag:String, note:Int, value:Dynamic, duration:Float, ease:String) {
+		Lua_helper.add_callback(lua, "noteTweenDirection", function(tag:String, note:Int, value:Dynamic, duration:Float, ?ease:String = 'linear') {
 			cancelTween(tag);
 			if(note < 0) note = 0;
 			var testicle:StrumNote = PlayState.instance.strumLineNotes.members[note % PlayState.instance.strumLineNotes.length];
@@ -2051,7 +2166,8 @@ class FunkinLua {
 				}));
 			}
 		});
-		Lua_helper.add_callback(lua, "mouseClicked", function(button:String) {
+		Lua_helper.add_callback(lua, "mouseClicked", function(?button:String = null) {
+			if(button == null) button = CompatEngine.defaultMouseButton();
 			var boobs = FlxG.mouse.justPressed;
 			switch(button){
 				case 'middle':
@@ -2063,7 +2179,8 @@ class FunkinLua {
 
 			return boobs;
 		});
-		Lua_helper.add_callback(lua, "mousePressed", function(button:String) {
+		Lua_helper.add_callback(lua, "mousePressed", function(?button:String = null) {
+			if(button == null) button = CompatEngine.defaultMouseButton();
 			var boobs = FlxG.mouse.pressed;
 			switch(button){
 				case 'middle':
@@ -2073,7 +2190,8 @@ class FunkinLua {
 			}
 			return boobs;
 		});
-		Lua_helper.add_callback(lua, "mouseReleased", function(button:String) {
+		Lua_helper.add_callback(lua, "mouseReleased", function(?button:String = null) {
+			if(button == null) button = CompatEngine.defaultMouseButton();
 			var boobs = FlxG.mouse.justReleased;
 			switch(button){
 				case 'middle':
@@ -2083,7 +2201,7 @@ class FunkinLua {
 			}
 			return boobs;
 		});
-		Lua_helper.add_callback(lua, "noteTweenAngle", function(tag:String, note:Int, value:Dynamic, duration:Float, ease:String) {
+		Lua_helper.add_callback(lua, "noteTweenAngle", function(tag:String, note:Int, value:Dynamic, duration:Float, ?ease:String = 'linear') {
 			cancelTween(tag);
 			if(note < 0) note = 0;
 			var testicle:StrumNote = PlayState.instance.strumLineNotes.members[note % PlayState.instance.strumLineNotes.length];
@@ -2097,7 +2215,7 @@ class FunkinLua {
 				}));
 			}
 		});
-		Lua_helper.add_callback(lua, "noteTweenAlpha", function(tag:String, note:Int, value:Dynamic, duration:Float, ease:String) {
+		Lua_helper.add_callback(lua, "noteTweenAlpha", function(tag:String, note:Int, value:Dynamic, duration:Float, ?ease:String = 'linear') {
 			cancelTween(tag);
 			if(note < 0) note = 0;
 			var testicle:StrumNote = PlayState.instance.strumLineNotes.members[note % PlayState.instance.strumLineNotes.length];
@@ -2205,7 +2323,8 @@ class FunkinLua {
 			return (PlayState.instance != null) ? PlayState.instance.songHits : 0;
 		});
 
-		Lua_helper.add_callback(lua, "setHealth", function(value:Float = 0) {
+		Lua_helper.add_callback(lua, "setHealth", function(?value:Null<Float> = null) {
+			if(value == null) value = CompatEngine.defaultHealth();
 			if (PlayState.instance == null) return;
 			PlayState.instance.health = value;
 		});
@@ -2218,12 +2337,11 @@ class FunkinLua {
 		});
 
 		Lua_helper.add_callback(lua, "getColorFromHex", function(color:String) {
-			if(!color.startsWith('0x')) color = '0xff' + color;
-			return Std.parseInt(color);
+			return safeColor(color);
 		});
-		Lua_helper.add_callback(lua, "FlxColor", function(color:String) return FlxColor.fromString(color));
-		Lua_helper.add_callback(lua, "getColorFromName", function(color:String) return FlxColor.fromString(color));
-		Lua_helper.add_callback(lua, "getColorFromString", function(color:String) return FlxColor.fromString(color));
+		Lua_helper.add_callback(lua, "FlxColor", function(color:String) return FlxColor.fromString(color == null ? '' : color));
+		Lua_helper.add_callback(lua, "getColorFromName", function(color:String) return FlxColor.fromString(color == null ? '' : color));
+		Lua_helper.add_callback(lua, "getColorFromString", function(color:String) return FlxColor.fromString(color == null ? '' : color));
 
 		Lua_helper.add_callback(lua, "keyboardJustPressed", function(name:String)
 		{
@@ -2361,8 +2479,13 @@ class FunkinLua {
 			return Reflect.getProperty(controller.justReleased, name) == true;
 		});
 
-		Lua_helper.add_callback(lua, "keyJustPressed", function(name:String) {
+		Lua_helper.add_callback(lua, "keyJustPressed", function(?name:String = null) {
 			if (PlayState.instance == null) return false;
+			// 1.0.4: name 可省略；空名走 "未绑定按键" 分支并安全返回 false。
+			if (name == null) name = '';
+			// 0.7.3/1.0.4 先 toLowerCase, 0.6.3 不转换 —— 按当前模拟版本走, 保证 063 无差异。
+			if (!CompatEngine.is063()) name = name.toLowerCase().trim();
+			if (name.length == 0) return false;
 			// 回放时: 录制中出现过的键以模拟状态为准 (还原 mod 自定义机制键, 如空格闪避)
 			if (PlayState.replayMode && PlayState.instance.replayExam != null && PlayState.instance.replayExam.keyExists(name))
 				return PlayState.instance.replayExam.keyJustPressed(name);
@@ -2381,8 +2504,11 @@ class FunkinLua {
 			}
 			return key;
 		});
-		Lua_helper.add_callback(lua, "keyPressed", function(name:String) {
+		Lua_helper.add_callback(lua, "keyPressed", function(?name:String = null) {
 			if (PlayState.instance == null) return false;
+			if (name == null) name = '';
+			if (!CompatEngine.is063()) name = name.toLowerCase().trim();
+			if (name.length == 0) return false;
 			if (PlayState.replayMode && PlayState.instance.replayExam != null && PlayState.instance.replayExam.keyExists(name))
 				return PlayState.instance.replayExam.keyPressed(name);
 			var key:Bool = false;
@@ -2396,8 +2522,11 @@ class FunkinLua {
 			}
 			return key;
 		});
-		Lua_helper.add_callback(lua, "keyReleased", function(name:String) {
+		Lua_helper.add_callback(lua, "keyReleased", function(?name:String = null) {
 			if (PlayState.instance == null) return false;
+			if (name == null) name = '';
+			if (!CompatEngine.is063()) name = name.toLowerCase().trim();
+			if (name.length == 0) return false;
 			if (PlayState.replayMode && PlayState.instance.replayExam != null && PlayState.instance.replayExam.keyExists(name))
 				return PlayState.instance.replayExam.keyJustReleased(name);
 			var key:Bool = false;
@@ -2413,14 +2542,16 @@ class FunkinLua {
 		});
 		#if MODS_ALLOWED
 		addLocalCallback("getModSetting", function(saveTag:String, ?modName:String = null) {
+			// 同样按调用者取 modFolder: 全局模组并存时, '最后注册的实例' 可能属于别的模组。
+			var self:FunkinLua = executing != null ? executing : this;
 			if(modName == null)
 			{
-				if(this.modFolder == null)
+				if(self.modFolder == null)
 				{
 					luaTrace('getModSetting: Argument #2 is null and script is not inside a packed Mod folder!', false, false, FlxColor.RED);
 					return null;
 				}
-				modName = this.modFolder;
+				modName = self.modFolder;
 			}
 			return getModSetting(saveTag, modName);
 		});
@@ -2509,7 +2640,7 @@ class FunkinLua {
 			}
 			PlayState.instance.addCharacterToList(name, charType);
 		});
-		Lua_helper.add_callback(lua, "precacheImage", function(name:String) {
+		Lua_helper.add_callback(lua, "precacheImage", function(name:String, ?allowGPU:Bool = true) {
 			Paths.returnGraphic(name);
 		});
 		Lua_helper.add_callback(lua, "precacheSound", function(name:String) {
@@ -2518,9 +2649,10 @@ class FunkinLua {
 		Lua_helper.add_callback(lua, "precacheMusic", function(name:String) {
 			CoolUtil.precacheMusic(name);
 		});
-		Lua_helper.add_callback(lua, "triggerEvent", function(name:String, arg1:Dynamic, arg2:Dynamic) {
-			var value1:String = arg1;
-			var value2:String = arg2;
+		Lua_helper.add_callback(lua, "triggerEvent", function(name:String, ?arg1:Dynamic = null, ?arg2:Dynamic = null) {
+			// 1.0.4: 三个参数都可省略，缺省视为空串。
+			var value1:String = (arg1 == null) ? '' : Std.string(arg1);
+			var value2:String = (arg2 == null) ? '' : Std.string(arg2);
 			PlayState.instance.triggerEventNote(name, value1, value2);
 			//trace('Triggered event: ' + name + ', ' + value1 + ', ' + value2);
 			return true;
@@ -2646,8 +2778,7 @@ class FunkinLua {
 		});
 
 		Lua_helper.add_callback(lua, "cameraFlash", function(camera:String, color:String, duration:Float,forced:Bool) {
-			var colorNum:Int = Std.parseInt(color);
-			if(!color.startsWith('0x')) colorNum = Std.parseInt('0xff' + color);
+			var colorNum:Int = safeColor(color);
 			cameraFromString(camera).flash(colorNum, duration,null,forced);
 		});
 		// The 5th argument is Psych 1.0.4's (?fadeOut, H-Slice has the same): it is handed straight to
@@ -2659,8 +2790,7 @@ class FunkinLua {
 		// black over 20s. Default false keeps 4-argument scripts byte-for-byte unchanged.
 		// (Upstream names it fadeOut even though it is passed as FadeIn -- kept for compatibility.)
 		Lua_helper.add_callback(lua, "cameraFade", function(camera:String, color:String, duration:Float,forced:Bool, ?fadeOut:Bool = false) {
-			var colorNum:Int = Std.parseInt(color);
-			if(!color.startsWith('0x')) colorNum = Std.parseInt('0xff' + color);
+			var colorNum:Int = safeColor(color);
 			cameraFromString(camera).fade(colorNum, duration,fadeOut,null,forced);
 		});
 		Lua_helper.add_callback(lua, "setRatingPercent", function(value:Float) {
@@ -2676,11 +2806,13 @@ class FunkinLua {
 			if (PlayState.instance != null)
 				PlayState.instance.updateScore();
 		});
-		Lua_helper.add_callback(lua, "getMouseX", function(camera:String) {
+		Lua_helper.add_callback(lua, "getMouseX", function(?camera:String = null) {
+			if(camera == null || camera.length == 0) camera = CompatEngine.defaultMouseCamera();
 			var cam:FlxCamera = cameraFromString(camera);
 			return FlxG.mouse.getScreenPosition(cam).x;
 		});
-		Lua_helper.add_callback(lua, "getMouseY", function(camera:String) {
+		Lua_helper.add_callback(lua, "getMouseY", function(?camera:String = null) {
+			if(camera == null || camera.length == 0) camera = CompatEngine.defaultMouseCamera();
 			var cam:FlxCamera = cameraFromString(camera);
 			return FlxG.mouse.getScreenPosition(cam).y;
 		});
@@ -2725,23 +2857,23 @@ class FunkinLua {
 
 			return 0;
 		});
-		Lua_helper.add_callback(lua, "getScreenPositionX", function(variable:String) {
+		Lua_helper.add_callback(lua, "getScreenPositionX", function(variable:String, ?camera:String = null) {
 			var killMe:Array<String> = variable.split('.');
 			var obj:FlxSprite = getObjectDirectly(killMe[0]);
 			if(killMe.length > 1) {
 				obj = getVarInArray(getPropertyLoopThingWhatever(killMe), killMe[killMe.length-1]);
 			}
-			if(obj != null) return obj.getScreenPosition().x;
+			if(obj != null) return obj.getScreenPosition(cameraFromString(camera)).x;
 
 			return 0;
 		});
-		Lua_helper.add_callback(lua, "getScreenPositionY", function(variable:String) {
+		Lua_helper.add_callback(lua, "getScreenPositionY", function(variable:String, ?camera:String = null) {
 			var killMe:Array<String> = variable.split('.');
 			var obj:FlxSprite = getObjectDirectly(killMe[0]);
 			if(killMe.length > 1) {
 				obj = getVarInArray(getPropertyLoopThingWhatever(killMe), killMe[killMe.length-1]);
 			}
-			if(obj != null) return obj.getScreenPosition().y;
+			if(obj != null) return obj.getScreenPosition(cameraFromString(camera)).y;
 
 			return 0;
 		});
@@ -2754,6 +2886,7 @@ class FunkinLua {
 		});
 
 		Lua_helper.add_callback(lua, "makeLuaSprite", function(tag:String, ?image:String = null, ?x:Float = 0, ?y:Float = 0) {
+			if(tag == null) return;
 			tag = tag.replace('.', '');
 			resetSpriteTag(tag);
 			var leSprite:ModchartSprite = new ModchartSprite(x, y);
@@ -2766,7 +2899,10 @@ class FunkinLua {
 			if(sprites != null) sprites.set(tag, leSprite);
 			leSprite.active = true;
 		});
-		Lua_helper.add_callback(lua, "makeAnimatedLuaSprite", function(tag:String, ?image:String = null, ?x:Float = 0, ?y:Float = 0, ?spriteType:String = "sparrow") {
+		Lua_helper.add_callback(lua, "makeAnimatedLuaSprite", function(tag:String, ?image:String = null, ?x:Float = 0, ?y:Float = 0, ?spriteType:String = null) {
+			// 1.0.4: spriteType 默认 'auto'(自动判定图集格式); 0.6.3/0.7.3 仍为 'sparrow'。
+			if(spriteType == null || spriteType.length == 0) spriteType = CompatEngine.defaultSpriteType();
+			if(tag == null) return;
 			tag = tag.replace('.', '');
 			resetSpriteTag(tag);
 			var leSprite:ModchartSprite = new ModchartSprite(x, y);
@@ -2778,8 +2914,7 @@ class FunkinLua {
 		});
 
 		Lua_helper.add_callback(lua, "makeGraphic", function(obj:String, width:Int = 256, height:Int = 256, color:String = 'FFFFFF') {
-			var colorNum:Int = Std.parseInt(color);
-			if(!color.startsWith('0x')) colorNum = Std.parseInt('0xff' + color);
+			var colorNum:Int = safeColor(color);
 
 			var spr:FlxSprite = PlayState.instance.getLuaObject(obj,false);
 			if(spr!=null) {
@@ -2792,10 +2927,10 @@ class FunkinLua {
 				object.makeGraphic(width, height, colorNum);
 			}
 		});
-		Lua_helper.add_callback(lua, "addAnimationByPrefix", function(obj:String, name:String, prefix:String, framerate:Int = 24, loop:Bool = true) {
+		Lua_helper.add_callback(lua, "addAnimationByPrefix", function(obj:String, name:String, prefix:String, framerate:Float = 24, loop:Bool = true) {
 			if(PlayState.instance.getLuaObject(obj,false)!=null) {
 				var cock:FlxSprite = PlayState.instance.getLuaObject(obj,false);
-				cock.animation.addByPrefix(name, prefix, framerate, loop);
+				cock.animation.addByPrefix(name, prefix, safeInt(framerate), loop);
 				if(cock.animation.curAnim == null) {
 					cock.animation.play(name, true);
 				}
@@ -2804,17 +2939,20 @@ class FunkinLua {
 
 			var cock:FlxSprite = Reflect.getProperty(getInstance(), obj);
 			if(cock != null) {
-				cock.animation.addByPrefix(name, prefix, framerate, loop);
+				cock.animation.addByPrefix(name, prefix, safeInt(framerate), loop);
 				if(cock.animation.curAnim == null) {
 					cock.animation.play(name, true);
 				}
 			}
 		});
 
-		Lua_helper.add_callback(lua, "addAnimation", function(obj:String, name:String, frames:Array<Int>, framerate:Int = 24, loop:Bool = true) {
+		// 1.0.4: frames 参数放宽为 Any —— 既接受 {0,1,2} 这样的索引数组，也接受
+		// '0,1,2' 逗号字符串；帧率放宽为 Float。旧行为（数组）完全保留。
+		Lua_helper.add_callback(lua, "addAnimation", function(obj:String, name:String, frames:Any, framerate:Float = 24, loop:Bool = true) {
+			var indices:Array<Int> = normalizeFrameIndices(frames);
 			if(PlayState.instance.getLuaObject(obj,false)!=null) {
 				var cock:FlxSprite = PlayState.instance.getLuaObject(obj,false);
-				cock.animation.add(name, frames, framerate, loop);
+				cock.animation.add(name, indices, framerate, loop);
 				if(cock.animation.curAnim == null) {
 					cock.animation.play(name, true);
 				}
@@ -2823,21 +2961,20 @@ class FunkinLua {
 
 			var cock:FlxSprite = Reflect.getProperty(getInstance(), obj);
 			if(cock != null) {
-				cock.animation.add(name, frames, framerate, loop);
+				cock.animation.add(name, indices, framerate, loop);
 				if(cock.animation.curAnim == null) {
 					cock.animation.play(name, true);
 				}
 			}
 		});
 
-		Lua_helper.add_callback(lua, "addAnimationByIndices", function(obj:String, name:String, prefix:String, indices:Any, framerate:Int = 24, loop:Bool = false) {
-			if(Std.isOfType(indices, Array)) {
-				var arr:Array<Int> = cast indices;
-				indices = arr.join(',');
-			}
+		Lua_helper.add_callback(lua, "addAnimationByIndices", function(obj:String, name:String, prefix:String, indices:Any, framerate:Float = 24, loop:Bool = false) {
+			// 注意: Lua 数字经过 Convert.fromLua 是 Float, 所以不能把 Lua 数组硬 cast 成
+			// Array<Int>(cpp 上是不同的运行时类型)。addAnimByIndices 内部统一走
+			// normalizeFrameIndices 安全转换。
 			return addAnimByIndices(obj, name, prefix, indices, framerate, loop);
 		});
-		Lua_helper.add_callback(lua, "addAnimationByIndicesLoop", function(obj:String, name:String, prefix:String, indices:String, framerate:Int = 24) {
+		Lua_helper.add_callback(lua, "addAnimationByIndicesLoop", function(obj:String, name:String, prefix:String, indices:String, framerate:Float = 24) {
 			luaTrace("addAnimationByIndicesLoop is deprecated! Use addAnimationByIndices instead", false, true);
 			return addAnimByIndices(obj, name, prefix, indices, framerate, true);
 		});
@@ -2949,10 +3086,10 @@ class FunkinLua {
 				shit.wasAdded = true;
 			}
 		});
-		Lua_helper.add_callback(lua, "setGraphicSize", function(obj:String, x:Int, y:Int = 0, updateHitbox:Bool = true) {
+		Lua_helper.add_callback(lua, "setGraphicSize", function(obj:String, x:Float, y:Float = 0, updateHitbox:Bool = true) {
 			if(PlayState.instance.getLuaObject(obj)!=null) {
 				var shit:FlxSprite = PlayState.instance.getLuaObject(obj);
-				shit.setGraphicSize(x, y);
+				shit.setGraphicSize(safeInt(x), safeInt(y));
 				if(updateHitbox) shit.updateHitbox();
 				return;
 			}
@@ -2964,7 +3101,7 @@ class FunkinLua {
 			}
 
 			if(poop != null) {
-				poop.setGraphicSize(x, y);
+				poop.setGraphicSize(safeInt(x), safeInt(y));
 				if(updateHitbox) poop.updateHitbox();
 				return;
 			}
@@ -3013,7 +3150,7 @@ class FunkinLua {
 			Reflect.getProperty(getInstance(), group)[index].updateHitbox();
 		});
 
-		Lua_helper.add_callback(lua, "removeLuaSprite", function(tag:String, destroy:Bool = true) {
+		Lua_helper.add_callback(lua, "removeLuaSprite", function(tag:String, destroy:Bool = true, ?group:String = null) {
 			if(!PlayState.instance.modchartSprites.exists(tag)) {
 				return;
 			}
@@ -3039,6 +3176,17 @@ class FunkinLua {
 			var sprites = getStateModchartSprites();
 			return sprites != null && sprites.exists(tag);
 		});
+		// 容错别名: 少数模组写成 doesLuaSpriteExist(...)。0.6.3/0.7.3/1.0.4 都没有这个名字,
+		// 所以只在引擎这边补一个别名 —— 少传/写错名字的脚本以前会一直报
+		// "attempt to call global 'doesLuaSpriteExist' (a nil value)" 并让整段逻辑失效。
+		Lua_helper.add_callback(lua, "doesLuaSpriteExist", function(tag:String) {
+			var sprites = getStateModchartSprites();
+			return sprites != null && sprites.exists(tag);
+		});
+		Lua_helper.add_callback(lua, "doesLuaTextExist", function(tag:String) {
+			var texts = getStateModchartTexts();
+			return texts != null && texts.exists(tag);
+		});
 		Lua_helper.add_callback(lua, "luaTextExists", function(tag:String) {
 			var texts = getStateModchartTexts();
 			return texts != null && texts.exists(tag);
@@ -3049,10 +3197,8 @@ class FunkinLua {
 		});
 
 		Lua_helper.add_callback(lua, "setHealthBarColors", function(leftHex:String, rightHex:String) {
-			var left:FlxColor = Std.parseInt(leftHex);
-			if(!leftHex.startsWith('0x')) left = Std.parseInt('0xff' + leftHex);
-			var right:FlxColor = Std.parseInt(rightHex);
-			if(!rightHex.startsWith('0x')) right = Std.parseInt('0xff' + rightHex);
+			var left:FlxColor = safeColor(leftHex);
+			var right:FlxColor = safeColor(rightHex);
 
 			if (CompatEngine.compatMode()) {
 				PlayState.instance.healthBar.setColors(left, right);
@@ -3063,10 +3209,8 @@ class FunkinLua {
 		});
 
 		Lua_helper.add_callback(lua, "setTimeBarColors", function(leftHex:String, rightHex:String) {
-			var left:FlxColor = Std.parseInt(leftHex);
-			if(!leftHex.startsWith('0x')) left = Std.parseInt('0xff' + leftHex);
-			var right:FlxColor = Std.parseInt(rightHex);
-			if(!rightHex.startsWith('0x')) right = Std.parseInt('0xff' + rightHex);
+			var left:FlxColor = safeColor(leftHex);
+			var right:FlxColor = safeColor(rightHex);
 
 			if (CompatEngine.compatMode()) {
 				PlayState.instance.timeBar.setColors(left, right);
@@ -3076,7 +3220,8 @@ class FunkinLua {
 			}
 		});
 
-		Lua_helper.add_callback(lua, "setObjectCamera", function(obj:String, camera:String = '') {
+		Lua_helper.add_callback(lua, "setObjectCamera", function(obj:String, ?camera:String = null) {
+			if(camera == null || camera.length == 0) camera = CompatEngine.defaultCamera();
 			/*if(PlayState.instance.modchartSprites.exists(obj)) {
 				PlayState.instance.modchartSprites.get(obj).cameras = [cameraFromString(camera)];
 				return true;
@@ -3242,10 +3387,11 @@ class FunkinLua {
 			}
 			return false;
 		});
-		Lua_helper.add_callback(lua, "startVideo", function(videoFile:String) {
+		// 1.0.4: startVideo 支持完整参数 (canSkip / forMidSong / shouldLoop / playOnLoad)。
+		Lua_helper.add_callback(lua, "startVideo", function(videoFile:String, ?canSkip:Bool = true, ?forMidSong:Bool = false, ?shouldLoop:Bool = false, ?playOnLoad:Bool = true) {
 			#if VIDEOS_ALLOWED
 			if(FileSystem.exists(Paths.video(videoFile))) {
-				PlayState.instance.startVideo(videoFile);
+				PlayState.instance.startVideo(videoFile, forMidSong, canSkip, shouldLoop, playOnLoad);
 				return true;
 			} else {
 				luaTrace('startVideo: Video file not found: ' + videoFile, false, false, FlxColor.RED);
@@ -3343,13 +3489,21 @@ class FunkinLua {
 			}
 		});
 		Lua_helper.add_callback(lua, "getSoundTime", function(tag:String) {
-			if(tag != null && tag.length > 0 && PlayState.instance.modchartSounds.exists(tag)) {
+			// 1.0.4: 不带 tag 读的是当前背景音乐的时间。
+			if(tag == null || tag.length < 1) {
+				return FlxG.sound.music != null ? FlxG.sound.music.time : 0;
+			}
+			if(PlayState.instance.modchartSounds.exists(tag)) {
 				return PlayState.instance.modchartSounds.get(tag).time;
 			}
 			return 0;
 		});
 		Lua_helper.add_callback(lua, "setSoundTime", function(tag:String, value:Float) {
-			if(tag != null && tag.length > 0 && PlayState.instance.modchartSounds.exists(tag)) {
+			if(tag == null || tag.length < 1) {
+				if(FlxG.sound.music != null) FlxG.sound.music.time = value;
+				return;
+			}
+			if(PlayState.instance.modchartSounds.exists(tag)) {
 				var theSound:FlxSound = PlayState.instance.modchartSounds.get(tag);
 				if(theSound != null) {
 					var wasResumed:Bool = theSound.playing;
@@ -3408,7 +3562,8 @@ class FunkinLua {
 
 
 		// LUA TEXTS
-		Lua_helper.add_callback(lua, "makeLuaText", function(tag:String, text:String, width:Int, x:Float, y:Float) {
+		Lua_helper.add_callback(lua, "makeLuaText", function(tag:String, ?text:String = '', ?width:Int = 0, ?x:Float = 0, ?y:Float = 0) {
+			if(tag == null) return;
 			tag = tag.replace('.', '');
 			resetTextTag(tag);
 			var leText:ModchartText = new ModchartText(x, y, text, width);
@@ -3467,12 +3622,12 @@ class FunkinLua {
 			var obj:FlxText = getTextObject(tag);
 			if(obj != null)
 			{
-				var colorNum:Int = Std.parseInt(color);
-				if(!color.startsWith('0x')) colorNum = Std.parseInt('0xff' + color);
+				// 1.0.4 里 color 也是必填，但缺省时崩游戏不如安全回落。
+				var colorNum:Int = safeColor(color);
 
 				obj.borderSize = size;
 				obj.borderColor = colorNum;
-				obj.borderStyle = switch(style.trim().toLowerCase()) {
+				obj.borderStyle = switch(style == null ? 'outline' : style.trim().toLowerCase()) {
 					case 'outline': OUTLINE;
 					case 'fast': OUTLINE_FAST;
 					case 'shadow': SHADOW;
@@ -3487,8 +3642,7 @@ class FunkinLua {
 			var obj:FlxText = getTextObject(tag);
 			if(obj != null)
 			{
-				var colorNum:Int = Std.parseInt(color);
-				if(!color.startsWith('0x')) colorNum = Std.parseInt('0xff' + color);
+				var colorNum:Int = safeColor(color);
 
 				obj.color = colorNum;
 				return true;
@@ -3703,9 +3857,34 @@ class FunkinLua {
 			}
 			return false;
 		});
-		Lua_helper.add_callback(lua, "deleteFile", function(path:String, ?ignoreModFolders:Bool = false)
+		Lua_helper.add_callback(lua, "deleteFile", function(path:String, ?ignoreModFolders:Bool = false, ?absolute:Bool = false)
 		{
 			try {
+				// 1.0.4 语义: absolute=true 时把 path 当作原样路径, 否则走 Paths.getPath。
+				// 0.6.3/0.7.3 的实现不同(先查 modFolders), 所以按版本分支 —— 旧模式逐字节不变。
+				if (CompatEngine.is104())
+				{
+					var lePath104:String = path;
+					if(!absolute)
+					{
+						// 本引擎的 getPath 第三个参数是 library:String(不是 1.0.4 的 ignoreModFolders:Bool),
+						// 所以这里用 modFolders + getPath 组合出 1.0.4 的解析顺序。
+						#if MODS_ALLOWED
+						var modPath104:String = Paths.modFolders(path);
+						if(!ignoreModFolders && FileSystem.exists(modPath104)) lePath104 = modPath104;
+						else lePath104 = Paths.getPath(path, TEXT);
+						#else
+						lePath104 = Paths.getPath(path, TEXT);
+						#end
+					}
+					if(FileSystem.exists(lePath104))
+					{
+						FileSystem.deleteFile(lePath104);
+						return true;
+					}
+					return false;
+				}
+
 				#if MODS_ALLOWED
 				if(!ignoreModFolders)
 				{
@@ -3765,8 +3944,7 @@ class FunkinLua {
 		Lua_helper.add_callback(lua, "luaSpriteMakeGraphic", function(tag:String, width:Int, height:Int, color:String) {
 			luaTrace("luaSpriteMakeGraphic is deprecated! Use makeGraphic instead", false, true);
 			if(PlayState.instance.modchartSprites.exists(tag)) {
-				var colorNum:Int = Std.parseInt(color);
-				if(!color.startsWith('0x')) colorNum = Std.parseInt('0xff' + color);
+				var colorNum:Int = safeColor(color);
 
 				PlayState.instance.modchartSprites.get(tag).makeGraphic(width, height, colorNum);
 			}
@@ -4370,7 +4548,8 @@ public static function getModSetting(saveTag:String, ?modName:String = null):Dyn
             if(settings == null) settings = new Map<String, Dynamic>();
             try {
                 var rawJson:String = File.getContent(path);
-                var parsedJson:Array<Dynamic> = haxe.Json.parse(rawJson); 
+                // 1.0.4 的 LuaUtils.getModSetting 用 tjson：容忍尾随逗号与注释。
+                var parsedJson:Array<Dynamic> = backend.JsonUtil.parseTolerant(rawJson); 
                 
                 for(item in parsedJson) {
                     if(item.save == saveTag) {
@@ -4495,6 +4674,14 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 			}
 			return target;
 		}
+		// 1.0.4 / 0.7.3 / 0.6.3 的 getVarInArray 都有这一段: allowMaps = true 时把 Map 当成
+		// 字典查一个 key。本引擎移植时漏掉了它, 于是
+		//   getPropertyFromClass('backend.ClientPrefs', 'keyBinds.note_left', true)
+		// 会拿 ClientPrefs.keyBinds 这个 Map 去 Reflect.getProperty, 永远得到 null ——
+		// SonicTheFunkChinese 的键位设置页因此整页显示 "- - -"。
+		if(allowMaps && isMap(instance))
+			return instance.get(variable);
+
 		if(stateVars != null && stateVars.exists(variable))
 		{
 			var retVal:Dynamic = stateVars.get(variable);
@@ -4519,13 +4706,27 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 					var lastIndex:Int = myArg.lastIndexOf('::');
 
 					var split:Array<String> = myArg.split('.');
-					args[i] = (lastIndex > -1) ? Type.resolveClass(myArg.substring(0, lastIndex)) : PlayState.instance;
-					for (j in 0...split.length)
+					var rootedAtState:Bool = (lastIndex <= -1);
+					var root:Dynamic = rootedAtState ? PlayState.instance : Type.resolveClass(myArg.substring(0, lastIndex));
+					var first:String = split[0].trim();
+					var resolved:Dynamic = null;
+
+					// 关键: 第一段必须先按"模组对象"查。
+					// Psych 把 modchart sprite / text 和脚本变量放在**同一个** variables 表里,
+					// 所以 instanceArg('某个sprite') 天然能解析; 本引擎分成
+					// modchartSprites / modchartTexts / variables 三张表, 只查 getVarInArray 会
+					// 永远得到 null —— 于是 callMethodFromClass('flixel.FlxG','mouse.overlaps',
+					// {instanceArg('button')}) 会把 null 送进 flixel, 直接 ACCESS_VIOLATION。
+					if(rootedAtState && PlayState.instance != null)
+						resolved = PlayState.instance.getLuaObject(first, true);
+					if(resolved == null)
+						resolved = getVarInArray(root, first);
+
+					for (j in 1...split.length)
 					{
-						//trace('Op2: ${Type.getClass(args[i])}, ${split[j]}');
-						args[i] = getVarInArray(args[i], split[j].trim());
-						//trace('Op3: ${args[i] != null ? Type.getClass(args[i]) : null}');
+						resolved = getVarInArray(resolved, split[j].trim());
 					}
+					args[i] = resolved;
 				}
 			}
 		}
@@ -4552,8 +4753,33 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 		}
 
 		funcToRun = cast obj;
+		if (funcToRun == null) return null;
+
+		// instanceArg('tag') 传进来的是 "##PSYCHLUA_STRINGTOOBJ::tag"；如果那个对象当时并不存在,
+		// 解析结果就是 null。把 null 直接送进 flixel 方法会触发原生空指针 ——
+		// 实测崩溃: callMethodFromClass('flixel.FlxG','mouse.overlaps',{instanceArg('x'),...})
+		//          -> FlxPointer.overlaps(null) -> ACCESS_VIOLATION read at 0x0。
+		// 这里保持 Psych 的参数解析语义, 但在"引用的对象不存在"时跳过调用并提示, 而不是崩游戏。
+		var raw:Array<Dynamic> = args.copy();
+		var parsed:Array<Dynamic> = parseInstances(raw);
+		for (i in 0...raw.length)
+		{
+			if (parsed[i] == null && isInstanceArg(raw[i]))
+			{
+				// callMethodFromObject 是 static, 不能调用实例方法 luaTrace —— 走静态日志。
+				TraceManager.error('trace.lua.callMethodMissingInstance', 'callMethod: instanceArg target does not exist, skipped {}()', [funcStr]);
+				return null;
+			}
+		}
+
 		//trace('end: $obj');
-		return funcToRun != null ? Reflect.callMethod(obj, funcToRun, args) : null;
+		return Reflect.callMethod(obj, funcToRun, parsed);
+	}
+
+	/** 是否是 instanceArg() 生成的引用字符串（'##PSYCHLUA_STRINGTOOBJ::...'）。 */
+	static function isInstanceArg(value:Dynamic):Bool
+	{
+		return Std.isOfType(value, String) && (cast(value, String)).startsWith(instanceStr);
 	}
 
 	static function getTextObject(name:String):FlxText
@@ -4802,6 +5028,7 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 
 	function loadFrames(spr:FlxSprite, image:String, spriteType:String)
 	{
+		if (spriteType == null) spriteType = CompatEngine.defaultSpriteType();
 		switch(spriteType.toLowerCase().trim())
 		{
 			case "texture" | "textureatlas" | "tex":
@@ -4810,8 +5037,16 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 			case "texture_noaa" | "textureatlas_noaa" | "tex_noaa":
 				spr.frames = AtlasFrameMaker.construct(image, null, true);
 
+			// 1.0.4: aseprite / texture-packer JSON 图集。
+			case 'aseprite' | 'ase' | 'json' | 'jsoni8':
+				spr.frames = Paths.getAsepriteAtlas(image);
+
 			case "packer" | "packeratlas" | "pac":
 				spr.frames = Paths.getPackerAtlas(image);
+
+			// 1.0.4: 'auto' = 自动判定格式 (sparrow XML → packer/aseprite JSON → TXT)。
+			case "auto":
+				spr.frames = Paths.getAtlas(image);
 
 			default:
 				spr.frames = Paths.getSparrowAtlas(image);
@@ -4949,6 +5184,7 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 	// startTween 的 tween_ 标签规范化（与 0.7.3/1.0.4 一致）
 	// startTween tag normalisation (matches 0.7.3/1.0.4)
 	function formatVariable(tag:String):String {
+		if (tag == null) return '';
 		return tag.trim().replace(' ', '_').replace('.', '');
 	}
 
@@ -4974,7 +5210,8 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 
 	function cameraFromString(cam:String):FlxCamera {
 		if (PlayState.instance != null) {
-			switch(cam.toLowerCase()) {
+			// cam 缺省(null)时按 'game' 走，不要在 null 上调 toLowerCase。
+			switch(cam == null ? '' : cam.toLowerCase()) {
 				case 'camhud' | 'hud': return PlayState.instance.camHUD;
 				case 'camother' | 'other': return PlayState.instance.camOther;
 			}
@@ -5116,8 +5353,13 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 		if (!ScriptErrorGuard.isLoopCallback(callback)) return false;
 		errorLoopCount++;
 		if (errorLoopCount >= ClientPrefs.data.scriptErrorLimit) {
-			closed = true;
-			TraceManager.warn('trace.script.ignoredAfterErrors', 'Script ignored after {} repeated errors: {}', [errorLoopCount, scriptName]);
+			// 1.0.4 不会因为脚本报错就停掉整个脚本: 一个每帧报错的回调本来就每次都中断在同一行,
+			// 而 onEndSong / onEvent / onTimerCompleted 这些回调必须照常工作。以前这里 closed = true
+			// 会把整个脚本封死 —— 实测 SonicTheFunkChinese 的 results.lua 在第一秒就被打死,
+			// onEndSong 永不执行, 结算界面永远不出现。现在只安静下来。
+			// 为了日志不被刷爆, 只在刚触发时和之后每 600 次留一条汇总。
+			if (errorLoopCount == ClientPrefs.data.scriptErrorLimit || errorLoopCount % 600 == 0)
+				TraceManager.warn('trace.script.errorLoopSilenced', 'Repeated errors silenced ({} times, script still running): {} :: {}', [errorLoopCount, scriptName, callback]);
 			return true;
 		}
 		return false;
@@ -5225,17 +5467,19 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 		return Function_Continue;
 	}
 
-	static function addAnimByIndices(obj:String, name:String, prefix:String, indices:String, framerate:Int = 24, loop:Bool = false)
+	/**
+	 * 1.0.4 风格: indices 可以是 '0,1,2' 字符串或索引数组; prefix 为 null 时走
+	 * `animation.add`(直接按帧索引建动画), 否则走 `animation.addByIndices`。
+	 * 帧率放宽为 Float。
+	 */
+	static function addAnimByIndices(obj:String, name:String, prefix:String, indices:Any, framerate:Float = 24, loop:Bool = false)
 	{
-		var strIndices:Array<String> = indices.trim().split(',');
-		var die:Array<Int> = [];
-		for (i in 0...strIndices.length) {
-			die.push(Std.parseInt(strIndices[i]));
-		}
+		var die:Array<Int> = normalizeFrameIndices(indices);
 
 		if(PlayState.instance.getLuaObject(obj, false)!=null) {
 			var pussy:FlxSprite = PlayState.instance.getLuaObject(obj, false);
-			pussy.animation.addByIndices(name, prefix, die, '', framerate, loop);
+			if(prefix != null) pussy.animation.addByIndices(name, prefix, die, '', safeInt(framerate), loop);
+			else pussy.animation.add(name, die, framerate, loop);
 			if(pussy.animation.curAnim == null) {
 				pussy.animation.play(name, true);
 			}
@@ -5244,13 +5488,171 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 
 		var pussy:FlxSprite = Reflect.getProperty(getInstance(), obj);
 		if(pussy != null) {
-			pussy.animation.addByIndices(name, prefix, die, '', framerate, loop);
+			if(prefix != null) pussy.animation.addByIndices(name, prefix, die, '', safeInt(framerate), loop);
+			else pussy.animation.add(name, die, framerate, loop);
 			if(pussy.animation.curAnim == null) {
 				pussy.animation.play(name, true);
 			}
 			return true;
 		}
 		return false;
+	}
+
+	/**
+	 * Lua 数字 -> Int 的安全转换: 兼容用 Float 传参的 1.0.4 模组
+	 * (本引擎固定的 flixel 版本里 setGraphicSize / addByPrefix 仍是 Int)。
+	 * NaN / null 一律回落为 0, 绝不抛异常。
+	 */
+	/**
+	 * Lua 数字 -> Int 的安全转换。
+	 *
+	 * 关键点: linc_luajit 的 Convert.fromLua 对 LUA_TNUMBER 返回的是
+	 * **Float**(lua_Number 是 double), 所以任何声明为 `Any`/`Dynamic` 的数字参数
+	 * 在运行时都是 Float 而不是 Int —— 直接 `Std.isOfType(v, Int)` 会永远为假。
+	 */
+	public static function anyToInt(value:Dynamic, fallback:Int = 0):Int
+	{
+		if (value == null) return fallback;
+		if (Std.isOfType(value, Int)) return cast value;
+		if (Std.isOfType(value, Float))
+		{
+			var f:Float = cast(value, Float);
+			return Math.isNaN(f) ? fallback : Std.int(f);
+		}
+		var parsed:Null<Int> = Std.parseInt(Std.string(value));
+		return parsed == null ? fallback : parsed;
+	}
+
+	/**
+	 * 把 Lua 传来的颜色字符串安全地转成 ARGB 整数。
+	 * null / 空 / 非法值一律返回不透明白色，绝不抛异常 —— 颜色是脚本里最常缺省
+	 * 的参数之一（例如 setTextBorder('x', 4) 少传颜色），在 cpp 上对 null 调
+	 * startsWith 会直接崩游戏。
+	 */
+	public static function safeColor(color:String):Int
+	{
+		var c:String = (color == null) ? '' : color.trim();
+		if (c.length == 0) return 0xFFFFFFFF;
+
+		// 0.6.3/0.7.3 保持原有的宽松行为（前缀 0xff 后交给 Std.parseInt，它会部分解析，
+		// 例如 '0xffzzz' → 255）—— 只有 1.0.4 追加严格校验，这样 063/073 逐字节等价。
+		if (!CompatEngine.is104())
+		{
+			var lenient:String = c;
+			if (!lenient.startsWith('0x')) lenient = '0xff' + lenient;
+			var lenientParsed:Null<Int> = Std.parseInt(lenient);
+			return lenientParsed == null ? 0xFFFFFFFF : lenientParsed;
+		}
+
+		var hadPrefix:Bool = c.startsWith('0x') || c.startsWith('0X');
+		var digits:String = hadPrefix ? c.substr(2) : c;
+
+		// Std.parseInt 会"部分解析"—— '0xffzzz' 会安静地返回 255 而不是失败, 所以这里
+		// 必须自己校验: 只接受全是十六进制数字的 6 位(RGB / AARRGGBB 前缀形式)或 8 位。
+		// 非法输入一律回落为不透明白色, 而不是悄悄变成某个随机颜色。
+		if (digits.length != 6 && digits.length != 8) return 0xFFFFFFFF;
+		for (i in 0...digits.length)
+		{
+			var code:Int = digits.charCodeAt(i);
+			var isHex:Bool = (code >= 48 && code <= 57)   // 0-9
+				|| (code >= 97 && code <= 102)            // a-f
+				|| (code >= 65 && code <= 70);            // A-F
+			if (!isHex) return 0xFFFFFFFF;
+		}
+
+		// Psych 约定: 不带前缀的 6 位是 RGB(alpha 强制 FF); 带前缀则原样使用。
+		var full:String = hadPrefix ? ('0x' + digits)
+			: ((digits.length == 6) ? ('0xff' + digits) : ('0x' + digits));
+		var parsed:Null<Int> = Std.parseInt(full);
+		return parsed == null ? 0xFFFFFFFF : parsed;
+	}
+
+	public static inline function safeInt(value:Null<Float>):Int
+	{
+		if (value == null) return 0;
+		if (Math.isNaN(value)) return 0;
+		return Std.int(value);
+	}
+
+	/**
+	 * 把 Lua 传来的帧索引统一成 Array<Int>:
+	 *   null            -> [0]           (1.0.4 默认)
+	 *   '0,1,2' / '0' -> [0,1,2]
+	 *   {0, 1.0, '2'}   -> [0,1,2]
+	 * 任何无法解析的元素按 0 处理，绝不抛异常(脚本不应因参数类型崩游戏)。
+	 */
+	public static function normalizeFrameIndices(indices:Any):Array<Int>
+	{
+		var out:Array<Int> = [];
+		if(indices == null)
+		{
+			out.push(0);
+			return out;
+		}
+
+		if(Std.isOfType(indices, String))
+		{
+			var str:String = cast(indices, String);
+			for(part in str.split(','))
+			{
+				var p:String = part.trim();
+				if(p.length == 0) continue;
+				var v:Null<Int> = Std.parseInt(p);
+				out.push(v == null ? 0 : v);
+			}
+			if(out.length == 0) out.push(0);
+			return out;
+		}
+
+		if(Std.isOfType(indices, Array))
+		{
+			var arr:Array<Dynamic> = cast indices;
+			for(v in arr)
+			{
+				if(v == null) { out.push(0); continue; }
+				if(Std.isOfType(v, Int)) out.push(cast v);
+				else if(Std.isOfType(v, String))
+				{
+					var parsed:Null<Int> = Std.parseInt(cast(v, String).trim());
+					out.push(parsed == null ? 0 : parsed);
+				}
+				else if(Std.isOfType(v, Float)) out.push(Std.int(cast(v, Float)));
+				else
+				{
+					var parsed:Null<Int> = Std.parseInt(Std.string(v));
+					out.push(parsed == null ? 0 : parsed);
+				}
+			}
+			if(out.length == 0) out.push(0);
+			return out;
+		}
+
+		// 单个数字 / 其它标量
+		if(Std.isOfType(indices, Int)) { out.push(cast indices); return out; }
+		if(Std.isOfType(indices, Float)) { out.push(Std.int(cast(indices, Float))); return out; }
+		var single:Null<Int> = Std.parseInt(Std.string(indices));
+		out.push(single == null ? 0 : single);
+		return out;
+	}
+
+	/**
+	 * 1.0.4 `allowInstances` 用: 把 instanceArg() 产生的
+	 * `##PSYCHLUA_STRINGTOOBJ::obj[::Class]` 字符串还原成对象。
+	 * 非字符串/数组原样返回。
+	 */
+	public static function parseInstanceValue(value:Dynamic):Dynamic
+	{
+		if(value == null) return null;
+		if(Std.isOfType(value, Array))
+		{
+			var arr:Array<Dynamic> = cast value;
+			if(arr.length > 0) parseInstances(arr);
+			return arr;
+		}
+		if(!Std.isOfType(value, String)) return value;
+		var arr:Array<Dynamic> = [value];
+		parseInstances(arr);
+		return arr[0];
 	}
 
 	public static function getPropertyLoopThingWhatever(killMe:Array<String>, ?checkForTextsToo:Bool = true, ?getProperty:Bool=true):Dynamic

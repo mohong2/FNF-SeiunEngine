@@ -222,7 +222,7 @@ class ModSelectSubstate extends MusicBeatSubstate
 				var rawJson:String = File.getContent(packPath);
 				if (rawJson != null && rawJson.length > 0)
 				{
-					var stuff:Dynamic = haxe.Json.parse(rawJson);
+					var stuff:Dynamic = backend.JsonUtil.parseTolerant(rawJson);
 					needsRestart = Reflect.getProperty(stuff, "restart") == true;
 				}
 			}

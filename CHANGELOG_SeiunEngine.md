@@ -394,7 +394,7 @@
 
 - 「更新与渲染分离」这条怀疑方向经核查**不成立**：`RenderThread` 是空壳（多线程渲染早已移除），`drawWrapper` 在 `Main.hx` 与 `ClientPrefs.hx` 中都被置空，渲染始终在单线程主循环里。真正的 update/draw 重排发生在 lime 的原生帧循环，不在 flixel。
 - 相机特效完成回调里销毁相机后无保护解引用 `flashSprite` 的问题也一并修了。
-- 完整的排查记录（含证据、代码位置与取舍理由）见 `docs/CRASH_ROOTCAUSE_20260912.md`。
+- 完整的排查记录（含证据、代码位置与取舍理由）保存在内部文档里，不随引擎仓库发布。
 - ⚠ **lime / flixel 两处补丁必须上游化到 `mohong2/lime` 与 `mohong2/flixel`**，否则 CI 重新克隆依赖后，打出来的包又会带上这两个缺陷。
 
 （2026-09-12，日志还是 AI 代笔。）
@@ -833,7 +833,7 @@ Bundled regression harness (temp/touch-fix-test/TouchFixTest.hx): replicates the
 
 - The "update/render separation" theory was checked and **does not hold**: `RenderThread` is a stub (multi-threaded rendering was removed long ago) and `drawWrapper` is nulled in both `Main.hx` and `ClientPrefs.hx`, so rendering has always been single-threaded. The real update/draw rescheduling lives in lime's native frame loop, not in flixel.
 - Also fixed: a camera could be destroyed from inside its own effect completion callback and then have `flashSprite` dereferenced unguarded.
-- The full investigation (evidence, code locations, and the reasoning behind each trade-off) is in `docs/CRASH_ROOTCAUSE_20260912.md`.
+- The full investigation (evidence, code locations, and the reasoning behind each trade-off) is kept in an internal document and is not shipped with the engine repository.
 - ⚠ **The lime and flixel patches must be upstreamed to `mohong2/lime` and `mohong2/flixel`**, otherwise CI re-clones the dependencies and ships those two defects again.
 
 (2026-09-12, changelog written by AI as usual.)
@@ -872,7 +872,330 @@ Bundled regression harness (temp/touch-fix-test/TouchFixTest.hx): replicates the
 
 (2026-10-01, changelog written by AI as usual.)
 
----
+### October 2, 2026 — Psych Engine 1.0.4 compatibility pass
+
+> The engine has always been a 0.6.3 fork with a `compatEngine` switch, but the 1.0.4 side of that
+> switch was mostly a label. Psych 1.0.4 relaxed a batch of Lua parameters from required to optional;
+> this engine kept registering the old, required signature, so a 1.0.4 mod that omitted one got
+> `nil` for a `String` parameter, called a method on it, and took the process down with a native
+> access violation that no Haxe `try/catch` can trap. This round makes the 1.0.4 API complete.
+
+#### Lua API surface: 62 divergent signatures closed, 2 functions added
+
+- Every callback Psych 1.0.4 relaxed is now relaxed here too: `doTween*` / `noteTween*` `ease`,
+  `mouseClicked/Pressed/Released` `button`, `getMouseX/Y` + `getScreenPositionX/Y` `camera`,
+  `keyJustPressed/Pressed/Released` `name`, `makeLuaText` (all four), `makeAnimatedLuaSprite` /
+  `loadFrames` `spriteType`, `playMusic` / `playSound` `volume` (+ `playSound` `loop`),
+  `precacheImage` `allowGPU`, `triggerEvent` `value1/value2`, `getObjectOrder` /
+  `setObjectOrder` / `removeLuaSprite` `group`, `deleteFile` `absolute`,
+  `setProperty` / `setPropertyFromClass` / `setPropertyFromGroup` `allowInstances`,
+  `getPropertyFromGroup` / `setPropertyFromGroup` `allowMaps`, `startVideo` (all four new):
+  `canSkip`, `forMidSong`, `shouldLoop`, `playOnLoad`.
+- Types that blocked real mods are widened: `addAnimation` takes `Any` frames (array *or* the
+  `'0,1,2'` string form 1.0.4 accepts) with the `prefix == null` branch; animation framerates are
+  `Float`; `setGraphicSize` takes `Float` x/y. The vendored flixel still wants `Int` there, so
+  conversion goes through a NaN-safe `safeInt()`.
+- `removeFromGroup` now answers both dialects: `(group, ?index, ?tag, ?destroy)` when the third
+  argument is not a Bool, and the historical `(group, index, dontDestroy)` when it is -- no 0.6.3
+  mod changes meaning.
+- Version-dependent defaults moved behind `CompatEngine` instead of being copied from 1.0.4:
+  `setHealth()` is 0 on 0.6.3/0.7.3 and 1 on 1.0.4, `setAchievementScore()` is 1 vs 0,
+  `setObjectCamera()` is `''` vs `'game'`, `loadFrames`/`makeAnimatedLuaSprite` default to
+  `sparrow` vs `auto`.
+- Added the two missing 1.0.4 functions, `getFileTranslation` and `getTranslationPhrase`, backed
+  by a new reader for 1.0.4's plain-text `data/<language>.lang` format (merged with the engine's
+  native JSON language tables, `{1}`/`{2}` substitution included). `Paths.getAtlas` /
+  `Paths.getAsepriteAtlas` were ported so `'auto'` really auto-detects the atlas format
+  (sparrow XML → texture-packer/aseprite JSON → packer TXT). HScript gained `getModSetting` and
+  optional-argument `keyJustPressed` / `keyPressed` / `keyReleased`.
+
+#### Mod JSON is parsed the way 1.0.4 parses it (the "many 1.0.4 mods don't fit" half)
+
+- Psych 1.0.4 reads mod data with `tjson.TJSON.parse`, and tjson **tolerates trailing commas and
+  `//` / `/* */` comments**. This engine used strict `haxe.Json.parse` in the same places, so a
+  `pack.json` ending in `"color": [0, 0, 0],\n}` simply failed to load. The shipped crash logs
+  had it six times per session: `加载 pack.json 失败: Invalid char 125 at position 147` (125 is
+  `}`), and 2 of the 21 pack.json files in the installed mods have exactly that trailing comma.
+- **Measured on a real mod**: `mods/SonicTheFunkChinese/pack.json` ends with `"color": [0, 0, 0],\n}`.
+  `tjson` parses it (`runsGlobally=true`), strict JSON throws `Invalid char 125 at position 147`.
+  `Paths.pushGlobalMods()` sits inside a `try/catch` that only logs, so the throw meant the mod was
+  **never registered as a global mod** -- before the fix the engine listed 2 global mods, after it
+  lists 3, and the third one is `SonicTheFunkChinese`. Everything that resolves through
+  `Paths.modFolders` (global-mod assets, `data/<song>/` scripts, `scripts/`) was affected.
+- New `backend/JsonUtil.parseTolerant` (tjson first, strict parser as fallback) is now used at the
+  sites where 1.0.4 uses tjson: `pack.json` (ModConfig, ModsMenuState, ModsMenuStateOld,
+  ModSelectSubstate, and Paths' global-mod scan), `stages/*.json`, `data/settings.json`
+  (`getModSetting`), and `images/gfDanceTitle.json`. Song / Character / Dialogue keep strict
+  parsing, because 1.0.4 is strict there too.
+
+#### Callback arguments
+
+- `eventEarlyTrigger` is called with `(event, value1, value2, strumTime)` and `doTween*` reports
+  `onTweenCompleted(tag, vars)`, both matching 1.0.4. 0.6.3 scripts that declare one parameter are
+  unaffected -- extra arguments are ignored by both Lua and HScript.
+
+#### Script hardening (fewer ways for a script to kill the process)
+
+- `makeLuaSprite()` / `makeAnimatedLuaSprite()` / `makeLuaText()` / `makeFlxAnimateSprite()` /
+  `createInstance()` skip safely when the tag is missing instead of dereferencing `null`; the
+  installed `SonicTheFunkChinese/data/menu/menu.lua` literally contains a bare `makeLuaSprite()`.
+- `safeColor()` replaces the twelve hand-rolled hex conversions, so `setTextBorder('scoreTxt', 4)`
+  landing on a `null` colour (present in the installed Deathmatch mod) yields opaque white rather
+  than an access violation. `cameraFromString(null)` no longer calls `toLowerCase()` on `null`.
+
+#### Fixed: `close()` closed the wrong script (the reason SonicTheFunkChinese's custom menu never appeared)
+
+- `Lua_helper.callbacks` is a **static** name→function map in linc_luajit: every Lua state registers
+  its same-named callbacks into one shared table, so **the last-created instance wins**. Our
+  `addLocalCallback` passed the real closure into that global table (Psych 1.0.4 passes `null` and
+  keeps the function in its own per-instance map), so the `this` captured by `close()` was not
+  necessarily the script that called it.
+- Measured consequence on SonicTheFunkChinese: the mod ships 19 Lua scripts; `data/menu/menu.lua`
+  is loaded **last**, and `scripts/MetalJet.lua` / `scripts/PEELOUTlegs.lua` call `close()` inside
+  their `onCreatePost`. Those calls set `closed = true` on `menu.lua` instead of on themselves, so
+  `callOnLuas('onCreatePost')` skipped it. The custom menu was never built, the game sat in the
+  empty `Menu` chart with the engine HUD visible, and the only surviving evidence was the `cursor`
+  sprite its `onCreate` had already created. The log showed it exactly: 18 scripts loaded,
+  `luaArray=11` before the dispatch, and `onCreatePost` reaching the other 10.
+- Fix: `FunkinLua.executing` now records the instance whose callback is running (`call()` became a
+  thin wrapper around `callInner()`, restoring the previous value so nested dispatch still works),
+  and `close()` acts on **that** script. `getModSetting` reads `modFolder` from the same pointer,
+  because with several global mods loaded the "last registered" instance could belong to another mod.
+- `close()` now also logs `CLOSE() <script>` so this class of bug is visible in `script_log.txt`.
+
+#### Fixed: native crash in `callMethodFromClass(... 'mouse.overlaps' ...)` (SonicTheFunkChinese `Extras`)
+
+- Crash report `0xC0000005 read at 0x0` in `states.PlayState | song=Extras`. The map-resolved backtrace
+  was unambiguous: `flixel::input::FlxPointer_obj::overlaps + 0x246` ←
+  `FunkinLua_obj::callMethodFromObject` ← `Lua_helper_obj::callback_handler` ← `PlayState_obj::callOnLuas`.
+  A mod passed a null object into a flixel method:
+  `callMethodFromClass('flixel.FlxG', 'mouse.overlaps', {instanceArg('tag'), instanceArg('camHUD')})`.
+- **Root cause: `instanceArg()` never resolved modchart objects.** Psych keeps modchart sprites, modchart
+  texts and script variables in one `MusicBeatState.getVariables()` map, so
+  `instanceArg('someSprite')` resolves naturally. This engine keeps them in three separate maps
+  (`modchartSprites` / `modchartTexts` / `variables`) and `parseInstances` only consulted
+  `getVarInArray`, i.e. the variables map plus reflection -- so **every** `instanceArg('modchartTag')`
+  came back `null`. The null then went straight into `FlxPointer.overlaps` and faulted.
+- Fixes: `parseInstances` resolves the first segment through `PlayState.getLuaObject()` (modchart
+  sprites/texts) before falling back to `getVarInArray`, and `callMethodFromObject` now skips the call
+  with a logged warning when an `instanceArg` did not resolve, instead of invoking a method with null.
+  `callMethod` / `callMethodFromClass` were changed to hand it the raw argument array so that
+  distinction is still available.
+- Two tolerance aliases were added for scripts that use a name Psych never had:
+  `doesLuaSpriteExist` / `doesLuaTextExist` (`squaretransition.lua` in the same mod calls the former
+  and errored on every `onTimerCompleted`, spamming the log). They forward to the existing
+  `luaSpriteExists` / `luaTextExists`; the API gate now reports 295 callbacks.
+
+#### Fixed: the engine mouse cursor leaked into gameplay
+
+- SeiunEngine's own menus turn Flixel's software cursor on (`FreeplayState`, `MainMenuState`,
+  `ModsMenuState`, `OptionsState`), and `PauseSubState` turns it on for its clickable items -- but
+  nothing ever turned it back **off**. A mod that draws its own cursor (SonicTheFunkChinese's
+  `data/menu/menu.lua` positions a `cursor` sprite at `getMouseX('other')` every frame) therefore
+  showed two cursors at once, and the software one stayed on screen after unpausing.
+- PlayState 0.6.3/0.7.3/1.0.4 never display it (their menus never enable it), so `PlayState.create()`
+  now sets `FlxG.mouse.visible = false` before any script runs -- identical to vanilla in all three
+  compat modes, and a mod can still turn it back on from `onCreate`. `PauseSubState` now saves the
+  previous value and restores it in `destroy()` instead of leaving the cursor on.
+
+#### Performance: the script log no longer traces high-frequency callbacks
+
+- The first version of the diagnostics logged **every** non-loop callback, which meant an
+  open+write+close of `logs/script_log.txt` for `onEvent` / `onNoteHit` / `onKeyPress` -- measurable
+  frame cost on a dense chart. `[cb]` is now restricted to a lifecycle allow-list
+  (`onCreate`, `onCreatePost`, `onDestroy`, `onStartCountdown`, `onCountdownStarted`,
+  `onSongStart`, `onEndSong`, `onGameOver`, `onGameOverStart`, `onPause`, `onResume`), which is
+  exactly what is needed to answer "did this script get its callback?" and is written about ten
+  times per song instead of thousands.
+
+#### Strict 0.6.3 / 0.7.3 parity restored for two earlier changes
+
+- `keyJustPressed` / `keyPressed` / `keyReleased` (Lua **and** HScript) only lower-case the key name
+  when the simulated engine is 0.7.3 or 1.0.4. 0.7.3 and 1.0.4 both do `name.toLowerCase()`, 0.6.3
+  does not, so the conversion is now gated on `!CompatEngine.is063()` and 0.6.3 behaves exactly as
+  before.
+- `safeColor()` keeps the historical lenient path outside 1.0.4: `'0xff' + color` followed by
+  `Std.parseInt` (which partially parses, so `'zzz'` still yields 255 exactly like the old code).
+  Only the 1.0.4 branch adds the hex validation that rejects garbage. `null` / empty is opaque
+  white in every mode, because the old code crashed there.
+
+#### Script diagnostics: `logs/script_log.txt`
+
+- New `backend/ScriptLog`: a bounded, always-on text log next to the executable (recreated each
+  launch, capped at 20,000 lines, any IO failure just stops writing). It records every loaded Lua
+  script with its absolute path, every script folder that was scanned (with `MISSING` when the
+  directory does not exist), every script error with its script name + callback name + raw Lua
+  error, and which scripts received `onCreate` / `onCreatePost`.
+- It also logs the line that matters most for "my mod's script never ran": `[scan] song=... path=...
+  currentMod=... globalMods=[...]`, because whether a mod counts as the *current* or a *global* mod
+  is exactly what decides whether `data/<song>/` is searched at all.
+- Unit-tested for the append path and the line cap (`ScriptLog.write` uses `File.append(path)` +
+  `writeString`; the two-argument form is `(path, binary:Bool)`, which silently breaks the log).
+
+#### Fixed: `getDataFromSave()` threw away its default value (the reason the options screen was half-built and ESC did nothing)
+
+- 0.7.3 and 1.0.4 resolve a missing save field to the caller's default; 0.6.3 returns the raw
+  `Reflect.field(...)`, i.e. `null`. This engine had kept the 0.6.3 body, so any 1.0.4 mod that
+  writes `x = getDataFromSave('save', 'field', 800)` got `nil` whenever *another* script had already
+  called `initSaveData` for that save but the field itself was not written yet.
+- Measured on SonicTheFunkChinese: `scripts/difficultyChanges.lua:3` runs `initSaveData('globalsave')`
+  at load, and global scripts load before `data/options/options.lua`. So `options.lua:106`
+  (`littlebuddyX = getDataFromSave('globalsave', 'littlebuddyX', 800)`) came back `nil`.
+  `onCreatePost` then died at line 297 (`arithmetic on littlebuddyX`), which is why **the whole
+  options menu was never built** after that point, and `onUpdatePost` died at line 1410
+  (`getProperty('selectionOptions2.alpha') > 0` -> compare number with nil) **before** reaching the
+  `keyJustPressed('BACK')` branch at line 1416 -- which is exactly why ESC could not leave the menu.
+- Fix: non-0.6.3 modes use `Reflect.hasField(saveData, field) ? field : defaultValue`, matching the
+  0.7.3 / 1.0.4 reference bodies line for line. `CompatEngine.is063()` keeps the historical raw
+  lookup, so 0.6.3 mode is untouched.
+- `getDataFromSave` is the only callback in the whole 1.0.4 Lua API with this "absent field ->
+  default" contract (verified by grepping `psychlua/` for `hasField` / `?defaultValue`), so this
+  closes the whole class rather than one symptom.
+- `logs/script_log.txt` now records up to 40 `[save]` lines for the `missing-field` /
+  `not-initialized` branches, so the next mod that depends on this fallback is diagnosable from the
+  log instead of from a screenshot.
+
+#### Fixed: the engine's own HUD extras ignored a mod's "hide the HUD" calls
+
+- `KeyboardDisplay` (the key/KPS panel) and the side HUD (总命中数 / 连击 / 判定统计) are
+  SeiunEngine-only widgets that live on `camOther`. A 1.0.4 mod hides the HUD by setting
+  `scoreTxt` / `healthBar` / `iconP1` invisible one by one, which cannot reach them -- so they stayed
+  drawn on top of the mod's own screen. Measured on SonicTheFunkChinese, whose main menu and options
+  screen are fake songs: the options screenshot carried the full 8-line side HUD on the left and the
+  KPS panel on the right, none of which exist in Psych 1.0.4.
+- `PlayState.syncHudExtras()` now ties them to the standard HUD: a script setting `scoreTxt.visible`
+  to false hides them too, and re-showing it brings them back. The user's own `hideHud` setting and
+  online mode (which hides `scoreTxt` because it draws per-player score texts) are explicitly
+  excluded, so those two paths behave exactly as before.
+- `hideTransientHud()` (the results screen) sets a suppression flag, so the follow logic cannot
+  re-light the widgets the results screen deliberately hides.
+
+#### Fixed: keybind readout, tagged-sound properties, and the error loop killing whole scripts
+
+- **`allowMaps` was ignored when reading.** All three reference engines contain
+  `if(allowMaps && isMap(instance)) return instance.get(variable);` in `getVarInArray`; the port had
+  dropped it (while `setVarInArray` kept it). So `getPropertyFromClass('backend.ClientPrefs',
+  'keyBinds.note_left', true)` ran `Reflect.getProperty` on a `Map` and returned null -- the mod's
+  whole keybind page printed `- - -` for every control. Restored.
+- **Tagged sounds are stored as `sound_<tag>` again.** Psych 1.0.4's `playSound` puts the sound in
+  `MusicBeatState.getVariables()` under `sound_<tag>`, which is how mods read
+  `getProperty('sound_pausemus.time' / '.length' / '.playing')`. This engine only stored
+  `modchartSounds`, so those reads were nil: SonicTheFunkChinese's `pauseMenu.lua:401`
+  (`math.floor(currentTime / beatLength)`) aborted **on the first line of `onCustomSubstateUpdate`**,
+  i.e. the pause menu's navigation and its item layout code never ran -- exactly the "pause menu
+  cannot move + first item misaligned" report. Both maps are written now.
+- **`stopSound()` / `pauseSound()` / `resumeSound()` / `getSoundTime()` / `setSoundTime()` without a
+  tag now act on `FlxG.sound.music`**, as in 1.0.4. They were no-ops, so `stopSound()` (used by the
+  mod to kill the previous fake-song menu's music) did nothing.
+- **The error-loop guard no longer disables a whole script.** Once a per-frame callback errored
+  `scriptErrorLimit` (50) times, the engine set `closed = true` and every later callback was dropped
+  -- `onEndSong` included. Measured: SonicTheFunkChinese's `results.lua` errors at line 487 from the
+  first frame (its own `accuracypercentresult` is only assigned in `onEndSong`), so the script was
+  dead within a second and its results screen could never appear. 1.0.4 has no such mechanism: an
+  erroring callback already aborts at the same line every frame, while the other callbacks keep
+  working. The guard now only **silences** the repeated report (one summary line at the limit and
+  one every 600 after), for Lua and HScript alike; the log cap and the perf win are unchanged.
+- `getObjectDirectly()` now checks the state's shared variables map before the typed
+  `getLuaObject()` (which returns `FlxSprite`), matching Psych's order and avoiding handing a
+  `FlxSound` to something that expects a sprite.
+- `logs/script_log.txt`'s `[save]` diagnostics now print each `(save, field)` pair once instead of
+  spending the whole budget on the same entry every frame.
+- For the record, the previously reported fixes are confirmed in the new log: no `options.lua`
+  errors remain, `[save] missing-field ... default=800` shows the default now being honoured, and
+  the mod's options/keybind screens build and render.
+
+#### Crash triage: a GC-thread crash during a heavy song load, and the diagnostics for it
+
+- A native crash was reported while entering `Break Down` (SonicTheFunkChinese). Resolved with the
+  published map (`tools/verify_map.py` -> MATCH), the backtrace is **hxcpp's garbage collector**, not
+  game code: `GlobalAllocator::SThreadLoop` -> `MarkContext::processMarkStack` ->
+  `Array<Dynamic>::__Mark` -> `hx::MarkObjectArray`, faulting on a read at `0xFFFFFFFFFFFFFFFF`.
+  That signature means the marker followed a bad element pointer inside an `Array<Dynamic>`; it is
+  the classic result of a dangling pointer or of raw (unboxed) values living in a container the GC
+  walks as objects.
+- Evidence that it is not the script layer: the session's `logs/script_log.txt` has **zero Lua
+  errors** (the new `[save]` diagnostics are all it contains), and `git status` shows the graphics
+  pipeline in that window (`GfxRepack`, `AsyncGfxLoader`, `GfxLru`, `GfxPolicy`) carries none of this
+  work -- those files are untouched by the compatibility pass.
+- Because the crash report kept only ~30 log lines, the ones that matter (the texture that was just
+  decoded / repacked / released) were missing. Diagnostics widened: the report now keeps 150 lines
+  and the native buffer was raised to 32 KB, `AsyncGfxLoader` logs every decode (key, size, ms) and
+  where the bitmap landed (tracked graphic vs pending), `GfxPolicy` logs every CPU-copy release with
+  the image's dimensions, and the crash context line now carries `asyncGfx` / `cpuRelease` /
+  `lowQuality` so the next report says which graphics settings were active.
+- The suspects that pipeline exposes are the settings a player can toggle without a rebuild:
+  `异步图片加载` (async decode on worker threads) and `大图内存释放` (CPU-copy release of images
+  >= 2048px). Reproducing with each one off isolates whether the corruption comes from the async
+  path or from the release path.
+
+#### Hardening: the graphics pipeline can no longer write outside a texture
+
+The GC-thread crash above is the classic *symptom* of either a dangling pointer or an out-of-bounds
+write (the heap gets a bad container element, and the marker trips over it seconds later). The crash
+was not reproducible, so instead of guessing at a fix, every path in that window that can produce one
+was closed off:
+
+- **Every pixel write now goes through `GfxRepack.blit()`.** The destination rectangle must fit
+  completely inside the packed canvas and the source rectangle completely inside the source sheet,
+  otherwise the blit is skipped and counted (`GfxRepack.boundsSkips`, with a warning the first time it
+  happens). For valid input this is bit-for-bit the same call as before; for invalid input it can no
+  longer touch memory outside a texture buffer.
+- **The packed canvas is verified after allocation.** `new BitmapData(canvasW, canvasH)` is checked
+  against the requested size before a single pixel is copied: if the platform clamped the allocation
+  (the packer allows up to 16384px, which is not every driver's limit), the repack is abandoned and the
+  caller keeps the original texture. Previously the copy loop trusted `canvasW/canvasH` locals and would
+  have written past a smaller real buffer -- the exact "corrupt the heap, crash in the GC later" pattern.
+- **A source whose CPU copy was released is never `copyPixels`ed.** Skipping every blit would have handed
+  the game a fully transparent atlas, so `process()` now aborts the whole repack (`source-not-readable`)
+  and the original texture stays. `blit()` carries the same check as a second line of defence.
+- **Cross-thread publication is main-thread-owned.** `AsyncGfxLoader` used to allocate the result record
+  *on the worker* and only then attach it to the shared map; now `enqueue()` allocates it, publishes it
+  immediately, and the worker only fills its fields inside the mutex (`done` is the release barrier).
+  The only object still created on a worker thread is the decoded `Bytes`, and it goes straight into an
+  already-rooted record.
+- **Release/cleanup failures no longer escape.** `GfxPolicy.tryRelease` records a CPU release only if
+  `disposeImage()` actually succeeded, and the decoded bitmap's `dispose()` in `drain()` is wrapped, so a
+  double free/late free cannot abort the loading state.
+
+If a player still wants the most conservative path, the two existing settings do it without a rebuild:
+turn off `异步图片加载` (slower load, identical rendering) and, if wanted, `大图内存释放` as well.
+
+#### Fixed: `marvelous` leaked into the judgement name scripts read (accuracy + combo were both wrong)
+
+- **Measured**: `marvelous` appears **zero** times in the Psych 1.0.4 tree (and 0.6.3/0.7.3); its ratings are
+  `sick/good/bad/shit` (`Rating.loadDefault()`, `ratingsData[0].hits` = sicks). This engine inserts
+  `new Rating('marvelous')` at `ratingsData[0]` and defaults `marvelousRatings = true` with a 25 ms window,
+  so a well-timed hit sets `note.rating = 'marvelous'`.
+- **Consequence in SonicTheFunkChinese**: `scripts/sonic UI.lua` maps judgements by name
+  (`registerNoteHit`: `rating == 'sick' / 'good' / 'bad' / 'shit'`). A `marvelous` hit still increments
+  `numnoteshit` but lands in no bucket, so `newaccuracy = (sick*100 + good*67 + bad*34) / numnoteshit`
+  collapses, and `combocounterNEW` (only incremented inside `ratingAnim()`) stops growing. One leaked
+  string explains both "the accuracy is wrong" and "the combo count is wrong".
+- **Fix**: `FunkinLua.ratingForScripts()` rewrites the name **as scripts see it** (`marvelous` -> `sick`,
+  exactly what the same <=25 ms hit would have been called in 1.0.4) in the dotted branch of
+  `getProperty()` and in `getGroupStuff()` (which `getPropertyFromGroup` uses).
+- **It is its own setting**: `ClientPrefs.judgementNameCompat` / `option.judgementNameCompat`,
+  "1.0.4 Judgement Names for Mods" (Gameplay options, Judgement section), **on by default**. Turn it off
+  and scripts read the raw `marvelous` again. It is declared in `assets/preload/data/options/gameplay.json`
+  like every other option, so it needs no engine change to toggle and old saves keep the default.
+- **With it on, marvelouse is still delivered**: the engine's own judgement -- side HUD, results screen,
+  scoring, Leather hitsound, online, replays -- keeps using the real rating, and `Note` gained a
+  `ratingRaw` field (written next to `rating`, reset by `recycle()`) so a script that *wants* the
+  Marvelous tier can read `getProperty('notes.members[i].ratingRaw')` (or `PlayState.marvelouses`).
+- Still gated on `CompatEngine.is104()` to honour the "0.6.3/0.7.3 modes must not change" rule; the same
+  leak exists in those modes and the identical mapping can be enabled there on request. HScript reads the
+  field directly rather than through these helpers, so an HScript mod sees `marvelous` either way
+  (`ratingRaw` is readable there too).
+
+#### Hardened: tagged-sound lookups, and diagnostics for them
+
+- `playSound(name, vol, tag)` no longer stores a `null` in the `sound_<tag>` slot when the sound failed to
+  build (a key present with a `null` value made `getProperty('sound_x.time')` read as "nothing here"
+  instead of "no such tag"), and `stopSound`/completion remove the slot.
+- `[snd]` lines in `logs/script_log.txt` (deduped, max 30) record every tagged `playSound`/`stopSound`
+  with the active state, plus every `sound_<tag>` miss with the state and the variable-map size. That is
+  what will pin down `gameOver.lua:117` (`getProperty('sound_gameovermusic.time')` was nil for the whole
+  game-over screen -- 1472 occurrences) if it survives the next run.
 
 ### Acknowledgments
 

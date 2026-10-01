@@ -21,6 +21,12 @@ class VideoHandler extends FlxInternalVideo
 	public var canUseSound:Bool = true;
 	public var canUseAutoResize:Bool = true;
 
+	/**
+	 * 1.0.4 startVideo(..., playOnLoad) 兼容: 为 false 时只加载不自动播放。
+	 * English: 1.0.4 startVideo playOnLoad — when false, load without playing.
+	 */
+	public var autoPlay:Bool = true;
+
 	public var openingCallback:Void->Void = null;
 	public var finishCallback:Void->Void = null;
 
@@ -166,8 +172,9 @@ class VideoHandler extends FlxInternalVideo
 
 			if (load(videoPath))
 			{
-				_isPlaying = true;
-				play();
+				_isPlaying = autoPlay;
+				if (autoPlay)
+					play();
 			}
 			else
 			{

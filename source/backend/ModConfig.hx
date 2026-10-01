@@ -108,7 +108,8 @@ class ModConfig
 			var raw:String = File.getContent(path);
 			if (raw == null || raw.length == 0) return cfg;
 
-			var json:Dynamic = Json.parse(raw);
+			// pack.json 在 1.0.4 里用 tjson 解析：容忍尾随逗号（{...,}）与注释。
+			var json:Dynamic = JsonUtil.parseTolerant(raw);
 
 			// ── Metadata ──
 			readStr(json, "name", function(v) { if (v != "Name") cfg.name = v; });

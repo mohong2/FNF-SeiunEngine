@@ -23,6 +23,17 @@ class MP4Handler extends FlxInternalVideo
 	public var readyCallback:Void->Void;
 	public var finishCallback:Void->Void;
 
+	/**
+	 * Psych Engine 1.0.4 startVideo(..., canSkip) 兼容: 为 false 时 ENTER/SPACE
+	 * 不再跳过视频。
+	 */
+	public var canSkip:Bool = true;
+
+	/**
+	 * Psych Engine 1.0.4 startVideo(..., playOnLoad) 兼容: 为 false 时只加载不自动播放。
+	 */
+	public var autoPlay:Bool = true;
+
 	var pauseMusic:Bool = false;
 	var _location:String = null;
 	var _repeat:Int = 0;
@@ -90,7 +101,7 @@ class MP4Handler extends FlxInternalVideo
 	public function update(?e:Event):Void
 	{
 		// Original hxCodec behavior: ENTER / SPACE skips the video.
-		if ((FlxG.keys.justPressed.ENTER || FlxG.keys.justPressed.SPACE) && isPlaying)
+		if (canSkip && (FlxG.keys.justPressed.ENTER || FlxG.keys.justPressed.SPACE) && isPlaying)
 			finishVideo();
 	}
 	#end
@@ -266,7 +277,7 @@ class MP4Handler extends FlxInternalVideo
 				{
 					try
 					{
-						play();
+						if (autoPlay) play();
 					}
 					catch (e:Dynamic)
 					{

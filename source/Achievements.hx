@@ -334,8 +334,10 @@ class Achievements {
 			}
 			return getScore(name);
 		});
-		Lua_helper.add_callback(lua, "setAchievementScore", function(name:String, ?value:Float = 1, ?saveIfNotUnlocked:Bool = true):Float
+		// 1.0.4 把默认 value 从 1 改成 0; 0.6.3/0.7.3 保持 1。
+		Lua_helper.add_callback(lua, "setAchievementScore", function(name:String, ?value:Null<Float> = null, ?saveIfNotUnlocked:Bool = true):Float
 		{
+			if(value == null) value = backend.CompatEngine.defaultAchievementScore();
 			if(!achievements.exists(name))
 			{
 				trace('setAchievementScore: Couldnt find achievement: $name');

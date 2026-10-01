@@ -916,6 +916,107 @@ class Paths
 		}
 	}
 
+	/**
+	 * 1.0.4 兼容: 解析 JSON 图集内容 (aseprite / texture-packer)，
+	 * 兜底顺序与 getSparrowXml 保持一致: mods → manifest → 直接文件系统。
+	 */
+	static function getAtlasJson(key:String, ?library:String):String
+	{
+		#if MODS_ALLOWED
+		var modJson:String = modsJson(key);
+		if (FileSystem.exists(modJson))
+			return File.getContent(modJson);
+		#end
+
+		var path:String = getPath('images/$key.json', TEXT, library);
+		if (OpenFlAssets.exists(path, TEXT))
+			return OpenFlAssets.getText(path);
+
+		#if sys
+		var fsCandidates:Array<String> = [];
+		if (library != null && library != 'preload' && library != 'default')
+			fsCandidates.push('assets/$library/images/$key.json');
+		fsCandidates.push(getPreloadPath('images/$key.json'));
+		fsCandidates.push('assets/shared/images/$key.json');
+		for (candidate in fsCandidates)
+		{
+			if (FileSystem.exists(candidate))
+				return File.getContent(candidate);
+		}
+		#end
+		return null;
+	}
+
+	/**
+	 * Psych Engine 1.0.4 `Paths.getAtlas` 兼容入口：自动判定图集格式 ——
+	 * sparrow XML → texture-packer / aseprite JSON → packer TXT。
+	 * 供 1.0.4 的 `loadFrames(..., 'auto')` / `makeAnimatedLuaSprite` 使用。
+	 */
+	static public function getAtlas(key:String, ?library:String = null, ?allowGPU:Bool = true):FlxAtlasFrames
+	{
+		if (key == null || key.length == 0) return null;
+
+		// 1.0.4 的 .lang 词组可以把资源路径整体替换 (如 images/alphabet)。
+		key = Language.getFileTranslation(key);
+
+		if (getSparrowXml(key, library) != null)
+			return getSparrowAtlas(key, library, allowGPU);
+
+		var json:String = getAtlasJson(key, library);
+		if (json != null)
+		{
+			var imageLoaded:FlxGraphic = returnGraphic(key);
+			if (imageLoaded == null) imageLoaded = image(key, library, allowGPU);
+			if (imageLoaded == null) return null;
+			try
+			{
+				var frames:FlxAtlasFrames = FlxAtlasFrames.fromTexturePackerJson(imageLoaded, json);
+				#if android
+				backend.GfxPolicy.releaseNow(imageLoaded.key, imageLoaded);
+				#end
+				return frames;
+			}
+			catch (e:Dynamic)
+			{
+				TraceManager.error('trace.paths.atlasError', 'Failed to build JSON atlas for {}: {}', [key, e]);
+				return null;
+			}
+		}
+		return getPackerAtlas(key, library);
+	}
+
+	/**
+	 * Psych Engine 1.0.4 `Paths.getAsepriteAtlas` 兼容入口：只走 JSON 图集。
+	 */
+	static public function getAsepriteAtlas(key:String, ?library:String = null, ?allowGPU:Bool = true):FlxAtlasFrames
+	{
+		if (key == null || key.length == 0) return null;
+		key = Language.getFileTranslation(key);
+
+		var json:String = getAtlasJson(key, library);
+		var imageLoaded:FlxGraphic = returnGraphic(key);
+		if (imageLoaded == null) imageLoaded = image(key, library, allowGPU);
+		if (imageLoaded == null) return null;
+		if (json == null)
+		{
+			TraceManager.error('trace.paths.atlasError', 'No JSON atlas found for {}', [key]);
+			return null;
+		}
+		try
+		{
+			var frames:FlxAtlasFrames = FlxAtlasFrames.fromTexturePackerJson(imageLoaded, json);
+			#if android
+			backend.GfxPolicy.releaseNow(imageLoaded.key, imageLoaded);
+			#end
+			return frames;
+		}
+		catch (e:Dynamic)
+		{
+			TraceManager.error('trace.paths.atlasError', 'Failed to build aseprite atlas for {}: {}', [key, e]);
+			return null;
+		}
+	}
+
 	/** 解析 Sparrow XML 内容：mods → manifest → 直接文件系统（与 image() 的兜底顺序一致）。 */
 	static function getSparrowXml(key:String, ?library:String):String
 	{
@@ -1375,7 +1476,8 @@ class Paths
 						try{
 							var rawJson:String = File.getContent(path);
 							if(rawJson != null && rawJson.length > 0) {
-								var stuff:Dynamic = Json.parse(rawJson);
+								// pack.json 在 1.0.4 里用 tjson 解析（容忍尾随逗号/注释）。
+								var stuff:Dynamic = backend.JsonUtil.parseTolerant(rawJson);
 								var global:Bool = Reflect.hasField(stuff, "runsGlobally") && Reflect.field(stuff, "runsGlobally") == true;
 								if(global && !globalMods.contains(dat[0])) globalMods.push(dat[0]);
 							}

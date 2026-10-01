@@ -237,7 +237,8 @@ class TitleState extends MusicBeatState
 
 		Highscore.load();
 
-		titleJSON = Json.parse(Paths.getTextFromFile('images/gfDanceTitle.json'));
+		// 1.0.4 用 tjson 解析标题数据（容忍尾随逗号与注释）。
+		titleJSON = backend.JsonUtil.parseTolerant(Paths.getTextFromFile('images/gfDanceTitle.json'));
 
 		#if TITLE_SCREEN_EASTER_EGG
 		if (FlxG.save.data.psychDevsEasterEgg == null) FlxG.save.data.psychDevsEasterEgg = '';

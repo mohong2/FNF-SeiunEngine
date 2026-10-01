@@ -26,6 +26,7 @@ import sys.io.File;
 import Type.ValueType;
 import Controls;
 import DialogueBoxPsych;
+import script.lua.FunkinLua;
 
 #if cpp
 import Discord;
@@ -89,7 +90,7 @@ class EditorLua {
 		set('middlescroll', ClientPrefs.data.middleScroll);
 
 		//stuff 4 noobz like you B)
-		Lua_helper.add_callback(lua, "getProperty", function(variable:String) {
+		Lua_helper.add_callback(lua, "getProperty", function(variable:String, ?allowMaps:Bool = false) {
 			var killMe:Array<String> = variable.split('.');
 			if(killMe.length > 1) {
 				var coverMeInPiss:Dynamic = Reflect.getProperty(EditorPlayState.instance, killMe[0]);
@@ -101,7 +102,7 @@ class EditorLua {
 			}
 			return Reflect.getProperty(EditorPlayState.instance, variable);
 		});
-		Lua_helper.add_callback(lua, "setProperty", function(variable:String, value:Dynamic) {
+		Lua_helper.add_callback(lua, "setProperty", function(variable:String, value:Dynamic, ?allowMaps:Bool = false, ?allowInstances:Bool = false) {
 			var killMe:Array<String> = variable.split('.');
 			if(killMe.length > 1) {
 				var coverMeInPiss:Dynamic = Reflect.getProperty(EditorPlayState.instance, killMe[0]);
@@ -113,8 +114,11 @@ class EditorLua {
 			}
 			return Reflect.setProperty(EditorPlayState.instance, variable, value);
 		});
-		Lua_helper.add_callback(lua, "getPropertyFromGroup", function(obj:String, index:Int, variable:Dynamic) {
-			if(Std.isOfType(Reflect.getProperty(EditorPlayState.instance, obj), FlxTypedGroup)) {
+		Lua_helper.add_callback(lua, "getPropertyFromGroup", function(obj:String, index:Int, variable:Dynamic, ?allowMaps:Bool = false) {
+			var groupObj:Dynamic = Reflect.getProperty(EditorPlayState.instance, obj);
+			if(groupObj == null) return null;
+			if(Std.isOfType(groupObj, FlxTypedGroup)) {
+				if(groupObj.members == null || index < 0 || index >= groupObj.members.length) return null;
 				return Reflect.getProperty(Reflect.getProperty(EditorPlayState.instance, obj).members[index], variable);
 			}
 
@@ -127,8 +131,11 @@ class EditorLua {
 			}
 			return null;
 		});
-		Lua_helper.add_callback(lua, "setPropertyFromGroup", function(obj:String, index:Int, variable:Dynamic, value:Dynamic) {
-			if(Std.isOfType(Reflect.getProperty(EditorPlayState.instance, obj), FlxTypedGroup)) {
+		Lua_helper.add_callback(lua, "setPropertyFromGroup", function(obj:String, index:Int, variable:Dynamic, value:Dynamic, ?allowMaps:Bool = false, ?allowInstances:Bool = false) {
+			var groupObjS:Dynamic = Reflect.getProperty(EditorPlayState.instance, obj);
+			if(groupObjS == null) return null;
+			if(Std.isOfType(groupObjS, FlxTypedGroup)) {
+				if(groupObjS.members == null || index < 0 || index >= groupObjS.members.length) return null;
 				return Reflect.setProperty(Reflect.getProperty(EditorPlayState.instance, obj).members[index], variable, value);
 			}
 
@@ -140,17 +147,64 @@ class EditorLua {
 				return Reflect.setProperty(leArray, variable, value);
 			}
 		});
-		Lua_helper.add_callback(lua, "removeFromGroup", function(obj:String, index:Int, dontDestroy:Bool = false) {
-			if(Std.isOfType(Reflect.getProperty(EditorPlayState.instance, obj), FlxTypedGroup)) {
-				var sex = Reflect.getProperty(EditorPlayState.instance, obj).members[index];
-				if(!dontDestroy)
-					sex.kill();
-				Reflect.getProperty(EditorPlayState.instance, obj).remove(sex, true);
-				if(!dontDestroy)
-					sex.destroy();
+		// 1.0.4: removeFromGroup(group, ?index = -1, ?tag = null, ?destroy = true)
+		// 第三参为 Bool 时按 0.6.3 旧签名 removeFromGroup(group, index, dontDestroy) 处理。
+		Lua_helper.add_callback(lua, "removeFromGroup", function(obj:String, ?index:Any = null, ?tagOrDontDestroy:Any = null, ?destroy:Bool = true) {
+			var groupOrArray:Dynamic = Reflect.getProperty(EditorPlayState.instance, obj);
+			if(groupOrArray == null) return;
+			// 全部走 Dynamic 访问, 不把 x.members 硬 cast 成 Array<Dynamic>。
+			var idx:Int = FunkinLua.anyToInt(index, -1);
+
+			if(Std.isOfType(tagOrDontDestroy, Bool))
+			{
+				var dontDestroy:Bool = cast tagOrDontDestroy;
+				var members:Dynamic = Reflect.field(groupOrArray, "members");
+				if(members != null)
+				{
+					if(idx < 0 || idx >= members.length) return;
+					var sex:Dynamic = members[idx];
+					if(sex == null) return;
+					if(!dontDestroy && Reflect.hasField(sex, "kill")) sex.kill();
+					Reflect.callMethod(groupOrArray, Reflect.field(groupOrArray, "remove"), [sex, true]);
+					if(!dontDestroy && Reflect.hasField(sex, "destroy")) sex.destroy();
+					return;
+				}
+				if(idx >= 0 && idx < groupOrArray.length)
+					Reflect.callMethod(groupOrArray, Reflect.field(groupOrArray, "remove"), [groupOrArray[idx]]);
 				return;
 			}
-			Reflect.getProperty(EditorPlayState.instance, obj).remove(Reflect.getProperty(EditorPlayState.instance, obj)[index]);
+
+			var target:Dynamic = null;
+			if(tagOrDontDestroy != null)
+			{
+				var tag:String = Std.string(tagOrDontDestroy);
+				target = Reflect.getProperty(EditorPlayState.instance, tag);
+				if(target == null) return;
+			}
+
+			var members104:Dynamic = Reflect.field(groupOrArray, "members");
+			if(members104 != null)
+			{
+				if(target == null)
+				{
+					if(idx < 0 || idx >= members104.length) return;
+					target = members104[idx];
+				}
+				if(target == null) return;
+				Reflect.callMethod(groupOrArray, Reflect.field(groupOrArray, "remove"), [target, true]);
+				if(destroy && Reflect.hasField(target, "destroy")) target.destroy();
+				return;
+			}
+
+			if(target != null)
+			{
+				Reflect.callMethod(groupOrArray, Reflect.field(groupOrArray, "remove"), [target]);
+				if(destroy && Reflect.hasField(target, "destroy")) target.destroy();
+			}
+			else if(idx >= 0 && idx < groupOrArray.length)
+			{
+				Reflect.callMethod(groupOrArray, Reflect.field(groupOrArray, "remove"), [groupOrArray[idx]]);
+			}
 		});
 
 		Lua_helper.add_callback(lua, "getColorFromHex", function(color:String) {
@@ -158,19 +212,21 @@ class EditorLua {
 			return Std.parseInt(color);
 		});
 
-		Lua_helper.add_callback(lua, "setGraphicSize", function(obj:String, x:Int, y:Int = 0) {
+		// 1.0.4: setGraphicSize(obj, x:Float, y = 0, updateHitbox = true)
+		Lua_helper.add_callback(lua, "setGraphicSize", function(obj:String, x:Float, y:Float = 0, ?updateHitbox:Bool = true) {
 			var poop:FlxSprite = Reflect.getProperty(EditorPlayState.instance, obj);
 			if(poop != null) {
-				poop.setGraphicSize(x, y);
-				poop.updateHitbox();
+				poop.setGraphicSize(Std.int(x), Std.int(y));
+				if(updateHitbox) poop.updateHitbox();
 				return;
 			}
 		});
-		Lua_helper.add_callback(lua, "scaleObject", function(obj:String, x:Float, y:Float) {
+		// 1.0.4: scaleObject(obj, x, y, updateHitbox = true)
+		Lua_helper.add_callback(lua, "scaleObject", function(obj:String, x:Float, y:Float, ?updateHitbox:Bool = true) {
 			var poop:FlxSprite = Reflect.getProperty(EditorPlayState.instance, obj);
 			if(poop != null) {
 				poop.scale.set(x, y);
-				poop.updateHitbox();
+				if(updateHitbox) poop.updateHitbox();
 				return;
 			}
 		});

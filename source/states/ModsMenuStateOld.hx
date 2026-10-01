@@ -413,7 +413,7 @@ class ModsMenuStateOld extends MusicBeatState
 			try
 			{
 				var rawJson = File.getContent(path);
-				return Json.parse(rawJson);
+				return backend.JsonUtil.parseTolerant(rawJson);
 			}
 			catch (e:Dynamic)
 			{
@@ -782,7 +782,7 @@ class ModMetadata
 			if(rawJson != null && rawJson.length > 0) {
 				var stuff:Dynamic = null;
 				try {
-					stuff = Json.parse(rawJson);
+					stuff = backend.JsonUtil.parseTolerant(rawJson);
 				} catch(e) {
 					TraceManager.error('trace.modsMenuOld.invalidPackJson', 'Invalid pack.json in mod "{}" ({}): {}', [folder, path, e]);
 				}

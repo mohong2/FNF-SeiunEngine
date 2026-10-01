@@ -791,6 +791,19 @@ class PlayState extends MusicBeatState
 
 	override public function create()
 	{
+		backend.ScriptLog.write('state', 'PlayState.create() ENTER  instance=' + Std.string(this)
+			+ '  luaArray=' + (luaArray == null ? 'null' : Std.string(luaArray.length))
+			+ '  song=' + (SONG == null ? 'null' : SONG.song));
+		// 诊断: create() 中途抛异常会让 onCreatePost 永远不执行 (表现就是"模组脚本没生效")。
+		// 这里把异常与调用栈写进 script_log.txt 再原样抛出, 不改变任何行为。
+		try {
+
+		// 引擎自带的 Flixel 鼠标光标：菜单（MainMenu/Freeplay/Mods/Pause）会把它打开，
+		// 而 PlayState 以前从没关掉过，于是自定义鼠标的模组会在游戏里同时看到两个光标。
+		// 0.6.3/0.7.3/1.0.4 的 PlayState 都不会显示它（那些版本的菜单也不打开它），
+		// 所以这里统一关掉就等于恢复三个版本的原生观感；模组仍可在 onCreate 里自己打开。
+		FlxG.mouse.visible = false;
+
 		// The build watermark is a menu affordance: keep it off the playfield entirely.
 		// destroy() puts it back for the menus (the option toggle still wins).
 		backend.Watermark.setVisible(false);
@@ -1733,9 +1746,15 @@ class PlayState extends MusicBeatState
 			foldersToCheck.insert(0, Paths.mods(mod + '/data/' + Paths.formatToSongPath(SONG.song) + '/' ));// using push instead of insert because these should run after everything else
 		#end
 
+		// 诊断: 把模组/歌曲脚本的搜索路径与结果写进 logs/script_log.txt。
+		backend.ScriptLog.write('scan', 'song=' + SONG.song + ' path=' + Paths.formatToSongPath(SONG.song)
+			+ ' currentMod=' + Paths.currentModDirectory + ' globalMods=[' + Paths.getGlobalMods().join(",") + ']');
+
 		for (folder in foldersToCheck)
 		{
-			if(FileSystem.exists(folder))
+			var loadedHere:Int = 0;
+			var folderExists:Bool = FileSystem.exists(folder);
+			if(folderExists)
 			{
 				for (file in FileSystem.readDirectory(folder))
 				{
@@ -1743,9 +1762,11 @@ class PlayState extends MusicBeatState
 					{
 						luaArray.push(new FunkinLua(folder + file));
 						filesPushed.push(file);
+						loadedHere++;
 					}
 				}
 			}
+			backend.ScriptLog.write('folder', (folderExists ? 'ok      ' : 'MISSING ') + folder + '  lua=' + loadedHere);
 		}
 		#end
 
@@ -2004,8 +2025,11 @@ class PlayState extends MusicBeatState
 		trackBackground.visible = (trackAlpha > 0);
 		// 0.7.3/1.0.4 compatibility: Lua's onCreatePost runs before super.create(),
 		// while HScript's onCreatePost is called inside super.create(), so it is not duplicated here.
+		backend.ScriptLog.write('state', 'before onCreatePost  luaArray=' + (luaArray == null ? 'null' : Std.string(luaArray.length)));
 		callOnLuas('onCreatePost', []);
+		backend.ScriptLog.write('state', 'after  onCreatePost');
 		super.create();
+		backend.ScriptLog.write('state', 'after  super.create()');
 		if (CompatEngine.isModern())
 			insert(members.indexOf(noteGroup), trackBackground);
 		else
@@ -2083,8 +2107,13 @@ class PlayState extends MusicBeatState
 		for (folder in scriptFolders)
 		{
 			#if (LUA_ALLOWED || HSCRIPT_ALLOWED || sys)
-			if (!FileSystem.exists(folder)) continue;
+			if (!FileSystem.exists(folder))
+			{
+				backend.ScriptLog.write('folder', 'MISSING ' + folder + '  (global/stage scripts)');
+				continue;
+			}
 			var dirContents:Array<String> = FileSystem.readDirectory(folder);
+			backend.ScriptLog.write('folder', 'ok      ' + folder + '  (global/stage scripts, ' + dirContents.length + ' entries)');
 			#end
 
 			#if LUA_ALLOWED
@@ -2347,10 +2376,26 @@ class PlayState extends MusicBeatState
 	var video:VideoHandler = null;
 	var videoPlaying:Bool = false;
 	#end
-	public function startVideo(name:String)
+	/**
+	 * 播放视频。
+	 *
+	 * 参数与 Psych Engine 1.0.4 的 `PlayState.startVideo` 对齐（全部可选，
+	 * 旧调用点只传 name，行为完全不变）:
+	 *   - forMidSong : true = 歌曲中途播放，不进入 cutscene、不触发 startAndEnd；
+	 *   - canSkip    : 是否允许按键跳过；
+	 *   - loop       : 是否循环播放；
+	 *   - playOnLoad : 加载后是否立刻播放。
+	 *
+	 * English: Plays a video. Signature matches Psych Engine 1.0.4's
+	 * `PlayState.startVideo`; every new parameter is optional, so existing
+	 * one-argument call sites keep their exact previous behaviour.
+	 */
+	public function startVideo(name:String, forMidSong:Bool = false, canSkip:Bool = true, loop:Bool = false, playOnLoad:Bool = true)
 	{
 		#if VIDEOS_ALLOWED
-		inCutscene = true;
+		// 1.0.4: forMidSong 时不进入过场状态；其余情况保持旧行为。
+		if (!forMidSong)
+			inCutscene = true;
 		videoPlaying = true;
 
 		var filepath:String = Paths.video(name);
@@ -2361,7 +2406,10 @@ class PlayState extends MusicBeatState
 		#end
 		{
 			FlxG.log.warn('Couldnt find video file: ' + name);
-			startAndEnd();
+			if (!forMidSong)
+				startAndEnd();
+			else
+				videoPlaying = false;
 			return;
 		}
 
@@ -2374,17 +2422,25 @@ class PlayState extends MusicBeatState
 				return;
 
 			video = new VideoHandler();
+			video.canSkip = canSkip;
+			video.autoPlay = playOnLoad;
 			video.finishCallback = function()
 			{
 				videoPlaying = false;
-				startAndEnd();
+				if (!forMidSong)
+				{
+					// 1.0.4 的 onVideoEnd 会清掉 inCutscene; 0.6.3/0.7.3 从不设置它
+					// (正常路径下 startCountdown() 自己会清), 所以只在 1.0.4 下显式清, 保证旧模式零差异。
+					if (CompatEngine.is104()) inCutscene = false;
+					startAndEnd();
+				}
 				return;
 			}
-			video.playVideo(filepath);
+			video.playVideo(filepath, loop);
 		});
 		#else
 		FlxG.log.warn('Platform not supported!');
-		startAndEnd();
+		if (!forMidSong) startAndEnd();
 		return;
 		#end
 	}
@@ -4607,7 +4663,9 @@ class PlayState extends MusicBeatState
 	}
 
 	function eventNoteEarlyTrigger(event:EventNote):Float {
-		var returnedValue:Float = callOnScripts('eventEarlyTrigger', [event.event]);
+		// 1.0.4: eventEarlyTrigger 回调带完整参数 (event, value1, value2, strumTime)。
+		// 0.6.3/0.7.3 脚本只声明一个参数时，多出来的实参在 Lua/HScript 里都会被忽略。
+		var returnedValue:Float = callOnScripts('eventEarlyTrigger', [event.event, event.value1, event.value2, event.strumTime]);
 		if(returnedValue != 0) {
 			return returnedValue;
 		}
@@ -5133,6 +5191,9 @@ class PlayState extends MusicBeatState
 		// get: the shader is already on the sprite, this is only its uTime.
 		for(wig in wiggleMap) wig.update(elapsed);
 
+		// 模组把 scoreTxt 关掉（1.0.4 通用的"关掉 HUD"写法）时，引擎自带的 side HUD 与
+		// 键盘-KPS 面板必须一起关，否则会盖在模组自制界面上面。见 syncHudExtras()。
+		syncHudExtras();
 		keyboardDisplay.dataUpdate(elapsed);
 		/*
 		lerpSongScore = FlxMath.lerp(lerpSongScore, songScore, CoolUtil.boundTo(elapsed * 10, 0, 1));
@@ -11126,6 +11187,48 @@ function calculateResetTime():Float {
 	}
 
 	/**
+	 * 引擎自带的 side HUD（总命中数 / 连击 / 判定统计）与键盘-KPS 面板挂在 `camOther` 上，
+	 * 而 1.0.4 模组关闭 HUD 的写法是把标准 HUD 元素逐个设成不可见（`scoreTxt` / `healthBar` /
+	 * `iconP1` …）。1.0.4 里根本不存在这两个东西，所以那套写法覆盖不到它们 —— 结果是它们直接
+	 * 盖在模组自制界面上（SonicTheFunkChinese 用假歌曲当菜单/设置界面，画面上就多出这两块）。
+	 *
+	 * 这里让它们跟随标准 HUD：脚本把 `scoreTxt` 关掉就等于把整块 HUD 关掉。用户自己的
+	 * `ClientPrefs.data.hideHud`（含在线模式自己关掉 scoreTxt 的情况）不算 —— 那是引擎/用户
+	 * 的选择，两个开关保持互不影响。
+	 */
+	private var _hudExtrasSuppressed:Bool = false;
+	private var _hudExtrasKeyboardForced:Bool = false;
+	private var _hudExtraTexts:Array<FlxText> = null;
+	function syncHudExtras():Void
+	{
+		if (_hudExtrasSuppressed || scoreTxt == null) return;
+
+		var engineHidesHud:Bool = ClientPrefs.data.hideHud;
+		#if ONLINE_ALLOWED
+		if (online.GameClient.isConnected()) engineHidesHud = true;
+		#end
+		var scriptHidHud:Bool = !scoreTxt.visible && !engineHidesHud;
+
+		if (_hudExtraTexts == null) _hudExtraTexts = [tnh, cm, marv, sick, good, bad, shit, miss];
+		for (t in _hudExtraTexts)
+			if (t != null) t.visible = !scriptHidHud;
+
+		if (keyboardDisplay != null)
+		{
+			if (scriptHidHud)
+			{
+				keyboardDisplay.visible = false;
+				_hudExtrasKeyboardForced = true;
+			}
+			else if (_hudExtrasKeyboardForced)
+			{
+				keyboardDisplay.visible = ClientPrefs.data.keyboardDisplay;
+				_hudExtrasKeyboardForced = false;
+			}
+		}
+	}
+
+	/**
 	 * Hides the play-HUD pieces that PlayStateResultsSubstate does not cover with its own panels.
 	 *
 	 * The results screen hides healthBar/scoreTxt/icons/timeBar/keyboardDisplay/strumLineNotes, but the
@@ -11137,6 +11240,8 @@ function calculateResetTime():Float {
 	 */
 	public function hideTransientHud():Void
 	{
+		// 结算界面把这批 HUD 一次性关掉且不再恢复，所以跟随逻辑必须让位，否则会把它们又点亮。
+		_hudExtrasSuppressed = true;
 		for (t in [tnh, cm, marv, sick, good, bad, shit, miss])
 			if (t != null) t.visible = false;
 		if (msTxtKade != null) msTxtKade.visible = false;

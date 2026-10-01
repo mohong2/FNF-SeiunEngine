@@ -71,9 +71,13 @@ class PauseSubState extends MusicBeatSubstate
 	public static var songName:String = '';
 	
 
+	/** 暂停界面会打开引擎鼠标光标；退出暂停时恢复进暂停前的状态（见 destroy()）。 */
+	var __prevMouseVisible:Bool = false;
+
 	public function new(x:Float, y:Float)
 	{
 		super();
+		__prevMouseVisible = FlxG.mouse.visible;
 		FlxG.mouse.visible = true;
 		Language.load();
 
@@ -758,6 +762,8 @@ class PauseSubState extends MusicBeatSubstate
 
 	override function destroy()
 	{
+		// 恢复进入暂停前的鼠标可见性，否则退出暂停后引擎光标会一直留在屏幕上。
+		FlxG.mouse.visible = __prevMouseVisible;
 		restoreBackdrop();
 		if (substateCam != null)
 		{
