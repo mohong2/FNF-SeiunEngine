@@ -174,7 +174,7 @@ static const char* seiun_sigcode_name(int sig, int code)
 static char seiun_dir[512];          // absolute crash dir with trailing slash, or ""
 static char seiun_app_info[256];     // "SeiunEngine <version> (<platform>)"
 static char seiun_ctx_line[512];     // "state=... | song=... | glErr=..."
-static char seiun_recent_logs[12288]; // TraceManager tail
+static char seiun_recent_logs[32768]; // TraceManager tail
 static char seiun_build_info[256];    // "built=... | exe=... | map=..." (Haxe-fed)
 
 void seiun_set_crash_dir(const char* dir)
@@ -394,6 +394,7 @@ static const char* seiun_crash_file(void)
 static void seiun_append(char* buf, size_t cap, int* len, const char* fmt, ...);
 static void seiun_append_engine_context(char* buf, size_t cap, int* len)
 {
+	seiun_append(buf, cap, len, "\n--- Engine context ---\n");
 	if (seiun_app_info[0])
 		seiun_append(buf, cap, len, "App: %s\n", seiun_app_info);
 	if (seiun_ctx_line[0])
@@ -431,13 +432,32 @@ static void seiun_append(char* buf, size_t cap, int* len, const char* fmt, ...)
 
 static void seiun_mark_crash_pending(void);
 
+/**
+ * Opens every crash file with the same three lines, so the Windows SEH dump, the
+ * abort() path, the LuaJIT panic and the POSIX signal handler all read (and
+ * parse, see tools/crash_triage.py) exactly the same way.
+ */
+static void seiun_append_report_header(char* buf, size_t cap, int* len, const char* kind)
+{
+	time_t t = time(NULL);
+	struct tm tmv;
+#if defined(_WIN32)
+	localtime_s(&tmv, &t);
+#else
+	localtime_r(&t, &tmv);
+#endif
+	seiun_append(buf, cap, len, "=== SeiunEngine Crash Report ===\n");
+	seiun_append(buf, cap, len, "Kind: %s\n", kind);
+	seiun_append(buf, cap, len, "Date: %04d-%02d-%02d %02d:%02d:%02d\n",
+		tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday, tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
+}
+
 #if defined(_WIN32)
 static void seiun_write_crash_file(const char* body)
 {
 	FILE* f = fopen(seiun_crash_file(), "w");
 	if (f != NULL)
 	{
-		fprintf(f, "SeiunEngine native crash recorded (%s)\n", seiun_path);
 		fputs(body, f);
 		fclose(f);
 	}
@@ -857,7 +877,8 @@ static void seiun_posix_handler(int sig, siginfo_t* si, void* uctx)
 	char* body = seiun_body;
 	size_t cap = sizeof(seiun_body);
 	int len = 0;
-	seiun_append(body, cap, &len, "Native crash (POSIX fatal signal)\n");
+	seiun_append_report_header(body, cap, &len, "Native crash (POSIX fatal signal)");
+	seiun_append(body, cap, &len, "\n--- Signal ---\n");
 	seiun_append(body, cap, &len, "Signal: %d - %s\n", sig, seiun_signal_name(sig));
 	seiun_append(body, cap, &len, "si_code: %d (%s)\n", si ? si->si_code : 0,
 		seiun_sigcode_name(sig, si ? si->si_code : 0));
@@ -1004,10 +1025,16 @@ static ULONG_PTR seiun_module_for_address(ULONG_PTR addr, char* outName, size_t 
 // "<module>+0xRVA  <symbol>+0xdisp [file:line]" for one address.
 //
 // Two independent sources feed the "[file:line]" part:
-//  - dbghelp, when a matching PDB happens to sit next to the exe (debug builds);
 //  - the embedded linemap (the same SELM table the POSIX path uses), which needs
-//    no sidecar file at all: that is what makes a release report resolvable
-//    without shipping a ~50 MB PDB.
+//    no sidecar file at all and is the only source that always exists in a
+//    release build;
+//  - dbghelp, but ONLY where it really has a PDB (SymType == SymPdb).
+//
+// Without a PDB dbghelp falls back to the export table and produces confident
+// nonsense - a plain Haxe function shows up as "<vsnprintf>+0x8B614E", and
+// "lime_hl_hb_shape+0x4411" is equally invented. A wrong function name is worse
+// than none, so such names are dropped and the reader gets the exact
+// "Module+0xRVA" that tools/mapresolve.py consumes.
 static void seiun_annotate_address(char* dst, size_t cap, DWORD64 pc)
 {
 	char modName[128];
@@ -1017,7 +1044,26 @@ static void seiun_annotate_address(char* dst, size_t cap, DWORD64 pc)
 	else
 		snprintf(dst, cap, "0x%llX (unmapped)", (unsigned long long)pc);
 	int haveSource = 0;
-	if (seiun_dbghelp.ready && seiun_dbghelp.symFromAddr != NULL)
+
+	// "May dbghelp name this frame?" Two ways it cannot:
+	//  - the main module has no matching PDB (every release build), so dbghelp
+	//    would answer from the export table;
+	//  - the displacement is far larger than any real function, which means the
+	//    nearest export is simply on the other side of the address space.
+	int namesTrustworthy = 1;
+	if (base == 0)
+		namesTrustworthy = 0;
+	else if (seiun_dbghelp.ready && seiun_dbghelp.seiun_symModuleInfo != NULL &&
+		base == (ULONG_PTR)GetModuleHandleA(NULL))
+	{
+		IMAGEHLP_MODULE64 mi;
+		memset(&mi, 0, sizeof(mi));
+		mi.SizeOfStruct = sizeof(IMAGEHLP_MODULE64);
+		if (seiun_dbghelp.seiun_symModuleInfo(GetCurrentProcess(), (DWORD64)base, &mi))
+			namesTrustworthy = ((int)mi.SymType == 3);
+	}
+
+	if (namesTrustworthy && seiun_dbghelp.ready && seiun_dbghelp.symFromAddr != NULL)
 	{
 		char symBuf[sizeof(SYMBOL_INFO) + 384];
 		memset(symBuf, 0, sizeof(symBuf));
@@ -1027,8 +1073,13 @@ static void seiun_annotate_address(char* dst, size_t cap, DWORD64 pc)
 		DWORD64 disp = 0;
 		if (seiun_dbghelp.symFromAddr(GetCurrentProcess(), pc, &disp, si))
 		{
-			size_t used = strlen(dst);
-			snprintf(dst + used, cap - used, " <%s>+0x%llX", si->Name, (unsigned long long)disp);
+			// A displacement this large is not "inside the symbol": the nearest
+			// export is somewhere else entirely, so the name would only mislead.
+			if (disp <= 0x10000)
+			{
+				size_t used = strlen(dst);
+				snprintf(dst + used, cap - used, " <%s>+0x%llX", si->Name, (unsigned long long)disp);
+			}
 			if (seiun_dbghelp.symGetLineFromAddr64 != NULL)
 			{
 				IMAGEHLP_LINE64 line;
@@ -1097,12 +1148,14 @@ static int seiun_module_build_stamp(HMODULE mod, unsigned long* outStamp, unsign
 }
 
 /**
- * Records which binary is running and whether dbghelp actually managed to pair
- * it with a symbol file.
+ * Records which binary is running and which symbol sources are actually usable.
  *
- * SymType is the verdict that matters: SymNone (0) means no PDB was matched, so
- * every "<name>+0x..." later in this report is an export-table guess and must
- * not be trusted. SymPdb (3) means real function names and file:line.
+ * dbghelp's SymType is the verdict. SymPdb (3) means real function names and
+ * file:line. Anything else - SymNone (0), SymExport (5), ... - means dbghelp is
+ * guessing from the export table, and a release build ships no PDB on purpose,
+ * so that is the expected answer rather than an error. The embedded linemap is
+ * what turns an offset into "[source/File.cpp:123]" without any sidecar file;
+ * the published .map is the fallback for frames the linemap does not cover.
  */
 static void seiun_append_build_identity(char* buf, size_t cap, int* len)
 {
@@ -1114,6 +1167,7 @@ static void seiun_append_build_identity(char* buf, size_t cap, int* len)
 	unsigned long stamp = 0, imgSize = 0;
 	int haveStamp = seiun_module_build_stamp(exeMod, &stamp, &imgSize);
 
+	seiun_append(buf, cap, len, "\n--- Build identity ---\n");
 	if (seiun_build_info[0])
 		seiun_append(buf, cap, len, "Build: %s\n", seiun_build_info);
 	seiun_append(buf, cap, len, "Main module: %s\n", exePath[0] ? exePath : "?");
@@ -1122,7 +1176,22 @@ static void seiun_append_build_identity(char* buf, size_t cap, int* len)
 			"Main module stamp: TimeDateStamp=0x%08lX (%lu) SizeOfImage=0x%lX\n",
 			stamp, stamp, imgSize);
 
-	// Conventional PDB name: the toolchain pairs "<image name>.pdb".
+	// The address->line table embedded in this image. Its identity is what makes
+	// the "[source/File.cpp:123]" annotations in the backtrace trustworthy, so
+	// say plainly whether one is loaded and which build it came from.
+	if (seiun_linemap == NULL)
+		seiun_append(buf, cap, len, "Linemap: none loaded - frames carry module+offset only\n");
+	else if (seiun_linemap_len < 20 || seiun_linemap[0] != 'S' || seiun_linemap[1] != 'E'
+		|| seiun_linemap[2] != 'L' || seiun_linemap[3] != 'M')
+		seiun_append(buf, cap, len, "Linemap: %s (%u bytes) is not a valid table - ignored\n",
+			seiun_linemap_lib, seiun_linemap_len);
+	else
+		seiun_append(buf, cap, len,
+			"Linemap: %s (%u bytes, %u entries) - annotated frames read [source/File.cpp:LINE]\n",
+			seiun_linemap_lib, seiun_linemap_len, seiun_lm_u32(seiun_linemap + 8));
+
+	// A PDB next to the exe only exists in a local symbol build (art/build_profile.bat);
+	// mentioning it when it is absent would just be noise in every release report.
 	char pdbPath[MAX_PATH];
 	pdbPath[0] = 0;
 	if (exePath[0])
@@ -1143,37 +1212,38 @@ static void seiun_append_build_identity(char* buf, size_t cap, int* len)
 	{
 		HANDLE h = CreateFileA(pdbPath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
 			OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-		if (h == INVALID_HANDLE_VALUE)
-			seiun_append(buf, cap, len, "Matching PDB: %s (MISSING - frames cannot be resolved)\n", pdbPath);
-		else
+		if (h != INVALID_HANDLE_VALUE)
 		{
 			LARGE_INTEGER sz;
 			sz.QuadPart = 0;
 			GetFileSizeEx(h, &sz);
 			CloseHandle(h);
-			seiun_append(buf, cap, len, "Matching PDB: %s (%lld bytes)\n", pdbPath, (long long)sz.QuadPart);
+			seiun_append(buf, cap, len, "Local PDB: %s (%lld bytes)\n", pdbPath, (long long)sz.QuadPart);
 		}
 	}
 
 	if (!seiun_dbghelp.ready)
-		seiun_append(buf, cap, len, "Symbols: dbghelp unavailable - frames are raw offsets\n");
-	else if (seiun_dbghelp.seiun_symModuleInfo != NULL)
+		seiun_append(buf, cap, len, "Symbols: dbghelp unavailable - frames are raw module+offset\n");
+	else if (seiun_dbghelp.seiun_symModuleInfo == NULL)
+		seiun_append(buf, cap, len, "Symbols: unknown (SymGetModuleInfo64 unavailable)\n");
+	else
 	{
 		IMAGEHLP_MODULE64 mi;
 		memset(&mi, 0, sizeof(mi));
 		mi.SizeOfStruct = sizeof(IMAGEHLP_MODULE64);
-		if (seiun_dbghelp.seiun_symModuleInfo(GetCurrentProcess(), (DWORD64)(ULONG_PTR)exeMod, &mi))
+		if (!seiun_dbghelp.seiun_symModuleInfo(GetCurrentProcess(), (DWORD64)(ULONG_PTR)exeMod, &mi))
+			seiun_append(buf, cap, len, "Symbols: SymGetModuleInfo64 failed (err %lu)\n", GetLastError());
+		else if ((int)mi.SymType == 3)
 			seiun_append(buf, cap, len,
-				"Symbols: SymType=%d %s | PdbAge=%lu | PdbSig=%08lX%04lX%04lX | LoadedPdb=%s\n",
-				(int)mi.SymType,
-				mi.SymType == 0 ? "(SymNone - REPORT UNRELIABLE, PDB not matched)" :
-				mi.SymType == 3 ? "(SymPdb - function names and file:line are real)" : "(partial)",
+				"Symbols: SymType=3 (SymPdb - names and file:line are real) | PdbAge=%lu | PdbSig=%08lX%04lX%04lX | LoadedPdb=%s\n",
 				(unsigned long)mi.PdbAge,
 				(unsigned long)mi.PdbSig70.Data1, (unsigned long)mi.PdbSig70.Data2,
 				(unsigned long)mi.PdbSig70.Data3,
 				mi.LoadedPdbName[0] ? mi.LoadedPdbName : "(none)");
 		else
-			seiun_append(buf, cap, len, "Symbols: SymGetModuleInfo64 failed (err %lu)\n", GetLastError());
+			seiun_append(buf, cap, len,
+				"Symbols: SymType=%d (no PDB for this image - normal for a release build;"
+				" resolve the offsets with the published .map)\n", (int)mi.SymType);
 	}
 }
 
@@ -1192,7 +1262,8 @@ static int seiun_write_stackwalk(char* out, size_t cap, CONTEXT* ctx)
 	frame.AddrStack.Offset = ctx->Rsp;
 	frame.AddrStack.Mode = AddrModeFlat;
 	int len = 0;
-	seiun_append(out, cap, &len, "Backtrace (StackWalk64):\n");
+	seiun_append(out, cap, &len,
+		"Backtrace (StackWalk64, innermost first - [source/File.cpp:LINE] comes from the embedded linemap):\n");
 	DWORD64 prevPc = 0;
 	for (int i = 0; i < 32; i++)
 	{
@@ -1278,7 +1349,8 @@ static LONG WINAPI seiun_seh_handler(EXCEPTION_POINTERS* info)
 	char* body = seiun_body;
 	size_t cap = sizeof(seiun_body);
 	int len = 0;
-	seiun_append(body, cap, &len, "Native crash (Windows Structured Exception Handling)\n");
+	seiun_append_report_header(body, cap, &len, "Native crash (Windows Structured Exception Handling)");
+	seiun_append(body, cap, &len, "\n--- Exception ---\n");
 
 	EXCEPTION_RECORD* er = info->ExceptionRecord;
 	seiun_append(body, cap, &len, "Exception code: 0x%08lX (%s)\n",
@@ -1302,15 +1374,27 @@ static LONG WINAPI seiun_seh_handler(EXCEPTION_POINTERS* info)
 		seiun_append(body, cap, &len, "Fault offset: 0x%016llX\n",
 			(unsigned long long)((ULONG_PTR)er->ExceptionAddress - moduleBase));
 	}
-	seiun_append(body, cap, &len, "Exception parameters: %lu\n", (unsigned long)er->NumberParameters);
-	for (DWORD i = 0; i < er->NumberParameters && i < 2; i++)
+	// ACCESS_VIOLATION is by far the common case (a null this-pointer deref shows
+	// up here as "read at 0x8"), so spell it out instead of leaving two raw
+	// numbers whose meaning the reader has to look up.
+	if (er->ExceptionCode == 0xC0000005 && er->NumberParameters >= 2)
 	{
-		seiun_append(body, cap, &len, "  param[%lu]: 0x%p (ACCESS_VIOLATION: 0=read,1=write,8=exec / faulting address)\n",
-			(unsigned long)i, (void*)er->ExceptionInformation[i]);
+		unsigned long long kind = (unsigned long long)er->ExceptionInformation[0];
+		seiun_append(body, cap, &len, "Access violation: %s at 0x%016llX\n",
+			kind == 0 ? "read" : kind == 1 ? "write" : kind == 8 ? "execute" : "unknown",
+			(unsigned long long)er->ExceptionInformation[1]);
+	}
+	else
+	{
+		seiun_append(body, cap, &len, "Exception parameters: %lu\n", (unsigned long)er->NumberParameters);
+		for (DWORD i = 0; i < er->NumberParameters && i < 2; i++)
+			seiun_append(body, cap, &len, "  param[%lu]: 0x%p\n",
+				(unsigned long)i, (void*)er->ExceptionInformation[i]);
 	}
 	if (info->ContextRecord != NULL)
 	{
 		CONTEXT* c = info->ContextRecord;
+		seiun_append(body, cap, &len, "\n--- Registers ---\n");
 #if defined(_M_X64) || defined(__x86_64__)
 		seiun_append(body, cap, &len, "Registers (x64):\n");
 		seiun_append(body, cap, &len, "  RIP=0x%016llX RSP=0x%016llX RBP=0x%016llX\n",
@@ -1340,10 +1424,9 @@ static LONG WINAPI seiun_seh_handler(EXCEPTION_POINTERS* info)
 	seiun_append_engine_context(body, cap, &len);
 
 	// Build identity in phase 1: if the symbol work below faults, the report
-	// still says which exe/PDB pair produced these offsets.
-	// dbghelp is initialized first so the Symbols: line reflects whether the PDB
-	// actually matched (SymType == SymNone means every "<name>+0x..." below is an
-	// export-table guess and must not be trusted).
+	// still says which exe produced these offsets and which linemap/.map can
+	// resolve them. dbghelp goes first so the Symbols: line is already final by
+	// the time the backtrace decides whether names may be shown at all.
 	seiun_dbghelp_init();
 	seiun_append_build_identity(body, cap, &len);
 	seiun_append(body, cap, &len, "\n");
@@ -1356,11 +1439,20 @@ static LONG WINAPI seiun_seh_handler(EXCEPTION_POINTERS* info)
 	seiun_native_crash_popup(seiun_crash_file());
 
 	// Phase 2: backtrace + stack scan appended, file overwritten in place.
+	seiun_append(body, cap, &len, "\n");
 	len += seiun_write_stackwalk(body + len, cap - (size_t)len, info->ContextRecord);
 #if defined(_M_X64) || defined(__x86_64__)
 	if (info->ContextRecord != NULL)
 		len += seiun_write_stack_scan(body + len, cap - (size_t)len, (ULONG_PTR)info->ContextRecord->Rsp);
 #endif
+
+	// The one actionable line: how to turn the offsets above into function names
+	// with the symbol bundle published next to the release.
+	seiun_append(body, cap, &len,
+		"\n--- Triage ---\n"
+		"python tools/mapresolve.py ApplicationMain.map <offset from the backtrace>\n"
+		"(first check the map belongs to this exe:"
+		" python tools/verify_map.py SeiunEngine.exe ApplicationMain.map)\n");
 	seiun_write_crash_file(body);
 
 	return EXCEPTION_CONTINUE_SEARCH;
@@ -1379,7 +1471,8 @@ static void __cdecl seiun_sigabrt_handler(int sig)
 	char* body = seiun_body;
 	size_t cap = sizeof(seiun_body);
 	int len = 0;
-	seiun_append(body, cap, &len, "Native crash (abort()/terminate path - SIGABRT; CRT assert, pure virtual call, etc.)\n");
+	seiun_append_report_header(body, cap, &len,
+		"Native crash (abort()/terminate path - SIGABRT; CRT assert, pure virtual call, etc.)");
 	seiun_append_engine_context(body, cap, &len);
 	seiun_append_build_identity(body, cap, &len);
 	seiun_append(body, cap, &len, "\n");
@@ -1424,7 +1517,8 @@ static int seiun_lua_panic_handler(lua_State* L)
 		char* body = seiun_body;
 		size_t cap = sizeof(seiun_body);
 		int len = 0;
-		seiun_append(body, cap, &len, "Native crash (LuaJIT panic: unprotected error in call to Lua API)\n");
+		seiun_append_report_header(body, cap, &len,
+			"Native crash (LuaJIT panic: unprotected error in call to Lua API)");
 		const char* msg = (L != NULL) ? lua_tolstring(L, -1, NULL) : NULL;
 		seiun_append(body, cap, &len, "Lua error message: %s\n", (msg != NULL) ? msg : "(non-string error object)");
 		seiun_append_engine_context(body, cap, &len);

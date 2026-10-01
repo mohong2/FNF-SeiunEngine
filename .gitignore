@@ -47,3 +47,6 @@ chart_cache/
 # Python bytecode caches (tools/*.py)
 __pycache__/
 *.pyc
+
+# script diagnostics log written by backend.ScriptLog when the test harness runs
+/logs/

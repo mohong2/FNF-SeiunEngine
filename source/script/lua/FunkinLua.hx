@@ -3408,36 +3408,77 @@ class FunkinLua {
 			#end
 		});
 
-		Lua_helper.add_callback(lua, "playMusic", function(sound:String, volume:Float = 1, loop:Bool = false) {
+		Lua_helper.add_callback(lua, "playMusic", function(sound:String, ?volume:Float = 1, ?loop:Bool = false) {
+			if(sound == null || sound.length == 0) return;
 			FlxG.sound.playMusic(Paths.music(sound), volume, loop);
 		});
-		Lua_helper.add_callback(lua, "playSound", function(sound:String, volume:Float = 1, ?tag:String = null) {
+		Lua_helper.add_callback(lua, "playSound", function(sound:String, ?volume:Float = 1, ?tag:String = null, ?loop:Bool = false) {
+			if(sound == null || sound.length == 0) return;
 			if(tag != null && tag.length > 0) {
 				tag = tag.replace('.', '');
 				if(PlayState.instance.modchartSounds.exists(tag)) {
 					PlayState.instance.modchartSounds.get(tag).stop();
 				}
-				PlayState.instance.modchartSounds.set(tag, FlxG.sound.play(Paths.sound(sound), volume, false, function() {
-					PlayState.instance.modchartSounds.remove(tag);
-					PlayState.instance.callOnScripts('onSoundFinished', [tag]);
-				}));
+				// FlxG.sound.play(asset, volume, looped, ?group, autoDestroy, ?onComplete)
+				var theTag:String = tag;
+				var snd:FlxSound = FlxG.sound.play(Paths.sound(sound), volume, loop, null, !loop, function() {
+					if(!loop) {
+						PlayState.instance.modchartSounds.remove(theTag);
+						var vars = getStateVars();
+						if(vars != null) vars.remove('sound_' + theTag);
+					}
+					PlayState.instance.callOnScripts('onSoundFinished', [theTag]);
+				});
+				PlayState.instance.modchartSounds.set(tag, snd);
+				// Psych 1.0.4 把带 tag 的音效同时存进 state 变量表, 名字是 sound_<tag> ——
+				// 模组用 getProperty('sound_pausemus.time' / '.length' / '.playing') 读它。
+				// 本引擎以前只存 modchartSounds, 那些 getProperty 全是 nil, 于是模组的
+				// 暂停菜单/GameOver 音乐逻辑在第一行就报错 (pauseMenu.lua:401)。
+				var vars = getStateVars();
+				// 音效没建出来时不能写一个 null 进去: Map 里存在 key、值是 null 的话,
+				// getProperty('sound_x.time') 会一路走到 nil 而不是"这个 tag 不存在"。
+				if(vars != null) {
+					if(snd != null) vars.set('sound_' + tag, snd);
+					else vars.remove('sound_' + tag);
+				}
+				logSoundDiag('play    ' + tag + '  snd=' + (snd != null ? 'ok' : 'NULL')
+					+ '  vars=' + (vars != null ? Std.string(Lambda.count(vars)) : 'null')
+					+ '  state=' + stateNameForDiag());
 				return;
 			}
-			FlxG.sound.play(Paths.sound(sound), volume);
+			FlxG.sound.play(Paths.sound(sound), volume, loop);
 		});
+		// 1.0.4: 不带 tag 的 stopSound / pauseSound / resumeSound 作用于当前背景音乐。
+		// 本引擎以前对 tag == null 直接什么都不做, 所以模组里 `stopSound()` 是空操作
+		// (SonicTheFunkChinese 的假歌曲菜单靠它停掉上一首音乐)。
 		Lua_helper.add_callback(lua, "stopSound", function(tag:String) {
-			if(tag != null && tag.length > 1 && PlayState.instance.modchartSounds.exists(tag)) {
+			if(tag == null || tag.length < 1) {
+				if(FlxG.sound.music != null) FlxG.sound.music.stop();
+				return;
+			}
+			if(PlayState.instance.modchartSounds.exists(tag)) {
 				PlayState.instance.modchartSounds.get(tag).stop();
 				PlayState.instance.modchartSounds.remove(tag);
 			}
+			var vars = getStateVars();
+			if(vars != null) vars.remove('sound_' + tag);
+			logSoundDiag('stop    ' + tag + '  vars=' + (vars != null ? Std.string(Lambda.count(vars)) : 'null'));
 		});
 		Lua_helper.add_callback(lua, "pauseSound", function(tag:String) {
-			if(tag != null && tag.length > 1 && PlayState.instance.modchartSounds.exists(tag)) {
+			if(tag == null || tag.length < 1) {
+				if(FlxG.sound.music != null) FlxG.sound.music.pause();
+				return;
+			}
+			if(PlayState.instance.modchartSounds.exists(tag)) {
 				PlayState.instance.modchartSounds.get(tag).pause();
 			}
 		});
 		Lua_helper.add_callback(lua, "resumeSound", function(tag:String) {
-			if(tag != null && tag.length > 1 && PlayState.instance.modchartSounds.exists(tag)) {
+			if(tag == null || tag.length < 1) {
+				if(FlxG.sound.music != null) FlxG.sound.music.play();
+				return;
+			}
+			if(PlayState.instance.modchartSounds.exists(tag)) {
 				PlayState.instance.modchartSounds.get(tag).play();
 			}
 		});
@@ -3540,8 +3581,12 @@ class FunkinLua {
 		});
 		
 		Lua_helper.add_callback(lua, "close", function() {
-			closed = true;
-			return closed;
+			// 必须作用于**调用者**, 不能作用于最后注册 close 的实例 (见 executing)。
+			var target:FunkinLua = executing;
+			if (target == null) target = this;
+			target.closed = true;
+			backend.ScriptLog.write('load', 'CLOSE() ' + target.scriptName);
+			return target.closed;
 		});
 
 		Lua_helper.add_callback(lua, "changePresence", function(details:String, state:Null<String>, ?smallImageKey:String, ?hasStartTimestamp:Bool, ?endTimestamp:Float) {
@@ -3794,10 +3839,20 @@ class FunkinLua {
 			var saves = getStateModchartSaves();
 			if(saves != null && saves.exists(name))
 			{
-				var retVal:Dynamic = Reflect.field(saves.get(name).data, field);
-				return retVal;
+				var saveData:Dynamic = saves.get(name).data;
+				// 0.7.3/1.0.4: 存档里没有这个字段时回退到 defaultValue。
+				// 0.6.3 原版直接返回 Reflect.field(...) (字段缺失即 null), 兼容模式保持原样。
+				// 少了这个回退, 1.0.4 模组在"别的脚本已经 initSaveData 过、但存档里还没有该字段"时
+				// 会拿到 nil, 顶层 `x = getDataFromSave(..., 默认值)` 就变成 nil, 后续算术/比较全部报错。
+				if(CompatEngine.is063())
+					return Reflect.field(saveData, field);
+				if(Reflect.hasField(saveData, field))
+					return Reflect.field(saveData, field);
+				logSaveDiag('missing:' + name + '.' + field, 'missing-field    name=' + name + '  field=' + field + '  default=' + Std.string(defaultValue));
+				return defaultValue;
 			}
 			luaTrace('getDataFromSave: Save file not initialized: ' + name, false, false, FlxColor.RED);
+			logSaveDiag('noinit:' + name, 'not-initialized  name=' + name + '  field=' + field + '  default=' + Std.string(defaultValue));
 			return defaultValue;
 		});
 		Lua_helper.add_callback(lua, "setDataFromSave", function(name:String, field:String, value:Dynamic) {
@@ -4101,6 +4156,7 @@ class FunkinLua {
 			var result:Dynamic = LuaL.dofile(lua, script);
 			var resultStr:String = Lua.tostring(lua, result);
 			if(resultStr != null && result != 0) {
+				backend.ScriptLog.write('load', 'LUA FAILED  ' + script + '  ::  ' + resultStr);
 				TraceManager.error('trace.lua.scriptError', 'Error on lua script! {}', [resultStr]);
 				backend.Dialog.show(Language.get('script_lua_error', 'Error on lua script!'), resultStr, 'Error');
 				//luaTrace('Error loading lua script: "$script"\n' + resultStr, true, false, FlxColor.RED);
@@ -4108,9 +4164,11 @@ class FunkinLua {
 				return;
 			}
 		} catch(e:Dynamic) {
+			backend.ScriptLog.write('load', 'LUA FAILED  ' + script + '  ::  ' + Std.string(e));
 			TraceManager.error('trace.lua.loadException', '{}', [e]);
 			return;
 		}
+		backend.ScriptLog.write('load', 'lua ok      ' + script);
 
 		// 0.7.3 兼容：onCreate 执行期间必须已经位于 PlayState.luaArray，
 		// 这样 HScript 的 createGlobalCallback 才能把 parseJson 等回调注册到当前 Lua 脚本。
@@ -4837,6 +4895,33 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 		if (Std.isOfType(state, MusicBeatSubstate)) return cast(state, MusicBeatSubstate).modchartTimers;
 		return null;
 	}
+	/**
+	 * 诊断: `getDataFromSave` 命中"字段缺失/存档未初始化"这两条分支时, 只把最前面的
+	 * 若干条写进 logs/script_log.txt, 用来定位 1.0.4 模组把 nil 当默认值用的场景。
+	 * 超出上限后直接返回, 不会因为模组每帧读取存档而刷日志。
+	 */
+	/** `sound_<tag>` 诊断只记一次、最多 30 条 —— 模组每帧读它也不会把日志刷满。 */
+	static var __sndDiagSeen:Map<String, Bool> = new Map();
+	static function logSoundDiag(msg:String):Void {
+		if (__sndDiagSeen.exists(msg)) return;
+		if (Lambda.count(__sndDiagSeen) >= 30) return;
+		__sndDiagSeen.set(msg, true);
+		backend.ScriptLog.write('snd', msg);
+	}
+	static function stateNameForDiag():String {
+		try { return FlxG.state != null ? Type.getClassName(Type.getClass(FlxG.state)) : 'null'; } catch (e:Dynamic) { return '?'; }
+	}
+
+	static var __saveDiagSeen:Map<String, Bool> = new Map();
+	static final SAVE_DIAG_LIMIT:Int = 60;
+	static function logSaveDiag(key:String, msg:String):Void {
+		// 同一个 (存档, 字段) 只记一次: 模组每帧读存档时不会把日志刷满。
+		if(__saveDiagSeen.exists(key)) return;
+		if(Lambda.count(__saveDiagSeen) >= SAVE_DIAG_LIMIT) return;
+		__saveDiagSeen.set(key, true);
+		backend.ScriptLog.write('save', msg);
+	}
+
 	static function getStateModchartSounds():Map<String, FlxSound> {
 		var state = FlxG.state;
 		if (PlayState.instance != null) return PlayState.instance.modchartSounds;
@@ -5345,7 +5430,7 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 	 * 只有每帧/每步回调参与计数（见 ScriptErrorGuard）：一次性回调（onEvent、onKeyPress…）
 	 * 报错照常打印，但不会把整个脚本关掉 —— 否则它在别的回调里本该正常工作的功能会一起失效。
 	 * @param callback 触发报错的回调名，缺省取最近一次 call() 的函数名
-	 * @return true = 已达到上限已被忽略
+	 * @return true = 这次报错应当安静下来（不再打印 / 不再写日志），脚本**继续运行**
 	 */
 	function registerError(callback:String = null):Bool {
 		if (!ClientPrefs.data.ignoreErrorLoopScripts) return false;
@@ -5370,10 +5455,23 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 	}
 
 	public function call(func:String, args:Array<Dynamic>):Dynamic {
+		// 记录当前执行的脚本 (见 executing 的说明), 返回时恢复, 支持嵌套调用。
+		var __prevExec:FunkinLua = executing;
+		executing = this;
+		var __ret:Dynamic = callInner(func, args);
+		executing = __prevExec;
+		return __ret;
+	}
+
+	function callInner(func:String, args:Array<Dynamic>):Dynamic {
 		#if LUA_ALLOWED
 		if(closed) return Function_Continue;
 
 		lastCalledFunction = func;
+		// 只记录生命周期回调（见 ScriptLog.isLifecycle）：这里是唯一的分发汇聚点，
+		// 所以 PlayState 覆盖 callOnLuas 也拦不住它；高频回调不记，避免每次回调写文件。
+		if(backend.ScriptLog.isLifecycle(func))
+			backend.ScriptLog.write('cb', scriptName + ' <- ' + func);
 		try {
 			if(lua == null) return Function_Continue;
 
@@ -5391,17 +5489,18 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 
 			if (type != Lua.LUA_TFUNCTION) {
 				if (type > Lua.LUA_TNIL) {
-					if (CompatEngine.compatMode()) {
-						// Old-style error message (PsychEngine 0.6.3 format)
-						luaTrace("ERROR (" + func + "): attempt to call a " + typeToString(type) + " value", false, false, FlxColor.RED);
-					} else {
-						var typeName:String = typeToString(type);
-						var pattern = Language.get('trace.lua.callNotFunction', 'ERROR ({}): attempt to call a {} value');
-						var errMsg = formatLuaString(pattern, [func, typeName]);
-						luaTrace(errMsg, false, false, FlxColor.RED);
-						TraceManager.error('trace.lua.callNotFunction', 'ERROR ({}): attempt to call a {} value', [func, typeName]);
+					if (!registerError(func)) {
+						if (CompatEngine.compatMode()) {
+							// Old-style error message (PsychEngine 0.6.3 format)
+							luaTrace("ERROR (" + func + "): attempt to call a " + typeToString(type) + " value", false, false, FlxColor.RED);
+						} else {
+							var typeName:String = typeToString(type);
+							var pattern = Language.get('trace.lua.callNotFunction', 'ERROR ({}): attempt to call a {} value');
+							var errMsg = formatLuaString(pattern, [func, typeName]);
+							luaTrace(errMsg, false, false, FlxColor.RED);
+							TraceManager.error('trace.lua.callNotFunction', 'ERROR ({}): attempt to call a {} value', [func, typeName]);
+						}
 					}
-					if (registerError(func)) { Lua.pop(lua, 1); return Function_Continue; }
 				}
 
 				// Only "absent" is cached; a non-nil, non-function value must keep hitting the
@@ -5433,16 +5532,19 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 			// Checks if it's not successful, then show a error.
 			if (status != Lua.LUA_OK) {
 				var error:String = getErrorMessage(status);
-				if (!CompatEngine.compatMode()) {
-					// Old-style error message (PsychEngine 0.6.3 format)
-					luaTrace("ERROR (" + func + "): " + error, false, false, FlxColor.RED);
-				} else {
-					var pattern = Language.get('trace.lua.callRuntimeError', 'ERROR ({}): {}');
-					var errMsg = formatLuaString(pattern, [func, error]);
-					luaTrace(errMsg, false, false, FlxColor.RED);
-					TraceManager.error('trace.lua.callRuntimeError', 'ERROR ({}): {}', [func, error]);
+				// 先问 error-loop 保护要不要安静这次报错; 但脚本本身不会被关掉(见 registerError)。
+				if (!registerError(func)) {
+					backend.ScriptLog.write('error', 'lua ' + scriptName + ' :: ' + func + ' :: ' + error);
+					if (!CompatEngine.compatMode()) {
+						// Old-style error message (PsychEngine 0.6.3 format)
+						luaTrace("ERROR (" + func + "): " + error, false, false, FlxColor.RED);
+					} else {
+						var pattern = Language.get('trace.lua.callRuntimeError', 'ERROR ({}): {}');
+						var errMsg = formatLuaString(pattern, [func, error]);
+						luaTrace(errMsg, false, false, FlxColor.RED);
+						TraceManager.error('trace.lua.callRuntimeError', 'ERROR ({}): {}', [func, error]);
+					}
 				}
-				if (registerError(func)) return Function_Continue;
 				return Function_Continue;
 			}
 
@@ -5456,6 +5558,7 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 		}
 		catch (e:Dynamic) {
 			globalsEpoch++; // an error path may still have written globals
+			backend.ScriptLog.write('error', 'lua-exception ' + scriptName + ' :: ' + lastCalledFunction + ' :: ' + Std.string(e));
 			if (!CompatEngine.compatMode()) {
 				trace(e);
 			} else {
@@ -5669,11 +5772,25 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 
 	public static function getObjectDirectly(objectName:String, ?checkForTextsToo:Bool = true):Dynamic
 	{
+		// 1.0.4 的顺序: 先查 state 的共享变量表, 再查 modchart sprite / text。
+		// 变量表里不止有精灵 —— 带 tag 的音效 (sound_xxx)、Map、数字都在这儿, 而
+		// getLuaObject() 的返回类型是 FlxSprite, 先走它就会把 FlxSound 当成精灵返回。
 		var coverMeInPiss:Dynamic = null;
-		if (PlayState.instance != null)
+		var vars = getStateVars();
+		if (vars != null && vars.exists(objectName)) coverMeInPiss = vars.get(objectName);
+		if (coverMeInPiss == null && PlayState.instance != null)
 			coverMeInPiss = PlayState.instance.getLuaObject(objectName, checkForTextsToo);
 		if(coverMeInPiss==null)
 			coverMeInPiss = getVarInArray(getInstance(), objectName);
+
+		// 诊断: 脚本读 sound_<tag> 却什么都没找到时记一条(去重, 最多 30 条),
+		// 用来定位"带 tag 的音效到底进没进变量表 / 在哪个 state 里"。
+		if (coverMeInPiss == null && objectName != null && StringTools.startsWith(objectName, 'sound_'))
+		{
+			var vars2 = getStateVars();
+			logSoundDiag('miss    ' + objectName + '  vars=' + (vars2 != null ? Std.string(Lambda.count(vars2)) : 'null')
+				+ '  state=' + stateNameForDiag() + '  playState=' + (PlayState.instance != null));
+		}
 
 		return coverMeInPiss;
 	}
@@ -5780,6 +5897,7 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 		if(lua == null) {
 			return;
 		}
+		backend.ScriptLog.write('load', 'STOP ' + scriptName);
 
 		// 清理 require 专用回调，避免 Lua_helper 全局静态 map 越积越多
 		// English: clean up the require-only callback so the global static map doesn't grow

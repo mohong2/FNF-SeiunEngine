@@ -529,7 +529,7 @@ class TraceManager
 	 * The C side keeps it in a fixed buffer, so it is capped on both entry
 	 * count and total characters.
 	 */
-	public static function getRecentCrashText(?maxEntries:Int = 30, ?maxChars:Int = 8000):String
+	public static function getRecentCrashText(?maxEntries:Int = 150, ?maxChars:Int = 28000):String
 	{
 		var all:Array<TraceEntry> = getAll();
 		var start:Int = all.length - maxEntries;

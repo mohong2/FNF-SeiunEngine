@@ -61,6 +61,19 @@ compatibility with the older gated `Project.xml`; it is a no-op.) A report's
 `Build:` line (fingerprint of the running binary + the loaded linemap) is what
 you match against `build-info.txt` in the bundle.
 
+### Check a map before you trust it -- `verify_map.py`
+
+    python tools/verify_map.py <exe> <map>
+
+A .map only describes the image the same link produced. Use a stale one and every
+frame resolves to a plausible-looking, wrong function. This compares the map's own
+`Timestamp` and `Preferred load address` with the exe's PE header and the `.text`
+extent of both, then prints MATCH/MISMATCH and exits 1 on a mismatch.
+
+`tools/build_windows_symbols.ps1` runs it before publishing and the Windows CI job
+fails if it does not pass, so a released `*-symbols.zip` is guaranteed to describe
+the released `SeiunEngine.exe`.
+
 ## Settings layout -- `verify_option_layout.py`
 
 Read-only gate for the built-in settings menu. Run it after touching
@@ -78,6 +91,7 @@ category/option label is missing from any of the three languages.
 
 | File | Purpose |
 |---|---|
+| `verify_map.py` | proves a `.map` belongs to an exe (Timestamp + image base + `.text` extent); run by the Windows symbol build and by CI |
 | `symbolize-crash.ps1` + `mapresolve.py` | the older two-step map symboliser (PowerShell + Python); `crash_triage.py` supersedes it |
 | `gen_linemap.bat` / `gen_linemap.py` | Android: address -> source-line table from an unstripped `.so` (the resident crash linemap) |
 | `gen_linemap_msvc.py` | Windows: the same table out of an MSVC PDB via dbghelp (`--text-sha` compares two builds' .text) |
