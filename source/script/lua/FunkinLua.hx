@@ -4751,11 +4751,29 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 		// Only when the target is the state itself: a dotted path, a group element or another class
 		// still gets the original error, because there a missing field is a mistake worth stopping on.
 		// 1.0.4 mode keeps the strict behaviour, exactly like the getProperty branch above.
+		//
+		// The fallback must fire ONLY when the property really does not exist, and that cannot be
+		// decided up front on this target: hxcpp's Reflect.hasField() returns false even for a plain
+		// `public var` (probe: hasField(obj, "defaultCamZoom") == false), so putting an existence
+		// test in the condition below diverts every real state field into `variables` and the engine
+		// never sees the write -- 0.6.3/0.7.3 stopped honouring `setProperty('defaultCamZoom', v)`,
+		// which silently killed scripted camera zooms. Write first and treat the throw as the
+		// signal instead: Reflect.setProperty coerces a numeric String into a Float field exactly
+		// like 0.6.3 / 0.7.3 / 1.0.4 do (probe: Reflect.setProperty(obj, "defaultCamZoom", "0.9")
+		// -> 0.9), and only a genuinely unknown name throws "Invalid field:".
 		if(!CompatEngine.is104() && stateVars != null && instance == getTargetInstance())
 		{
-			trace('FunkinLua: setProperty: "' + variable + '" is not a field, kept as a script variable');
-			stateVars.set(variable, value);
-			return value;
+			try
+			{
+				Reflect.setProperty(instance, variable, value);
+				return value;
+			}
+			catch(e:Dynamic)
+			{
+				trace('FunkinLua: setProperty: "' + variable + '" is not a field, kept as a script variable');
+				stateVars.set(variable, value);
+				return value;
+			}
 		}
 		// ChartNotes: 整行赋值写不回列式存储(也没有意义), 直接忽略 —— 同时避免
 		// Reflect.setProperty 抛 Invalid field:<下标> 把整个脚本回调打断。
