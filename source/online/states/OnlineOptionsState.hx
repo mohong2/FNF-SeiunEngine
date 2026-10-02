@@ -114,24 +114,33 @@ class OnlineOptionsState extends MusicBeatState {
 		var lastOption:InputOption;
 		var recentOption:InputOption;
 		items.add(recentOption = new InputOption(OnlineLang.L('options.sslVerify', 'Enable SSL Verification'), OnlineLang.L('options.sslVerify.desc', "If checked, the game will check for valid SSL Certifications, which can lead to safer connections with downloads or rooms.\n(But It's not recommended because of Haxe's flawed sockets implementation.)"), 
-		ClientPrefs.data.verifySSL,
-		() -> {
+		// The checkbox must show the EFFECTIVE process state. `ClientPrefs.data.verifySSL`
+		// defaults to false and is deliberately NOT applied at startup (see ClientPrefs.loadPrefs),
+		// while `sys.ssl.Socket.DEFAULT_VERIFY_CERT` defaults to true. Binding the box to the pref
+		// displayed "off" while verification was really on, so a single click - the user thinking
+		// they were turning verification back on - was silently what disabled it process-wide.
+		// Reading the live switch keeps display == reality without changing any default.
+		sys.ssl.Socket.DEFAULT_VERIFY_CERT == true));
+		recentOption.onClick = () -> {
 			recentOption.checked = !recentOption.checked;
 			ClientPrefs.data.verifySSL = recentOption.checked;
 			ClientPrefs.saveSettings();
-			sys.ssl.Socket.DEFAULT_VERIFY_CERT = ClientPrefs.data.verifySSL;
-		}));
+			// Explicit, single and reversible: unchecking turns verification off for this
+			// process only, re-checking turns it back on. Never applied at startup.
+			sys.ssl.Socket.DEFAULT_VERIFY_CERT = recentOption.checked;
+		};
 		recentOption.y = trustedOption.y + trustedOption.height + 50;
 		recentOption.screenCenter(X);
 		recentOption.ID = i++;
 		// Online score HUD form. Unchecked (default) keeps the compact one-liner; checked
 		// restores the multi-line block.
 		var scoreHudOption:InputOption;
-		items.add(scoreHudOption = new InputOption(OnlineLang.L('options.scoreDetails', 'Detailed Score HUD'), OnlineLang.L('options.scoreDetails.desc', 'If checked, online score texts show every value on its own line.\nUnchecked keeps them on one compact line.'), ClientPrefs.data.onlineScoreDetails, () -> {
+		items.add(scoreHudOption = new InputOption(OnlineLang.L('options.scoreDetails', 'Detailed Score HUD'), OnlineLang.L('options.scoreDetails.desc', 'If checked, online score texts show every value on its own line.\nUnchecked keeps them on one compact line.'), ClientPrefs.data.onlineScoreDetails));
+		scoreHudOption.onClick = () -> {
 			scoreHudOption.checked = !scoreHudOption.checked;
 			ClientPrefs.data.onlineScoreDetails = scoreHudOption.checked;
 			ClientPrefs.saveSettings();
-		}));
+		};
 		scoreHudOption.y = recentOption.y + recentOption.height + 50;
 		scoreHudOption.screenCenter(X);
 		scoreHudOption.ID = i++;
@@ -143,7 +152,8 @@ class OnlineOptionsState extends MusicBeatState {
 
 			var registerOption:InputOption;
 			items.add(registerOption = new InputOption(OnlineLang.L('options.register', 'Register to the Network'),
-			OnlineLang.L('options.register.desc', 'Join the SeiunEngine Online Network and submit your song replays\nto the leaderboards!'), [OnlineLang.L('options.placeholder.username', 'Username'), OnlineLang.L('options.placeholder.email', 'Email')], (text, input) -> {
+			OnlineLang.L('options.register.desc', 'Join the SeiunEngine Online Network and submit your song replays\nto the leaderboards!'), [OnlineLang.L('options.placeholder.username', 'Username'), OnlineLang.L('options.placeholder.email', 'Email')]));
+			registerOption.onEnter = (text, input) -> {
 				try {
 					if (input == 0) {
 						registerOption.inputs[0].hasFocus = false;
@@ -179,7 +189,7 @@ class OnlineOptionsState extends MusicBeatState {
 				catch (exc) {
 					Alert.alert(OnlineLang.L('options.registerFailed', "Couldn't register!"), ShitUtil.prettyError(exc));
 				}
-			}));
+			};
 			registerOption.y = section.y + 70;
 			registerOption.screenCenter(X);
 			registerOption.ID = i++;
@@ -213,12 +223,12 @@ class OnlineOptionsState extends MusicBeatState {
 			var recentOption:InputOption;
 			items.add(recentOption = new InputOption(OnlineLang.L('options.chatNotify', 'Network Chat Notifications'), 
 			OnlineLang.L('options.chatNotify.desc', 'If checked, all messages from the Network Chat will be notified to you.\nCan be toggled with "/notify" Network command.'), 
-			ClientPrefs.data.notifyOnChatMsg,
-			() -> {
+			ClientPrefs.data.notifyOnChatMsg));
+			recentOption.onClick = () -> {
 				recentOption.checked = !recentOption.checked;
 				ClientPrefs.data.notifyOnChatMsg = recentOption.checked;
 				ClientPrefs.saveSettings();
-			}));
+			};
 			recentOption.y = lastOption.y + lastOption.height + 50;
 			recentOption.screenCenter(X);
 			recentOption.ID = i++;
@@ -227,11 +237,12 @@ class OnlineOptionsState extends MusicBeatState {
 			var recentOption:InputOption;
 			items.add(recentOption = new InputOption(OnlineLang.L('options.mutePM', 'Mute PM Notifications'),
 				OnlineLang.L('options.mutePM.desc', 'If checked, PM notifications are muted.\nCan be toggled with "/notify pm" Network command.'),
-				ClientPrefs.data.disablePMs, () -> {
+				ClientPrefs.data.disablePMs));
+				recentOption.onClick = () -> {
 					recentOption.checked = !recentOption.checked;
 					ClientPrefs.data.disablePMs = recentOption.checked;
 					ClientPrefs.saveSettings();
-				}));
+				};
 			recentOption.y = lastOption.y + lastOption.height + 50;
 			recentOption.screenCenter(X);
 			recentOption.ID = i++;
@@ -240,11 +251,12 @@ class OnlineOptionsState extends MusicBeatState {
 			var recentOption:InputOption;
 			items.add(recentOption = new InputOption(OnlineLang.L('options.muteInvites', 'Mute Room Invites'),
 				OnlineLang.L('options.muteInvites.desc', 'If checked, room invites are muted.\nCan be toggled with "/notify roominvite" Network command.'),
-				ClientPrefs.data.disableRoomInvites, () -> {
+				ClientPrefs.data.disableRoomInvites));
+				recentOption.onClick = () -> {
 					recentOption.checked = !recentOption.checked;
 					ClientPrefs.data.disableRoomInvites = recentOption.checked;
 					ClientPrefs.saveSettings();
-				}));
+				};
 			recentOption.y = lastOption.y + lastOption.height + 50;
 			recentOption.screenCenter(X);
 			recentOption.ID = i++;
@@ -253,11 +265,12 @@ class OnlineOptionsState extends MusicBeatState {
 			var recentOption:InputOption;
 			items.add(recentOption = new InputOption(OnlineLang.L('options.friendOnline', 'Notify when Friend is Online'),
 				OnlineLang.L('options.friendOnline.desc', "If checked, you'll receive a notification when your friend goes online.\nCan be toggled with \"/notify friend\" Network command."),
-				ClientPrefs.data.friendOnlineNotification, () -> {
+				ClientPrefs.data.friendOnlineNotification));
+				recentOption.onClick = () -> {
 					recentOption.checked = !recentOption.checked;
 					ClientPrefs.data.friendOnlineNotification = recentOption.checked;
 					ClientPrefs.saveSettings();
-				}));
+				};
 			recentOption.y = lastOption.y + lastOption.height + 50;
 			recentOption.screenCenter(X);
 			recentOption.ID = i++;

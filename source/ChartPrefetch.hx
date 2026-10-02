@@ -1,8 +1,10 @@
 package;
 
 import sys.thread.Thread;
-import sys.thread.Mutex;
 import sys.thread.Lock;
+#if (haxe_ver < 4.3)
+import sys.thread.Mutex;
+#end
 
 /**
  * Bounded, asynchronous section prefetcher for streamed charts.
@@ -55,7 +57,10 @@ class ChartPrefetch
 
 	var nextIndex:Int = 0;
 	var pending:Chunk = null;
+	#if (haxe_ver < 4.3)
+	/** 4.2.5 没有 haxe.atomic: chunk.done 仍是 mutex 保护的普通 Int(见 runWorker)。 */
 	var mutex:Mutex = new Mutex();
+	#end
 
 	public function new(paths:Array<String>, ranges:Array<ChartStream.ChartSectionRange>, ?workers:Int = 0)
 	{
@@ -161,10 +166,17 @@ class ChartPrefetch
 		if (reader != null) reader.close();
 
 		var last:Bool = false;
+		#if (haxe_ver >= 4.3)
+		// AtomicInt.add 返回旧值: 旧值 + 1 == total 表示本次是最后一个收工的 worker。
+		// chunk.lock.release() 同时充当 chunk.results / chunk.error 的发布屏障 ——
+		// finish() 里的 lock.wait() 与它配对, 所以这个纯计数器不再需要 mutex。
+		last = (chunk.done.add(1) + 1 >= chunk.total);
+		#else
 		mutex.acquire();
 		chunk.done++;
 		last = (chunk.done >= chunk.total);
 		mutex.release();
+		#end
 		if (last) chunk.lock.release();
 	}
 }
@@ -175,7 +187,11 @@ private class Chunk
 	/** One slot per section of the chunk, in section order. */
 	public var results:Array<Array<ChartStream.ChartRawNote>>;
 	/** Workers that reported completion. */
+	#if (haxe_ver >= 4.3)
+	public var done:Counter = new Counter(0);
+	#else
 	public var done:Int = 0;
+	#end
 	/** Workers the chunk was split across: the completion count, NOT the section count. */
 	public var total:Int = 0;
 	public var error:String = null;
@@ -189,3 +205,24 @@ private class Chunk
 		this.lock = new Lock();
 	}
 }
+
+/**
+ * T4 线程原语现代化的兼容层(与 backend.AsyncGfxLoader 里的同名私有类型一致)。
+ *
+ * 4.3.7 + 有原子操作的目标: Counter = haxe.atomic.AtomicInt, 完成计数无锁。
+ * 4.2.5: haxe.atomic 在 4.2.5 的 std 里不存在, 退回普通 Int —— 该分支下 done 仍由
+ * mutex 保护(见 runWorker), 语义与改动前一致, 守住 "4.2.5 类型检查 exit 0" 基线。
+ * 丢弃 4.2.5 支持时删除 #else 分支, 只留 typedef。
+ */
+#if ((haxe_ver >= 4.3) && target.atomics)
+private typedef Counter = haxe.atomic.AtomicInt;
+#else
+private abstract Counter(Int)
+{
+	public inline function new(value:Int) this = value;
+	public inline function add(b:Int):Int { var old = this; this = old + b; return old; }
+	public inline function sub(b:Int):Int { var old = this; this = old - b; return old; }
+	public inline function load():Int return this;
+	public inline function store(value:Int):Int { var old = this; this = value; return old; }
+}
+#end

@@ -13,6 +13,9 @@ import sys.FileSystem;
 import sys.io.File;
 import sys.thread.Thread;
 import sys.thread.Mutex;
+#if (haxe_ver >= 4.3)
+import sys.thread.Semaphore;
+#end
 #end
 
 
@@ -46,12 +49,31 @@ class AsyncGfxLoader
 
 	public static inline var ASYNC_TIMEOUT_MS:Float = 45000;
 
-	public static var decodedOffThreadTotal:Int = 0;
-	public static var failedOffThreadTotal:Int = 0;
+	// 会话/批次计数。存储换成原子计数器(4.3.7: haxe.atomic.AtomicInt, cpp 走无锁 _hx_atomic_*),
+	// 对外仍是 Int 只读属性: GfxPolicy.hx:406-408 与 GfxLru.hx:222-223 按 Int 读这些名字
+	// (含 "> 0" 与字符串插值), 保持属性形态就不必改动那两个文件。
+	static var _decodedOffThreadTotal:Counter = new Counter(0);
+	static var _failedOffThreadTotal:Counter = new Counter(0);
+	/** 解码耗时累计: cpp 只提供 AtomicInt/AtomicObject, Float 没有原子实现, 仍只在主线程累加。 */
 	public static var decodeMsTotal:Float = 0;
-	public static var lastBatchEnqueued:Int = 0;
-	public static var lastBatchOffThread:Int = 0;
-	public static var lastBatchCached:Int = 0;
+	static var _lastBatchEnqueued:Counter = new Counter(0);
+	static var _lastBatchOffThread:Counter = new Counter(0);
+	static var _lastBatchCached:Counter = new Counter(0);
+
+	public static var decodedOffThreadTotal(get, never):Int;
+	static inline function get_decodedOffThreadTotal():Int return _decodedOffThreadTotal.load();
+
+	public static var failedOffThreadTotal(get, never):Int;
+	static inline function get_failedOffThreadTotal():Int return _failedOffThreadTotal.load();
+
+	public static var lastBatchEnqueued(get, never):Int;
+	static inline function get_lastBatchEnqueued():Int return _lastBatchEnqueued.load();
+
+	public static var lastBatchOffThread(get, never):Int;
+	static inline function get_lastBatchOffThread():Int return _lastBatchOffThread.load();
+
+	public static var lastBatchCached(get, never):Int;
+	static inline function get_lastBatchCached():Int return _lastBatchCached.load();
 
 	#if sys
 	static var mutex:Mutex = new Mutex();
@@ -63,8 +85,12 @@ class AsyncGfxLoader
 	static var generation:Int = 0;
 	/** 强制 GC 期间: worker 不再开始新任务。 */
 	static var quiesced:Bool = false;
-	/** 正在读文件/填结果的 worker 数(在 mutex 里维护)。 */
-	static var workersBusy:Int = 0;
+	/** 正在读文件/填结果的 worker 数。4.3.7: 无锁原子量, 主线程可在锁外观察。 */
+	static var workersBusy:Counter = new Counter(0);
+	#if (haxe_ver >= 4.3)
+	/** worker 收工信号: quiesce() 用它阻塞等最后一个 worker 离开任务(sys.thread.Semaphore)。 */
+	static var idleWorkers:Semaphore = new Semaphore(0);
+	#end
 	#end
 
 	public static function available():Bool
@@ -93,7 +119,7 @@ class AsyncGfxLoader
 		if (isCached(cacheKey))
 		{
 			mutex.release();
-			lastBatchCached++;
+			_lastBatchCached.add(1);
 			if (onDone != null) onDone();
 			return;
 		}
@@ -103,7 +129,7 @@ class AsyncGfxLoader
 		queue.push({cacheKey: cacheKey, filePath: filePath, enqueuedAt: haxe.Timer.stamp(), gen: generation, slot: slot});
 		inflight.set(cacheKey, true);
 		callbacks.set(cacheKey, onDone);
-		lastBatchEnqueued++;
+		_lastBatchEnqueued.add(1);
 		startWorkersOnce();
 		mutex.release();
 	}
@@ -124,7 +150,7 @@ class AsyncGfxLoader
 			{
 				inflight.remove(job.cacheKey);
 				pendingResults.remove(job.cacheKey);
-				failedOffThreadTotal++;
+				_failedOffThreadTotal.add(1);
 				var cb = callbacks.get(job.cacheKey);
 				callbacks.remove(job.cacheKey);
 				if (cb != null) fired.push(cb);
@@ -225,8 +251,8 @@ class AsyncGfxLoader
 					ready.set(key, bmp);
 					mutex.release();
 				}
-				decodedOffThreadTotal++;
-				lastBatchOffThread++;
+				_decodedOffThreadTotal.add(1);
+				_lastBatchOffThread.add(1);
 				TraceManager.info('trace.asyncGfx.settled', 'AsyncGfxLoader settled {} as {}',
 					[key, storedInCache ? 'tracked-graphic' : 'ready-pending']);
 			}
@@ -236,7 +262,7 @@ class AsyncGfxLoader
 			}
 			else
 			{
-				failedOffThreadTotal++;
+				_failedOffThreadTotal.add(1);
 			}
 
 			mutex.acquire();
@@ -265,9 +291,9 @@ class AsyncGfxLoader
 
 	public static function beginBatch():Void
 	{
-		lastBatchEnqueued = 0;
-		lastBatchOffThread = 0;
-		lastBatchCached = 0;
+		_lastBatchEnqueued.store(0);
+		_lastBatchOffThread.store(0);
+		_lastBatchCached.store(0);
 	}
 
 
@@ -301,16 +327,33 @@ class AsyncGfxLoader
 		mutex.acquire();
 		quiesced = true;
 		var deadline = haxe.Timer.stamp() + timeoutMs / 1000;
-		var clean = (workersBusy == 0);
+
+		#if (haxe_ver >= 4.3)
+		// 4.3.7: workersBusy 是无锁原子量, 可以在锁外真阻塞等"最后一个 worker 收工"。
+		// 每次醒来都重新判定条件, 所以多余的一次唤醒不会让结果失真; worker 只在 1 -> 0 且
+		// quiesced 为真时 release, 而主线程一直阻塞到计数归零或超时才返回。
+		mutex.release();
+		while (workersBusy.load() > 0)
+		{
+			var remain = deadline - haxe.Timer.stamp();
+			if (remain <= 0) break;
+			idleWorkers.tryAcquire(remain);
+		}
+		return workersBusy.load() == 0;
+		#else
+		// 4.2.5 没有 sys.thread.Semaphore: workersBusy 仍由 mutex 保护, 保留原来的轮询等待
+		// (锁外不读 workersBusy, 旧编译器路径的锁纪律与改动前一致)。
+		var clean = (workersBusy.load() == 0);
 		while (!clean && haxe.Timer.stamp() < deadline)
 		{
 			mutex.release();
 			Sys.sleep(0.002);
 			mutex.acquire();
-			clean = (workersBusy == 0);
+			clean = (workersBusy.load() == 0);
 		}
 		mutex.release();
 		return clean;
+		#end
 		#else
 		return true;
 		#end
@@ -333,6 +376,26 @@ class AsyncGfxLoader
 		return quiesced;
 		#else
 		return false;
+		#end
+	}
+
+	/**
+	 * worker 收工: workersBusy 减一。
+	 *
+	 * 4.3.7: AtomicInt.sub 返回旧值, 旧值 == 1 表示本次正好把计数降到 0; 若此刻处于 quiesce,
+	 * 就 release 一次 idleWorkers, 让 quiesce() 里阻塞的 tryAcquire 立刻返回 —— 这就是
+	 * "工作线程置位 / 主线程等待" 的发布屏障, 主线程不再 2ms 轮询。
+	 * 4.2.5: workersBusy 是 mutex 保护的普通 Int, 那边没有等待者, 只做减法。
+	 *
+	 * 必须在持有 mutex 时调用: quiesced 的读与 enqueue/取任务的写由同一把锁排序。
+	 */
+	static function workerFinished():Void
+	{
+		#if (haxe_ver >= 4.3)
+		if (workersBusy.sub(1) == 1 && quiesced)
+			idleWorkers.release();
+		#else
+		workersBusy.sub(1);
 		#end
 	}
 
@@ -367,7 +430,7 @@ class AsyncGfxLoader
 						if (queue.length > 0)
 						{
 							job = queue.shift();
-							workersBusy++;
+							workersBusy.add(1);
 							tookJob = true;
 						}
 						mutex.release();
@@ -398,7 +461,7 @@ class AsyncGfxLoader
 							job.slot.failed = (bytes == null);
 							job.slot.done = true;
 						}
-						workersBusy--;
+						workerFinished();
 						tookJob = false;
 						mutex.release();
 					}
@@ -407,7 +470,7 @@ class AsyncGfxLoader
 						if (tookJob)
 						{
 							mutex.acquire();
-							if (workersBusy > 0) workersBusy--;
+							if (workersBusy.load() > 0) workerFinished();
 							mutex.release();
 						}
 						try TraceManager.warn('trace.asyncGfx.workerFail',
@@ -534,3 +597,26 @@ class AsyncGfxLoader
 	}
 	#end
 }
+
+/**
+ * T4 线程原语现代化的兼容层。
+ *
+ * 4.3.7 + 有原子操作的目标: Counter 就是 haxe.atomic.AtomicInt —— cpp 走 _hx_atomic_add/sub/
+ * load/store, 计数器无锁。add/sub 返回的是**旧值**, 调用点按旧值语义使用(见 workerFinished)。
+ * 4.2.5 (以及没有 target.atomics 的目标): haxe.atomic 在 4.2.5 的 std 里不存在, 退回普通 Int。
+ * 这些计数器的自增当前只发生在主线程, workersBusy 在 4.2.5 分支仍全程在 mutex 里读写,
+ * 因此 4.2.5 语义与改动前一致, 用于守住 "4.2.5 类型检查 exit 0" 基线。
+ * 丢弃 4.2.5 支持时删除 #else 分支, 只留 typedef。
+ */
+#if ((haxe_ver >= 4.3) && target.atomics)
+private typedef Counter = haxe.atomic.AtomicInt;
+#else
+private abstract Counter(Int)
+{
+	public inline function new(value:Int) this = value;
+	public inline function add(b:Int):Int { var old = this; this = old + b; return old; }
+	public inline function sub(b:Int):Int { var old = this; this = old - b; return old; }
+	public inline function load():Int return this;
+	public inline function store(value:Int):Int { var old = this; this = value; return old; }
+}
+#end

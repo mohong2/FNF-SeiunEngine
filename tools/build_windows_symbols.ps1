@@ -75,9 +75,25 @@ function New-AugmentedHxcppConfig {
         $source = Join-Path $env:USERPROFILE '.hxcpp_config.xml'
     }
     if (-not (Test-Path $source)) {
-        $source = Join-Path $root '.haxelib\hxcpp\git\toolchain\example.hxcpp_config.xml'
+        # Resolve the hxcpp directory that is actually in use instead of hardcoding
+        # .haxelib\hxcpp\git: an upgrade renames the fork's version directory (4.2.1 ->
+        # 4.3.x), and a dead path here only surfaces as "no hxcpp config found to augment".
+        $hxcppDir = $null
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $hxcppDir = @(& haxelib libpath hxcpp 2>$null | Where-Object { $_ -and "$_".Trim() -ne '' })[0]
+        } catch {
+            $hxcppDir = $null
+        } finally {
+            $ErrorActionPreference = $prevEAP
+        }
+        if ($hxcppDir) {
+            $hxcppDir = "$hxcppDir".Trim() -replace '/', '\'
+            $source = Join-Path $hxcppDir.TrimEnd('\') 'toolchain\example.hxcpp_config.xml'
+        }
     }
-    if (-not (Test-Path $source)) { throw "no hxcpp config found to augment" }
+    if (-not (Test-Path $source)) { throw "no hxcpp config found to augment (tried HXCPP_CONFIG, ~\.hxcpp_config.xml and 'haxelib libpath hxcpp')" }
     $xml = Get-Content -Raw $source
     $nl = [Environment]::NewLine
     $block = '     <linker id="exe" if="windows">' + $nl +

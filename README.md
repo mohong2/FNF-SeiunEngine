@@ -23,7 +23,11 @@ No HTML5 build.
 
 ## Building
 
-You need Haxe 4.2.5.
+You need Haxe **4.3.7** (minimum 4.3.0), plus the hxcpp that `haxelib setup`
+installs for you: Haxe 4.3 requires an hxcpp built against the 4.3 API, and the
+old 4.2.1 fork is rejected with "Hxcpp is out of date - please update". The
+Haxe 4.2.5 baseline still type-checks this tree, so either compiler works for
+the source side.
 
 ```sh
 haxelib setup .haxelib

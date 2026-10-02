@@ -12,7 +12,7 @@ fi
 
 if ! command -v haxe >/dev/null 2>&1; then
 	echo "ERROR: haxe not found on PATH."
-	echo "Install Haxe 4.2.5 and Neko first (see setup/wsl-env.sh), then re-run this script."
+	echo "Install Haxe 4.3.7 or newer and Neko first (see setup/wsl-env.sh), then re-run this script."
 	exit 1
 fi
 
@@ -40,7 +40,17 @@ else
 fi
 
 echo "=== Patching Lime iOS templates (Files-app Documents sharing) ==="
-LIME_IOS_TEMPLATE="$(pwd)/.haxelib/lime/8,0,1/templates/ios/template"
+# Resolve the lime library that is actually in use instead of a hardcoded version
+# directory (.haxelib/lime/8,0,1 was NOT the active library, so this copy silently
+# patched a tree nothing read). NOTE: haxelib 4.x ignores HAXELIB_PATH - it keeps
+# its repository path in its own config file - so "haxelib setup" is what matters.
+LIME_DIR="$(haxelib libpath lime 2>/dev/null | head -n 1 | tr -d '\r' || true)"
+LIME_DIR="${LIME_DIR%/}"
+if [ -n "$LIME_DIR" ]; then
+	LIME_IOS_TEMPLATE="$LIME_DIR/templates/ios/template"
+else
+	LIME_IOS_TEMPLATE=""
+fi
 if [ -f "$LIME_IOS_TEMPLATE/{{app.file}}/{{app.file}}-Info.plist" ]; then
 	cp "templates/ios/template/{{app.file}}/{{app.file}}-Info.plist" \
 		"$LIME_IOS_TEMPLATE/{{app.file}}/{{app.file}}-Info.plist"

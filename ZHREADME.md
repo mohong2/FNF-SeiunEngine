@@ -22,7 +22,9 @@
 
 ## 构建
 
-需要 Haxe 4.2.5。
+需要 Haxe **4.3.7**（最低 4.3.0），以及由 `haxelib setup` 自动装好的 hxcpp 移植版：
+Haxe 4.3 要求 hxcpp 按 4.3 API 构建，旧的 4.2.1 分叉会被拒绝并提示 "Hxcpp is out of date"。
+Haxe 4.2.5 基线仍能通过同一套类型检查，所以源码层面两个编译器都能用。
 
 ```sh
 haxelib setup .haxelib

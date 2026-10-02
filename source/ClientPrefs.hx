@@ -262,7 +262,8 @@ import sys.io.Process;
 	public var disablePMs:Bool = false;
 	/** Disables room invite notifications. */
 	public var disableRoomInvites:Bool = false;
-	/** HTTPS certificate verification toggle; loadPrefs() writes it to sys.ssl. */
+	/** Persisted user choice for HTTPS certificate verification. NOT applied at startup
+		(see loadPrefs); the online options screen reads/writes sys.ssl.Socket.DEFAULT_VERIFY_CERT directly. */
 	public var verifySSL:Bool = false;
 	/** Player-entered network server address. */
 	public var networkServerAddress:String = null;
@@ -983,13 +984,17 @@ class ClientPrefs {
 		#if ONLINE_ALLOWED
 		// The vanilla assignment
 		//   `sys.ssl.Socket.DEFAULT_VERIFY_CERT = data.verifySSL;`
-		// `data.verifySSL` defaults to **false** and `sys.ssl.Socket.DEFAULT_VERIFY_CERT` is a
-		// process-wide switch. Applying it would silently disable TLS certificate verification
-		// for *every* HTTPS connection this engine makes (update checks, GitHub / GameBanana /
-		// Drive downloads, ...), not just online traffic, because the switch is global.
-		// That is an engine-wide security and behaviour change, not a minimal change, so it
-		// needs an explicit decision before being enabled.
-		// Re-adding it is these 3 lines.
+		// is deliberately NOT done here. `data.verifySSL` defaults to **false** (and every existing
+		// save file already stores false), while `sys.ssl.Socket.DEFAULT_VERIFY_CERT` defaults to
+		// true and is a process-wide switch. Applying the saved pref at startup would therefore
+		// silently disable TLS certificate verification for *every* HTTPS connection this engine
+		// makes (update checks, GitHub / GameBanana / Drive downloads, ...) on the next launch, and
+		// would turn the currently-safe default into an insecure one. That is an engine-wide
+		// security decision, so it stays off until it is explicitly made.
+		// Contract this file guarantees and OnlineOptionsState relies on: `data.verifySSL` only
+		// records the user's explicit choice; the live switch is read/written directly by the online
+		// options screen and is never restored from the save file.
+		// Re-adding the restore is these 3 lines.
 		#end
 
 		// only tunes observation intensity; visuals stay with lowQuality.

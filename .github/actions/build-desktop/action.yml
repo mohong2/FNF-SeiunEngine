@@ -71,22 +71,26 @@ runs:
         haxelib setup "$GITHUB_WORKSPACE/.haxelib"
         haxe -cp ./setup -main Main --interp
 
-    - name: Patch hxcpp mac toolchain for arm64
+    # Resolve the active library directories once, so no step below hardcodes
+    # .haxelib/<lib>/git - renaming the version directory must not break the build.
+    - name: Resolve haxelib paths
+      uses: ./.github/actions/haxelib-path
+      with:
+        libs: hxcpp discord_rpc
+
+    # The hxcpp 4.3.x forward port does not carry the 4.2.1 fork's -march=x86-64-v3
+    # additions at all (they were dropped while porting), so the old
+    # `sed '/-march=x86-64-v3/d'` here only ever matched nothing. It is gone:
+    # mac-toolchain.xml in both the official 4.3.2 and the ported tree has zero
+    # "march" hits. What remains is the arm64 tool rebuild.
+    - name: Rebuild hxcpp tools for arm64
       if: inputs.target == 'macos-arm64'
       shell: bash
       run: |
         set -e
-        MAC_TOOLCHAIN="$GITHUB_WORKSPACE/.haxelib/hxcpp/git/toolchain/mac-toolchain.xml"
-        sed -i.bak '/-march=x86-64-v3/d' "$MAC_TOOLCHAIN"
-        rm -f "$MAC_TOOLCHAIN.bak"
-        if grep -q 'march=x86-64-v3' "$MAC_TOOLCHAIN"; then
-          echo "warning: march=x86-64-v3 still present in mac-toolchain.xml"
-        else
-          echo "removed march=x86-64-v3 from mac-toolchain.xml"
-        fi
-        cd "$GITHUB_WORKSPACE/.haxelib/hxcpp/git/tools/run"
+        cd "$HAXELIB_HXCPP_PATH/tools/run"
         haxe compile.hxml
-        cd "$GITHUB_WORKSPACE/.haxelib/hxcpp/git/tools/hxcpp"
+        cd "$HAXELIB_HXCPP_PATH/tools/hxcpp"
         haxe compile.hxml
         echo "hxcpp tools rebuilt for arm64"
 
@@ -105,7 +109,7 @@ runs:
         CACHE_DIR="$GITHUB_WORKSPACE/.hxcpp-cache"
         CACHE_DIR="${CACHE_DIR//\\//}"
         mkdir -p "$CACHE_DIR"
-        EXAMPLE="$GITHUB_WORKSPACE/.haxelib/hxcpp/git/toolchain/example.hxcpp_config.xml"
+        EXAMPLE="$HAXELIB_HXCPP_PATH/toolchain/example.hxcpp_config.xml"
         EXAMPLE="${EXAMPLE//\\//}"
         # Keep the config OUT of the workspace root: lime's project auto-detection scans *.xml
         # in the working directory, and a second xml sitting next to Project.xml can hijack it
@@ -119,24 +123,24 @@ runs:
     - name: Init discord_rpc submodules
       shell: bash
       run: |
-        cd "$GITHUB_WORKSPACE/.haxelib/discord_rpc/git"
+        cd "$HAXELIB_DISCORD_RPC_PATH"
         git submodule update --init --recursive
 
     - name: Patch hxcpp zlib for modern macOS SDK
       if: startsWith(inputs.target, 'macos')
       shell: bash
       run: |
-        find "$GITHUB_WORKSPACE/.haxelib/hxcpp" -path '*/thirdparty/zlib-*/zutil.h' -exec sed -i.bak '/# *define fdopen(fd,mode) NULL/d' {} +
-        find "$GITHUB_WORKSPACE/.haxelib/hxcpp" -path '*/thirdparty/zlib-*/zutil.h.bak' -delete
-        ! grep -rq 'define fdopen(fd,mode) NULL' "$GITHUB_WORKSPACE/.haxelib/hxcpp"
+        find "$HAXELIB_HXCPP_PATH" -path '*/thirdparty/zlib-*/zutil.h' -exec sed -i.bak '/# *define fdopen(fd,mode) NULL/d' {} +
+        find "$HAXELIB_HXCPP_PATH" -path '*/thirdparty/zlib-*/zutil.h.bak' -delete
+        ! grep -rq 'define fdopen(fd,mode) NULL' "$HAXELIB_HXCPP_PATH"
 
     - name: Silence unused -stdlib=libc++ warning on macOS
       if: startsWith(inputs.target, 'macos')
       shell: bash
       run: |
-        find "$GITHUB_WORKSPACE/.haxelib/hxcpp" -path '*/toolchain/mac-toolchain.xml' \
+        find "$HAXELIB_HXCPP_PATH" -path '*/toolchain/mac-toolchain.xml' \
           -exec perl -0pi -e 's{(<flag value="-stdlib=libc\+\+" unless="STDLIBCPP" />)}{$1\n  <flag value="-Wno-unused-command-line-argument" if="HXCPP_CLANG" />}' {} +
-        find "$GITHUB_WORKSPACE/.haxelib/hxcpp" -path '*/toolchain/mac-toolchain.xml' -exec grep -q 'Wno-unused-command-line-argument' {} \;
+        find "$HAXELIB_HXCPP_PATH" -path '*/toolchain/mac-toolchain.xml' -exec grep -q 'Wno-unused-command-line-argument' {} \;
 
     - name: Read app version
       shell: bash

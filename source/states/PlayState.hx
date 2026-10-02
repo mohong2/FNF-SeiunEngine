@@ -3724,12 +3724,13 @@ class PlayState extends MusicBeatState
 		if (snd == null || !snd.exists) return;
 
 		@:privateAccess
-		if (snd._channel != null && snd._channel.__source != null)
+		var source = FlxSound.getAudioSource(snd._channel);
+
+		if (source != null)
 		{
 			try
 			{
-				@:privateAccess
-				snd._channel.__source.pause();
+				source.pause();
 			}
 			catch (e:Dynamic) {}
 		}
@@ -3744,14 +3745,14 @@ class PlayState extends MusicBeatState
 		if (snd == null || !snd.exists) return;
 
 		@:privateAccess
-		if (snd._channel != null && snd._channel.__source != null)
+		var source = FlxSound.getAudioSource(snd._channel);
+
+		if (source != null)
 		{
 			try
 			{
-				@:privateAccess
-				snd._channel.__source.currentTime = 0;
-				@:privateAccess
-				snd._channel.__source.play();
+				source.currentTime = 0;
+				source.play();
 				return;
 			}
 			catch (e:Dynamic) {}

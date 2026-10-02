@@ -1,5 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <project>
+	<!-- Build toolchain gate: Haxe 4.3.7 (minimum 4.3.0). Haxe 4.3.x additionally
+	     requires an hxcpp built against the 4.3 API - the old 4.2.1 fork is
+	     rejected with "Hxcpp is out of date - please update". Running
+	     `haxe -cp ./setup -main Main --interp` installs hxcpp from the
+	     mohong2/hxcpp fork, branch haxe-4.3. The 4.2.5 baseline still
+	     type-checks this tree, so either compiler works for the source side. -->
+
 	<!-- _________________________ Application Settings _________________________ -->
 
 	<app title="SeiunEngine" file="SeiunEngine" packageName="com.mohong.Seiunengine" package="com.mohong.Seiunengine" main="Main" version="0.2.2preonline2" company="mo_hong" company-url="https://github.com/mohong2/FNF-SeiunEngine"/>

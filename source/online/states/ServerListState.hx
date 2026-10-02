@@ -255,10 +255,11 @@ class ServerListState extends MusicBeatState {
 
 	function addToggleRow(title:String, desc:String, checked:Bool, id:Int, y:Float, onChange:Bool->Void):Float {
 		var row:InputOption;
-		items.add(row = new InputOption(title, desc, checked, () -> {
+		items.add(row = new InputOption(title, desc, checked));
+		row.onClick = () -> {
 			row.checked = !row.checked;
 			onChange(row.checked);
-		}));
+		};
 		row.y = y;
 		row.screenCenter(X);
 		row.ID = id;
