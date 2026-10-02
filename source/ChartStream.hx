@@ -1,8 +1,10 @@
 package;
 
+import haxe.Int64;
 import haxe.Json;
 import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
+import mohong.TraceManager;
 import sys.io.File;
 import sys.io.FileInput;
 
@@ -36,8 +38,19 @@ typedef ChartScanResult = {
 	var chart:Dynamic;
 	/** One range per chart.notes (or chart.song.notes) entry. */
 	var ranges:Array<ChartSectionRange>;
-	/** Note entries counted while scanning; see Cursor.noteCount. Feeds PlayState's load budget. */
-	var noteCount:Float;
+	/**
+	 * Note entries counted while scanning; see Cursor.noteCount. Feeds PlayState's load budget.
+	 *
+	 * Int64, not Int: scanParts() adds every chart part's count into this one, so it is a running
+	 * total across files and an Int would wrap silently once the sum passed 2^31. Nothing indexes
+	 * with it -- no row, section or byte offset is ever derived from it -- so the row layout stays
+	 * Int (Array and haxe.io.Bytes lengths are Int32).
+	 *
+	 * It is not a Float either: read it through ChartStream.i64ToFloat() before it reaches a Dynamic
+	 * boundary such as chart.__seiunStream.noteCount, which PlayState compares against a Float. Both
+	 * a scan and a skeleton-cache load yield an Int64 here.
+	 */
+	var noteCount:Int64;
 	/**
 	 * Whether any note entry contained a negative number. Only a legacy chart (<= 0.3.2) writes
 	 * those: it stores events as negative-data notes, which Song.convert() / onLoadJson() turn back
@@ -103,8 +116,11 @@ class ChartStream
 			cur.skipWs();
 			var root:Dynamic = scanObject(cur, ranges, true, part);
 			cur.skipWs();
-			var counted:Float = cur.noteCount;
+			var counted:Int64 = cur.noteCount;
 			cur.close();
+			// One part file can hold more note entries than an Int32 can count; passing that point is
+			// what reportCountCrossing() traces.
+			reportCountCrossing('chart scan of "' + path + '"', Int64.ofInt(0), counted);
 			return { chart: root, ranges: ranges, noteCount: counted, sawNegativeNote: cur.sawNegativeNote };
 		}
 		catch (e:Dynamic)
@@ -153,7 +169,11 @@ class ChartStream
 		for (i in 1...paths.length)
 		{
 			var part:ChartScanResult = scanPart(paths[i], i);
-			base.noteCount += part.noteCount;
+			// The cross-file accumulation: one segmented chart's total is the sum of its part files,
+			// so this is where the counter can pass 2^31.
+			var before:Int64 = base.noteCount;
+			base.noteCount = before + part.noteCount;
+			reportCountCrossing('segmented chart note count (' + paths.length + ' parts)', before, base.noteCount);
 			if (part.sawNegativeNote) base.sawNegativeNote = true;
 			var partSections:Array<Dynamic> = sectionArray(part.chart);
 			if (partSections == null)
@@ -607,6 +627,57 @@ class ChartStream
 		if (Reflect.field(sec, 'sectionNotes') == null) Reflect.setField(sec, 'sectionNotes', []);
 		return range;
 	}
+
+	// ── counters ────────────────────────────────────────────────────────────
+
+	/** 2^31 - 1: the largest value a 32 bit Int counter can hold. */
+	static inline final INT32_LIMIT:Int = 0x7FFFFFFF;
+
+	/**
+	 * Int64 -> Float, exact for every integer a Float can hold (|v| <= 2^53).
+	 *
+	 * haxe.Int64 has no toDouble, so the value is rebuilt from its two 32 bit words. The low word
+	 * must be made unsigned by hand: on cpp `low >>> 0` stays signed, so a value whose low word has
+	 * bit 31 set comes out negative (cpp: 2147483648 -> -2147483648, 3000000000 -> -1294967296).
+	 *
+	 * Use this for any counter that reaches a Dynamic boundary (chart.__seiunStream.noteCount is
+	 * compared against a Float): an Int64 left inside a Dynamic would make that comparison depend on
+	 * whether the chart came from a scan or from the skeleton cache.
+	 */
+	public static inline function i64ToFloat(v:Int64):Float
+	{
+		var low:Float = v.low;
+		if (low < 0) low += 4294967296.0;
+		return v.high * 4294967296.0 + low;
+	}
+
+	/**
+	 * Dynamic-taking wrapper around i64ToFloat() for values whose shape is only known at runtime --
+	 * a boxed Int64, a Float and an Int all reach these paths. Each shape is read as the number it is
+	 * rather than reinterpreted as another type, and nothing is truncated: an unknown shape reads as
+	 * 0, which callers already understand as "no estimate".
+	 */
+	public static function noteCountToFloat(v:Dynamic):Float
+	{
+		if (v == null) return 0;
+		if (Int64.isInt64(v)) return i64ToFloat(cast v);
+		if (Std.isOfType(v, Float)) return cast v;
+		if (Std.isOfType(v, Int)) return cast v;
+		return 0;
+	}
+
+	/**
+	 * Overflow guard for the counters: traces the update that takes one past 2^31-1, the largest
+	 * value an Int can hold, so the trace shows a counter carrying a value an Int32 could not. It
+	 * fires once per crossing and changes no behaviour. Its callers are the scan functions only --
+	 * once per chart part, never per note -- so no cost lands on the note loop.
+	 */
+	static function reportCountCrossing(label:String, previous:Int64, current:Int64):Void
+	{
+		if (previous <= INT32_LIMIT && current > INT32_LIMIT)
+			TraceManager.debug('trace.chart.countOverflow', '{} passed the 32-bit counter limit ({} -> {})',
+				[label, Int64.toStr(previous), Int64.toStr(current)]);
+	}
 }
 
 /**
@@ -744,8 +815,8 @@ private class Cursor
 	var bufLen:Int = 0;
 	var atEof:Bool = false;
 	var collect:BytesBuffer = null;
-	/** Note entries seen by skipValueFast(); see ChartScanResult.noteCount. */
-	public var noteCount:Float = 0;
+	/** Note entries seen by skipValueFast(); see ChartScanResult.noteCount (Int64 for the same reason). */
+	public var noteCount:Int64 = 0;
 	/** Negative note elements seen by skipValueFast(); see ChartScanResult.sawNegativeNote. */
 	public var sawNegativeNote:Bool = false;
 	/** Bytes consumed == absolute offset of the next byte to read. */
@@ -900,7 +971,7 @@ private class Cursor
 				else if (c == 123 || c == 91)
 				{
 					// A '[' at depth 1 is one note entry of the sectionNotes array being skipped.
-					if (c == 91 && depth == 1) noteCount++;
+					if (c == 91 && depth == 1) noteCount = noteCount + 1;
 					depth++;
 				}
 				else if (c == 125 || c == 93)

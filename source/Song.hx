@@ -500,7 +500,11 @@ class Song
 			paths: parts,
 			ranges: scan.ranges,
 			// Note entries counted while scanning; PlayState uses it as its materialisation budget.
-			noteCount: scan.noteCount,
+			// noteCount crosses a Dynamic boundary and is read back through Reflect, so it is stored
+			// as a Float: an Int64 field would come back as a boxed cpp.Int64. scan.noteCount is a
+			// real Int64 on both paths (a fresh scan and a skeleton-cache hit, see
+			// ChartStream.loadSkeleton), and i64ToFloat converts it exactly up to 2^53.
+			noteCount: ChartStream.i64ToFloat(scan.noteCount),
 			ammo: ammo,
 			rewrite: needRewrite
 		});
@@ -509,7 +513,7 @@ class Song
 			+ ' convert+events=' + Std.int((__tConvert - __tScan) * 1000) + 'ms'
 			+ ' total=' + Std.int((__tConvert - __tSong0) * 1000) + 'ms'
 			+ ' parts=' + ((parts != null) ? parts.length : 1)
-			+ ' sections=' + scan.ranges.length + ' notes=' + Std.int(scan.noteCount)
+			+ ' sections=' + scan.ranges.length + ' notes=' + haxe.Int64.toStr(scan.noteCount)
 			+ ' cache=' + (scanFromCache ? 'hit' : (cacheEnabled ? 'miss' : 'off')));
 		return cast chart;
 		#else

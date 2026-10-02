@@ -410,8 +410,15 @@ class PlayState extends MusicBeatState
 	 * Turbo pre-processing folds taps that cannot be told apart on screen into representative notes, each carrying
  * its merged count (noteDensity). The living sprite count then depends only on scroll speed and screen geometry.
 	 */
-	/** Raw tap count of this play before folding (per unmerged tap), for logs/diagnostics. */
-	private var _turboRawTapCount:Int = 0;
+	/**
+	 * Raw tap count of this play before folding (per unmerged tap), for logs/diagnostics.
+	 *
+	 * Int64: one chart can pass 2^31 raw taps at the chart sizes this store targets, and the value
+	 * is also what fills the second 8-byte slot of the ChartCache header -- which is already
+	 * Int64, so an Int here would wrap first. The field is private and never exposed to
+	 * Lua/HScript, so a script reading it through getPropertyFromClass gets a boxed Int64.
+	 */
+	private var _turboRawTapCount:haxe.Int64 = 0;
 	/** Per-lane cos/sin cache: per-note per-frame trig becomes once per lane per frame (the direction is a lane constant anyway). */
 	var _playerLaneCos:Array<Float> = [];
 	var _playerLaneSin:Array<Float> = [];
@@ -4030,7 +4037,11 @@ class PlayState extends MusicBeatState
 			// representatives that are actually distinguishable on screen instead of attempting the
 			// allocation. Same fold Turbo uses, so the path is already exercised.
 			collapser = new TurboDensity.GhostCollapser(Note.ammo[mania], 1.0, songSpeed, mania);
-			trace('Chart has ' + Std.int(chartStreamInfo.noteCount) + ' notes (> ' + MAX_CHART_NOTES
+			// chartStreamInfo.noteCount is a Float out of a Dynamic (exact up to 2^53). Std.int takes a
+			// Float but truncates into Int32 above 2^31 (Std.int(3e9) == -1294967296), which would print
+			// a negative count for exactly the chart sizes this budget exists for, so it is formatted
+			// through Int64.fromFloat -> Int64.toStr. Cold path: only a chart past MAX_CHART_NOTES.
+			trace('Chart has ' + haxe.Int64.toStr(haxe.Int64.fromFloat(chartStreamInfo.noteCount)) + ' notes (> ' + MAX_CHART_NOTES
 				+ '); folding to screen-distinguishable representatives (chart-budget fallback, see PlayState.MAX_CHART_NOTES)');
 		}
 
@@ -4573,7 +4584,8 @@ class PlayState extends MusicBeatState
 			+ ' sectionWait=' + FlxMath.roundDecimal(__tWait, 3) + 's'
 			+ ' perNoteBody=' + FlxMath.roundDecimal(__tBody, 3) + 's'
 			+ ' total=' + FlxMath.roundDecimal(haxe.Timer.stamp() - __t0, 3) + 's'
-			+ ' notesFed=' + Std.int(cacheHit ? _turboRawTapCount
+			// Int64.toStr: this value has to print exactly, and Std.int would truncate above 2^31.
+			+ ' notesFed=' + haxe.Int64.toStr(cacheHit ? _turboRawTapCount
 				: (collapser != null ? collapser.fedCount : unspawnNotes.length))
 			+ ' representatives=' + unspawnNotes.length
 			+ ' folded=' + (cacheHit ? cachedNotes.folded : collapser != null)
@@ -9667,7 +9679,11 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		if (data > -1)
 		{
 			if(note != null) {
-				skin = note.noteSplashTexture;
+				// 不要用 null 覆盖谱面的 splashSkin: NoteSplash.setupNoteSplash 只在 texture == null
+				// 时挑默认图集, 所以一个没带材质的 Note 会把整首歌的自定义溅射(如
+				// noteSplashes-sonic)顶掉, 表现为"贴图识别不到"。材质为空时保留谱面的 splashSkin。
+				if (note.noteSplashTexture != null && note.noteSplashTexture.length > 0)
+					skin = note.noteSplashTexture;
 				hue = note.noteSplashHue;
 				sat = note.noteSplashSat;
 				brt = note.noteSplashBrt;

@@ -1108,7 +1108,9 @@ class EditorPlayState extends MusicBeatState
 		var sat:Float = delta[1] + hsv[1] / 100;
 		var brt:Float = delta[2] + hsv[2] / 100;
 		if(note != null) {
-			skin = note.noteSplashTexture;
+			// 与 PlayState.spawnNoteSplash 同口径: 材质为空时不要顶掉谱面的 splashSkin
+			if (note.noteSplashTexture != null && note.noteSplashTexture.length > 0)
+				skin = note.noteSplashTexture;
 			hue = note.noteSplashHue;
 			sat = note.noteSplashSat;
 			brt = note.noteSplashBrt;

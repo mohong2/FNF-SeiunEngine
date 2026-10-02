@@ -52,6 +52,37 @@ class GfxRepack
 	public static inline var GAP:Int = 2;
 	public static inline var MAX_TEX_DIM:Int = 16384;
 
+	// Placement strategies tried by selectLayout(). STRAT_SHELF_H is the original
+	// packer; the other two are extra candidates whose layouts are adopted only when
+	// their area is *strictly* smaller than the incumbent's.
+	static inline var STRAT_SHELF_H:Int = 0; // shelf, tallest-first (the original)
+	static inline var STRAT_SHELF_W:Int = 1; // shelf, widest-first
+	static inline var STRAT_SKYLINE:Int = 2; // skyline bottom-left
+
+	// Bounds on the extra-candidate phase. The chooser deliberately reads no clock: a
+	// time-based cut-off would make the chosen layout depend on machine speed and frame
+	// load, so a context-loss rebuild (repackForRestore) could pick a different layout
+	// than the original load and leave the packed bitmap paired with another layout's
+	// XML. Integer counters behave identically on every platform and every run.
+	static inline var MAX_EXTRA_COMBOS:Int = 24;      // candidate layouts evaluated
+	static inline var MAX_EXTRA_VISITS:Int = 600000;  // rect visits charged to the phase
+	static inline var SKYLINE_VISIT_ESTIMATE:Int = 8; // skyline steps charged per rect
+	// Per-candidate cap inside the skyline packer. Its cost is O(rects x skyline
+	// segments); a candidate that burns this many inner steps reports "does not fit"
+	// (-1), which keeps the incumbent layout and can never make the result worse.
+	static inline var SKYLINE_WORK_LIMIT:Int = 500000;
+	// The extra phase is skipped above this many unique rects. Its preparation cost (one
+	// O(n log n) re-order plus O(rects x skyline segments) scans) grows with the sheet:
+	// a 19k-rect sheet measured ~41 ms on hxcpp for candidates that could not improve
+	// anything. Above the cap only the historical four-width shelf search runs. The
+	// largest atlas shipped with this project has 185 unique rects.
+	static inline var EXTRA_MAX_RECTS:Int = 4096;
+	// Comparison cap for the post-selection geometry check. A layout with every cell in
+	// one column makes the candidate-pair count O(n^2); reaching the cap rejects the new
+	// layout and returns the historical shelf layout instead, so a layout is never
+	// accepted unchecked.
+	static inline var LAYOUT_CHECK_BUDGET:Int = 8000000;
+
 	public static var triedTotal:Int = 0;
 	public static var okTotal:Int = 0;
 	public static var fallbackTotal:Int = 0;
@@ -59,6 +90,16 @@ class GfxRepack
 	public static var oldBytesTotal:Float = 0;
 	public static var newBytesTotal:Float = 0;
 	public static var msTotal:Float = 0;
+	// Enhanced-search telemetry: candidates evaluated, how many of them won, how often a
+	// cap stopped the search, and how many rect visits the phase charged.
+	public static var extraCombosTotal:Int = 0;
+	public static var extraWinsTotal:Int = 0;
+	public static var extraCapHitsTotal:Int = 0;
+	public static var extraVisitsTotal:Int = 0;
+	// Post-selection geometry checks: how many ran (new-strategy layout wins only) and how
+	// many rejected their layout and returned the historical shelf result instead.
+	public static var layoutChecksTotal:Int = 0;
+	public static var layoutCheckFailsTotal:Int = 0;
 
 	// Exact cache key -> packed pair. Never normalized: alias keys can hold
 	// different objects, pairing must follow the object's creation key.
@@ -118,7 +159,13 @@ class GfxRepack
 		if (entry == null) return fresh;
 		var r = coreProcess(entry.filePath, fresh);
 		if (r != null)
+		{
+			// The pair is rebuilt from this call's own outputs, so the cached bitmap and XML
+			// always describe the same layout even if a layout decision ever becomes
+			// non-deterministic.
+			packedXmls.set(requestedKey, {xml: r.xml, filePath: entry.filePath, cw: r.bmp.width, ch: r.bmp.height});
 			return r.bmp;
+		}
 		TraceManager.warn('trace.gfx.repackRestoreFail',
 			'GfxRepack restore rebuild failed for {} — frames may mismatch', [requestedKey]);
 		return fresh;
@@ -168,6 +215,10 @@ class GfxRepack
 			if (src.width < GfxPolicy.minDimension && src.height < GfxPolicy.minDimension)
 				return null;
 
+			// No sibling XML means a whole image rather than an atlas. Cropping its transparent
+			// border would shift every visible pixel (flixel positions the graphic by its
+			// origin), i.e. a real visual change, so it is deliberately not attempted: without
+			// an XML there is no repack, and the image itself is never modified.
 			var xmlPath = swapExt(filePath, '.xml');
 			if (xmlPath == null || !FileSystem.exists(xmlPath)) return null;
 			var xmlContent = File.getContent(xmlPath);
@@ -265,33 +316,32 @@ class GfxRepack
 			});
 
 			var oldB:Float = src.width * src.height * 4;
-			var cands:Array<Int> = [];
-			addWidth(cands, Std.int(src.width / 2));
-			addWidth(cands, src.width);
-			addWidth(cands, src.width * 2);
-			addWidth(cands, src.width * 4);
-			cands.sort(function(a:Int, b:Int):Int return a - b);
+			var sel = selectLayout(order, oldB, src.width);
 
-			// Compare areas in bytes on both sides.
-			var canvasW = 0;
-			var canvasH = 0;
-			var bestArea:Float = 0;
-			for (w in cands)
+			// Geometry gate (overlap and out-of-bounds). Only layouts from the extra strategies
+			// need it; the historical shelf layout comes from the original code path. The XML
+			// read-back check further down validates semantics only and cannot see two cells
+			// covering each other or a cell placed outside the canvas, either of which would
+			// make a mod animation render a neighbouring frame's pixels. A layout that fails
+			// the check is replaced by the historical shelf result, so it is never returned.
+			var gate = gateLayout(sel.w, sel.h, sel.order, sel.strat, sel.baseW, sel.baseH, order);
+			if (gate.violation != null)
 			{
-				var hNeed = tryPack(order, w);
-				if (hNeed <= 0) continue;
-				var area:Float = (w * hNeed) * 4;
-				if (area >= oldB) continue;
-				if (canvasW == 0 || area < bestArea)
-				{
-					canvasW = w;
-					canvasH = hNeed;
-					bestArea = area;
-				}
+				TraceManager.warn('trace.gfx.repackLayout',
+					'GfxRepack rejected {} layout for {} ({}x{}): {} -- falling back to the historical shelf layout',
+					[stratName(sel.strat), filePath, sel.w, sel.h, gate.violation]);
 			}
+			var canvasW = gate.w;
+			var canvasH = gate.h;
 			if (canvasW == 0)
-				abort('no-area-win (src ${src.width}x${src.height}, ${parsed.frames.length} entries/${order.length} unique, ${cands.length} widths tried)');
-			tryPack(order, canvasW); // replay winning width to restore placements
+				abort(gate.violation != null
+					? ('layout-check-failed-and-baseline-had-no-win: ' + gate.violation)
+					: ('no-area-win (src ${src.width}x${src.height}, ${parsed.frames.length} entries/${order.length} unique, ${sel.baseWidths} base widths + ${sel.combos} extra combos)'));
+			// selectLayout() returns with the winning layout already written to the frames, so the
+			// gate above inspected the real rectangles. This replay stays because the fallback
+			// path substitutes the historical shelf baseline and because it keeps the write loop
+			// independent of that behaviour; on an accepted layout it re-writes the same values.
+			tryPack(gate.order, canvasW, gate.strat);
 
 			for (f in parsed.frames)
 			{
@@ -442,6 +492,19 @@ class GfxRepack
 	 * 绝不把像素写到缓冲区外面(那是堆破坏, 之后会在 GC 里以 ACCESS_VIOLATION 呈现)。
 	 * 合法输入下与原来直接 copyPixels 完全等价。
 	 */
+	// Reusable scratch for blit(). blit() runs once per packed cell plus once per
+	// replicated out-of-bounds column or row -- a 5k-entry atlas reaches tens of
+	// thousands of calls, and allocating a Rectangle and a Point per call was pure
+	// garbage. openfl's BitmapData.copyPixels only reads these two objects synchronously
+	// (Image.copyPixels copies the values into its own cached lime Rectangle/Vector2
+	// before the pixel run), so one reused pair is safe: both are rewritten before every
+	// call and blit() never re-enters itself. process() only runs on the main thread --
+	// AsyncGfxLoader workers fetch bytes and drain() decodes and repacks on the main
+	// thread -- and the GfxPolicy/GfxLru byte ledgers plus packedXmls/boundsSkips above
+	// rely on the same single-threaded execution.
+	static var blitSrcRect:Rectangle = new Rectangle(0, 0, 0, 0);
+	static var blitDstPoint:Point = new Point(0, 0);
+
 	static inline function blit(packed:BitmapData, src:BitmapData, sx:Int, sy:Int, sw:Int, sh:Int,
 		dx:Int, dy:Int, canvasW:Int, canvasH:Int):Void
 	{
@@ -451,7 +514,9 @@ class GfxRepack
 		if (src == null || !src.readable) { boundsSkips++; return; }
 		if (dx < 0 || dy < 0 || dx + sw > canvasW || dy + sh > canvasH) { boundsSkips++; return; }
 		if (sx < 0 || sy < 0 || sx + sw > src.width || sy + sh > src.height) { boundsSkips++; return; }
-		packed.copyPixels(src, new Rectangle(sx, sy, sw, sh), new Point(dx, dy));
+		blitSrcRect.setTo(sx, sy, sw, sh);
+		blitDstPoint.setTo(dx, dy);
+		packed.copyPixels(src, blitSrcRect, blitDstPoint);
 	}
 
 	static function abort(reason:String):Void
@@ -591,7 +656,38 @@ class GfxRepack
 		f.dh = maxY - minY + 1;
 	}
 
-	static function tryPack(order:Array<RepackFrame>, width:Int):Int
+	// Skyline scratch, reused across candidates and atlases so no candidate allocates.
+	// Single-threaded like packedXmls/boundsSkips above: process() runs only on the main
+	// thread.
+	static var skX:Array<Int> = [];
+	static var skY:Array<Int> = [];
+	static var skW:Array<Int> = [];
+	static var skOutX:Array<Int> = [];
+	static var skOutY:Array<Int> = [];
+	static var skOutW:Array<Int> = [];
+	static var skCount:Int = 0;
+
+	static function ensureSkyline(cap:Int):Void
+	{
+		while (skX.length < cap)
+		{
+			skX.push(0);
+			skY.push(0);
+			skW.push(0);
+			skOutX.push(0);
+			skOutY.push(0);
+			skOutW.push(0);
+		}
+	}
+
+	static function tryPack(order:Array<RepackFrame>, width:Int, strategy:Int):Int
+	{
+		if (strategy == STRAT_SKYLINE) return tryPackSkyline(order, width);
+		return tryPackShelf(order, width);
+	}
+
+	/** Shelf placement: the original packer's algorithm, unchanged. */
+	static function tryPackShelf(order:Array<RepackFrame>, width:Int):Int
 	{
 		var x = GAP;
 		var y = GAP;
@@ -612,6 +708,373 @@ class GfxRepack
 			if (f.dh > rowH) rowH = f.dh;
 		}
 		return y + rowH + GAP;
+	}
+
+	/**
+	 * Skyline bottom-left placement. Writes f.px/f.py and returns the canvas height, or -1
+	 * when the sheet cannot fit, exactly as the shelf packer does. Cells are reserved as
+	 * (dw+GAP) x (dh+GAP) inside the usable rectangle [0, width-GAP) and every cell is
+	 * then offset by +GAP, so each packed cell keeps at least a GAP-wide transparent margin
+	 * on all four sides. The shelf packer guarantees that for the top, left and bottom
+	 * edges and may let a cell touch the right edge, so this is never a weaker spacing
+	 * guarantee: it can only shrink the canvas, never change which pixels a frame samples.
+	 */
+	static function tryPackSkyline(order:Array<RepackFrame>, width:Int):Int
+	{
+		var uw = width - GAP;
+		if (uw <= 0) return -1;
+		ensureSkyline(order.length + 2);
+
+		// Per-candidate work cap, no clock involved. A candidate that burns the budget
+		// reports "does not fit", so the incumbent layout is kept.
+		var work = SKYLINE_WORK_LIMIT;
+		skX[0] = 0;
+		skY[0] = 0;
+		skW[0] = uw;
+		skCount = 1;
+
+		for (f in order)
+		{
+			var rw = f.dw + GAP;
+			var rh = f.dh + GAP;
+			if (rw > uw) return -1;
+
+			// Lowest skyline slot wins; ties keep the leftmost one.
+			var bestX = -1;
+			var bestY = 0;
+			var i = 0;
+			while (i < skCount)
+			{
+				if (--work < 0) return -1;
+				var cx = skX[i];
+				if (cx + rw > uw) break; // segments are sorted by x
+				var y = 0;
+				var left = rw;
+				var k = i;
+				while (left > 0 && k < skCount)
+				{
+					if (--work < 0) return -1;
+					if (skY[k] > y) y = skY[k];
+					left -= skW[k];
+					k++;
+				}
+				if (left > 0) break; // unreachable: segments tile [0, uw)
+				if (bestX < 0 || y < bestY)
+				{
+					bestX = cx;
+					bestY = y;
+				}
+				i++;
+			}
+			if (bestX < 0) return -1;
+			if (bestY + rh + 2 * GAP > MAX_TEX_DIM) return -1; // keeps the returned height <= MAX_TEX_DIM
+
+			f.px = bestX + GAP;
+			f.py = bestY + GAP;
+
+			// Raise the skyline over [bestX, bestX+rw) to bestY+rh.
+			var nx = bestX;
+			var nr = bestX + rw;
+			var ny = bestY + rh;
+			var outN = 0;
+			var inserted = false;
+			var j = 0;
+			while (j < skCount)
+			{
+				if (--work < 0) return -1;
+				var sx = skX[j];
+				var sy = skY[j];
+				var sw = skW[j];
+				j++;
+				if (sx >= nx && sx + sw <= nr) continue; // fully covered
+				if (sx < nr && sx + sw > nr) // right part survives
+				{
+					var trim = nr - sx;
+					sx += trim;
+					sw -= trim;
+				}
+				else if (sx < nx && sx + sw > nx) // left part survives
+				{
+					sw = nx - sx;
+				}
+				if (!inserted && sx > nx)
+				{
+					skOutX[outN] = nx;
+					skOutY[outN] = ny;
+					skOutW[outN] = rw;
+					outN++;
+					inserted = true;
+				}
+				skOutX[outN] = sx;
+				skOutY[outN] = sy;
+				skOutW[outN] = sw;
+				outN++;
+			}
+			if (!inserted)
+			{
+				skOutX[outN] = nx;
+				skOutY[outN] = ny;
+				skOutW[outN] = rw;
+				outN++;
+			}
+			for (k in 0...outN)
+			{
+				skX[k] = skOutX[k];
+				skY[k] = skOutY[k];
+				skW[k] = skOutW[k];
+			}
+			skCount = outN;
+		}
+
+		// The skyline tiles the whole usable width, so its highest level is the
+		// bottom of the deepest reserved cell; add the two GAP margins.
+		var deepest = 0;
+		for (k in 0...skCount)
+			if (skY[k] > deepest) deepest = skY[k];
+		return deepest + 2 * GAP;
+	}
+
+	/** Same frames, ordered widest-first, for the alternative shelf candidate. */
+	static function buildWidthOrder(order:Array<RepackFrame>):Array<RepackFrame>
+	{
+		var o = order.copy();
+		o.sort(function(a:RepackFrame, b:RepackFrame):Int
+		{
+			if (a.dw != b.dw) return b.dw - a.dw;
+			if (a.dh != b.dh) return b.dh - a.dh;
+			return a.idx - b.idx;
+		});
+		return o;
+	}
+
+	/**
+	 * Widths beyond the historical {w/2, w, 2w, 4w}: cheap multiples plus
+	 * content-driven widths around sqrt(reserved area), which is where both
+	 * packers waste the least space. addWidth() de-dupes and clamps them.
+	 */
+	static function buildExtraWidths(srcW:Int, order:Array<RepackFrame>):Array<Int>
+	{
+		var cands:Array<Int> = [];
+		addWidth(cands, Std.int(srcW * 3 / 2));
+		addWidth(cands, srcW * 3);
+		addWidth(cands, srcW * 6);
+		addWidth(cands, srcW * 8);
+
+		var total:Float = 0;
+		for (f in order)
+			total += (f.dw + GAP) * (f.dh + GAP);
+		if (total > 0)
+		{
+			var side = Std.int(Math.sqrt(total));
+			addWidth(cands, Std.int(side * 3 / 4));
+			addWidth(cands, side);
+			addWidth(cands, Std.int(side * 4 / 3));
+			addWidth(cands, side * 2);
+			addWidth(cands, side * 3);
+		}
+		cands.sort(function(a:Int, b:Int):Int return a - b);
+		return cands;
+	}
+
+	/**
+	 * Layout chooser. Phase 1 is the historical search -- {w/2, w, 2w, 4w} widths with the
+	 * tallest-first shelf placement -- and always runs; it is the incumbent. Phase 2 tries
+	 * extra widths with {skyline bottom-left, widest-first shelf} and adopts a layout only
+	 * when its area is *strictly* smaller than the incumbent's, within the deterministic
+	 * caps above. No clock is read here, so the same input always picks the same layout.
+	 *
+	 * Properties this ordering guarantees:
+	 *   - the historical best layout is always evaluated, so the result can never be worse
+	 *     than the original packer's;
+	 *   - on atlases the extra candidates cannot improve, the placements are the historical
+	 *     ones and the emitted XML and bitmap are unchanged;
+	 *   - the extra work is bounded by MAX_EXTRA_COMBOS, MAX_EXTRA_VISITS and
+	 *     SKYLINE_WORK_LIMIT. The only work outside those counters is one O(n log n)
+	 *     re-order for the widest-first shelf and one O(n) width scan, the same order as
+	 *     the sort coreProcess already performs on this array.
+	 *
+	 * w == 0 means no candidate beat the source area; the caller aborts and keeps the
+	 * original graphic.
+	 *
+	 * On return with w != 0 the frames hold the WINNING layout's placements. Candidate
+	 * evaluation writes f.px/f.py in place, so without the closing replay the frames would
+	 * hold the last candidate tried, and a caller inspecting them (the geometry gate in
+	 * coreProcess) would compare the wrong rectangles against the winning canvas.
+	 */
+	static function selectLayout(order:Array<RepackFrame>, oldB:Float, srcW:Int):{w:Int, h:Int, order:Array<RepackFrame>, strat:Int, combos:Int, baseWidths:Int, baseW:Int, baseH:Int}
+	{
+		var baseCands:Array<Int> = [];
+		addWidth(baseCands, Std.int(srcW / 2));
+		addWidth(baseCands, srcW);
+		addWidth(baseCands, srcW * 2);
+		addWidth(baseCands, srcW * 4);
+		baseCands.sort(function(a:Int, b:Int):Int return a - b);
+
+		// Compare areas in bytes on both sides.
+		var canvasW = 0;
+		var canvasH = 0;
+		var bestArea:Float = 0;
+		var bestStrat = STRAT_SHELF_H;
+		var bestOrder = order;
+		for (w in baseCands)
+		{
+			var hNeed = tryPackShelf(order, w);
+			if (hNeed <= 0) continue;
+			var area:Float = (w * hNeed) * 4;
+			if (area >= oldB) continue;
+			if (canvasW == 0 || area < bestArea)
+			{
+				canvasW = w;
+				canvasH = hNeed;
+				bestArea = area;
+				bestStrat = STRAT_SHELF_H;
+				bestOrder = order;
+			}
+		}
+
+		// Retained so the caller can return the baseline when the gate rejects an extra-strategy layout.
+		var baseW = canvasW;
+		var baseH = canvasH;
+
+		var combos = 0;
+		var visits = 0;
+		var extraW = buildExtraWidths(srcW, order);
+		if (extraW.length > 0 && order.length <= EXTRA_MAX_RECTS)
+		{
+			var strats:Array<Int> = [STRAT_SKYLINE, STRAT_SHELF_W];
+			var orderW:Array<RepackFrame> = null;
+			var stop = false;
+			for (si in 0...strats.length)
+			{
+				if (stop) break;
+				var st = strats[si];
+				var cost = st == STRAT_SKYLINE ? order.length * SKYLINE_VISIT_ESTIMATE : order.length;
+				var ord = order;
+				if (st == STRAT_SHELF_W)
+				{
+					if (orderW == null) orderW = buildWidthOrder(order);
+					ord = orderW;
+				}
+				for (w in extraW)
+				{
+					// Caps are pure counters, never a clock: the same input always yields
+					// the same layout, so a context-loss rebuild keeps the packed bitmap
+					// matched with the XML of that same layout.
+					if (combos >= MAX_EXTRA_COMBOS || visits + cost > MAX_EXTRA_VISITS)
+					{
+						extraCapHitsTotal++;
+						stop = true;
+						break;
+					}
+					combos++;
+					visits += cost;
+					var hNeed = tryPack(ord, w, st);
+					if (hNeed <= 0) continue;
+					var area:Float = (w * hNeed) * 4;
+					if (area >= oldB) continue;
+					// Strict improvement only: an equal-area candidate keeps the historical
+					// layout, so atlases that cannot improve emit identical placements.
+					if (canvasW != 0 && area >= bestArea) continue;
+					canvasW = w;
+					canvasH = hNeed;
+					bestArea = area;
+					bestStrat = st;
+					bestOrder = ord;
+				}
+			}
+			if (canvasW != 0 && bestStrat != STRAT_SHELF_H) extraWinsTotal++;
+		}
+		// The frames must hold the WINNING layout when this function returns. Candidate
+		// evaluation writes f.px/f.py in place, so without this replay they would hold the
+		// last candidate tried while the caller compares them against the winning canvas
+		// (the geometry gate in coreProcess) and rejects a valid layout. w == 0 means no
+		// candidate won; the caller then aborts and nothing is replayed.
+		if (canvasW != 0)
+			tryPack(bestOrder, canvasW, bestStrat);
+
+		extraCombosTotal += combos;
+		extraVisitsTotal += visits;
+		return {w: canvasW, h: canvasH, order: bestOrder, strat: bestStrat, combos: combos,
+			baseWidths: baseCands.length, baseW: baseW, baseH: baseH};
+	}
+
+	/**
+	 * Decision part of the geometry gate, pure and silent. A layout that did not come from
+	 * the historical shelf strategy is checked with layoutViolation(); when the check fails
+	 * this returns the historical shelf baseline (baseW/baseH/baseOrder, the original
+	 * packer's result) together with the reason for the caller to log. baseW == 0 means the
+	 * historical search had no usable layout either, and the caller takes the no-area-win
+	 * abort path. Kept as a pure function so a bad layout can be fed to it directly and the
+	 * fallback branch exercised without a graphics context.
+	 */
+	static function gateLayout(w:Int, h:Int, order:Array<RepackFrame>, strat:Int,
+		baseW:Int, baseH:Int, baseOrder:Array<RepackFrame>):{w:Int, h:Int, order:Array<RepackFrame>, strat:Int, violation:Null<String>}
+	{
+		if (w == 0 || strat == STRAT_SHELF_H)
+			return {w: w, h: h, order: order, strat: strat, violation: null};
+		layoutChecksTotal++;
+		var why = layoutViolation(order, w, h);
+		if (why == null)
+			return {w: w, h: h, order: order, strat: strat, violation: null};
+		layoutCheckFailsTotal++;
+		return {w: baseW, h: baseH, order: baseOrder, strat: STRAT_SHELF_H, violation: why};
+	}
+
+	static function stratName(strat:Int):String
+	{
+		if (strat == STRAT_SKYLINE) return 'skyline bottom-left';
+		if (strat == STRAT_SHELF_W) return 'widest-first shelf';
+		return 'tallest-first shelf';
+	}
+
+	/**
+	 * Packed-geometry invariant check: the only check that can catch two cells covering each
+	 * other or a cell placed outside the canvas. The XML read-back check in coreProcess
+	 * validates frameX/sourceSize semantics and cannot see pixel overlap; an overlapping cell
+	 * makes a mod animation render a neighbouring frame's pixels.
+	 *
+	 * Treat each cell as the rectangle (px, py, dw+GAP, dh+GAP). Those rectangles being
+	 * pairwise disjoint is equivalent to any two cells being at least GAP apart in x or in y,
+	 * which is the property that keeps a frame from sampling its neighbour's pixels.
+	 * Implementation: sort by px and sweep an active set, so only pairs whose x intervals
+	 * overlap are compared -- O(n log n + k).
+	 *
+	 * Only layouts from the extra strategies are checked; the historical shelf layout comes
+	 * from the original code path. Returns null when the layout is sound, otherwise a
+	 * description of the first violation, which makes the caller return the historical shelf
+	 * layout instead.
+	 */
+	static function layoutViolation(order:Array<RepackFrame>, w:Int, h:Int):Null<String>
+	{
+		var sorted = order.copy();
+		sorted.sort(function(a:RepackFrame, b:RepackFrame):Int
+		{
+			if (a.px != b.px) return a.px - b.px;
+			return a.py - b.py;
+		});
+		var budget = LAYOUT_CHECK_BUDGET;
+		for (i in 0...sorted.length)
+		{
+			var a = sorted[i];
+			if (a.px < GAP || a.py < GAP)
+				return 'cell $i outside the top/left GAP (px=${a.px}, py=${a.py})';
+			if (a.px + a.dw > w || a.py + a.dh > h)
+				return 'cell $i outside the canvas (px=${a.px}, py=${a.py}, ${a.dw}x${a.dh}, canvas ${w}x${h})';
+			var xEnd = a.px + a.dw;
+			var j = i + 1;
+			while (j < sorted.length && sorted[j].px < xEnd + GAP)
+			{
+				budget--;
+				if (budget < 0) return 'check budget exhausted (${sorted.length} cells) -- layout not trusted';
+				var b = sorted[j];
+				var xGap = b.px - xEnd;
+				var yGap = b.py > a.py ? b.py - (a.py + a.dh) : a.py - (b.py + b.dh);
+				if (xGap < GAP && yGap < GAP)
+					return 'cells $i and $j too close (xGap=$xGap, yGap=$yGap)';
+				j++;
+			}
+		}
+		return null;
 	}
 
 	/**

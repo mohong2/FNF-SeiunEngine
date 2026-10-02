@@ -197,9 +197,25 @@ class GfxPolicy
 		{
 			var g = findGraphicByKey(key);
 			if (g == null)
+			{
+				// The graphic is gone. Unless it is parked in the LRU (that case is finished by
+				// GfxLru.onContextRestored in the same callback, which drops the CPU-release
+				// record through forgetReleased), this registration is dangling: subtract its
+				// bytes and drop it here, exactly as pruneRegistry() would, so that
+				// releasedBytesLive cannot stay inflated forever.
+				if (!GfxLru.isParked(key))
+				{
+					releasedBytesLive -= entry.bytes;
+					consumedKeys.push(key);
+				}
 				continue;
+			}
 			if (g.bitmap != null && g.bitmap.readable)
 			{
+				// The CPU copy is back (something re-decoded the graphic), so this registration
+				// is meaningless. Subtract its bytes like pruneRegistry() does: removing the
+				// record without subtracting would leave releasedBytesLive permanently inflated.
+				releasedBytesLive -= entry.bytes;
 				consumedKeys.push(key);
 				continue;
 			}

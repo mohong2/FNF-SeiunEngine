@@ -5,6 +5,7 @@ import PreloadedChartNote;
 #else
 import Note.PreloadedChartNote;
 #end
+import haxe.Int64;
 
 /**
  * Turbo-mode chart pre-processing.
@@ -236,10 +237,13 @@ class TurboDensity
 	 * Converts a tap sequence (with sustains/tails already excluded) into "how many notes each representative stands for".
 	 * Diagnostics / tests only.
 	 */
-	public static function representedTotal(notes:ChartNotes):Int
+	public static function representedTotal(notes:ChartNotes):Int64
 	{
-		var t:Int = 0;
-		for (i in 0...notes.length) t += Std.int(Math.max(1, Math.round(notes.noteDensityAt(i))));
+		// Running total, not an index: each row contributes up to MAX_REPRESENTED notes to the sum, so
+		// a folded list of a few million rows can pass 2^31 while every individual row is still an
+		// Int. The Int64 return keeps a diagnostic from wrapping silently.
+		var t:Int64 = 0;
+		for (i in 0...notes.length) t = t + Std.int(Math.max(1, Math.round(notes.noteDensityAt(i))));
 		return t;
 	}
 }
@@ -261,8 +265,12 @@ class GhostCollapser
 	// Packed columns, not an Array: a dense chart folds to millions of representatives and the
 	// array form of that is what grows hxcpp's block pool to several GB for the whole song.
 	public var out:ChartNotes = ChartNotes.builder(4096);
-	/** Total notes fed in (diagnostic). */
-	public var fedCount:Int = 0;
+	/**
+	 * Total notes fed in (diagnostic). A running total over the whole chart, never an index, so it is
+	 * Int64: a segmented chart can feed more notes than an Int32 can hold. This is also the value
+	 * PlayState saves as ChartCache's fedNotes.
+	 */
+	public var fedCount:Int64 = 0;
 
 	var laneCount:Int;
 	var rangeMs:Float;
@@ -323,7 +331,7 @@ class GhostCollapser
 	public function feed(pn:PreloadedChartNote):Void
 	{
 		if (pn == null) return;
-		fedCount++;
+		fedCount = fedCount + 1;
 
 		// Sustains, tails and sustain heads never merge: tail trimming and the prev/next chain must stay intact.
 		if (pn.isSustainNote || pn.sustainLength > 0)
@@ -385,7 +393,7 @@ class GhostCollapser
 	 */
 	public function wantsRepresentative(strumTime:Float, lane:Int, mustPress:Bool, multSpeed:Float = 1):Bool
 	{
-		fedCount++;
+		fedCount = fedCount + 1;
 		lane = Std.int(Math.abs(lane));
 		if (lane >= laneCount) lane = lane % laneCount;
 		var idx:Int = (mustPress ? 1 : 0) * laneCount + lane;
@@ -433,7 +441,7 @@ class GhostCollapser
 	public function pushHold(pn:PreloadedChartNote):Void
 	{
 		if (pn == null) return;
-		fedCount++;
+		fedCount = fedCount + 1;
 		out.append(pn);
 	}
 

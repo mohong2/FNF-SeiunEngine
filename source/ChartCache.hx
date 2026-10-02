@@ -1,7 +1,9 @@
 package;
 
+import haxe.Int64;
 import haxe.crypto.Md5;
 import haxe.io.Bytes;
+import mohong.TraceManager;
 import sys.FileSystem;
 import sys.io.File;
 import sys.io.FileInput;
@@ -16,8 +18,14 @@ typedef CachedNote = PreloadedChartNote;
 typedef CachedNotes = {
 	/** Packed columns: a cache hit must not materialise the multi-million-element DTO array. */
 	var notes:ChartNotes;
-	/** Raw tap count the fold consumed (PlayState._turboRawTapCount); 0 when the load did not fold. */
-	var fedNotes:Int;
+	/**
+	 * Raw tap count the fold consumed (PlayState._turboRawTapCount); 0 when the load did not fold.
+	 *
+	 * Int64, like ChartStream.ChartScanResult.noteCount and for the same reason: it totals a whole
+	 * (possibly segmented) chart rather than indexing anything, so an Int would wrap silently at 2^31
+	 * while still looking correct. Stored in the header's second 8 byte slot, SECOND_OFFSET.
+	 */
+	var fedNotes:Int64;
 	/** Whether the list was folded, i.e. one DTO may stand for several chart notes. */
 	var folded:Bool;
 	/** Note types the chart used, for the custom_notetypes script lookup. */
@@ -80,15 +88,65 @@ private class BlockCursor
  */
 class ChartCache
 {
-	/** Layout revision. Bump when a record field, its meaning or the fold rules change. */
-	public static inline final FORMAT:Int = 2;
+	/**
+	 * Layout revision. Bump when a record field, its meaning or the fold rules change.
+	 *
+	 * 3: the header's two counters are 8 byte haxe.Int64 (they were 4 byte Int32, which capped a note
+	 * total at 2^31-1) and the fields around them moved 16/20 -> 16/24, so a file written by revision
+	 * 2 must never be read. fileFor() mixes this revision into the name hash, so such a file is never
+	 * opened; the FORMAT check in loadNotes()/loadSkeleton() also deletes one that is reached anyway,
+	 * and prune() reclaims whatever is left on disk under MAX_TOTAL_BYTES.
+	 */
+	public static inline final FORMAT:Int = 3;
 
 	static inline final MAGIC:Int = 0x53454E43; // "SENC"
 	static inline final KIND_NOTES:Int = 1;
 	static inline final KIND_SKELETON:Int = 2;
 
-	/** magic, format, kind, header length, body length, fed count. */
-	static inline final PREFIX_BYTES:Int = 24;
+	/*
+	 * Header layout, byte for byte. Every integer goes through haxe.io.Bytes, whose 64 bit helpers
+	 * are implemented in Haxe (getInt64 = make(getInt32(pos+4), getInt32(pos)), setInt64 =
+	 * setInt32(pos, low) then setInt32(pos+4, high)) on top of little-endian 32 bit helpers, so
+	 * these offsets do not depend on the host's byte order:
+	 *
+	 *   offset  size   type    .notes                .skel
+	 *   0       4      Int32   MAGIC                 MAGIC
+	 *   4       4      Int32   FORMAT                FORMAT
+	 *   8       4      Int32   KIND_NOTES            KIND_SKELETON
+	 *   12      4      Int32   header text length    header text length
+	 *   16      8      Int64   record count          serialized payload length
+	 *   24      8      Int64   fed note count        scan note count
+	 *   32      len    text    buildHeader() text    buildHeader() text
+	 *   ...     rest   bytes   record blocks         haxe.Serializer payload
+	 *
+	 * A revision 2 file was 24 bytes: magic, format, kind, header length, count (Int32) and fed count
+	 * (Int32). Read with the offsets above it would be misread -- bytes 20..27 would be taken as one
+	 * Int64, splicing the old fed count with the first four header bytes -- which is why the revision
+	 * is part of the name hash and is checked again in loadNotes()/loadSkeleton().
+	 */
+
+	/** magic, format, kind, header text length, then the two counters below. */
+	static inline final PREFIX_BYTES:Int = 32;
+
+	/**
+	 * First counter. .notes: records in the body. .skel: bytes of serialized payload after the
+	 * header. Both are Int64 in the file, but a record loop bound and a Bytes length are Int by
+	 * construction (haxe.io.Bytes/Array lengths are Int32), so the reader validates the value and
+	 * then narrows it explicitly instead of truncating it.
+	 */
+	static inline final COUNT_OFFSET:Int = 16;
+
+	/**
+	 * Second counter. .notes: raw note count the fold consumed (CachedNotes.fedNotes). .skel: the
+	 * ChartScanResult note count, which cannot ride inside the serialized payload: haxe.Serializer
+	 * has no Int64 representation (on cpp it returns one as a plain Int when the value fits 32 bits
+	 * and as a cpp::Int64 object otherwise), and its Float path is only good to 15 significant
+	 * digits. A raw 8 byte field is exact across the whole range.
+	 */
+	static inline final SECOND_OFFSET:Int = 24;
+
+	/** 2^31 - 1: the largest count or byte length that can be addressed with a row Int index. */
+	static inline final INT32_LIMIT:Int = 0x7FFFFFFF;
 
 	/** Float columns of a PreloadedChartNote, in the order the record stores them. */
 	static inline final DOUBLE_COLUMNS:Int = 12;
@@ -210,8 +268,11 @@ class ChartCache
 			}
 
 			var headerLen:Int = prefix.getInt32(12);
-			var count:Int = prefix.getInt32(16);
-			var fed:Int = prefix.getInt32(20);
+			// Both counters are 8 byte Int64 fields. A count that does not fit an Int32 cannot describe
+			// a file this class wrote: rejecting it takes the same damaged-file path as a bad magic
+			// instead of narrowing the value silently.
+			var count:Int = countToInt(prefix.getInt64(COUNT_OFFSET));
+			var fed:Int64 = prefix.getInt64(SECOND_OFFSET);
 			if (headerLen <= 0 || count < 0 || stat.size < PREFIX_BYTES + headerLen)
 			{
 				input.close();
@@ -230,6 +291,9 @@ class ChartCache
 
 			var table:Array<String> = readStringTable(input);
 			var plan:NotePlan = readPlan(input);
+			// The header is intact and describes this chart, so the counter is real: trace it if it is
+			// past the largest value an Int32 could hold. Diagnostics only.
+			reportCountPastLimit('cached note list fed count', fed);
 
 			// Built as packed columns, one record at a time. The estimate only seeds the column
 			// capacity; hoisted (constant) columns never allocate at all, so it must stay small.
@@ -289,7 +353,7 @@ class ChartCache
 	 * written only means the next load parses the chart again.
 	 */
 	public static function saveNotes(paths:Array<String>, config:String, notes:ChartNotes,
-		fedNotes:Int, folded:Bool, noteTypes:Array<String>, compress:Bool = true):Void
+		fedNotes:Int64, folded:Bool, noteTypes:Array<String>, compress:Bool = true):Void
 	{
 		#if sys
 		if (paths == null || paths.length == 0 || notes == null || notes.length == 0) return;
@@ -348,8 +412,11 @@ class ChartCache
 			prefix.setInt32(8, KIND_NOTES);
 			var headerBytes:Bytes = Bytes.ofString(buildHeader(sourceSignature(paths), config, folded, compress, noteTypes));
 			prefix.setInt32(12, headerBytes.length);
-			prefix.setInt32(16, count);
-			prefix.setInt32(20, fedNotes);
+			// The header's counters are 8 byte Int64, so the record count is not capped at 2^31. `count`
+			// is an Int here only because a row index is one.
+			prefix.setInt64(COUNT_OFFSET, Int64.ofInt(count));
+			prefix.setInt64(SECOND_OFFSET, fedNotes);
+			reportCountPastLimit('chart cache fed count', fedNotes);
 			out.writeBytes(prefix, 0, PREFIX_BYTES);
 			out.writeBytes(headerBytes, 0, headerBytes.length);
 			writeStringTable(out, table);
@@ -749,7 +816,9 @@ class ChartCache
 			}
 
 			var headerLen:Int = prefix.getInt32(12);
-			var count:Int = prefix.getInt32(16);
+			// Same first slot as .notes' record count, holding the serialized payload length here.
+			var count:Int = countToInt(prefix.getInt64(COUNT_OFFSET));
+			var noteCount:Int64 = prefix.getInt64(SECOND_OFFSET);
 			if (headerLen <= 0 || count < 0 || stat.size < PREFIX_BYTES + headerLen + count)
 			{
 				input.close();
@@ -769,7 +838,14 @@ class ChartCache
 			var payload:Bytes = Bytes.alloc(count);
 			readFull(input, payload, 0, count);
 			input.close();
-			return haxe.Unserializer.run(payload.getString(0, count));
+			var scan:Dynamic = haxe.Unserializer.run(payload.getString(0, count));
+			// The payload's noteCount is the constant placeholder saveSkeleton() wrote; the real value
+			// is the raw Int64 in the header. Restoring it as an Int64 keeps the field's declared type
+			// true after a cache load, so a caller that converts it to Float (ChartStream.i64ToFloat)
+			// reads the same type whether or not the cache was hit.
+			if (scan != null) Reflect.setField(scan, 'noteCount', noteCount);
+			reportCountPastLimit('cached chart scan note count', noteCount);
+			return scan;
 		}
 		catch (e:Dynamic)
 		{
@@ -793,7 +869,16 @@ class ChartCache
 		try
 		{
 			if (FileSystem.exists(tmp)) FileSystem.deleteFile(tmp);
-			var payload:Bytes = Bytes.ofString(haxe.Serializer.run(scan));
+			var noteCount:Int64 = 0;
+			if (Reflect.hasField(scan, 'noteCount')) noteCount = (cast scan : ChartStream.ChartScanResult).noteCount;
+			// An Int64 must not be handed to haxe.Serializer: on cpp it comes back as a plain Int when
+			// the value fits 32 bits and as a cpp::Int64 object otherwise, and its Float path only
+			// survives 15 significant digits. The count therefore goes into the header as raw bytes,
+			// and the payload carries a constant placeholder that loadSkeleton() overwrites. The
+			// Reflect.copy below keeps the caller's scan object untouched.
+			var cached:Dynamic = Reflect.copy(scan);
+			Reflect.setField(cached, 'noteCount', 0.0);
+			var payload:Bytes = Bytes.ofString(haxe.Serializer.run(cached));
 
 			out = File.write(tmp, true);
 			var prefix:Bytes = Bytes.alloc(PREFIX_BYTES);
@@ -802,8 +887,9 @@ class ChartCache
 			prefix.setInt32(8, KIND_SKELETON);
 			var headerBytes:Bytes = Bytes.ofString(buildHeader(sourceSignature(paths), config, false, false, null));
 			prefix.setInt32(12, headerBytes.length);
-			prefix.setInt32(16, payload.length);
-			prefix.setInt32(20, 0);
+			prefix.setInt64(COUNT_OFFSET, Int64.ofInt(payload.length));
+			prefix.setInt64(SECOND_OFFSET, noteCount);
+			reportCountPastLimit('chart cache scan note count', noteCount);
 			out.writeBytes(prefix, 0, PREFIX_BYTES);
 			out.writeBytes(headerBytes, 0, headerBytes.length);
 			out.writeBytes(payload, 0, payload.length);
@@ -966,6 +1052,32 @@ class ChartCache
 			if (got <= 0) throw new haxe.Exception('ChartCache: unexpected end of file');
 			done += got;
 		}
+	}
+
+	/**
+	 * Narrows a counter read from a file to an Int, or -1 when it cannot be one.
+	 *
+	 * Only this class writes these files, so a negative count or one past 2^31-1 is damage, not a
+	 * chart with billions of records: a record loop bound and a Bytes length are Int by
+	 * construction. Returning a sentinel feeds the existing "count < 0 -> delete the file" check
+	 * instead of truncating the value and handing a bogus length to Bytes.alloc.
+	 */
+	static inline function countToInt(v:Int64):Int
+	{
+		if (v < 0 || v > INT32_LIMIT) return -1;
+		return v.low;
+	}
+
+	/**
+	 * Overflow guard for the counters: traces when a cumulative note count is past 2^31-1, the largest
+	 * value an Int can hold, so the trace shows a counter carrying a value an Int32 could not. Changes
+	 * no behaviour.
+	 */
+	static function reportCountPastLimit(label:String, value:Int64):Void
+	{
+		if (value <= INT32_LIMIT) return;
+		TraceManager.debug('trace.chart.countOverflow', '{} is past the 32-bit counter limit ({})',
+			[label, Int64.toStr(value)]);
 	}
 
 	static function deleteFile(path:String):Void

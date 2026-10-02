@@ -8,16 +8,32 @@ import openfl.utils.AssetType;
 import openfl.utils.ByteArray;
 import mohong.TraceManager;
 
+import haxe.atomic.AtomicInt;
+
 #if sys
 import sys.FileSystem;
 import sys.io.File;
 import sys.thread.Thread;
 import sys.thread.Mutex;
-#if (haxe_ver >= 4.3)
 import sys.thread.Semaphore;
 #end
-#end
 
+// ============================================================================
+// Invariant: worker threads never call TraceManager, directly or indirectly.
+//
+// TraceManager is not safe to call off the main thread:
+//   - log() resolves the translated text through Language.get() before it takes any
+//     lock, and the language table is loaded lazily without synchronization;
+//   - addEntry() serializes only the ring-buffer write behind bufferMutex. The direct
+//     console write and the listener dispatch run after that lock is released, and the
+//     listener list itself is mutated without holding it.
+// A worker calling any log method therefore races the main thread's lazy language
+// load, its listener dispatch and its console output.
+//
+// A worker thread may only do three things: read file bytes (File.getBytes), store the
+// exception pointer it saw into its already-published result slot, and touch atomic
+// counters. Every log line is emitted by the main thread from drain().
+// ============================================================================
 
 typedef GfxJob =
 {
@@ -38,7 +54,15 @@ typedef GfxWorkerResult =
 	gen:Int,             
 	/** 工作线程写完后置 true（在 mutex 里写，作为发布屏障）。 */
 	done:Bool,
-	failed:Bool
+	failed:Bool,
+	/**
+	 * Exception the worker saw for this job: either the read failed or the worker loop
+	 * itself threw. The worker only stores the pointer while holding the mutex and never
+	 * formats a message; drain() reads it on the main thread.
+	 */
+	err:Dynamic,
+	/** True when the failure came from the worker loop itself rather than from the read; selects the log key in drain(). */
+	panic:Bool
 }
 
 class AsyncGfxLoader
@@ -49,16 +73,17 @@ class AsyncGfxLoader
 
 	public static inline var ASYNC_TIMEOUT_MS:Float = 45000;
 
-	// 会话/批次计数。存储换成原子计数器(4.3.7: haxe.atomic.AtomicInt, cpp 走无锁 _hx_atomic_*),
-	// 对外仍是 Int 只读属性: GfxPolicy.hx:406-408 与 GfxLru.hx:222-223 按 Int 读这些名字
-	// (含 "> 0" 与字符串插值), 保持属性形态就不必改动那两个文件。
-	static var _decodedOffThreadTotal:Counter = new Counter(0);
-	static var _failedOffThreadTotal:Counter = new Counter(0);
+	// Session/batch counters. haxe.atomic.AtomicInt maps to the lock-free _hx_atomic_*
+	// intrinsics on cpp and allocates no hxcpp object. They stay exposed as read-only Int
+	// properties because GfxPolicy and GfxLru read these names as Int (including "> 0"
+	// tests and string interpolation).
+	static var _decodedOffThreadTotal:AtomicInt = new AtomicInt(0);
+	static var _failedOffThreadTotal:AtomicInt = new AtomicInt(0);
 	/** 解码耗时累计: cpp 只提供 AtomicInt/AtomicObject, Float 没有原子实现, 仍只在主线程累加。 */
 	public static var decodeMsTotal:Float = 0;
-	static var _lastBatchEnqueued:Counter = new Counter(0);
-	static var _lastBatchOffThread:Counter = new Counter(0);
-	static var _lastBatchCached:Counter = new Counter(0);
+	static var _lastBatchEnqueued:AtomicInt = new AtomicInt(0);
+	static var _lastBatchOffThread:AtomicInt = new AtomicInt(0);
+	static var _lastBatchCached:AtomicInt = new AtomicInt(0);
 
 	public static var decodedOffThreadTotal(get, never):Int;
 	static inline function get_decodedOffThreadTotal():Int return _decodedOffThreadTotal.load();
@@ -80,17 +105,21 @@ class AsyncGfxLoader
 	static var queue:Array<GfxJob> = [];
 	static var inflight:Map<String, Bool> = [];     
 	static var ready:Map<String, BitmapData> = [];    
-	static var callbacks:Map<String, Void->Void> = [];
+	// Callback table: one key can carry several onDone callbacks (the same key may be
+	// enqueued more than once) and every registered callback runs exactly once.
+	// A list per key beats chaining closures: registration is O(1), nothing can end up
+	// referencing itself, and drain() detaches the whole list in one step.
+	static var callbacks:Map<String, Array<Void->Void>> = [];
 	static var workersStarted:Bool = false;
 	static var generation:Int = 0;
 	/** 强制 GC 期间: worker 不再开始新任务。 */
 	static var quiesced:Bool = false;
-	/** 正在读文件/填结果的 worker 数。4.3.7: 无锁原子量, 主线程可在锁外观察。 */
-	static var workersBusy:Counter = new Counter(0);
-	#if (haxe_ver >= 4.3)
+	/** Number of workers currently reading a file or publishing a result; lock-free, so the main thread can read it outside the mutex. */
+	static var workersBusy:AtomicInt = new AtomicInt(0);
 	/** worker 收工信号: quiesce() 用它阻塞等最后一个 worker 离开任务(sys.thread.Semaphore)。 */
 	static var idleWorkers:Semaphore = new Semaphore(0);
-	#end
+	/** Exceptions a worker threw before it obtained a job, so they cannot be tied to a result slot; drain() flushes them into log lines on the main thread. */
+	static var pendingWorkerErrors:Array<Dynamic> = [];
 	#end
 
 	public static function available():Bool
@@ -109,10 +138,21 @@ class AsyncGfxLoader
 			return;
 
 		mutex.acquire();
-		if (inflight.exists(cacheKey) || ready.exists(cacheKey))
+		// ready hit: the bitmap is already decoded and waiting for takeDecoded(), so the
+		// resource is available. Fire the callback immediately.
+		// It must NOT be registered here: that job was already completed by drain() and its
+		// callbacks already ran, so a callback left in the table would never be invoked.
+		if (ready.exists(cacheKey))
 		{
-			if (onDone != null && !callbacks.exists(cacheKey))
-				callbacks.set(cacheKey, onDone);
+			mutex.release();
+			if (onDone != null) onDone();
+			return;
+		}
+		// inflight hit: the same key is already being read/decoded. Append the callback to
+		// the existing list so drain() fires all of them when the job settles.
+		if (inflight.exists(cacheKey))
+		{
+			if (onDone != null) addCallback(cacheKey, onDone);
 			mutex.release();
 			return;
 		}
@@ -124,14 +164,33 @@ class AsyncGfxLoader
 			return;
 		}
 
-		var slot:GfxWorkerResult = {bytes: null, filePath: filePath, gen: generation, done: false, failed: false};
+		var slot:GfxWorkerResult = {bytes: null, filePath: filePath, gen: generation, done: false, failed: false, err: null, panic: false};
 		pendingResults.set(cacheKey, slot);
 		queue.push({cacheKey: cacheKey, filePath: filePath, enqueuedAt: haxe.Timer.stamp(), gen: generation, slot: slot});
 		inflight.set(cacheKey, true);
-		callbacks.set(cacheKey, onDone);
+		if (onDone != null) addCallback(cacheKey, onDone);
 		_lastBatchEnqueued.add(1);
 		startWorkersOnce();
 		mutex.release();
+	}
+
+	/**
+	 * Append onDone to the callback list for a key. Must be called while holding the mutex.
+	 *
+	 * Invariant: every successfully registered onDone runs exactly once. There are only two
+	 * invocation sites and both are outside the lock: drain() detaches the whole list and
+	 * calls it once the job settles or times out, or the ready-hit branch of enqueue() calls
+	 * it immediately.
+	 */
+	static function addCallback(cacheKey:String, onDone:Void->Void):Void
+	{
+		var list = callbacks.get(cacheKey);
+		if (list == null)
+		{
+			list = [];
+			callbacks.set(cacheKey, list);
+		}
+		list.push(onDone);
 	}
 
 	public static function drain():Void
@@ -139,8 +198,18 @@ class AsyncGfxLoader
 		var fired:Array<Void->Void> = [];
 		var doneKeys:Array<String> = [];
 		var doneRes:Array<GfxWorkerResult> = [];
+		var panics:Array<Dynamic> = null;
+		var timeouts:Array<String> = null;
 
 		mutex.acquire();
+
+		// Exceptions from workers that never obtained a job: detach them here and log them
+		// outside the lock.
+		if (pendingWorkerErrors.length > 0)
+		{
+			panics = pendingWorkerErrors;
+			pendingWorkerErrors = [];
+		}
 
 		var now = haxe.Timer.stamp();
 		var keep:Array<GfxJob> = [];
@@ -151,11 +220,14 @@ class AsyncGfxLoader
 				inflight.remove(job.cacheKey);
 				pendingResults.remove(job.cacheKey);
 				_failedOffThreadTotal.add(1);
-				var cb = callbacks.get(job.cacheKey);
+				var cbs = callbacks.get(job.cacheKey);
 				callbacks.remove(job.cacheKey);
-				if (cb != null) fired.push(cb);
-				TraceManager.warn('trace.asyncGfx.timeout',
-					'AsyncGfxLoader timeout for {}', [job.cacheKey]);
+				if (cbs != null) for (cb in cbs) fired.push(cb);
+				// Do not call TraceManager while holding this mutex: it lazily loads language
+				// strings and dispatches to listeners, which would keep workers out of the job
+				// queue for that whole time. Collect the keys and log after the lock is released.
+				if (timeouts == null) timeouts = [];
+				timeouts.push(job.cacheKey);
 			}
 			else keep.push(job);
 		}
@@ -188,11 +260,36 @@ class AsyncGfxLoader
 
 		mutex.release();
 
+		// No worker thread ever calls TraceManager; every worker-side exception is logged
+		// here, on the main thread.
+		if (panics != null)
+			for (e in panics)
+				TraceManager.warn('trace.asyncGfx.workerFail',
+					'AsyncGfxLoader worker error: {}', [Std.string(e)]);
+
+		if (timeouts != null)
+			for (k in timeouts)
+				TraceManager.warn('trace.asyncGfx.timeout',
+					'AsyncGfxLoader timeout for {}', [k]);
+
 		for (i in 0...doneKeys.length)
 		{
 			var key = doneKeys[i];
 			var res = doneRes[i];
 			var bmp:BitmapData = null;
+
+			// The worker only wrote the exception pointer plus the failed/panic flags into
+			// the slot; the log line is emitted here, on the main thread.
+			if (res != null && res.failed)
+			{
+				var errText:String = res.err != null ? Std.string(res.err) : 'null';
+				if (res.panic)
+					TraceManager.warn('trace.asyncGfx.workerFail',
+						'AsyncGfxLoader worker error for {}: {}', [res.filePath, errText]);
+				else
+					TraceManager.warn('trace.asyncGfx.readFail',
+						'AsyncGfxLoader read failed for {}: {}', [res.filePath, errText]);
+			}
 
 			if (res != null && res.bytes != null && res.bytes.length > 0)
 			{
@@ -207,6 +304,10 @@ class AsyncGfxLoader
 						'AsyncGfxLoader decode failed for {}: {}', [res.filePath, e]);
 					bmp = null;
 				}
+				// Decoding is synchronous, so the PNG bytes are dead the moment the bitmap
+				// exists. Drop the reference now: the heavier GfxRepack pass below then does not
+				// keep the largest buffer alive and the GC can reclaim it earlier.
+				res.bytes = null;
 				decodeMsTotal += (haxe.Timer.stamp() - t0) * 1000;
 				// 崩溃报告只留最后 N 条日志: 把这张图的解码结果也写进去,
 				// 下一次 GC / 原生崩溃就能看到"最后成功解码的是哪张图、多大"。
@@ -267,10 +368,12 @@ class AsyncGfxLoader
 
 			mutex.acquire();
 			inflight.remove(key);
-			var cb = callbacks.get(key);
+			// Detach the whole callback list under the lock and run it outside it:
+			// every registered onDone runs exactly once.
+			var cbs = callbacks.get(key);
 			callbacks.remove(key);
 			mutex.release();
-			if (cb != null) fired.push(cb);
+			if (cbs != null) for (cb in cbs) fired.push(cb);
 		}
 
 		for (cb in fired) cb();
@@ -328,10 +431,12 @@ class AsyncGfxLoader
 		quiesced = true;
 		var deadline = haxe.Timer.stamp() + timeoutMs / 1000;
 
-		#if (haxe_ver >= 4.3)
-		// 4.3.7: workersBusy 是无锁原子量, 可以在锁外真阻塞等"最后一个 worker 收工"。
-		// 每次醒来都重新判定条件, 所以多余的一次唤醒不会让结果失真; worker 只在 1 -> 0 且
-		// quiesced 为真时 release, 而主线程一直阻塞到计数归零或超时才返回。
+		// workersBusy is lock-free, so the wait can block outside the mutex. The condition is
+		// re-checked on every wake-up, so a spurious wake-up cannot change the result: a worker
+		// releases idleWorkers only when it brings the count to 0 while quiesced is set, and
+		// the main thread blocks until the count reaches 0 or the deadline passes.
+		// The mutex must be released before blocking: workers need it to take or finish jobs,
+		// so waiting while holding it would deadlock.
 		mutex.release();
 		while (workersBusy.load() > 0)
 		{
@@ -340,20 +445,6 @@ class AsyncGfxLoader
 			idleWorkers.tryAcquire(remain);
 		}
 		return workersBusy.load() == 0;
-		#else
-		// 4.2.5 没有 sys.thread.Semaphore: workersBusy 仍由 mutex 保护, 保留原来的轮询等待
-		// (锁外不读 workersBusy, 旧编译器路径的锁纪律与改动前一致)。
-		var clean = (workersBusy.load() == 0);
-		while (!clean && haxe.Timer.stamp() < deadline)
-		{
-			mutex.release();
-			Sys.sleep(0.002);
-			mutex.acquire();
-			clean = (workersBusy.load() == 0);
-		}
-		mutex.release();
-		return clean;
-		#end
 		#else
 		return true;
 		#end
@@ -380,23 +471,21 @@ class AsyncGfxLoader
 	}
 
 	/**
-	 * worker 收工: workersBusy 减一。
+	 * Worker finished: decrement workersBusy.
 	 *
-	 * 4.3.7: AtomicInt.sub 返回旧值, 旧值 == 1 表示本次正好把计数降到 0; 若此刻处于 quiesce,
-	 * 就 release 一次 idleWorkers, 让 quiesce() 里阻塞的 tryAcquire 立刻返回 —— 这就是
-	 * "工作线程置位 / 主线程等待" 的发布屏障, 主线程不再 2ms 轮询。
-	 * 4.2.5: workersBusy 是 mutex 保护的普通 Int, 那边没有等待者, 只做减法。
+	 * AtomicInt.sub returns the previous value, so a previous value of exactly 1 means this
+	 * call brought the count to 0. When that happens while quiesced is set, release
+	 * idleWorkers so a blocked tryAcquire in quiesce() returns immediately: that is the
+	 * handshake that lets the main thread stop polling every 2 ms.
 	 *
-	 * 必须在持有 mutex 时调用: quiesced 的读与 enqueue/取任务的写由同一把锁排序。
+	 * Must be called while holding the mutex: the read of quiesced and the writes done by
+	 * enqueue/job pickup are ordered by that same lock.
 	 */
 	static function workerFinished():Void
 	{
-		#if (haxe_ver >= 4.3)
+		// AtomicInt.sub returns the previous value; 1 means this call reached 0.
 		if (workersBusy.sub(1) == 1 && quiesced)
 			idleWorkers.release();
-		#else
-		workersBusy.sub(1);
-		#end
 	}
 
 	static var pendingResults:Map<String, GfxWorkerResult> = [];
@@ -416,13 +505,24 @@ class AsyncGfxLoader
 					// code 0xE06D7363, a C++ throw with hxThreadFunc at the stack bottom). This catch keeps the
 					// worker running after a dropped job instead of taking the whole game down.
 					var tookJob:Bool = false;
+					// job is declared outside the try: the outer catch needs it to tie an
+					// exception to the result slot it belongs to.
+					var job:GfxJob = null;
+					// Single source of truth for "this thread holds the mutex": set immediately
+					// after every successful acquire, cleared before every release.
+					// It has to exist because an exception can be thrown inside a locked region
+					// (queue.shift, workersBusy.add, the slot writes, workerFinished) and Mutex is
+					// not recursive: the outer catch must not acquire it again, or the worker
+					// deadlocks itself and workersBusy never returns to 0.
+					var locked:Bool = false;
 					try
 					{
-						var job:GfxJob = null;
 						mutex.acquire();
+						locked = true;
 						// quiesce() 期间不许再开始新任务(强制 GC 要求没有第二个线程在分配)。
 						if (quiesced)
 						{
+							locked = false;
 							mutex.release();
 							Sys.sleep(0.002);
 							continue;
@@ -433,6 +533,7 @@ class AsyncGfxLoader
 							workersBusy.add(1);
 							tookJob = true;
 						}
+						locked = false;
 						mutex.release();
 
 						if (job == null)
@@ -442,39 +543,89 @@ class AsyncGfxLoader
 						}
 
 						var bytes:haxe.io.Bytes = null;
+						// Read failure: the worker only carries the exception pointer out of
+						// here; it does not build strings or log (see the TraceManager invariant
+						// at the top of this file).
+						var readErr:Dynamic = null;
 						try
 						{
 							bytes = File.getBytes(job.filePath);
 						}
 						catch (e:Dynamic)
 						{
-							try TraceManager.warn('trace.asyncGfx.readFail',
-								'AsyncGfxLoader read failed for {}: {}', [job.filePath, e]) catch (_:Dynamic) {}
+							readErr = e;
 							bytes = null;
 						}
 
+						// The locked region only does non-throwing work: field writes plus the
+						// atomic decrement (and a semaphore release).
 						mutex.acquire();
+						locked = true;
 						// 只在同一个加载世代里填; 记录本身是主线程分配并已经挂在表上的。
 						if (job.gen == generation && job.slot != null)
 						{
 							job.slot.bytes = bytes;
+							job.slot.err = readErr;
 							job.slot.failed = (bytes == null);
 							job.slot.done = true;
 						}
-						workerFinished();
+						// Clear tookJob before workerFinished(): its first statement is the
+						// non-throwing AtomicInt.sub and only the semaphore release after it can
+						// throw, so clearing first keeps the catch below from decrementing twice.
 						tookJob = false;
+						workerFinished();
+						locked = false;
 						mutex.release();
 					}
 					catch (e:Dynamic)
 					{
-						if (tookJob)
+						// The worker loop itself failed (not a read failure). TraceManager is
+						// still off limits here: if the exception belongs to a result slot, finish
+						// that job with the exception attached; if it was thrown before a job was
+						// obtained, queue it for drain() to log on the main thread.
+						//
+						// The whole catch is wrapped again so that nothing escapes the worker loop
+						// (an escaping exception kills the process).
+						//
+						// Lock handling follows `locked` only:
+						//   locked == true  -> the exception was thrown inside a locked region, so
+						//                      reuse that lock and do not acquire;
+						//   locked == false -> acquire here and give it back at the end.
+						// `locked` is cleared before every release, so the fallback below cannot
+						// release twice even if release itself throws.
+						//
+						// Order: publish the error / queue it first, call workerFinished() last.
+						// quiesce() treats workersBusy == 0 as "all workers stopped", so that must
+						// only become observable after the worker has stopped allocating.
+						try
 						{
-							mutex.acquire();
-							if (workersBusy.load() > 0) workerFinished();
+							if (!locked)
+							{
+								mutex.acquire();
+								locked = true;
+							}
+							var attributed:Bool = false;
+							if (job != null && job.slot != null && job.gen == generation && !job.slot.done)
+							{
+								job.slot.err = e;
+								job.slot.failed = true;
+								job.slot.panic = true;
+								job.slot.done = true;
+								attributed = true;
+							}
+							if (!attributed) pendingWorkerErrors.push(e);
+							if (tookJob && workersBusy.load() > 0) workerFinished();
+							locked = false;
 							mutex.release();
 						}
-						try TraceManager.warn('trace.asyncGfx.workerFail',
-							'AsyncGfxLoader worker error: {}', [Std.string(e)]) catch (_:Dynamic) {}
+						catch (_:Dynamic)
+						{
+							if (locked)
+							{
+								locked = false;
+								try mutex.release() catch (_:Dynamic) {}
+							}
+						}
 					}
 				}
 			});
@@ -598,25 +749,3 @@ class AsyncGfxLoader
 	#end
 }
 
-/**
- * T4 线程原语现代化的兼容层。
- *
- * 4.3.7 + 有原子操作的目标: Counter 就是 haxe.atomic.AtomicInt —— cpp 走 _hx_atomic_add/sub/
- * load/store, 计数器无锁。add/sub 返回的是**旧值**, 调用点按旧值语义使用(见 workerFinished)。
- * 4.2.5 (以及没有 target.atomics 的目标): haxe.atomic 在 4.2.5 的 std 里不存在, 退回普通 Int。
- * 这些计数器的自增当前只发生在主线程, workersBusy 在 4.2.5 分支仍全程在 mutex 里读写,
- * 因此 4.2.5 语义与改动前一致, 用于守住 "4.2.5 类型检查 exit 0" 基线。
- * 丢弃 4.2.5 支持时删除 #else 分支, 只留 typedef。
- */
-#if ((haxe_ver >= 4.3) && target.atomics)
-private typedef Counter = haxe.atomic.AtomicInt;
-#else
-private abstract Counter(Int)
-{
-	public inline function new(value:Int) this = value;
-	public inline function add(b:Int):Int { var old = this; this = old + b; return old; }
-	public inline function sub(b:Int):Int { var old = this; this = old - b; return old; }
-	public inline function load():Int return this;
-	public inline function store(value:Int):Int { var old = this; this = value; return old; }
-}
-#end

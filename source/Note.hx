@@ -25,8 +25,87 @@ typedef EventNote = {
     value2:String
 }
 
+/**
+ * noteSplashData 的宿主。
+ * noteSplashTexture / noteSplashDisabled 是本引擎 0.6.3 时代就有的扁平字段，引擎内部
+ * （出谱、溅射生成、编辑器试玩）直接读写它们；noteSplashData 只是代理这两个字段，
+ * 保证两边永远是同一个值，不会出现两份状态。
+ */
+interface NoteSplashOwner
+{
+    public var noteSplashTexture:String;
+    public var noteSplashDisabled:Bool;
+}
 
-@:structInit class PreloadedChartNote {
+/**
+ * Psych 0.7.3 / 1.0.4 的 `note.noteSplashData`（Lua 可直接读写）。
+ *
+ * 上游是 anon typedef；本引擎做成持有宿主引用的对象：texture / disabled 代理宿主既有
+ * 字段，其余 7 个 0.7.3/1.0.4 专属字段存在本对象里。
+ *
+ * 默认值一律跟随"本引擎的设置"，所以脚本一个字段都不写时渲染结果与改动前一致：
+ *  - a            ← ClientPrefs.data.splashAlpha
+ *  - antialiasing ← ClientPrefs.data.globalAntialiasing && !像素舞台
+ *  - useRGBShader ← ClientPrefs.noteRGBDisabled(SONG.disableNoteRGB) 取反
+ *                   （即设置里的 noteRGBMode: Chart 跟随谱面 / On 强制开 / Off 强制关）
+ *  - r/g/b        = -1（不覆盖，沿用轨道色板）
+ */
+class NoteSplashData
+{
+    public var owner(default, null):NoteSplashOwner;
+
+    public var a:Float = 1;
+    public var antialiasing:Bool = true;
+    public var useRGBShader:Bool = true;
+    public var useGlobalShader:Bool = false;
+    /** -1 = 不覆盖，沿用轨道色板。 */
+    public var r:Int = -1;
+    public var g:Int = -1;
+    public var b:Int = -1;
+
+    public function new(owner:NoteSplashOwner)
+    {
+        this.owner = owner;
+        reset();
+    }
+
+    /** 新 Note / 池化复用 / DTO 首次创建时，恢复"跟随引擎设置"的默认值。 */
+    public function reset():Void
+    {
+        a = ClientPrefs.data.splashAlpha;
+        antialiasing = ClientPrefs.data.globalAntialiasing && !PlayState.isPixelStage;
+        useRGBShader = !ClientPrefs.noteRGBDisabled(PlayState.SONG != null && PlayState.SONG.disableNoteRGB);
+        useGlobalShader = false;
+        r = -1;
+        g = -1;
+        b = -1;
+    }
+
+    /** 0.6.3 命名，代理宿主字段（两边同一个值）。 */
+    public var texture(get, set):String;
+    inline function get_texture():String return owner.noteSplashTexture;
+    inline function set_texture(v:String):String return owner.noteSplashTexture = v;
+
+    public var disabled(get, set):Bool;
+    inline function get_disabled():Bool return owner.noteSplashDisabled;
+    inline function set_disabled(v:Bool):Bool return owner.noteSplashDisabled = v;
+
+    /** DTO → Note：把脚本写在 unspawnNotes 上的值搬到真正出谱的 Note 上。 */
+    public function copyFrom(src:NoteSplashData):Void
+    {
+        if (src == null) return;
+        a = src.a;
+        antialiasing = src.antialiasing;
+        useRGBShader = src.useRGBShader;
+        useGlobalShader = src.useGlobalShader;
+        r = src.r;
+        g = src.g;
+        b = src.b;
+    }
+}
+
+
+@:structInit class PreloadedChartNote implements NoteSplashOwner {
     public var strumTime:Float = 0;
     public var sustainLength:Float = 0;
     public var parentST:Float = 0;
@@ -54,6 +133,22 @@ typedef EventNote = {
     /** 0.6.3 自定义 Note 兼容: 溅射皮肤/颜色在 PreloadedChartNote 上也可由 Lua 设置。
      * 注意：只有 Lua 显式写过才覆盖（null 表示未设置），避免把普通 Note 的轨道色溅射覆盖成全零。 */
     public var noteSplashTexture:String = null;
+
+    /**
+     * 0.7.3 / 1.0.4 Lua: setPropertyFromGroup('unspawnNotes', i, 'noteSplashData.a', 0.8)。
+     * 懒创建: 谱面可达千万级 Note，脚本没碰过时不留对象；引擎内部用 splashDataOrNull
+     * 判断"脚本写过没有"，不会因为读取而分配。
+     */
+    var _splashData:NoteSplashData = null;
+    public var noteSplashData(get, never):NoteSplashData;
+    inline function get_noteSplashData():NoteSplashData
+    {
+        if (_splashData == null) _splashData = new NoteSplashData(this);
+        return _splashData;
+    }
+    /** 引擎内部用: null = 脚本没写过。 */
+    public var splashDataOrNull(get, never):NoteSplashData;
+    inline function get_splashDataOrNull():NoteSplashData return _splashData;
 
     // ── Int ──
     public var noteData:Int = 0;
@@ -90,7 +185,7 @@ final defaultNoteTypes:Array<String> = [
 	'No Animation'
 ];
 
-class Note extends FlxSprite {
+class Note extends FlxSprite implements NoteSplashOwner {
     // ============ 多k 静态数据 (转发到 EKData) ============
     public static var minMania:Int = 0;
     public static var maxMania:Int = 17;
@@ -239,6 +334,15 @@ class Note extends FlxSprite {
     public var noteSplashHue:Float = 0;
     public var noteSplashSat:Float = 0;
     public var noteSplashBrt:Float = 0;
+
+    /** 0.7.3 / 1.0.4 Lua: note.noteSplashData.*（懒创建，见 NoteSplashData）。 */
+    var _splashData:NoteSplashData = null;
+    public var noteSplashData(get, never):NoteSplashData;
+    inline function get_noteSplashData():NoteSplashData
+    {
+        if (_splashData == null) _splashData = new NoteSplashData(this);
+        return _splashData;
+    }
 
     public var offsetX:Float = 0;
     public var offsetY:Float = 0;
@@ -449,6 +553,17 @@ class Note extends FlxSprite {
     }
 
     private function set_noteType(value:String):String {
+        // 0.6.3 / 0.7.3 / 1.0.4 都以谱面 splashSkin 作为溅射材质的起点（0.6.3 的
+        // Note.set_noteType 第一句就是 `noteSplashTexture = PlayState.SONG.splashSkin;`）。
+        // 漏掉它时 noteSplashTexture 会停在 null，spawnNoteSplash 里
+        // `skin = note.noteSplashTexture` 把谱面的 splashSkin 覆盖成 null，引擎于是永远
+        // 回退到默认溅射图集 —— 模组自定义溅射（例如 SonicTheFunkChinese 的
+        // images/noteSplashes-sonic.png）就表现为"识别不到"。
+        // 谱面没写 splashSkin 时保持 null，交给 NoteSplash 按兼容模式挑默认
+        // （0.6.3 = noteSplashes；0.7.3/1.0.4 = noteSplashes/noteSplashes[+皮肤后缀]）。
+        noteSplashTexture = (PlayState.SONG != null && PlayState.SONG.splashSkin != null && PlayState.SONG.splashSkin.length > 0)
+            ? PlayState.SONG.splashSkin : null;
+
         if(noteData > -1 && noteType != value) {
             switch(value) {
                 case 'Hurt Note':
@@ -797,6 +912,8 @@ class Note extends FlxSprite {
         customCharAnim = null;
         noteSplashTexture = null;
         noteSplashDisabled = false;
+        // noteSplashData 是懒创建的: 只有脚本碰过才有必要重置。
+        if (_splashData != null) _splashData.reset();
         noteSplashHue = 0;
         noteSplashSat = 0;
         noteSplashBrt = 0;
@@ -1171,6 +1288,10 @@ class Note extends FlxSprite {
         // 只有 Lua 显式设置过才覆盖；未设置保持 noteType setter 算出的轨道色溅射。
         if (chartNoteData.noteSplashTexture != null)
             noteSplashTexture = chartNoteData.noteSplashTexture;
+        // 0.7.3/1.0.4: unspawnNotes 上写的 noteSplashData 也要带到出谱的 Note 上
+        // (splashDataOrNull 不分配对象; null = 脚本没写过, 保留 Note 自己的默认值)
+        var dtoSplash:NoteSplashData = chartNoteData.splashDataOrNull;
+        if (dtoSplash != null) noteSplashData.copyFrom(dtoSplash);
         if (chartNoteData.noteSplashHue != null)
             noteSplashHue = chartNoteData.noteSplashHue;
         if (chartNoteData.noteSplashSat != null)
