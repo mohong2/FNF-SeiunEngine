@@ -574,7 +574,7 @@ class ChartingState extends MusicBeatState implements PsychUIEventHandler.PsychU
 
 		markUnsaved();
 		updateGrid();
-		TraceManager.info('trace.editor.dumbChart', '一键写大粪完成(匹配人声), 新增 {} 个 Note', [totalAdd]);
+		TraceManager.info('trace.editor.dumbChartDone', '一键写大粪完成(匹配人声), 新增 {} 个 Note', [totalAdd]);
 	}
 
 	/** 多k: 分析人声轨能量, 每 25ms 一个能量桶。 */
@@ -705,7 +705,7 @@ class ChartingState extends MusicBeatState implements PsychUIEventHandler.PsychU
 
 		markUnsaved();
 		updateGrid();
-		TraceManager.info('trace.editor.dumbChart', '密度增强完成(阈值 {}), 新增 {} 个 Note', [threshold, totalAdd]);
+		TraceManager.info('trace.editor.dumbChartDensity', '密度增强完成(阈值 {}), 新增 {} 个 Note', [threshold, totalAdd]);
 	}
 	var CAM_OFFSET:Int = 360;
 

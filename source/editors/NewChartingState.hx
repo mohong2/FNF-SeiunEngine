@@ -7654,7 +7654,7 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 			catch(e:Dynamic)
 			{
 				showOutput('newchartEditor_error_save', true);
-				TraceManager.error('trace.editor.fileSaveError', 'Save failed: {} - {}', [savePath, Std.string(e)]);
+				TraceManager.error('trace.editor.fileSavePathError', 'Save failed: {} - {}', [savePath, Std.string(e)]);
 			}
 		}
 		if(FileSystem.exists(savePath))

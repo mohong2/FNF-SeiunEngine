@@ -284,7 +284,7 @@ class AsyncGfxLoader
 			{
 				var errText:String = res.err != null ? Std.string(res.err) : 'null';
 				if (res.panic)
-					TraceManager.warn('trace.asyncGfx.workerFail',
+					TraceManager.warn('trace.asyncGfx.workerPanic',
 						'AsyncGfxLoader worker error for {}: {}', [res.filePath, errText]);
 				else
 					TraceManager.warn('trace.asyncGfx.readFail',

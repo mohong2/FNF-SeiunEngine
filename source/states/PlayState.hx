@@ -3571,7 +3571,7 @@ class PlayState extends MusicBeatState
 
 			if (!FileSystem.exists('./crash/')) FileSystem.createDirectory('./crash/');
 			File.saveContent('./crash/hitprobe.txt', buf.toString());
-			TraceManager.info('trace.playState.hitProbe', 'Hit probe written to ./crash/hitprobe.txt (frames=' + n + ')');
+			TraceManager.info('trace.playState.hitProbe', 'Hit probe written to ./crash/hitprobe.txt (frames={})', [n]);
 		}
 		catch (e:Dynamic) {}
 		#end

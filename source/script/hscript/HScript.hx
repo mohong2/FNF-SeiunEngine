@@ -344,7 +344,7 @@ class HScript
 		interp.allowStaticVariables = true;
 		interp.allowPublicVariables = true;
 		interp.errorHandler = function(e) {
-			TraceManager.error('trace.hscript.interpError', 'HScript error in ${scriptName}: $e');
+			TraceManager.error('trace.hscript.interpError', 'HScript error in {}: {}', [scriptName, e]);
 		};
 		interp.importFailedCallback = importFailedCallback;
 		parser = new Parser();
@@ -1437,8 +1437,7 @@ class HScript
 		if (!silenced) {
 			// Always log via TraceManager so we can see the error in the console
 			// even when ClientPrefs / Language are not yet initialized.
-			var fullMessage:String = scriptDir + '/' + scriptName + '\n' + message;
-			TraceManager.error('trace.hscript.error', fullMessage);
+			TraceManager.error('trace.hscript.error', 'HScript error in {}: {}', [scriptDir + '/' + scriptName, message]);
 		}
 
 		if (ClientPrefs.data == null) return;
@@ -1518,7 +1517,7 @@ class PlayStateInterp extends hscript.Interp
 				_instanceFields = Type.getInstanceFields(PlayState);
 		} catch (e:Dynamic) {
 			_instanceFields = [];
-			mohong.TraceManager.error('trace.hscript.interpInit', 'PlayStateInterp init: $e');
+			mohong.TraceManager.error('trace.hscript.interpInit', 'PlayStateInterp init: {}', [e]);
 		}
 	}
 

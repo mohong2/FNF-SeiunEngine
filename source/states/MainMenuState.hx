@@ -819,7 +819,7 @@ class MainMenuState extends SeiunMenuState
 					selectedModFolder = content;
 				}
 			} catch (e:Dynamic) {
-				TraceManager.error('trace.error', 'Failed to load activeMod.txt: {}', [e]);
+				TraceManager.error('trace.mainMenu.activeModLoadError', 'Failed to load activeMod.txt: {}', [e]);
 			}
 		}
 		#end
@@ -831,7 +831,7 @@ class MainMenuState extends SeiunMenuState
 		try {
 			File.saveContent('activeMod.txt', selectedModFolder);
 		} catch (e:Dynamic) {
-			TraceManager.error('trace.error', 'Failed to save activeMod.txt: {}', [e]);
+			TraceManager.error('trace.mainMenu.activeModSaveError', 'Failed to save activeMod.txt: {}', [e]);
 		}
 		#end
 	}

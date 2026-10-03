@@ -675,7 +675,7 @@ class ChartStream
 	static function reportCountCrossing(label:String, previous:Int64, current:Int64):Void
 	{
 		if (previous <= INT32_LIMIT && current > INT32_LIMIT)
-			TraceManager.debug('trace.chart.countOverflow', '{} passed the 32-bit counter limit ({} -> {})',
+			TraceManager.debug('trace.chart.countCrossing', '{} passed the 32-bit counter limit ({} -> {})',
 				[label, Int64.toStr(previous), Int64.toStr(current)]);
 	}
 }

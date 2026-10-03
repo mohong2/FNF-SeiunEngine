@@ -911,7 +911,7 @@ class Paths
 		}
 		catch (e:Dynamic)
 		{
-			TraceManager.error('trace.paths.atlasError', 'Failed to build sparrow atlas for {}: {}', [key, e]);
+			TraceManager.error('trace.paths.sparrowBuildFail', 'Failed to build sparrow atlas for {}: {}', [key, e]);
 			return null;
 		}
 	}
@@ -978,7 +978,7 @@ class Paths
 			}
 			catch (e:Dynamic)
 			{
-				TraceManager.error('trace.paths.atlasError', 'Failed to build JSON atlas for {}: {}', [key, e]);
+				TraceManager.error('trace.paths.jsonBuildFail', 'Failed to build JSON atlas for {}: {}', [key, e]);
 				return null;
 			}
 		}
@@ -999,7 +999,7 @@ class Paths
 		if (imageLoaded == null) return null;
 		if (json == null)
 		{
-			TraceManager.error('trace.paths.atlasError', 'No JSON atlas found for {}', [key]);
+			TraceManager.error('trace.paths.jsonNotFound', 'No JSON atlas found for {}', [key]);
 			return null;
 		}
 		try
@@ -1012,7 +1012,7 @@ class Paths
 		}
 		catch (e:Dynamic)
 		{
-			TraceManager.error('trace.paths.atlasError', 'Failed to build aseprite atlas for {}: {}', [key, e]);
+			TraceManager.error('trace.paths.asepriteBuildFail', 'Failed to build aseprite atlas for {}: {}', [key, e]);
 			return null;
 		}
 	}
