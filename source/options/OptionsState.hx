@@ -1500,6 +1500,12 @@ class OptionsState extends MusicBeatState
 	{
 		if (FlxG.game != null)
 			FlxG.game.separateUpdateDraw = ClientPrefs.data.separateUpdateDraw;
+
+		// At a draw rate above the update rate most ticks run no logic step at all, and rebuilding
+		// the draw list for an unchanged world is wasted work. Kept in lockstep with the mode
+		// rather than the preference, in case anything changes the mode directly.
+		// See FlxG.separateDrawSkipIdleFrames and FlxGame.invalidateDrawCache().
+		FlxG.separateDrawSkipIdleFrames = (FlxG.game != null) ? FlxG.game.separateUpdateDraw : false;
 	}
 
 	function onChangeAntiAliasing()

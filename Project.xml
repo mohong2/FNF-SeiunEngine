@@ -37,11 +37,17 @@
 	<window if="desktop" orientation="landscape" fullscreen="false" resizable="true" vsync="false" allow-high-dpi="true"/>
 
 	<!--Mobile-specific-->
-	<!--allow-high-dpi="false": render at 1280x720 and let the compositor scale, instead of
-	    rasterizing at the device's native resolution (2-4x fill-rate savings on phones).
-	    depth/stencil="false": flixel's 2D renderer never uses depth/stencil buffers, dropping
-	    the extra attachments saves VRAM and bandwidth per frame. Remove them only if a mod
-	    relies on DisplayObject masks (openfl implements those with stencil).-->
+	<!--allow-high-dpi does not lower the render resolution on Android: SDL only consults
+	    SDL_WINDOW_HIGH_PIXEL_DENSITY for the emscripten/cocoa/wayland/uikit backends, while
+	    src/video/android/ never reads it and forces the native surface size, so the backbuffer
+	    is always the device resolution. Lowering it needs ANativeWindow_setBuffersGeometry
+	    (which decouples SDL's reported size from the real EGL surface) or an intermediate
+	    render target, neither of which belongs in a window tag.
+	    depth/stencil="false": flixel's 2D renderer never uses depth/stencil buffers; dropping
+	    the extra attachments saves VRAM and bandwidth. Remove them only if a mod relies on
+	    DisplayObject masks (openfl implements those with stencil).
+	    vsync is omitted on purpose: lime defaults it to false and the engine then paces itself
+	    with a software clock. Enabling it is an experiment, not a default.-->
 	<window if="mobile" orientation="landscape" fullscreen="true" resizable="false" allow-shaders="true" require-shaders="true" allow-high-dpi="true" depth="false" stencil="false"/>
 
 	<!--Switch-specific-->

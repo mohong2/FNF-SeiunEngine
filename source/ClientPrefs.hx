@@ -974,9 +974,15 @@ class ClientPrefs {
 			}
 		}
 
-		// Apply separate update/draw mode (property setter handles timer + FlxG sync)
+		// Apply separate update/draw mode (the property setter keeps FlxGame in sync).
+		// Idle render ticks in that mode reuse the recorded draw commands; mirror the mode that
+		// is actually in effect rather than the preference, so a direct change of
+		// FlxGame.separateUpdateDraw cannot leave the flag behind.
 		if (FlxG.game != null)
+		{
 			FlxG.game.separateUpdateDraw = data.separateUpdateDraw;
+			FlxG.separateDrawSkipIdleFrames = FlxG.game.separateUpdateDraw;
+		}
 
 		// Ensure draw wrapper is null (threaded rendering removed)
 		if (FlxG.game != null)

@@ -340,9 +340,16 @@ class Main extends Sprite
 		// Heartbeat: last known state survives even a process killed below the Haxe layer.
 		SystemDiag.setupHeartbeat();
 
-		// Sync separateUpdateDraw (property setter handles timer + FlxG sync)
+		// Sync separateUpdateDraw (the property setter keeps FlxGame in sync).
+		// While the mode is on, an idle render tick - one that ran no logic step - re-presents the
+		// draw commands already recorded on the camera canvases instead of rebuilding them.
+		// The flag is mirrored from the mode that is actually in effect, not from the preference.
+		// See FlxG.separateDrawSkipIdleFrames and FlxGame.invalidateDrawCache().
 		if (FlxG.game != null)
+		{
 			FlxG.game.separateUpdateDraw = ClientPrefs.data.separateUpdateDraw;
+			FlxG.separateDrawSkipIdleFrames = FlxG.game.separateUpdateDraw;
+		}
 
 		// Ensure draw wrapper is null (threaded rendering removed)
 		if (FlxG.game != null)
