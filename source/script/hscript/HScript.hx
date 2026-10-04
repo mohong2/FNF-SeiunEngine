@@ -1208,13 +1208,17 @@ class HScript
 				// 只有每帧/每步回调的成功才重置连续错误计数（见 ScriptErrorGuard）。
 				if (ScriptErrorGuard.isLoopCallback(func)) errorLoopCount = 0;
 				execDepth++;
+				// 脚本执行期间, 复用参数槽会串台 (脚本可能再次触发引擎回调), 见 backend.Scripts。
+				backend.Scripts.enterExec();
 				try {
 					var ret:Dynamic = Reflect.callMethod(null, f, args);
 					execDepth--;
+					backend.Scripts.exitExec();
 					bumpVarEpoch(); // the body may have written any global
 					return ret;
 				} catch (e:Dynamic) {
 					execDepth--;
+					backend.Scripts.exitExec();
 					bumpVarEpoch(); // a body that threw may still have written globals
 					throw e;
 				}

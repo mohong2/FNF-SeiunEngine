@@ -307,6 +307,11 @@ class Main extends Sprite
 		VideoPreloader.warmup();
 		#end
 
+		// REC badge used while a video render is running (desktop only).
+		#if desktop
+		backend.RenderIndicator.install();
+		#end
+
 		// 每次状态切换时，旧 state 已 destroy、FlxG.bitmap.clearCache() 已执行，
 		// 这里统一清掉上一状态残留的 Paths 图片缓存，避免反复进出关卡内存只增不减。
 		FlxG.signals.preStateCreate.add(function(_) {

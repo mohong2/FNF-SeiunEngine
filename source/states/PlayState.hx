@@ -1,4 +1,4 @@
-package states;
+﻿package states;
 
 import substates.PauseSubState;
 import substates.OldPauseSubState;
@@ -6,6 +6,7 @@ import substates.GameOverSubstate;
 import substates.PlayStateResultsSubstate;
 import script.hscript.HScript;
 import backend.CompatEngine;
+import backend.Scripts; // 这是啥子玩意儿
 import backend.GfxPolicy;
 import backend.GcState;
 import haxe.display.Display.GotoDefinitionResult;
@@ -158,6 +159,56 @@ class PlayState extends MusicBeatState
 	var msTween:FlxTween;
 	var atkText:FlxText;
 
+	/**
+	 * 'singXXX' + animSuffix 的名字缓存, 按角色动画位 (keyCount + lane) 索引。
+	 * 对手与 botplay 的 sing 动画本来就被"每帧每轨一次"的门控住, 但每次命中仍会现拼
+	 * 'sing' + anim + suffix 三个字符串; 空白谱面每分钟几万次, 就是几万条短命字符串。
+	 * 只在 keyCount / 共享后缀变化时重建 (见 refreshLaneSingAnimCache)。
+	 */
+	var _laneSingAnim:Array<String> = [];
+	var _laneSingAnimKey:String = null;
+	var _laneSingAnimMania:Int = -1;
+	/** 本段谱面共享的 animSuffix ('-alt' 或 ''), 由 sectionHit 维护。 */
+	var _sharedAnimSuffix:String = '';
+	/**
+	 * Note 优化页的 "复用脚本回调参数" 开关 (ClientPrefs.data.scriptArgReuse), 在 create() 里读一次。
+	 * 关闭时 _laneSingAnim 缓存与 backend.Scripts 的槽都退回原来的逐次分配。
+	 */
+	var scriptAllocOpt:Bool = false;
+	/** 'tutorial' 判断用的谱面路径, 第一次需要时缓存 (见 opponentNoteHit)。 */
+	var _songPathCache:String = null;
+
+	/**
+	 * 音符回调第 2 个参数的取值方式。三个原调用点并不一致, 所以不能用一个 bool 表达:
+	 *   ROUND_ABS = Math.round(Math.abs(noteData)) —— goodNoteHit / goodNoteHitPre (0.7.3+)
+	 *   ABS       = Math.abs(noteData)             —— opponentNoteHit (0.7.3+ 与 0.6.3 非 reverse)
+	 *   RAW       = noteData (可为负)              —— 0.6.3 goodNoteHit / opponentNoteHit(reverse)
+	 */
+	static inline var NOTE_ARG_ROUND_ABS:Int = 2;
+	static inline var NOTE_ARG_ABS:Int = 1;
+	static inline var NOTE_ARG_RAW:Int = 0;
+
+	/** 按调用点原本的取法算出音符回调的第 2 个参数。 */
+	inline function noteHitArgData(note:Note, mode:Int):Dynamic
+	{
+		if (mode == NOTE_ARG_ROUND_ABS) return Math.round(Math.abs(note.noteData));
+		if (mode == NOTE_ARG_ABS) return Math.abs(note.noteData);
+		return note.noteData;
+	}
+
+	/**
+	 * 音符回调 4 参数槽的写入器。每个调用点调用一次, 保证脚本读到的就是本次参数
+	 * (形状相同的槽可能被别的引擎回调写过)。
+	 * @param dataMode 第 2 个参数的取法, 见 NOTE_ARG_*
+	 */
+	inline function fillNoteHitArgs(args:Array<Dynamic>, note:Note, idx:Int, dataMode:Int):Void
+	{
+		args[0] = idx;
+		args[1] = noteHitArgData(note, dataMode);
+		args[2] = note.noteType;
+		args[3] = note.isSustainNote;
+	}
+
 
 	#if (haxe >= "4.0.0")
 	public var boyfriendMap:Map<String, Boyfriend> = new Map();
@@ -283,46 +334,6 @@ class PlayState extends MusicBeatState
 	public static inline var MAX_SPLASH_ALIVE:Int = 256;
 	var _splashBudgetLeft:Int = SPLASH_FRAME_BUDGET;
 
-	// ---- F8 hit-cost probe: read-only diagnostics, never feeds back into gameplay ----
-	/**
-	 * Ring of the last PROBE_FRAMES frames, PROBE_STRIDE floats each. F8 dumps it to
-	 * ./crash/hitprobe.txt, so a 100k-NPS run can be compared before/after a change.
-	 */
-	static inline var PROBE_FRAMES:Int = 600;
-	static inline var PROBE_STRIDE:Int = 13;
-	static inline var PROBE_TOTAL:Int = 0;    // whole PlayState.update()
-	static inline var PROBE_BULK:Int = 1;     // bulkHitDueMaterialized()
-	static inline var PROBE_NOTES:Int = 2;    // per-object note update loop
-	static inline var PROBE_SORT:Int = 3;     // note sort
-	static inline var PROBE_PRESENT:Int = 4;  // flushHitPresentation()
-	static inline var PROBE_POPUP:Int = 5;    // ms inside RatingPopup.show()
-	static inline var PROBE_SHOWS:Int = 6;    // popup show() calls this frame
-	static inline var PROBE_MEMBERS:Int = 7;  // ratingPopup.container.length (stale-length canary)
-	static inline var PROBE_COMBO:Int = 8;
-	/** Per-frame script dispatch cost: the four fixed update() dispatch sites (onUpdate, the two
-	 * engine-variable sweeps, onUpdatePost). Per-hit callbacks are charged to notes/sort instead. */
-	static inline var PROBE_SCRIPT:Int = 9;
-	/** callOnLuas/callOnHScript/setOnLuas/setOnHScript entries this frame (one entry = one array sweep). */
-	static inline var PROBE_SWEEPS:Int = 10;
-	/** luaArray.length + hscriptArray.length, sampled once per frame. */
-	static inline var PROBE_SCOUNT:Int = 11;
-	/** require() filesystem misses + import() calls this frame (counted inside FunkinLua). */
-	static inline var PROBE_REQIMP:Int = 12;
-
-	var _probeBuf:Array<Float> = null;
-	var _probeIdx:Int = 0;
-	var _probeFrames:Int = 0;
-	var _probeFrameStart:Float = 0;
-	var _probeBulkMs:Float = 0;
-	var _probeNotesMs:Float = 0;
-	var _probeSortMs:Float = 0;
-	var _probePresentMs:Float = 0;
-	var _probeTotalMs:Float = 0;
-	var _probePopupMs:Float = 0;
-	var _probeShows:Int = 0;
-	var _probeScriptMs:Float = 0;
-	var _probeSweeps:Int = 0;
-	var _probeReqImpPrev:Int = 0;
 	/** Once-per-lane-per-frame gates for botplay character sing animations / strum static resets (reset with strumsHit). */
 	var _botCharAnim:Array<Bool> = [false, false, false, false, false, false, false, false];
 	var _botStrumStatic:Array<Bool> = [false, false, false, false, false, false, false, false];
@@ -444,6 +455,17 @@ class PlayState extends MusicBeatState
 	};
 
 	public var limitNC:Int = 0;
+	/**
+	 * Reusable row objects for the two whole-chart walks (drain + spawn).
+	 *
+	 * Both loops used to read unspawnNotes[i], which materialises a fresh 358-byte DTO per row.
+	 * On a folded dense chart they walk thousands of rows per frame, so that was a steady stream
+	 * of short-lived objects for the GC to stop the world over. They now read row fields straight
+	 * out of the columns and only copy a row into these scratch objects when they actually need a
+	 * DTO; allocated once per song, never per row.
+	 */
+	private var _drainScratch:PreloadedChartNote = null;
+	private var _spawnScratch:PreloadedChartNote = null;
 	/** True if the loaded chart contains holds/sustains. Fast bulk-skip is disabled for such charts to avoid orphan sustain tails. */
 	private var _chartHasHolds:Bool = false;
 	public var noteLimit:Int = 1000;
@@ -1001,6 +1023,12 @@ class PlayState extends MusicBeatState
 		// String for when the game is paused
 		detailsPausedText = "Paused - " + detailsText;
 		#end
+
+		//天天复用，天天复用 
+		scriptAllocOpt = ClientPrefs.data.scriptArgReuse;
+		Scripts.reuseEnabled = scriptAllocOpt;
+		_laneSingAnimKey = null;
+		refreshLaneSingAnimCache();
 
 		GameOverSubstate.resetVariables();
 		var songName:String = Paths.formatToSongPath(SONG.song);
@@ -2033,7 +2061,7 @@ class PlayState extends MusicBeatState
 		// 0.7.3/1.0.4 compatibility: Lua's onCreatePost runs before super.create(),
 		// while HScript's onCreatePost is called inside super.create(), so it is not duplicated here.
 		backend.ScriptLog.write('state', 'before onCreatePost  luaArray=' + (luaArray == null ? 'null' : Std.string(luaArray.length)));
-		callOnLuas('onCreatePost', []);
+		callOnLuas('onCreatePost', Scripts.EMPTY);
 		backend.ScriptLog.write('state', 'after  onCreatePost');
 		super.create();
 		backend.ScriptLog.write('state', 'after  super.create()');
@@ -2480,6 +2508,69 @@ class PlayState extends MusicBeatState
 		else
 			startCountdown();
 	}
+
+	// ─── FFmpeg video render (auto-start option, no hotkey) ─────────────────
+
+	#if desktop
+	var _renderCapture:Void->Void = null;
+	#end
+
+	/** Starts capturing the song into a video file. See backend.FFMpeg. */
+	public function startVideoRender():Void
+	{
+		#if desktop
+		if (backend.FFMpeg.isRendering())
+			return;
+
+		backend.FFMpeg.init();
+		final song:String = (SONG != null && SONG.song != null) ? SONG.song : 'render';
+
+		if (!backend.FFMpeg.instance.start(song))
+			return;
+
+		// Capture once per drawn frame; captureFrame() itself decides how many
+		// video frames that covers, from Conductor.songPosition. Deriving it from
+		// the song clock (instead of counting logic steps) is what makes pausing
+		// correct: while paused, songPosition is frozen and nothing is written.
+		if (_renderCapture == null)
+		{
+			_renderCapture = function()
+			{
+				if (backend.FFMpeg.isRendering())
+				{
+					backend.FFMpeg.instance.captureFrame();
+				}
+			};
+		}
+		FlxG.signals.postDraw.add(_renderCapture);
+
+		backend.RenderIndicator.setVisible(true);
+		backend.RenderIndicator.setText(ClientPrefs.data.previewRender ? 'PREVIEW' : 'REC');
+
+		// This engine has no sfxVolume pref; menu call sites use a literal 0.7.
+		FlxG.sound.play(Paths.sound('confirmMenu'), 0.7);
+		#end
+	}
+
+	/** Stops the render, flushes and closes ffmpeg. */
+	public function stopVideoRender():Void
+	{
+		#if desktop
+		if (!backend.FFMpeg.isRendering())
+			return;
+
+		if (_renderCapture != null)
+		{
+			FlxG.signals.postDraw.remove(_renderCapture);
+			_renderCapture = null;
+		}
+
+		backend.FFMpeg.instance.stop();
+		backend.RenderIndicator.setVisible(false);
+		FlxG.sound.play(Paths.sound('cancelMenu'), 0.7);
+		#end
+	}
+	//这是啥子视频渲染
 
 	var dialogueCount:Int = 0;
 	public var psychDialogue:DialogueBoxPsych;
@@ -2929,7 +3020,7 @@ class PlayState extends MusicBeatState
 	public function startCountdown():Void
 	{
 		if(startedCountdown) {
-			callOnScripts('onStartCountdown', []);
+			callOnScripts('onStartCountdown', Scripts.EMPTY); //天天烦，复不复用
 			return;
 		}
 
@@ -2952,7 +3043,7 @@ class PlayState extends MusicBeatState
 			Conductor.changeBPM((SONG != null && SONG.bpm > 0 && Math.isFinite(SONG.bpm)) ? SONG.bpm : 100);
 
 		inCutscene = false;
-		var ret:Dynamic = callOnScripts('onStartCountdown', [], false);
+		var ret:Dynamic = callOnScripts('onStartCountdown', Scripts.EMPTY, false);
 		if(ret != FunkinLua.Function_Stop) {
 			if (skipCountdown || startOnTime > 0) skipArrowStartTween = true;
 			if (androidControls != null) androidControls.visible = true;
@@ -3021,7 +3112,7 @@ class PlayState extends MusicBeatState
 			startedCountdown = true;
 			Conductor.songPosition = -Conductor.crochet * 5;
 			setOnScripts('startedCountdown', true);
-			callOnScripts('onCountdownStarted', []);
+			callOnScripts('onCountdownStarted', Scripts.EMPTY);
 
 			var swagCounter:Int = 0;
 
@@ -3153,7 +3244,7 @@ class PlayState extends MusicBeatState
 						}
 					}
 				});
-				callOnScripts('onCountdownTick', [swagCounter]);
+				callOnScripts('onCountdownTick', Scripts.fill1(Scripts.get(1), swagCounter));
 
 				swagCounter += 1;
 				// generateSong('fresh');
@@ -3177,11 +3268,13 @@ class PlayState extends MusicBeatState
 	public function clearNotesBefore(time:Float)
 	{
 		var i:Int = unspawnNotes.length - 1;
+		// 列读: 这里原来每行 unspawnNotes[i] 现造一个 DTO, 而全曲扫描一次就是上千万个对象。
+		// 只需要 strumTime 和"标记为已消费", 两者都在列上, 不必物化任何行。
+		var threshold:Float = time + 350;
 		while (i >= 0) {
-			var daNote:PreloadedChartNote = unspawnNotes[i];
-			if(daNote != null && daNote.strumTime - 350 < time)
+			if(unspawnNotes.strumTimeRow(i) < threshold)
 			{
-				// The DTO above is a copy, so stored state has to go through the store.
+				// 行是列存储, 写入必须走 store (读出来的 DTO 写不回)。
 				unspawnNotes.setWasHit(i, true);
 			}
 			--i;
@@ -3224,14 +3317,17 @@ class PlayState extends MusicBeatState
 		if (hasActiveScripts())
 		{
 			// With scripts: keep the per-hit callback semantics (preUpdateScore can intercept, onUpdateScore fires every time)
-			var preResult:Dynamic = callOnScripts('preUpdateScore', [miss], true);
+			// 参数复用: 见 backend.Scripts (每次命中都会走这里)。
+			// 参数槽可能在 preUpdateScore 里被脚本触发的回调覆盖, 所以第二次分发前重写一遍,
+			// 与原来"每次现造一个数组"的语义一致。
+			var preResult:Dynamic = callOnScripts('preUpdateScore', Scripts.fill1(Scripts.get(1), miss), true);
 			if (preResult == LuaUtils.Function_Stop || preResult == FunkinLua.Function_Stop)
 				return;
 
 			applyScoreText();
 			if(ClientPrefs.data.scoreZoom && !miss && !cpuControlled)
 				bounceScoreTxt();
-			callOnScripts('onUpdateScore', [miss]);
+			callOnScripts('onUpdateScore', Scripts.fill1(Scripts.get(1), miss));
 			return;
 		}
 
@@ -3475,140 +3571,12 @@ class PlayState extends MusicBeatState
 	inline function showRatingPopup(target:RatingPopup, ratingKey:String, comboValue:Int, baseX:Float,
 		showRatingSprite:Bool, showComboNumSprite:Bool):Void
 	{
-		var t0:Float = haxe.Timer.stamp();
 		target.show(ratingKey, comboValue, playbackRate, baseX, ClientPrefs.data.hideHud,
 			showRatingSprite, showCombo, showComboNumSprite, ClientPrefs.data.comboOffset,
 			Conductor.crochet, ClientPrefs.data.comboStacking);
-		_probePopupMs += haxe.Timer.stamp() - t0;
-		_probeShows++;
 	}
+	//何意味
 
-	/** Store this frame's slice in the F8 probe ring and clear the per-frame accumulators. */
-	function commitHitProbeFrame():Void
-	{
-		if (_probeBuf == null)
-			_probeBuf = [for (i in 0...(PROBE_FRAMES * PROBE_STRIDE)) 0.0];
-		var base:Int = _probeIdx * PROBE_STRIDE;
-		_probeBuf[base + PROBE_TOTAL] = _probeTotalMs;
-		_probeBuf[base + PROBE_BULK] = _probeBulkMs;
-		_probeBuf[base + PROBE_NOTES] = _probeNotesMs;
-		_probeBuf[base + PROBE_SORT] = _probeSortMs;
-		_probeBuf[base + PROBE_PRESENT] = _probePresentMs;
-		_probeBuf[base + PROBE_POPUP] = _probePopupMs;
-		_probeBuf[base + PROBE_SHOWS] = _probeShows;
-		_probeBuf[base + PROBE_MEMBERS] = (ratingPopup != null && ratingPopup.container != null) ? ratingPopup.container.length : -1;
-		_probeBuf[base + PROBE_COMBO] = combo;
-		_probeBuf[base + PROBE_SCRIPT] = _probeScriptMs;
-		_probeBuf[base + PROBE_SWEEPS] = _probeSweeps;
-		_probeBuf[base + PROBE_SCOUNT] = probeScriptCount();
-		var reqImp:Int = FunkinLua.probeRequireResolves + FunkinLua.probeImportResolves;
-		_probeBuf[base + PROBE_REQIMP] = reqImp - _probeReqImpPrev;
-		_probeReqImpPrev = reqImp;
-		_probeIdx = (_probeIdx + 1) % PROBE_FRAMES;
-		if (_probeFrames < PROBE_FRAMES) _probeFrames++;
-		_probePopupMs = 0;
-		_probeShows = 0;
-		_probeScriptMs = 0;
-		_probeSweeps = 0;
-	}
-
-	/**
-	 * F8: write the last PROBE_FRAMES frames of hit-path timings to ./crash/hitprobe.txt.
-	 * The per-frame table is oldest-first, so whether the frame cost keeps growing with the hit
-	 * count is directly visible; the header carries the settings the run used.
-	 */
-	function dumpHitProbe():Void
-	{
-		#if sys
-		try
-		{
-			if (_probeFrames <= 0)
-			{
-				TraceManager.info('trace.playState.hitProbeEmpty', 'Hit probe: no frames recorded yet');
-				return;
-			}
-			var n:Int = (_probeFrames < PROBE_FRAMES) ? _probeFrames : PROBE_FRAMES;
-			var start:Int = (_probeFrames < PROBE_FRAMES) ? 0 : _probeIdx;
-			var fps:Int = 0;
-			try { if (Main.fpsVar != null) fps = Main.fpsVar.currentFPS; } catch (e:Dynamic) {}
-
-			var buf:StringBuf = new StringBuf();
-			buf.add('# SeiunEngine hit probe\n');
-			buf.add('# date=' + Date.now().toString() + '\n');
-			buf.add('# song=' + ((SONG != null) ? SONG.song : '?') + ' fps=' + fps + '\n');
-			buf.add('# perfMode=' + ClientPrefs.data.perfMode + ' turbo=' + turboModeActive
-				+ ' limitNotes=' + ClientPrefs.data.limitNotes + ' fastSort=' + ClientPrefs.data.fastSort
-				+ ' bulkSkip=' + ClientPrefs.data.bulkSkip + ' comboStacking=' + ClientPrefs.data.comboStacking + '\n');
-			buf.add('# frames=' + n + ' combo=' + combo + ' luaScripts=' + probeLuaScriptCount()
-				+ ' hscripts=' + probeHScriptCount() + '\n');
-			buf.add('# columns: frame total bulk notes sort present popup shows members combo script sweeps scount reqimp\n');
-
-			var names:Array<String> = ['total', 'bulk', 'notes', 'sort', 'present', 'popup', 'shows', 'members', 'combo', 'script', 'sweeps', 'scount', 'reqimp'];
-			var sums:Array<Float> = [for (i in 0...PROBE_STRIDE) 0.0];
-			var maxs:Array<Float> = [for (i in 0...PROBE_STRIDE) 0.0];
-			for (f in 0...n)
-			{
-				var b:Int = ((start + f) % PROBE_FRAMES) * PROBE_STRIDE;
-				for (c in 0...PROBE_STRIDE)
-				{
-					var v:Float = _probeBuf[b + c];
-					sums[c] += v;
-					if (v > maxs[c]) maxs[c] = v;
-				}
-			}
-			for (c in 0...PROBE_STRIDE)
-				buf.add('# ' + names[c] + ' avg=' + _probeFmt(sums[c] / n) + ' max=' + _probeFmt(maxs[c]) + '\n');
-
-			buf.add('frame\ttotal\tbulk\tnotes\tsort\tpresent\tpopup\tshows\tmembers\tcombo\tscript\tsweeps\tscount\treqimp\n');
-			for (f in 0...n)
-			{
-				var b:Int = ((start + f) % PROBE_FRAMES) * PROBE_STRIDE;
-				buf.add(Std.string(f));
-				for (c in 0...PROBE_STRIDE)
-					buf.add('\t' + _probeFmt(_probeBuf[b + c]));
-				buf.add('\n');
-			}
-
-			if (!FileSystem.exists('./crash/')) FileSystem.createDirectory('./crash/');
-			File.saveContent('./crash/hitprobe.txt', buf.toString());
-			TraceManager.info('trace.playState.hitProbe', 'Hit probe written to ./crash/hitprobe.txt (frames={})', [n]);
-		}
-		catch (e:Dynamic) {}
-		#end
-	}
-
-	/** Fixed 3-decimal ms text for the probe dump (Haxe 4.2 has no StringTools.format). */
-	static inline function _probeFmt(v:Float):String
-	{
-		return Std.string(Math.round(v * 1000) / 1000);
-	}
-
-	/** Start/stop one fixed per-frame script dispatch slice (4 slices per frame; Timer.stamp is ~100ns). */
-	inline function _probeScriptT0():Float {
-		return haxe.Timer.stamp();
-	}
-	inline function _probeScriptT1(t0:Float):Void {
-		_probeScriptMs += haxe.Timer.stamp() - t0;
-	}
-
-	/** Script counts for the probe header / scount column (0 when the runtime is compiled out). */
-	function probeLuaScriptCount():Int {
-		#if LUA_ALLOWED
-		return luaArray != null ? luaArray.length : 0;
-		#else
-		return 0;
-		#end
-	}
-	function probeHScriptCount():Int {
-		#if HSCRIPT_ALLOWED
-		return hscriptArray != null ? hscriptArray.length : 0;
-		#else
-		return 0;
-		#end
-	}
-	inline function probeScriptCount():Int {
-		return probeLuaScriptCount() + probeHScriptCount();
-	}
 
 	function flushHitPresentation():Void
 	{
@@ -3684,11 +3652,11 @@ class PlayState extends MusicBeatState
 
 	function startNextDialogue() {
 		dialogueCount++;
-		callOnScripts('onNextDialogue', [dialogueCount]);
+		callOnScripts('onNextDialogue', Scripts.fill1(Scripts.get(1), dialogueCount));
 	}
 
 	function skipDialogue() {
-		callOnScripts('onSkipDialogue', [dialogueCount]);
+		callOnScripts('onSkipDialogue', Scripts.fill1(Scripts.get(1), dialogueCount));
 	}
 
 	var previousFrameTime:Int = 0;
@@ -3845,6 +3813,15 @@ class PlayState extends MusicBeatState
 		}
 		startOnTime = 0;
 
+		// Auto render: with the option on, recording starts with the song itself
+		// and needs no hotkey. Starting HERE rather than in create() is what makes
+		// the muxed audio exact - Conductor.songPosition is 0 and the music is at
+		// file position 0, so video t=0 and audio t=0 are the same instant.
+		#if desktop
+		if (ClientPrefs.data.renderOnSongStart)
+			startVideoRender();
+		#end
+
 		if(paused) {
 			//trace('Oopsie doopsie! Paused sound');
 			FlxG.sound.music.pause();
@@ -3866,7 +3843,7 @@ class PlayState extends MusicBeatState
 		if(iconP2 != null) DiscordClient.changePresence(detailsText, SONG.song + " (" + storyDifficultyText + ")", iconP2.getCharacter(), true, songLength);
 		#end
 		setOnScripts('songLength', songLength);
-		callOnScripts('onSongStart', []);
+		callOnScripts('onSongStart', Scripts.EMPTY);
 	}
 
 	var debugNum:Int = 0;
@@ -4072,7 +4049,7 @@ class PlayState extends MusicBeatState
 						eventPushed(subEvent);
 						// 0.7.3+/1.0.4: onEventPushed (fires when an event is queued)
 						// 0.7.3+/1.0.4: onEventPushed (fires when an event is queued)
-						callOnScripts('onEventPushed', [subEvent.event, subEvent.value1 != null ? subEvent.value1 : '', subEvent.value2 != null ? subEvent.value2 : '', subEvent.strumTime]);
+						callOnScripts('onEventPushed', Scripts.fill4(Scripts.get(4), subEvent.event, subEvent.value1 != null ? subEvent.value1 : '', subEvent.value2 != null ? subEvent.value2 : '', subEvent.strumTime));
 					}
 				}
 			}
@@ -4375,7 +4352,7 @@ class PlayState extends MusicBeatState
 					eventPushed(subEvent);
 					// 0.7.3+/1.0.4: onEventPushed (fires when an event is queued)
 					// 0.7.3+/1.0.4: onEventPushed (fires when an event is queued)
-					callOnScripts('onEventPushed', [subEvent.event, subEvent.value1 != null ? subEvent.value1 : '', subEvent.value2 != null ? subEvent.value2 : '', subEvent.strumTime]);
+					callOnScripts('onEventPushed', Scripts.fill4(Scripts.get(4), subEvent.event, subEvent.value1 != null ? subEvent.value1 : '', subEvent.value2 != null ? subEvent.value2 : '', subEvent.strumTime));
 				}
 			}
 		}
@@ -4696,7 +4673,7 @@ class PlayState extends MusicBeatState
 	function eventNoteEarlyTrigger(event:EventNote):Float {
 		// 1.0.4: eventEarlyTrigger 回调带完整参数 (event, value1, value2, strumTime)。
 		// 0.6.3/0.7.3 脚本只声明一个参数时，多出来的实参在 Lua/HScript 里都会被忽略。
-		var returnedValue:Float = callOnScripts('eventEarlyTrigger', [event.event, event.value1, event.value2, event.strumTime]);
+		var returnedValue:Float = callOnScripts('eventEarlyTrigger', Scripts.fill4(Scripts.get(4), event.event, event.value1, event.value2, event.strumTime));
 		if(returnedValue != 0) {
 			return returnedValue;
 		}
@@ -4810,7 +4787,7 @@ class PlayState extends MusicBeatState
 
 		// Lua/HScript may take over: returning true/Function_Stop from onChangeManiaStart skips the built-in transition
 		var customAnim:Bool = false;
-		var scriptResult:Dynamic = callOnScripts('onChangeManiaStart', [newValue, daOldMania, animStyle]);
+		var scriptResult:Dynamic = callOnScripts('onChangeManiaStart', Scripts.fill3(Scripts.get(3), newValue, daOldMania, animStyle));
 		if (scriptResult == true || scriptResult == FunkinLua.Function_Stop)
 			customAnim = true;
 
@@ -4852,7 +4829,7 @@ class PlayState extends MusicBeatState
 		for (note in notes.members)
 			if (note != null && note.exists && note.noteData > -1 && note.mania == mania) note.resetNoteScaleForMania(mania);
 
-		callOnScripts('onChangeMania', [mania, daOldMania]);
+		callOnScripts('onChangeMania', Scripts.fill2(Scripts.get(2), mania, daOldMania));
 	}
 
 	/**
@@ -5062,7 +5039,7 @@ class PlayState extends MusicBeatState
 				timer.active = true;
 			}
 			paused = false;
-			callOnScripts('onResume', []);
+			callOnScripts('onResume', Scripts.EMPTY);
 
 			#if desktop
 			if (startTimer != null && startTimer.finished)
@@ -5159,8 +5136,6 @@ class PlayState extends MusicBeatState
 			_popupImmediateBudget = 999999;
 			_splashBudgetLeft = 999999;
 		}
-		var _phaseT:Float = haxe.Timer.stamp();
-		_probeFrameStart = _phaseT;
 
 		#if ONLINE_ALLOWED
 		/*
@@ -5205,18 +5180,31 @@ class PlayState extends MusicBeatState
 		syncOnlineHealth();
 		#end
 
-		// F8: dump the last PROBE_FRAMES frames of hit-path timings to ./crash/hitprobe.txt.
-		// Deliberately outside the online guard: the 100k-NPS repro is a single-player run.
-		if (FlxG.keys.justPressed.F8)
-			dumpHitProbe();
+
+		#if desktop
+		// Refresh the REC badge once a second, not every frame: it shows how many frames the
+		// encoder could not absorb, which is the signal to raise Render Buffer or pick a faster
+		// codec. Each update re-renders the badge's openfl TextField, i.e. allocates a small
+		// texture, and with ClientPrefs.disableGC on nothing collects those - so 1/s, not 3/s.
+		if (backend.FFMpeg.isRendering() && FlxG.game != null && FlxG.game.stepCount % 60 == 0)
+		{
+			final rec = backend.FFMpeg.instance;
+			final dropped:Int = rec.framesDropped;
+			// framesWritten is song time * fps, so framesWritten/fps versus the wall
+			// clock tells the player whether the render is keeping realtime (1.00x).
+			// The finished video is correct either way; this only predicts whether
+			// the music heard during the render stays in sync with the picture.
+			backend.RenderIndicator.setText(ClientPrefs.data.previewRender
+				? 'PREVIEW ' + rec.framesCaptured
+				: 'REC ' + rec.framesWritten + ' ' + (Math.round(rec.renderSpeed * 100) / 100) + 'x' + (dropped > 0 ? ' (-' + dropped + ')' : ''));
+		}
+		#end
 
 		/*if (FlxG.keys.justPressed.NINE)
 		{
 			iconP1.swapOldIcon();
 		}*/
-		var _probeScA:Float = _probeScriptT0();
-		callOnScripts('onUpdate', [elapsed]);
-		_probeScriptT1(_probeScA);
+		callOnScripts('onUpdate', Scripts.fill1(Scripts.get(1), elapsed));
 
 		// Lua wiggle effects (addWiggleEffect in FunkinLua) advance with the same clock the scripts
 		// get: the shader is already on the sprite, this is only its uTime.
@@ -5299,10 +5287,8 @@ class PlayState extends MusicBeatState
 			miss.text = Language.get("missesText", "Misses:") + songMisses;
 		}
 
-		// F8 probe + one sweep for both globals (same instant, same per-script order).
-		var _probeScB:Float = _probeScriptT0();
+		// One sweep for both globals (same instant, same per-script order).
 		setOnScripts2('curDecStep', curDecStep, 'curDecBeat', curDecBeat);
-		_probeScriptT1(_probeScB);
 
 		if(botplayTxt.visible) {
 			botplaySine += 180 * elapsed;
@@ -5325,7 +5311,7 @@ class PlayState extends MusicBeatState
 
 		if ((controls.PAUSE	#if android || FlxG.android.justReleased.BACK #end) && startedCountdown && canPause)
 		{
-			var ret:Dynamic = callOnScripts('onPause', [], false);
+			var ret:Dynamic = callOnScripts('onPause', Scripts.EMPTY, false);
 			if(ret != FunkinLua.Function_Stop#if VIDEOS_ALLOWED && !videoPlaying #end)  {
 				openPauseMenu();
 			}
@@ -5457,18 +5443,27 @@ class PlayState extends MusicBeatState
 		{
 			var time:Float = spawnTime;
 			if(songSpeed < 1) time /= songSpeed;
-			if(unspawnNotes[notesAddedCount].multSpeed < 1) time /= unspawnNotes[notesAddedCount].multSpeed;
+			// 列读: 只是判 multSpeed, 不值得为此物化一整行 DTO (旧写法每次进歌都要多走一次分配)。
+			if(unspawnNotes.multSpeedAt(notesAddedCount) < 1) time /= unspawnNotes.multSpeedAt(notesAddedCount);
 
 			fastSkipPastNotes(elapsed);
-			var targetData:PreloadedChartNote = (notesAddedCount < unspawnNotes.length) ? unspawnNotes[notesAddedCount] : null;
+			// 行本身在下面经 spawnRow 读入 (零分配); 这里只声明游标位置。
+			var targetData:PreloadedChartNote = null;
 			// Exact living count: with perfMode off it matches the pre-submit behaviour via FlxTypedGroup.countLiving(),
 			// so notes added by scripts are still counted; with perfMode on it reads the compact list (O(1)).
 			limitNC = ClientPrefs.data.perfMode ? activeNotes.length : notes.countLiving();
 
-			// Adaptive materialisation budget: longer frames may spawn more (catch up after a drop and recover);
+			// Materialisation budget: a fixed cap, deliberately NOT proportional to frame time.
+			//
+			// 这里原来是 clamp(elapsed * 1000 * 30, 2048, 20000)。它想让"卡了一帧之后多补一些"，
+			// 但代价是一个正反馈: 帧越慢 -> 这一帧计划物化的 Note 越多 -> 帧更慢。
+			// setupNoteData() 很贵 (着色器绑定 / 动画 / updateHitbox)，所以 1 fps 时它一帧要排
+			// 24096 次物化 (= 20000 + 4096)，掉帧只会越来越深，一旦掉进去基本回不来。
+			// 密集谱面的"追赶"交给数据层 (fastSkipPastNotes)，那里每行只要几十纳秒；
+			// 物化只保留一个固定配额，慢帧不会因此变得更慢。
 			// notes inside hardDeadline (at the strum line) ignore the budget and always spawn, prioritising playability over smoothing.
 			var hardDeadline:Float = Conductor.songPosition + Conductor.safeZoneOffset;
-			var spawnBudget:Int = Std.int(Math.max(2048, Math.min(20000, elapsed * 1000 * 30)));
+			var spawnBudget:Int = 2048;
 			// Overload is judged from this frame's data-level drain: a clearly non-zero drain means arrivals outpace
 			// materialisation, so due notes are settled by the data path, materialisation keeps only a small quota
 			// near the line and the hard deadline no longer forces spawns (behind, forced spawns pay for notes the data layer will settle).
@@ -5492,12 +5487,17 @@ class PlayState extends MusicBeatState
 			var effTime:Float = perfOn ? Math.min(time, _visHorizonMs) : time;
 			var spawnedThisFrame:Int = 0;
 
-			_phaseT = haxe.Timer.stamp();
 			// Turbo: reset the runtime keep gate every frame (see turboKeepNote).
 			if (turboModeActive)
 				resetTurboKeepGate();
 			// With perfMode off there is no budget throttle and no hard-deadline forcing, matching the stock per-note behaviour.
 			// Manual mode (manualUnthrottled) is also unthrottled to keep off-screen slide-in correct.
+			var spawnRow:PreloadedChartNote = _spawnScratch;
+			if (spawnRow == null) spawnRow = _spawnScratch = ChartNotes.scratchNote();
+			// 诡异
+			if (notesAddedCount < unspawnNotes.length)
+				targetData = unspawnNotes.rowAt(notesAddedCount, spawnRow);
+
 			while (targetData != null && targetData.strumTime - Conductor.songPosition < effTime
 				&& limitNC < noteLimit
 				&& (!perfOn || manualUnthrottled || spawnedThisFrame < spawnBudget
@@ -5507,7 +5507,7 @@ class PlayState extends MusicBeatState
 				{
 					notesAddedCount++;
 					if (notesAddedCount < unspawnNotes.length)
-						targetData = unspawnNotes[notesAddedCount];
+						targetData = unspawnNotes.rowAt(notesAddedCount, spawnRow);
 					else
 						break;
 					continue;
@@ -5517,7 +5517,7 @@ class PlayState extends MusicBeatState
 				{
 					notesAddedCount++;
 					if (notesAddedCount < unspawnNotes.length)
-						targetData = unspawnNotes[notesAddedCount];
+						targetData = unspawnNotes.rowAt(notesAddedCount, spawnRow);
 					else
 						break;
 					continue;
@@ -5552,31 +5552,24 @@ class PlayState extends MusicBeatState
 				lastSpawnedNote.set(linkKey, newNote);
 
 				if (!reusedNote)
+				{
 					appendNoteFast(newNote);
+				}
 				if (hasActiveScripts()) {
-					if (CompatEngine.isModern()) {
-						callOnScripts('onSpawnNote', [
-							noteIndexFast(newNote),
-							newNote.noteData,
-							newNote.noteType,
-							newNote.isSustainNote,
-							newNote.strumTime
-						]);
-					} else {
-						callOnScripts('onSpawnNote', [
-							noteIndexFast(newNote),
-							newNote.noteData,
-							newNote.noteType,
-							newNote.isSustainNote
-						]);
-					}
+					var spawnArgs:Array<Dynamic> = Scripts.get(CompatEngine.isModern() ? 5 : 4);
+					spawnArgs[0] = noteIndexFast(newNote);
+					spawnArgs[1] = newNote.noteData;
+					spawnArgs[2] = newNote.noteType;
+					spawnArgs[3] = newNote.isSustainNote;
+					if (CompatEngine.isModern()) spawnArgs[4] = newNote.strumTime;
+					callOnScripts('onSpawnNote', spawnArgs);
 				}
 
 				notesAddedCount++;
 				limitNC++;
 				spawnedThisFrame++;
 				if (notesAddedCount < unspawnNotes.length)
-					targetData = unspawnNotes[notesAddedCount];
+					targetData = unspawnNotes.rowAt(notesAddedCount, spawnRow);
 				else
 					break;
 			}
@@ -5614,11 +5607,7 @@ class PlayState extends MusicBeatState
 				// Reset the once-per-lane-per-frame gates for botplay/opponent side
 				resetBotGateArrays();
 
-				_phaseT = haxe.Timer.stamp();
-				var _probeBulkT0:Float = _phaseT;
 				bulkHitDueMaterialized(); // batch-hit botplay's due materialised notes (merged per-hit call chain)
-				var _probeBulkEnd:Float = haxe.Timer.stamp();
-				_probeBulkMs = _probeBulkEnd - _probeBulkT0;
 				if (ClientPrefs.data.perfMode)
 				{
 					// Iterate the compact living list (O(living), no full member scan).
@@ -5700,9 +5689,6 @@ class PlayState extends MusicBeatState
 				// fasterNoteSort is safe for sustains too: it reorders only living, visible notes and leaves dead slots in place,
 				// so the draw order matches a full sort and dense sustain charts no longer fall back to an O(n log n) full sort.
 				var sortOrder:Int = ClientPrefs.data.downScroll ? FlxSort.ASCENDING : FlxSort.DESCENDING;
-				var _probeNotesT:Float = haxe.Timer.stamp();
-				_probeNotesMs = _probeNotesT - _probeBulkEnd;
-				_phaseT = _probeNotesT;
 				if (ClientPrefs.data.fastSort)
 					fasterNoteSort(sortOrder);
 				else
@@ -5744,25 +5730,16 @@ class PlayState extends MusicBeatState
 
 		// Refresh the presentation once at frame end (score text / ms text / merged popup), then update the watch counters.
 		// Before onUpdatePost, so scripts reading the score/text in this frame's callbacks see the final values.
-		var _probePresentT:Float = haxe.Timer.stamp();
-		_probeSortMs = _probePresentT - _phaseT;
-		_phaseT = _probePresentT;
 		flushHitPresentation();
-		_probePresentMs = haxe.Timer.stamp() - _probePresentT;
 
-		// F8 probe + one sweep for the three globals (same instant, same per-script order).
-		var _probeScC:Float = _probeScriptT0();
+		// One sweep for the three globals (same instant, same per-script order).
 		setOnScripts3('cameraX', camFollowPos.x, 'cameraY', camFollowPos.y, 'botPlay', cpuControlled);
-		_probeScriptT1(_probeScC);
 
-		var _probeScD:Float = _probeScriptT0();
-		callOnScripts('onUpdatePost', [elapsed]);
-		_probeScriptT1(_probeScD);
+		callOnScripts('onUpdatePost', Scripts.fill1(Scripts.get(1), elapsed));
 
-		// Commit after the script tail so this frame's total and script slices include it.
-		_probeTotalMs = haxe.Timer.stamp() - _probeFrameStart;
-		commitHitProbeFrame();
 	}
+
+
 	// Health icon updaters(like 073?)
 	public dynamic function updateIconsScale(elapsed:Float){
 		var mult:Float = FlxMath.lerp(1, iconP1.scale.x, CoolUtil.boundTo(1 - (elapsed * 9 * playbackRate), 0, 1));
@@ -5848,7 +5825,7 @@ class PlayState extends MusicBeatState
 		#end
 		if (((skipHealthCheck && instakillOnMiss) || (playOpponent ? health >= 2 : health <= 0)) && !practiceMode && !isDead && !replayMode && !cpuControlled)
 		{
-			var ret:Dynamic = callOnScripts('onGameOver', [], false);
+			var ret:Dynamic = callOnScripts('onGameOver', Scripts.EMPTY, false);
 			if(ret != FunkinLua.Function_Stop) {
 				boyfriend.stunned = true;
 				deathCounter++;
@@ -6231,10 +6208,11 @@ class PlayState extends MusicBeatState
 				FlxG.sound.play(Paths.sound(value1), val2);
 
 		}
+		// 参数复用: 见 backend.Scripts。事件回调可以按谱面密度触发得非常频繁。
 		if (CompatEngine.isModern()) {
-			callOnScripts('onEvent', [eventName, value1, value2, strumTime]);
+			callOnScripts('onEvent', Scripts.fill4(Scripts.get(4), eventName, value1, value2, strumTime));
 		} else {
-			callOnScripts('onEvent', [eventName, value1, value2]);
+			callOnScripts('onEvent', Scripts.fill3(Scripts.get(3), eventName, value1, value2));
 		}
 	}
 
@@ -6247,19 +6225,19 @@ class PlayState extends MusicBeatState
 			camFollow.x += gf.cameraPosition[0] + girlfriendCameraOffset[0];
 			camFollow.y += gf.cameraPosition[1] + girlfriendCameraOffset[1];
 			tweenCamIn();
-			callOnScripts('onMoveCamera', ['gf']);
+			callOnScripts('onMoveCamera', Scripts.fill1(Scripts.get(1), 'gf'));
 			return;
 		}
 
 		if (!SONG.notes[curSection].mustHitSection)
 		{
 			moveCamera(true);
-			callOnScripts('onMoveCamera', ['dad']);
+			callOnScripts('onMoveCamera', Scripts.fill1(Scripts.get(1), 'dad'));
 		}
 		else
 		{
 			moveCamera(false);
-			callOnScripts('onMoveCamera', ['boyfriend']);
+			callOnScripts('onMoveCamera', Scripts.fill1(Scripts.get(1), 'boyfriend'));
 		}
 	}
 
@@ -6359,6 +6337,12 @@ class PlayState extends MusicBeatState
 	public var transitioning = false;
 	public function endSong():Void
 	{
+		// The song is over, so the render is over: flush and close ffmpeg so the
+		// file is playable and the game loop is unpinned.
+		#if desktop
+		stopVideoRender();
+		#end
+
 		#if ONLINE_ALLOWED
 		// endSong() first reports the final FP, max combo and "playerEnded" to the room and
 		// bails out. The room then answers with the "endSong" message, whose listener
@@ -6384,11 +6368,12 @@ class PlayState extends MusicBeatState
 			}
 			notes.forEachAlive(drainHealth);
 
-			// Only drain truly unspawned notes (past notesAddedCount cursor)
+			// Only drain truly unspawned notes (past notesAddedCount cursor).
+			// 列读: strumTime 在列上, 整段扫描不必逐行物化 DTO。
 			var i:Int = notesAddedCount;
+			var drainCut:Float = songLength - Conductor.safeZoneOffset;
 			while (i < unspawnNotes.length) {
-				var dn = unspawnNotes[i];
-				if(dn.strumTime < songLength - Conductor.safeZoneOffset) {
+				if(unspawnNotes.strumTimeRow(i) < drainCut) {
 					if (playOpponent)
 						health += 0.05 * healthLoss;
 					else
@@ -6433,7 +6418,7 @@ class PlayState extends MusicBeatState
 		}
 		#end
 
-		var ret:Dynamic = callOnScripts('onEndSong', [], false);
+		var ret:Dynamic = callOnScripts('onEndSong', Scripts.EMPTY, false);
 		trace(SONG.validScore);
 		if(ret != FunkinLua.Function_Stop && !transitioning) {
 			if (SONG.validScore || SONG.validScore == null)
@@ -6753,7 +6738,7 @@ class PlayState extends MusicBeatState
 
 			// 0.7.3+/1.0.4: onKeyPressPre (returning Function_Stop cancels the press)
 			// 0.7.3+/1.0.4: onKeyPressPre (return Function_Stop to block the press)
-			var preResult:Dynamic = callOnScripts('onKeyPressPre', [key]);
+			var preResult:Dynamic = callOnScripts('onKeyPressPre', Scripts.fill1(Scripts.get(1), key));
 			if (preResult == LuaUtils.Function_Stop || preResult == FunkinLua.Function_Stop)
 				return;
 
@@ -6803,7 +6788,7 @@ class PlayState extends MusicBeatState
 		keyboardDisplay.pressed(key);
 
 
-			callOnScripts('preKeyPress', [key]);
+			callOnScripts('preKeyPress', Scripts.fill1(Scripts.get(1), key));
 		if(!boyfriend.stunned && generatedMusic && !endingSong)
 			{
 				//more accurate hit time for the ratings?
@@ -6884,7 +6869,7 @@ class PlayState extends MusicBeatState
 					}
 				}
 				else{
-					callOnScripts('onGhostTap', [key]);
+					callOnScripts('onGhostTap', Scripts.fill1(Scripts.get(1), key));
 					if (canMiss) {
 						noteMissPress(key);
 					}
@@ -6913,7 +6898,7 @@ class PlayState extends MusicBeatState
 				spr.playAnim('pressed');
 				spr.resetAnim = 0;
 			}
-			callOnScripts('onKeyPress', [key]);
+			callOnScripts('onKeyPress', Scripts.fill1(Scripts.get(1), key));
 			_pressScratchDepth--;
 			}
 
@@ -7002,7 +6987,7 @@ class PlayState extends MusicBeatState
 				var key:Int = keys[i];
 				var reportTime:Float = (pressTimes != null && i < pressTimes.length && pressTimes[i] != -999999) ? pressTimes[i] : Conductor.songPosition;
 				keyboardDisplay.pressed(key);
-				callOnScripts('preKeyPress', [key]);
+				callOnScripts('preKeyPress', Scripts.fill1(Scripts.get(1), key));
 
 				var spr:StrumNote = (key >= 0 && key < playerStrums.members.length) ? playerStrums.members[key] : null;
 				if (strumsBlocked[key] != true && spr != null && spr.animation.curAnim != null && spr.animation.curAnim.name != 'confirm')
@@ -7019,11 +7004,11 @@ class PlayState extends MusicBeatState
 				var list:Array<Note> = (key >= 0 && key < laneNotes.length) ? laneNotes[key] : null;
 				if (list == null || list.length < 1)
 				{
-					callOnScripts('onGhostTap', [key]);
+					callOnScripts('onGhostTap', Scripts.fill1(Scripts.get(1), key));
 					if (canMiss) noteMissPress(key);
 					keysPressed[key] = true;
 
-					callOnScripts('onKeyPress', [key]);
+					callOnScripts('onKeyPress', Scripts.fill1(Scripts.get(1), key));
 					continue;
 				}
 
@@ -7059,7 +7044,7 @@ class PlayState extends MusicBeatState
 				}
 				keysPressed[key] = true;
 
-				callOnScripts('onKeyPress', [key]);
+				callOnScripts('onKeyPress', Scripts.fill1(Scripts.get(1), key));
 			}
 			_pressScratchDepth--;
 		}
@@ -7127,7 +7112,7 @@ class PlayState extends MusicBeatState
 
 			// 0.7.3+/1.0.4: onKeyReleasePre (returning Function_Stop cancels the release)
 			// 0.7.3+/1.0.4: onKeyReleasePre (return Function_Stop to block the release)
-			var preResult:Dynamic = callOnScripts('onKeyReleasePre', [key]);
+			var preResult:Dynamic = callOnScripts('onKeyReleasePre', Scripts.fill1(Scripts.get(1), key));
 			if (preResult == LuaUtils.Function_Stop || preResult == FunkinLua.Function_Stop)
 				return;
 
@@ -7152,7 +7137,7 @@ class PlayState extends MusicBeatState
 				spr.playAnim('static');
 				spr.resetAnim = 0;
 			}
-			callOnScripts('onKeyRelease', [key]);
+			callOnScripts('onKeyRelease', Scripts.fill1(Scripts.get(1), key));
 
 		}
 
@@ -7958,7 +7943,7 @@ class PlayState extends MusicBeatState
 		}
 
 		if (hasActiveScripts())
-			callOnScripts('noteMiss', [noteIndexFast(daNote), daNote.noteData, daNote.noteType, daNote.isSustainNote]);
+			callOnScripts('noteMiss', Scripts.fill4(Scripts.get(4), noteIndexFast(daNote), daNote.noteData, daNote.noteType, daNote.isSustainNote));
 	}
 
 	function noteMissPress(direction:Int = 1):Void //You pressed a key when there was no notes to press for this key
@@ -8024,13 +8009,16 @@ class PlayState extends MusicBeatState
 			vocalsPlayer.volume = 0;
 		}
 		if (hasActiveScripts())
-			callOnScripts('noteMissPress', [direction]);
+			callOnScripts('noteMissPress', Scripts.fill1(Scripts.get(1), direction));
 	}
 
 	function opponentNoteHit(note:Note):Void
 	{
 
-		if (Paths.formatToSongPath(SONG.song) != 'tutorial')
+		// 每帧/每音符都会走到这里, 而谱面名在一次游玩里不会变: 以前每次命中都跑两遍正则
+		// (invalidChars / hideChars), 还各生成一个中间字符串。缓存一次即可。
+		if (_songPathCache == null) _songPathCache = Paths.formatToSongPath(SONG.song);
+		if (_songPathCache != 'tutorial')
 			camZooming = true;
 
 		// Opponent-side downgrade: sing animations and strum confirms are also once per lane per frame (opponent
@@ -8064,7 +8052,11 @@ class PlayState extends MusicBeatState
                     }
 
             var char:Character = playOpponent ? boyfriend : dad;
-            var animToPlay:String = getSingAnim(note) + altAnim;
+            // 角色动画名走缓存 (见 _laneSingAnim): 以前每次命中都现拼 'sing'+anim+suffix。
+            // 该路径已被"每帧每轨一次"的门控, 所以这里省下的是门控之后那一次拼接, 语义不变。
+            // (Haxe 4.2.5 没有 ??, 所以用显式的 null 判断。)
+            var animToPlay:String = scriptAllocOpt ? getSingAnimCached(note, 0) : null;
+            if (animToPlay == null) animToPlay = getSingAnim(note) + altAnim;
             if(note.gfNote) {
                     char = gf;
         	}
@@ -8091,12 +8083,15 @@ class PlayState extends MusicBeatState
 		}
 		note.hitByOpponent = true;
 
+		var oppArgs4:Array<Dynamic> = hasActiveScripts() ? Scripts.get(4) : null;
+//阿巴阿巴
 if (CompatEngine.isModern() && hasActiveScripts()) {
 			// 0.7.3+/1.0.4: opponentNoteHitPre / goodNoteHitPre callbacks
 			var preName:String = reverseNoteHit ? 'goodNoteHitPre' : 'opponentNoteHitPre';
-			var preResult:Dynamic = callOnLuas(preName, [noteIndexFast(note), Math.abs(note.noteData), note.noteType, note.isSustainNote]);
+			fillNoteHitArgs(oppArgs4, note, noteIndexFast(note), NOTE_ARG_ABS);
+			var preResult:Dynamic = callOnLuas(preName, oppArgs4);
 			if(preResult != FunkinLua.Function_Stop && preResult != FunkinLua.Function_StopHScript && preResult != FunkinLua.Function_StopAll)
-				callOnHScript(preName, [note]);
+				callOnHScript(preName, Scripts.fill1(Scripts.get(1), note));
 			if (CompatEngine.stopOnPreHitStop() && preResult == FunkinLua.Function_Stop)
 			{
 				return;
@@ -8106,18 +8101,12 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		if (hasActiveScripts())
 		{
 			var scriptName:String = reverseNoteHit ? 'goodNoteHit' : 'opponentNoteHit';
-			var result:Dynamic;
-			if (CompatEngine.isModern()) {
-				// 0.7.3 format: uses Math.abs like opponentNoteHit
-				result = callOnLuas(scriptName, [noteIndexFast(note), Math.abs(note.noteData), note.noteType, note.isSustainNote]);
-			} else if (reverseNoteHit) {
-				// 0.6.3 format, but reverseNoteHit actually calls goodNoteHit so the raw noteData is passed
-				result = callOnLuas(scriptName, [noteIndexFast(note), note.noteData, note.noteType, note.isSustainNote]);
-			} else {
-				// 0.6.3 opponentNoteHit itself uses Math.abs
-				result = callOnLuas(scriptName, [noteIndexFast(note), Math.abs(note.noteData), note.noteType, note.isSustainNote]);
-			}
-			if(result != FunkinLua.Function_Stop && result != FunkinLua.Function_StopHScript && result != FunkinLua.Function_StopAll) callOnHScript(scriptName, [note]);
+			// 0.6.3 的 reverseNoteHit 走 goodNoteHit 并传原始 noteData, 其余路径都用 Math.abs。
+			fillNoteHitArgs(oppArgs4, note, noteIndexFast(note),
+				(CompatEngine.isModern() || !reverseNoteHit) ? NOTE_ARG_ABS : NOTE_ARG_RAW);
+			var result:Dynamic = callOnLuas(scriptName, oppArgs4);
+			if(result != FunkinLua.Function_Stop && result != FunkinLua.Function_StopHScript && result != FunkinLua.Function_StopAll)
+				callOnHScript(scriptName, Scripts.fill1(Scripts.get(1), note));
 		}
 		// Turbo: opponent hits feed the player's own combo counter and popup. Most local notes are
 		// settled in the data layer, so without this the combo never moves on dense charts. Only
@@ -8311,6 +8300,39 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		return idx;
 	}
 
+	/**
+	 * 重建 "角色动画位 -> sing 动画名" 缓存。keyCount 或共享后缀变了才会重建, 否则是空操作。
+	 * 见 _laneSingAnim。
+	 */
+	function refreshLaneSingAnimCache():Void
+	{
+		var lanes:Int = Note.ammo[mania];
+		if (lanes <= 0) lanes = 1;
+		// 每个角色 (bf / dad, 各自可能 gf) 都要一份: 索引 = keyCount + lane。
+		var key:String = mania + '|' + _sharedAnimSuffix + '|' + lanes;
+		if (_laneSingAnimKey == key && _laneSingAnim.length == lanes * 3) return;
+		_laneSingAnimKey = key;
+		_laneSingAnimMania = mania;
+		var out:Array<String> = [];
+		for (c in 0...3)
+			for (i in 0...lanes)
+				out.push('sing' + EKData.getAnim(mania, i) + _sharedAnimSuffix);
+		_laneSingAnim = out;
+	}
+
+	/** 角色动画位的缓存名; 越界 (脚本写了非法 noteData) 时返回 null, 调用方回落到现场拼接。 */
+	inline function getSingAnimCached(note:Note, charIdx:Int):String
+	{
+		if (note.customCharAnim != null && note.customCharAnim.length > 0) return note.customCharAnim;
+		var lane:Int = note.laneData();
+		if (_laneSingAnimMania != mania || lane < 0 || lane >= Note.ammo[mania]) return null;
+		if (charIdx < 0 || charIdx > 2) return null;
+		var idx:Int = charIdx * Note.ammo[mania] + lane;
+		if (idx < 0 || idx >= _laneSingAnim.length) return null;
+		return _laneSingAnim[idx];
+	}
+	//AI太好用了，你知道吗
+
 	/** Rebuilds the whole memberIndex cache (after a full reorder such as notes.sort; one O(n) pass). */
 	static function rebuildMemberIndexes(m:Array<Note>, len:Int):Void
 	{
@@ -8445,7 +8467,12 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 			if (_cmpIntAsc == null)
 				_cmpIntAsc = function(a:Int, b:Int):Int { return a - b; };
 			_noteSortArr.sort(_cmpNoteY);
-			_noteSortIdx.sort(_cmpIntAsc);
+			// _noteSortIdx 是在上面的循环里按 i 递增顺序填的, 本来就是升序; 那次
+			// sort(_cmpIntAsc) 被离线测试 (temp/noteperf 测试 C) 证明是空操作 ——
+			// 200 组随机输入下 members 最终顺序逐元素相同 —— 却是一次 closure
+			// comparator 的 Array.sort, 占每帧 note 排序开销的可观一块。
+			// _noteSortIdx.sort(_cmpIntAsc);
+			// (比较器 _cmpIntAsc 保留: 只注释调用, 避免动到其它初始化路径。)
 			for (k in 0..._noteSortRange)
 			{
 				members[_noteSortIdx[k]] = _noteSortArr[k];
@@ -8738,8 +8765,21 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		// Outside Turbo the stock one-shot drain behaviour is kept (off means unchanged).
 		// A folded group counts as one budget unit: its members are overlapping notes in the same pixel band,
 		// matching how the old implementation consumed folded groups.
-		var drainBudget:Int = turboModeActive ? Std.int(Math.max(4096, Math.min(65536, elapsed * 1000 * 100))) : 0x7FFFFFFF;
+		//
+		// 下限必须 >= 实测峰值需求，否则每帧都差一截，游标永远追不上，_overloadFrames 会一直锁死，
+		// 于是本该廉价结算掉的行被迫留给昂贵的物化路径 —— 这正是"掉到一两帧就再也回不来"的第二半原因。
+		// 实测峰值 (折叠后): realisticful 4320 行/帧, 10m 谱面 5361 行/帧; 旧的 4096 下限比它还低。
+		// 现在每行约 62ns, 16384 行也只有 ~1ms, 所以这个下限是安全的。
+		var drainBudget:Int = turboModeActive ? Std.int(Math.max(16384, Math.min(65536, elapsed * 1000 * 100))) : 0x7FFFFFFF;
 		var processed:Int = 0;
+
+		// 零分配行读取: 这里每帧要走几千到几万行。unspawnNotes[i] 每次现造一个 358 字节 DTO,
+		// 折过的密集谱面上就是每秒几十万次短命对象分配 —— 正是 GC 停顿的来源。
+		// 行先用列读判断 (strumTime / hold / wasHit), 只有真的要结算时才读进复用 scratch,
+		// 语义与直接读 DTO 一致: rowAt 对脚本 writeback 过的行返回它自己的 live DTO。
+		// scratch 挂在字段上: 每首歌只有第一次需要时分配一次, 之后每帧复用。
+		if (_drainScratch == null) _drainScratch = ChartNotes.scratchNote();
+		var scratch:PreloadedChartNote = _drainScratch;
 
 		while (notesAddedCount < unspawnNotes.length)
 		{
@@ -8747,13 +8787,14 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 				break;
 			processed++;
 
-			var d:PreloadedChartNote = unspawnNotes[notesAddedCount];
-			if (d.strumTime > hardCut && d.strumTime > softCut) break;
+			// 便宜的列读: 不足以结算就退出, 不构造任何对象。
+			var strum:Float = unspawnNotes.strumTimeRow(notesAddedCount);
+			if (strum > hardCut && strum > softCut) break;
 			// Sustains and sustain heads (isSustainNote=false but sustainLength>0) keep the per-object path:
 			// consuming a head in the data layer would break the tail's prevNote/parent chain and its rendering.
-			if (d.isSustainNote || d.sustainLength > 0) break;
+			if (unspawnNotes.isHoldRow(notesAddedCount)) break;
 
-			if (d.wasHit)
+			if (unspawnNotes.getWasHit(notesAddedCount))
 			{
 				notesAddedCount++;
 				continue;
@@ -8762,7 +8803,9 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 			// Data-level settlement (including expanding a Turbo fold group). Not-yet-due / non-player / sustain notes
 			// return false with the cursor untouched -- this is also the only path that may advance the settlement cursor,
 			// so any early-consume path that forgets to advance it would block every following note forever.
-			if (!bulkSettleNote(d, acc, notesAddedCount))
+			// rowAt: 脚本写过的行返回它自己的 live DTO (不能丢掉它写的字段), 其余行填进 scratch, 全程零分配。
+			var d:PreloadedChartNote = unspawnNotes.rowAt(notesAddedCount, scratch);
+			if (d == null || !bulkSettleNote(d, acc, notesAddedCount))
 				break;
 			drainTotal++;
 			notesAddedCount++;
@@ -9387,7 +9430,11 @@ if (!cpuControlled) {
 	else
 	{
 	_msTextDirty = true;
-	_pendingMsText = Std.string(FlxMath.roundDecimal(-diff, 3)) + "ms";
+	// 局部变量复用: 原写法在同一行里多构造了一个中间字符串, 密集命中时是额外垃圾。
+	var roundedMs:Float = FlxMath.roundDecimal(-diff, 3);
+	_pendingMsText = (roundedMs == Std.int(roundedMs))
+		? (Std.string(Std.int(roundedMs)) + "ms")
+		: (Std.string(roundedMs) + "ms");
 	if (rating == 'marvelous') {
 		_pendingMsColor = 0xFFFFD700;
 	} else if (rating == 'sick') {
@@ -9407,15 +9454,18 @@ if (!cpuControlled) {
 
 if (!note.wasGoodHit)
 		{
+			// 参数复用: 见 backend.Scripts。每个音符原来至少要分配一个 4 参数数组 (外加 noteType 的装箱),
+			// 现在热路径上只剩一个复用槽; 每个调用点都用 fillNoteHitArgs() 整组重写,
+			// 所以中途即使被别的引擎回调借用同一个形状的槽, 脚本读到的仍是本次参数。
+			var hitArgs4:Array<Dynamic> = hasActiveScripts() ? Scripts.get(4) : null;
+
 			// 0.7.3+/1.0.4: goodNoteHitPre / opponentNoteHitPre callbacks
 if (CompatEngine.isModern() && hasActiveScripts()) {
 				var preName:String = reverseNoteHit ? 'opponentNoteHitPre' : 'goodNoteHitPre';
-				var preIsSus:Bool = note.isSustainNote;
-				var preLeData:Int = Math.round(Math.abs(note.noteData));
-				var preLeType:String = note.noteType;
-				var preResult:Dynamic = callOnLuas(preName, [noteIndexFast(note), preLeData, preLeType, preIsSus]);
+				fillNoteHitArgs(hitArgs4, note, noteIndexFast(note), CompatEngine.isModern() ? NOTE_ARG_ROUND_ABS : NOTE_ARG_RAW);
+				var preResult:Dynamic = callOnLuas(preName, hitArgs4);
 				if(preResult != FunkinLua.Function_Stop && preResult != FunkinLua.Function_StopHScript && preResult != FunkinLua.Function_StopAll)
-					callOnHScript(preName, [note]);
+					callOnHScript(preName, Scripts.fill1(Scripts.get(1), note));
 				if (CompatEngine.stopOnPreHitStop() && preResult == FunkinLua.Function_Stop)
 				{
 					return;
@@ -9427,13 +9477,10 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 				if (hasActiveScripts())
 				{
 					var botScriptName:String = reverseNoteHit ? 'opponentNoteHit' : 'goodNoteHit';
-					var botResult:Dynamic = FunkinLua.Function_Continue;
-					if (CompatEngine.isModern())
-						botResult = callOnLuas(botScriptName, [noteIndexFast(note), Math.round(Math.abs(note.noteData)), note.noteType, note.isSustainNote]);
-					else
-						botResult = callOnLuas(botScriptName, [noteIndexFast(note), note.noteData, note.noteType, note.isSustainNote]);
+					fillNoteHitArgs(hitArgs4, note, noteIndexFast(note), CompatEngine.isModern() ? NOTE_ARG_ROUND_ABS : NOTE_ARG_RAW);
+					var botResult:Dynamic = callOnLuas(botScriptName, hitArgs4);
 					if(botResult != FunkinLua.Function_Stop && botResult != FunkinLua.Function_StopHScript && botResult != FunkinLua.Function_StopAll)
-						callOnHScript(botScriptName, [note]);
+						callOnHScript(botScriptName, Scripts.fill1(Scripts.get(1), note));
 				}
 				note.wasGoodHit = true;
 				return;
@@ -9527,18 +9574,23 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 				}
 				if (allowCharAnim)
 				{
+					// 角色动画名走缓存 (见 _laneSingAnim), 省掉每次命中的 'sing'+anim+suffix 拼接。
+					// (Haxe 4.2.5 没有 ??, 所以用显式的 null 判断。)
+					var cachedSing:String = null;
 					if(note.gfNote)
 					{
 						if(gf != null)
 						{
-							gf.playAnim(animToPlay + note.animSuffix, true);
+							if (scriptAllocOpt) cachedSing = getSingAnimCached(note, 2);
+							gf.playAnim(cachedSing != null ? cachedSing : (animToPlay + note.animSuffix), true);
 							gf.holdTimer = 0;
 						}
 					}
 					else
 						{
 							var playChar:Character = playOpponent ? dad : boyfriend;
-							playChar.playAnim(animToPlay + note.animSuffix, true);
+							if (scriptAllocOpt) cachedSing = getSingAnimCached(note, playOpponent ? 0 : 1);
+							playChar.playAnim(cachedSing != null ? cachedSing : (animToPlay + note.animSuffix), true);
 							playChar.holdTimer = 0;
 						}
 
@@ -9598,30 +9650,13 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 
 			if (hasActiveScripts())
 			{
+				// 手动 / botplay 的 0.6.3 与 0.7.3+ 参数格式在进入这个块时就写好了,
+				// 所以这里不需要再区分两条调用路径 (见上面的 hitArgs4 构造)。
 				var scriptName:String = reverseNoteHit ? 'opponentNoteHit' : 'goodNoteHit';
-				var result:Dynamic = FunkinLua.Function_Continue;
-				if (!cpuControlled) {
-					if (CompatEngine.isModern()) {
-						// 0.7.3 format: passes Math.round(Math.abs(noteData))
-						var isSus:Bool = note.isSustainNote;
-						var leData:Int = Math.round(Math.abs(note.noteData));
-						var leType:String = note.noteType;
-						result = callOnLuas(scriptName, [noteIndexFast(note), leData, leType, isSus]);
-					} else {
-						// 0.6.3 format: passes the raw noteData (may be negative)
-						result = callOnLuas(scriptName, [noteIndexFast(note), note.noteData, note.noteType, note.isSustainNote]);
-					}
-				}
-				// Botplay still represents a real hit. Do not skip custom note/event
-				// scripts just because keyboard judgement was bypassed.
-				if (cpuControlled) {
-					if (CompatEngine.isModern())
-						result = callOnLuas(scriptName, [noteIndexFast(note), Math.round(Math.abs(note.noteData)), note.noteType, note.isSustainNote]);
-					else
-						result = callOnLuas(scriptName, [noteIndexFast(note), note.noteData, note.noteType, note.isSustainNote]);
-				}
+				fillNoteHitArgs(hitArgs4, note, noteIndexFast(note), CompatEngine.isModern() ? NOTE_ARG_ROUND_ABS : NOTE_ARG_RAW);
+				var result:Dynamic = callOnLuas(scriptName, hitArgs4);
 				if(result != FunkinLua.Function_Stop && result != FunkinLua.Function_StopHScript && result != FunkinLua.Function_StopAll)
-					callOnHScript(scriptName, [note]);
+					callOnHScript(scriptName, Scripts.fill1(Scripts.get(1), note));
 			}
 
 			if (!note.isSustainNote)
@@ -9721,6 +9756,12 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		// Back to the menus: the watermark is visible again (ClientPrefs.data.showWatermark wins).
 		backend.Watermark.setVisible(true);
 
+		// A render must never outlive the state: leaving it running would keep the
+		// game pinned to a fixed timestep (and the ffmpeg child alive).
+		#if desktop
+		stopVideoRender();
+		#end
+
 		// Detach the song's completion callback before the state goes away (see _songMusic).
 		if (_songMusic != null) {
 			_songMusic.onComplete = null;
@@ -9740,6 +9781,9 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 			lua.stop();
 		}
 		luaArray = [];
+
+		// 脚本回调参数槽只服务于本次游玩, 随状态一起释放 (见 backend.Scripts)。
+		Scripts.clear();
 
 		// Fallback memory ledger flush for exit paths that skip endSong (e.g. death exit)
 		GfxPolicy.onPlayStateDestroy();
@@ -9879,7 +9923,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 
 		lastStepHit = curStep;
 		setOnScripts('curStep', curStep);
-		callOnScripts('onStepHit', []);
+		callOnScripts('onStepHit', Scripts.EMPTY);
 	}
 
 	var lastBeatHit:Int = -1;
@@ -9929,7 +9973,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		lastBeatHit = curBeat;
 
 		setOnScripts('curBeat', curBeat); //DAWGG?????
-		callOnScripts('onBeatHit', []);
+		callOnScripts('onBeatHit', Scripts.EMPTY);
 	}
 
 	override function sectionHit()
@@ -9961,8 +10005,23 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 			setOnScripts('gfSection', SONG.notes[curSection].gfSection);
 		}
 
+		// 角色 sing 动画名的共享后缀在本节内不变; 与对手路径的 'altAnim' 规则保持一致。
+		// 缓存只在后缀/键数变化时重建 (见 refreshLaneSingAnimCache)。
+		if (scriptAllocOpt)
+		{
+			var secSuffix:String = '';
+			if (SONG.notes[curSection] != null && SONG.notes[curSection].altAnim && !SONG.notes[curSection].gfSection)
+				secSuffix = '-alt';
+			if (_sharedAnimSuffix != secSuffix)
+			{
+				_sharedAnimSuffix = secSuffix;
+				_laneSingAnimKey = null; // force a rebuild
+			}
+			refreshLaneSingAnimCache();
+		}
+
 		setOnScripts('curSection', curSection);
-		callOnScripts('onSectionHit', []);
+		callOnScripts('onSectionHit', Scripts.EMPTY);
 	}
 	/** True when any Lua/HScript runtime may have callback handlers. Used to skip pure no-op callback+indexOf work in the hot paths. */
 	inline function hasActiveScripts():Bool
@@ -10031,7 +10090,6 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		var returnVal:Dynamic = FunkinLua.Function_Continue;
 
 	#if HSCRIPT_ALLOWED
-		_probeSweeps++;
 		// `exclusions` is dead here: the old code allocated it but never read it. Script-level
 		// exclusions are applied by callers that pass an already-filtered list.
 		// The old code also pushed Function_Continue into the caller's excludeValues array on every
@@ -10092,7 +10150,6 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 	 */
 	function setOnScripts2(n1:String, v1:Dynamic, n2:String, v2:Dynamic):Void {
 		#if LUA_ALLOWED
-		_probeSweeps++;
 		if (luaArray != null)
 			for (script in luaArray)
 			{
@@ -10101,7 +10158,6 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 			}
 		#end
 		#if HSCRIPT_ALLOWED
-		_probeSweeps++;
 		HScript.setOnGlobalScript(n1, v1);
 		HScript.setOnGlobalScript(n2, v2);
 		if (hscriptArray != null)
@@ -10117,7 +10173,6 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 	/** Three-variable variant of setOnScripts2 (same reasoning). */
 	function setOnScripts3(n1:String, v1:Dynamic, n2:String, v2:Dynamic, n3:String, v3:Dynamic):Void {
 		#if LUA_ALLOWED
-		_probeSweeps++;
 		if (luaArray != null)
 			for (script in luaArray)
 			{
@@ -10127,7 +10182,6 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 			}
 		#end
 		#if HSCRIPT_ALLOWED
-		_probeSweeps++;
 		HScript.setOnGlobalScript(n1, v1);
 		HScript.setOnGlobalScript(n2, v2);
 		HScript.setOnGlobalScript(n3, v3);
@@ -10144,7 +10198,6 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 
 	override public function setOnLuas(variable:String, arg:Dynamic, exclusions:Array<String> = null) {
 		#if LUA_ALLOWED
-		_probeSweeps++;
 		if(exclusions == null) exclusions = EMPTY_STRINGS;
 		for (script in luaArray) {
 			if(exclusions.contains(script.scriptName))
@@ -10157,7 +10210,6 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 
 	public function setOnHScript(variable:String, arg:Dynamic, exclusions:Array<String> = null) {
 		#if HSCRIPT_ALLOWED
-		_probeSweeps++;
 		if(exclusions == null) exclusions = EMPTY_STRINGS;
 		HScript.setOnGlobalScript(variable, arg);
 		for (script in hscriptArray) {
@@ -10172,7 +10224,6 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 	override public function callOnLuas(funcToCall:String, args:Array<Dynamic> = null, ignoreStops = false, exclusions:Array<String> = null, excludeValues:Array<Dynamic> = null):Dynamic {
 		var returnVal:Dynamic = FunkinLua.Function_Continue;
 		#if LUA_ALLOWED
-		_probeSweeps++;
 		if (luaArray == null || luaArray.length == 0) return returnVal;
 		if(args == null) args = EMPTY_ARGS;
 		if(exclusions == null) exclusions = EMPTY_STRINGS;
@@ -10255,7 +10306,7 @@ function calculateResetTime():Float {
 			setOnScripts('hits', songHits);
 			setOnScripts('combo', combo);
 
-			scriptStopped = (callOnScripts('onRecalculateRating', [], false) == FunkinLua.Function_Stop);
+			scriptStopped = (callOnScripts('onRecalculateRating', Scripts.EMPTY, false) == FunkinLua.Function_Stop);
 		}
 
 		if (!scriptStopped)
@@ -10621,7 +10672,7 @@ function calculateResetTime():Float {
 			if (player.bfSide == isRight) {
 				var stats = getPlayerStats(sid);
 
-				var ret:Dynamic = callOnScripts('onRecalculateRatingPlayer', [sid], true);
+				var ret:Dynamic = callOnScripts('onRecalculateRatingPlayer', Scripts.fill1(Scripts.get(1), sid), true);
 				if (ret != FunkinLua.Function_Stop) {
 					stats.recalculateRating();
 				}
@@ -10663,7 +10714,7 @@ function calculateResetTime():Float {
 			doTweenScore(isRight ? 'RIGHTSIDE' : 'LEFTSIDE', isRight);
 		}
 
-		callOnScripts('onUpdateScoreTeam', [isRight, miss]);
+		callOnScripts('onUpdateScoreTeam', Scripts.fill2(Scripts.get(2), isRight, miss));
 	}
 
 	function averageOf(arr:Array<Float>):Float {
@@ -10738,7 +10789,7 @@ function calculateResetTime():Float {
 		setOnScripts('hitsOP', op.calcHits()); // may be inaccurate to hits
 		setOnScripts('comboOP', op.combo);
 
-		var ret:Dynamic = callOnScripts('onRecalculateRatingPlayer', [sid], true);
+		var ret:Dynamic = callOnScripts('onRecalculateRatingPlayer', Scripts.fill1(Scripts.get(1), sid), true);
 		if (ret != FunkinLua.Function_Stop) {
 			op.recalculateRating();
 		}
@@ -10783,7 +10834,7 @@ function calculateResetTime():Float {
 		setOnScripts('ratingNameOP', op.ratingName);
 		setOnScripts('ratingFCOP', op.ratingFC);
 
-		callOnScripts('onUpdateScorePlayer', [sid, miss]);
+		callOnScripts('onUpdateScorePlayer', Scripts.fill2(Scripts.get(2), sid, miss));
 	}
 
 	function doTweenScore(sid:String, ?isRight:Null<Bool> = null):Void {
@@ -11538,7 +11589,7 @@ function calculateResetTime():Float {
 				if (message == null || message[0] == null || message[1] == null || message[2] == null)
 					return;
 
-				if (callOnScripts('onMessageStrumPlay', [sid, message], true) == FunkinLua.Function_Stop)
+				if (callOnScripts('onMessageStrumPlay', Scripts.fill2(Scripts.get(2), sid, message), true) == FunkinLua.Function_Stop)
 					return;
 
 				var strums = getStrumsFromSID(sid);
@@ -11562,7 +11613,7 @@ function calculateResetTime():Float {
 				if (message == null || message[0] == null)
 					return;
 
-				if (callOnScripts('onMessageCharPlay', [sid, message], true) == FunkinLua.Function_Stop)
+				if (callOnScripts('onMessageCharPlay', Scripts.fill2(Scripts.get(2), sid, message), true) == FunkinLua.Function_Stop)
 					return;
 
 				var isGF:Bool = (message[1] == true);
@@ -11594,7 +11645,7 @@ function calculateResetTime():Float {
 				if (message == null || message[0] == null || message[1] == null || message[2] == null)
 					return;
 
-				if (callOnScripts('onMessageNoteHit', [sid, message], true) == FunkinLua.Function_Stop)
+				if (callOnScripts('onMessageNoteHit', Scripts.fill2(Scripts.get(2), sid, message), true) == FunkinLua.Function_Stop)
 					return;
 
 				notes.forEachAlive(function(note:Note) {
@@ -11614,8 +11665,15 @@ function calculateResetTime():Float {
 				}
 
 				var isSelf:Bool = (message[6] == true);
-				callOnLuas(isSelf ? 'goodNoteHit' : 'opponentNoteHit', [message[5], message[1], message[4], message[2], getCharPlayTag(isSelf, sid)]);
-				callOnHScript(isSelf ? 'goodNoteHit' : 'opponentNoteHit', [notes.members[Std.int(message[5])], getCharPlayTag(isSelf, sid)]);
+				// 参数复用: 见 backend.Scripts。远端每个音符也会走这里, 同样是按音符计的分配。
+				var netCharTag:String = getCharPlayTag(isSelf, sid);
+				// 分发前整组写入, 避免上一次分发 (可能执行过脚本) 留下的值。
+				callOnLuas(isSelf ? 'goodNoteHit' : 'opponentNoteHit',
+					Scripts.fill5(Scripts.get(5), message[5], message[1], message[4], message[2], netCharTag));
+				// HScript 侧要的是 note 对象 + 同一个 tag 串。netArgs5 上次分发可能触发过脚本,
+				// 所以这里在分发前重新写入 (fill2), 不依赖上层缓存。
+				callOnHScript(isSelf ? 'goodNoteHit' : 'opponentNoteHit',
+					Scripts.fill2(Scripts.get(2), notes.members[Std.int(message[5])], netCharTag));
 
 				updateScoreSID(sid, false);
 				getVocalsFromSIDVolume(sid, 1);
@@ -11630,7 +11688,7 @@ function calculateResetTime():Float {
 				if (message == null || message[0] == null || message[1] == null || message[2] == null)
 					return;
 
-				if (callOnScripts('onMessageNoteMiss', [sid, message], true) == FunkinLua.Function_Stop)
+				if (callOnScripts('onMessageNoteMiss', Scripts.fill2(Scripts.get(2), sid, message), true) == FunkinLua.Function_Stop)
 					return;
 
 				// The remote sends a noteMiss for *every* sustain segment, and this used to recycle the local
@@ -11680,7 +11738,7 @@ function calculateResetTime():Float {
 			online.backend.Waiter.put(() -> {
 				if (destroyed)
 					return;
-				if (callOnScripts('onPlayerPing', [sid, player.ping], true) == FunkinLua.Function_Stop)
+				if (callOnScripts('onPlayerPing', Scripts.fill2(Scripts.get(2), sid, player.ping), true) == FunkinLua.Function_Stop)
 					return;
 
 				updateScoreSID(sid, true);
@@ -11691,7 +11749,7 @@ function calculateResetTime():Float {
 			online.backend.Waiter.put(() -> {
 				if (destroyed)
 					return;
-				if (callOnScripts('onPlayerBotplay', [sid, value], true) == FunkinLua.Function_Stop)
+				if (callOnScripts('onPlayerBotplay', Scripts.fill2(Scripts.get(2), sid, value), true) == FunkinLua.Function_Stop)
 					return;
 
 				showBotplay();
@@ -11702,7 +11760,7 @@ function calculateResetTime():Float {
 			online.backend.Waiter.put(() -> {
 				if (destroyed)
 					return;
-				if (callOnScripts('onPlayerNoteHold', [sid, value], true) == FunkinLua.Function_Stop)
+				if (callOnScripts('onPlayerNoteHold', Scripts.fill2(Scripts.get(2), sid, value), true) == FunkinLua.Function_Stop)
 					return;
 
 				if (characters.exists(sid))

@@ -3,6 +3,7 @@ package;
 import Note.PreloadedChartNote;
 
 /**
+ * 谁给你做Note优化
  * Column storage for one numeric field: hoisted to a single scalar when every note shares the
  * same value, otherwise a packed Float64 column. Charts are extremely repetitive (stepCrochet,
  * hit/miss health, offsets and every string column are usually one value for the whole file),
@@ -276,6 +277,17 @@ private class FlagsCol
 		return (b & (1 << (bit & 7))) != 0;
 	}
 
+	/**
+	 * The whole 16 bit flag word in one read. get(i, bit) reads one byte per flag, so decoding
+	 * all 14 flags cost 14 reads of the same two bytes; the bulk row readers decode from this
+	 * single value instead. Byte order matches pack() (low byte first).
+	 */
+	public inline function word(i:Int):Int
+	{
+		var at:Int = i << 1;
+		return data.get(at) | (data.get(at + 1) << 8);
+	}
+
 	public function permute(idx:Array<Int>, len:Int):Void
 	{
 		var next:haxe.io.Bytes = haxe.io.Bytes.alloc(n << 1);
@@ -526,6 +538,234 @@ class ChartNotesData
 		};
 	}
 
+	// ── allocation-free row access (hot drain loops) ────────────────────────
+	//
+	// get() builds a fresh 358-byte DTO for every row, and the drain paths read one row per
+	// note: on a folded dense chart that is millions of short-lived objects per song, which is
+	// exactly what the GC then has to stop the world to collect. These accessors expose the same
+	// fields straight out of the columns, so a loop can decide on a row without materialising it.
+	//
+	// A row that a script has parked (liveAt / parkedRows) is the exception: the parked DTO is
+	// the row's real storage for script-written fields, so reads must go through it. Routed here
+	// behind one check so callers stay branch-free, and a chart no script touches never pays it.
+
+	/** True when row i must be read as a live DTO because a script has written to it. */
+	public inline function isParked(i:Int):Bool
+		return parkedRows != null && parkedRows.exists(i);
+
+	/**
+	 * The row to hand to a hot loop: the parked live DTO when a script has written to it, otherwise
+	 * `out` filled from the columns.
+	 *
+	 * The distinction matters because a parked DTO is the real storage for the fields a script
+	 * writes, including the lazily created splash DTO that setupNoteData() reads. Copying a parked
+	 * row into a scratch would quietly drop that state, so such rows are returned as-is (with
+	 * wasHit / noteDensity mirrored from the columns, exactly as get() does).
+	 *
+	 * Charts no script touches never park anything, so `out` is used for every row and the scan
+	 * allocates nothing at all. `out` is fully overwritten per call, so one instance serves a
+	 * whole scan; the return value is null only for an out-of-range row.
+	 */
+	public function rowAt(i:Int, out:PreloadedChartNote):PreloadedChartNote
+	{
+		if (i < 0 || i >= length) return null;
+		if (parkedRows != null)
+		{
+			var parked = parkedRows.get(i);
+			if (parked != null)
+			{
+				parked.wasHit = flags.get(i, 11);
+				parked.noteDensity = fNoteDensity.get(i);
+				return parked;
+			}
+		}
+		fillInto(i, out);
+		return out;
+	}
+
+	/**
+	 * Copies row i into `out` without allocating. Column storage only -- a parked row's
+	 * script-written fields are not copied (use rowAt() when those matter).
+	 *
+	 * Returns false for an out-of-range row, leaving `out` untouched.
+	 */
+	public function getInto(i:Int, out:PreloadedChartNote):Bool
+	{
+		if (i < 0 || i >= length || out == null) return false;
+		fillInto(i, out);
+		return true;
+	}
+
+	/** Column-only materialisation of row i into `out`. Never consults parkedRows. */
+	function fillInto(i:Int, out:PreloadedChartNote):Void
+	{
+		var hue:Float = fSplashHue.get(i);
+		var sat:Float = fSplashSat.get(i);
+		var brt:Float = fSplashBrt.get(i);
+		out.strumTime = fStrumTime.get(i);
+		out.sustainLength = fSustainLength.get(i);
+		out.parentST = fParentST.get(i);
+		out.parentSL = fParentSL.get(i);
+		out.stepCrochet = fStepCrochet.get(i);
+		out.hitHealth = fHitHealth.get(i);
+		out.missHealth = fMissHealth.get(i);
+		out.multSpeed = fMultSpeed.get(i);
+		out.multAlpha = fMultAlpha.get(i);
+		out.noteDensity = fNoteDensity.get(i);
+		out.offsetX = fOffsetX.get(i);
+		out.offsetY = fOffsetY.get(i);
+		out.noteSplashHue = Math.isNaN(hue) ? null : hue;
+		out.noteSplashSat = Math.isNaN(sat) ? null : sat;
+		out.noteSplashBrt = Math.isNaN(brt) ? null : brt;
+		out.noteType = sNoteType.get(i);
+		out.animSuffix = sAnimSuffix.get(i);
+		out.noteskin = sNoteskin.get(i);
+		out.texture = sTexture.get(i);
+		out.noteSplashTexture = sSplashTexture.get(i);
+		out.noteData = iNoteData.raw(i);
+		out.mania = iMania.raw(i) - 1;
+		// One word read for all 14 flags: flags.get() per flag is 14 reads of the same two bytes.
+		var f:Int = flags.word(i);
+		out.mustPress = (f & 1) != 0;
+		out.oppNote = (f & 2) != 0;
+		out.gfNote = (f & 4) != 0;
+		out.noAnimation = (f & 8) != 0;
+		out.noMissAnimation = (f & 16) != 0;
+		out.isSustainNote = (f & 32) != 0;
+		out.isSustainEnd = (f & 64) != 0;
+		out.hitCausesMiss = (f & 128) != 0;
+		out.ignoreNote = (f & 256) != 0;
+		out.blockHit = (f & 512) != 0;
+		out.lowPriority = (f & 1024) != 0;
+		out.wasHit = (f & 2048) != 0;
+		out.noteSplashDisabled = (f & 4096) != 0;
+		out.hitsoundDisabled = (f & 8192) != 0;
+	}
+
+	/** Field-by-field copy, used only for the rare parked row. */
+	static function copyInto(src:PreloadedChartNote, out:PreloadedChartNote):Void
+	{
+		out.strumTime = src.strumTime;
+		out.sustainLength = src.sustainLength;
+		out.parentST = src.parentST;
+		out.parentSL = src.parentSL;
+		out.stepCrochet = src.stepCrochet;
+		out.hitHealth = src.hitHealth;
+		out.missHealth = src.missHealth;
+		out.multSpeed = src.multSpeed;
+		out.multAlpha = src.multAlpha;
+		out.noteDensity = src.noteDensity;
+		out.offsetX = src.offsetX;
+		out.offsetY = src.offsetY;
+		out.noteSplashHue = src.noteSplashHue;
+		out.noteSplashSat = src.noteSplashSat;
+		out.noteSplashBrt = src.noteSplashBrt;
+		out.noteType = src.noteType;
+		out.animSuffix = src.animSuffix;
+		out.noteskin = src.noteskin;
+		out.texture = src.texture;
+		out.noteSplashTexture = src.noteSplashTexture;
+		out.noteData = src.noteData;
+		out.mania = src.mania;
+		out.mustPress = src.mustPress;
+		out.oppNote = src.oppNote;
+		out.gfNote = src.gfNote;
+		out.noAnimation = src.noAnimation;
+		out.noMissAnimation = src.noMissAnimation;
+		out.isSustainNote = src.isSustainNote;
+		out.isSustainEnd = src.isSustainEnd;
+		out.hitCausesMiss = src.hitCausesMiss;
+		out.ignoreNote = src.ignoreNote;
+		out.blockHit = src.blockHit;
+		out.lowPriority = src.lowPriority;
+		out.wasHit = src.wasHit;
+		out.noteSplashDisabled = src.noteSplashDisabled;
+		out.hitsoundDisabled = src.hitsoundDisabled;
+	}
+
+	/** A reusable blank DTO for getInto() scans. Field defaults match ChartNotesData.DEFAULTS. */
+	public static function scratchNote():PreloadedChartNote
+	{
+		return {
+			strumTime: 0, sustainLength: 0, parentST: 0, parentSL: 0, stepCrochet: 0,
+			hitHealth: 0.023, missHealth: 0.0475, multSpeed: 1, multAlpha: 1, noteDensity: 1,
+			offsetX: 0, offsetY: 0,
+			noteSplashHue: null, noteSplashSat: null, noteSplashBrt: null,
+			noteType: '', animSuffix: '', noteskin: '', texture: '', noteSplashTexture: null,
+			noteData: 0, mania: -1,
+			mustPress: false, oppNote: false, gfNote: false, noAnimation: false, noMissAnimation: false,
+			isSustainNote: false, isSustainEnd: false, hitCausesMiss: false, ignoreNote: false,
+			blockHit: false, lowPriority: false, wasHit: false, noteSplashDisabled: false, hitsoundDisabled: false
+		};
+	}
+
+	// ── scalar column reads (no DTO, not even a scratch copy) ───────────────
+	//
+	// A parked row is authoritative for whatever the script wrote into it, so every accessor here
+	// starts with the parked check. That keeps a scalar read and a rowAt() read of the same row
+	// consistent no matter which the caller uses. The check is one null test on a chart no script
+	// touches, so the hot loops pay effectively nothing for it.
+
+	/** The parked DTO for row i, or null. */
+	inline function parkedOrNull(i:Int):PreloadedChartNote
+		return (parkedRows == null) ? null : parkedRows.get(i);
+
+	public inline function sustainLengthAt(i:Int):Float
+	{
+		if (i < 0 || i >= length) return 0;
+		var p = parkedOrNull(i);
+		return (p != null) ? p.sustainLength : fSustainLength.get(i);
+	}
+
+	/** Flags 32 (isSustainNote) and the sustainLength column: "this row is a hold or a hold tail". */
+	public inline function isHoldRow(i:Int):Bool
+	{
+		if (i < 0 || i >= length) return false;
+		var p = parkedOrNull(i);
+		if (p != null) return p.isSustainNote || p.sustainLength > 0;
+		return flags.get(i, 5) || fSustainLength.get(i) > 0;
+	}
+
+	public inline function strumTimeRow(i:Int):Float
+	{
+		if (i < 0 || i >= length) return 0;
+		var p = parkedOrNull(i);
+		return (p != null) ? p.strumTime : fStrumTime.get(i);
+	}
+
+	public inline function noteDataAt(i:Int):Int
+	{
+		if (i < 0 || i >= length) return 0;
+		var p = parkedOrNull(i);
+		return (p != null) ? p.noteData : iNoteData.raw(i);
+	}
+
+	public inline function mustPressAt(i:Int):Bool
+	{
+		if (i < 0 || i >= length) return false;
+		var p = parkedOrNull(i);
+		return (p != null) ? p.mustPress : flags.get(i, 0);
+	}
+
+	public inline function hitHealthAt(i:Int):Float
+	{
+		if (i < 0 || i >= length) return 0;
+		var p = parkedOrNull(i);
+		return (p != null) ? p.hitHealth : fHitHealth.get(i);
+	}
+
+	public inline function multSpeedAt(i:Int):Float
+	{
+		if (i < 0 || i >= length) return 1;
+		var p = parkedOrNull(i);
+		return (p != null) ? p.multSpeed : fMultSpeed.get(i);
+	}
+
+	/** Every Bool column of row i in one read (bit order is pack()'s). Not parked-aware: use for
+	 *  whole-word decodes only, where rowAt()/get() already handles the parked case. */
+	public inline function flagsAt(i:Int):Int
+		return (i >= 0 && i < length) ? flags.word(i) : 0;
+
 	/** Column-level reads/writes. The turbo fold increments a representative's noteDensity long
 	 *  after it was appended, and a write through a get() DTO cannot be written back. */
 	public inline function noteDensityAt(i:Int):Float
@@ -616,6 +856,21 @@ abstract ChartNotes(ChartNotesData)
 	public inline function noteDensityAt(i:Int):Float return this.noteDensityAt(i);
 	public inline function setNoteDensity(i:Int, v:Float):Void this.setNoteDensity(i, v);
 	public inline function strumTimeAt(i:Int):Float return this.strumTimeAt(i);
+
+	/** Allocation-free row read (see ChartNotesData.getInto). `out` is a caller-owned scratch DTO. */
+	public inline function getInto(i:Int, out:PreloadedChartNote):Bool return this.getInto(i, out);
+	/** Hot-loop row read: the parked live row when a script wrote to it, else `out`. See rowAt. */
+	public inline function rowAt(i:Int, out:PreloadedChartNote):PreloadedChartNote return this.rowAt(i, out);
+	public static inline function scratchNote():PreloadedChartNote return ChartNotesData.scratchNote();
+	public inline function isParked(i:Int):Bool return this.isParked(i);
+	public inline function sustainLengthAt(i:Int):Float return this.sustainLengthAt(i);
+	public inline function strumTimeRow(i:Int):Float return this.strumTimeRow(i);
+	public inline function isHoldRow(i:Int):Bool return this.isHoldRow(i);
+	public inline function noteDataAt(i:Int):Int return this.noteDataAt(i);
+	public inline function mustPressAt(i:Int):Bool return this.mustPressAt(i);
+	public inline function hitHealthAt(i:Int):Float return this.hitHealthAt(i);
+	public inline function multSpeedAt(i:Int):Float return this.multSpeedAt(i);
+	public inline function flagsAt(i:Int):Int return this.flagsAt(i);
 	public inline function hasHolds():Bool return this.hasHolds();
 	public inline function toArray():Array<PreloadedChartNote> return this.toArray();
 

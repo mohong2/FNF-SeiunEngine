@@ -964,15 +964,9 @@ class Note extends FlxSprite implements NoteSplashOwner {
         _animCacheKey = null;
 
         // ── release render resources (keep the FlxSprite structure) ──
+        // 依旧
         if (animation != null)
-        {
             animation.curAnim = null;
-            animation.destroyAnimations();
-        }
-        frames = null;
-        graphic = null;      // set_graphic: oldGraphic.useCount--
-        _frame = null;
-        _frameGraphic = null;
         clipRect = null;
         shader = null;
         colorSwap = null;
@@ -1025,6 +1019,8 @@ class Note extends FlxSprite implements NoteSplashOwner {
             animation.add(name, cached, 30, true);
         }
     }
+
+    var _boundMaterialKey:String = null;
 
     public function reloadNote(?prefix:String = '', ?texture:String = '', ?suffix:String = '') {
         if(prefix == null) prefix = '';
@@ -1106,6 +1102,8 @@ class Note extends FlxSprite implements NoteSplashOwner {
 		}
         if(isSustainNote) scale.y = lastScaleY;
         updateHitbox();
+        if (frames != null)
+            _boundMaterialKey = ((prefix.length > 0 || suffix.length > 0) ? null : materialKey(texture));
 
         // 材质溯源同步: 让 texture 字段始终反映"当前 frames 由哪种输入加载而来",
         // 池化复用时 setupNoteData 的按值比较才能安全跳过重载。
@@ -1164,6 +1162,19 @@ class Note extends FlxSprite implements NoteSplashOwner {
             rgbShader.fallbackShader = (colorSwap != null) ? colorSwap.shader : null;
     }
 
+    inline function materialKey(textureValue:String):String
+    {
+        return textureValue + '|' + baseTex() + '|' + mania
+            + '|' + (isSustainNote ? 'S' : 'N') + '|' + (isSustainEnd ? 'E' : '0')
+            + '|' + (PlayState.isPixelStage ? 'P' : 'N');
+    }
+
+    function applyNoteGraphicSize():Void
+    {
+        setGraphicSize(Std.int(frameWidth * 0.7 * Note.noteScale(mania)));
+        updateHitbox();
+    }
+
     function loadNoteAnims() {
         var b:Int = (noteData >= 0) ? baseTex() : 0;
         addCachedAnim(colArray[b] + 'Scroll', colArray[b] + '0');
@@ -1172,8 +1183,7 @@ class Note extends FlxSprite implements NoteSplashOwner {
             addCachedAnim(colArray[b] + 'holdend', colArray[b] + ' hold end');
             addCachedAnim(colArray[b] + 'hold', colArray[b] + ' hold piece');
         }
-        setGraphicSize(Std.int(width * 0.7 * Note.noteScale(mania)));
-        updateHitbox();
+        applyNoteGraphicSize();
     }
 
     function loadPixelNoteAnims() {
@@ -1195,6 +1205,7 @@ class Note extends FlxSprite implements NoteSplashOwner {
         // 像素动画始终以显式帧数组 add，按 sprite 独立注册（缓存仅用于去重复创建无谓对象）
         animation.add(name, frames, 30, true);
     }
+
 
     public function setupNoteData(chartNoteData:PreloadedChartNote):Void {
         // 自愈: 池化复用/异常路径下 frames 缺失时强制重载一次, 避免空帧参与渲染。
@@ -1273,7 +1284,20 @@ class Note extends FlxSprite implements NoteSplashOwner {
         else if(tx.length > 0) targetTexture = tx;
 
         animation.curAnim = null;
+        var _reuseMaterial:Bool = false;
+        if (frames != null && frames.numFrames > 0 && !isSustainNote && sustainLength <= 0 && !PlayState.isPixelStage)
+            _reuseMaterial = (materialKey(targetTexture) == _boundMaterialKey);
+        if (!_reuseMaterial)
+            @:bypassAccessor texture = null;
         this.texture = targetTexture;
+        if (_reuseMaterial)
+        {
+            applyNoteGraphicSize();
+            if (!PlayState.isPixelStage) antialiasing = ClientPrefs.data.globalAntialiasing;
+            if (targetTexture.length > 0 && targetTexture != 'NOTE_assets')
+                applyLaneColorShader = false;
+        }
+        //为什么要缓存
 
         noteType = chartNoteData.noteType;
         animSuffix = chartNoteData.animSuffix;

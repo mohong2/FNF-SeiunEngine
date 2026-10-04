@@ -4357,7 +4357,6 @@ class FunkinLua {
 	 * then falls through to the next searcher).
 	 */
 	function resolveRequireModule(modName:String, roots:Array<String>, chunksName:String):Dynamic {
-		probeRequireResolves++; // F8 probe: a require() missed package.loaded and searched the filesystem
 		if (modName == null || modName.length == 0) return null;
 		// 路径穿越保护：Lua 标准 require 也不允许 ".."，这里直接拦截
 		// English: path-traversal guard — standard require also rejects ".."
@@ -4517,7 +4516,6 @@ class FunkinLua {
 	 * English: Resolve an import target file to its full path; null when not found.
 	 */
 	function resolveImportFile(path:String, roots:Array<String>):String {
-		probeImportResolves++; // F8 probe: import() always re-resolves and re-executes (include semantics)
 		if (path == null || path.length == 0) return null;
 		#if sys
 		// 以 .lua 结尾 / 绝对路径 / 带分隔符的路径 → 按文件路径解析；
@@ -5475,15 +5473,6 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 	}
 
 	/**
-	 * F8 probe counters: how many times the require / import resolvers actually had to search
-	 * the file system. A mod that calls import() (or a never-resolving require) inside a
-	 * per-frame callback shows up here at once, which separates "the callback body is slow"
-	 * from "the callback re-reads and re-compiles files every frame".
-	 */
-	public static var probeRequireResolves:Int = 0;
-	public static var probeImportResolves:Int = 0;
-
-	/**
 	 * Negative callback cache for call(). A global name is remembered as "nil at stamp S" and
 	 * the getglobal/type/pop probe is skipped while the stamp is still S. The stamp survives
 	 * only as long as nothing could have defined that global:
@@ -5574,7 +5563,10 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 		// 记录当前执行的脚本 (见 executing 的说明), 返回时恢复, 支持嵌套调用。
 		var __prevExec:FunkinLua = executing;
 		executing = this;
+		// 脚本执行期间, 复用参数槽会串台 (脚本可能再次触发引擎回调), 见 backend.Scripts。
+		backend.Scripts.enterExec();
 		var __ret:Dynamic = callInner(func, args);
+		backend.Scripts.exitExec();
 		executing = __prevExec;
 		return __ret;
 	}

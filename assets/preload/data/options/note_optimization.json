@@ -3,17 +3,26 @@
 		"nameKey": "option.noteOptimizationNotice",
 		"defaultName": "Show the Notice Again",
 		"descKey": "option.noteOptimizationNotice.desc",
-		"defaultDesc": "Show the note-optimisation disclaimer again without restarting the game.",
+		"defaultDesc": "Show the note-optimisation disclaimer again.",
 		"variable": "showNoteOptimizationNotice",
 		"type": "button",
 		"defaultValue": false,
 		"onChange": "onChangeShowNoteOptimizationNotice"
 	},
 	{
+		"nameKey": "option.scriptArgReuse",
+		"defaultName": "Reuse Script Callback Arguments",
+		"descKey": "option.scriptArgReuse.desc",
+		"defaultDesc": "Reuses one argument array for script callbacks instead of allocating one per hit.\nStops the GC stutter on dense charts. Off = stock per-hit allocation.",
+		"variable": "scriptArgReuse",
+		"type": "bool",
+		"defaultValue": true
+	},
+	{
 		"nameKey": "option.perfMode",
 		"defaultName": "Performance Mode",
 		"descKey": "option.perfMode.desc",
-		"defaultDesc": "Master switch for extreme-chart optimizations (bulk skip, popup/splash\nmerging, spawn budgets). When off, gameplay is identical to the stock engine;\nonly enable it for absurd-NPS charts.",
+		"defaultDesc": "Master switch for extreme-chart optimizations. Off = stock gameplay.\nOnly enable on absurd-NPS charts; online disables it automatically.",
 		"variable": "perfMode",
 		"type": "bool",
 		"defaultValue": false
@@ -22,7 +31,7 @@
 		"nameKey": "option.turboMode",
 		"defaultName": "Turbo Mode",
 		"descKey": "option.turboMode.desc",
-		"defaultDesc": "Ultimate extreme-chart switch. When ON, botplay is forced and locked, high-density note sections use precomputed aggregation plus data-level bulk settlement instead of materializing tens of thousands of sprites. When OFF, everything is exactly the stock behavior.",
+		"defaultDesc": "Extreme-chart switch: forces botplay and settles dense sections as data,\nso millions of notes stay playable. Off = stock behavior.",
 		"variable": "turboMode",
 		"type": "bool",
 		"defaultValue": false
@@ -31,7 +40,7 @@
 		"nameKey": "option.limitNotes",
 		"defaultName": "Max Simultaneous Notes",
 		"descKey": "option.limitNotes.desc",
-		"defaultDesc": "Maximum materialized notes at once. 0 means unlimited (only for high-end machines).\nHigher values render more notes but cost more CPU/GPU and memory.",
+		"defaultDesc": "Maximum notes alive at once. 0 = unlimited (high-end machines only).\nHigher values cost more CPU/GPU and memory.",
 		"variable": "limitNotes",
 		"type": "int",
 		"defaultValue": 0,
@@ -44,7 +53,7 @@
 		"nameKey": "option.fastSort",
 		"defaultName": "Fast Note Sorting",
 		"descKey": "option.fastSort.desc",
-		"defaultDesc": "H-Slice style faster sort: only visible/alive notes are sorted every frame.\nImproves frame time on dense charts; turn off if a mod depends on the full group order.",
+		"defaultDesc": "Sorts only visible/alive notes each frame. Turn off if a mod needs\nthe full group order; online disables it automatically.",
 		"variable": "fastSort",
 		"type": "bool",
 		"defaultValue": false
@@ -53,7 +62,7 @@
 		"nameKey": "option.bulkSkip",
 		"defaultName": "Bulk Skip Old Notes",
 		"descKey": "option.bulkSkip.desc",
-		"defaultDesc": "H-Slice style bulk skipping of already expired chart notes.\nAvoids spawn->instant miss churn on extreme NPS charts.\nRequires Performance Mode; auto-disabled while Lua/HScript/replay/online is active.",
+		"defaultDesc": "Bulk-skips already expired notes to avoid spawn-then-miss churn.\nAuto-disabled with Lua/HScript, replay or online.",
 		"variable": "bulkSkip",
 		"type": "bool",
 		"defaultValue": false
@@ -62,7 +71,7 @@
 		"nameKey": "option.chartCache",
 		"defaultName": "Huge Chart Cache",
 		"descKey": "option.chartCache.desc",
-		"defaultDesc": "Keeps the note list of very large charts (64 MB and up) on disk, so re-entering the song\nskips parsing, folding and sorting it again. Only charts that already load through the\nstreaming reader are affected; turning this off always reads the chart file from scratch.",
+		"defaultDesc": "Caches the note list of huge charts (64 MB+) so re-entering skips parsing\nand folding. Off always re-reads the chart file.",
 		"variable": "chartCache",
 		"type": "bool",
 		"defaultValue": true
@@ -71,7 +80,7 @@
 		"nameKey": "option.chartCacheCompress",
 		"defaultName": "Compress the Chart Cache",
 		"descKey": "option.chartCacheCompress.desc",
-		"defaultDesc": "Deflates the cached note list in 1 MB blocks. The same list measured 290 MB plain\nand 2 MB compressed, at the cost of about one extra second per load and per save.\nTurn this off for the fastest possible load if the disk usage does not bother you.",
+		"defaultDesc": "Compresses the cached note list (290 MB -> 2 MB measured), costing about\none second per load/save. Off = fastest load, more disk.",
 		"variable": "chartCacheCompress",
 		"type": "bool",
 		"defaultValue": true
@@ -80,7 +89,7 @@
 		"nameKey": "option.clearChartCache",
 		"defaultName": "Clear the Chart Cache",
 		"descKey": "option.clearChartCache.desc",
-		"defaultDesc": "Press ENTER to delete every cached chart note list. Do it after editing a chart in place:\nan edited chart is detected by its size and timestamp, but a tool that preserves both\nwould leave the old note list in use.",
+		"defaultDesc": "Press ENTER to delete every cached note list. Do this after editing a chart\nin place if the tool preserved its size and timestamp.",
 		"variable": "clearChartCache",
 		"type": "button",
 		"defaultValue": false,

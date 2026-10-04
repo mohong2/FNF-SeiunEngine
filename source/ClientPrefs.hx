@@ -148,6 +148,7 @@ import sys.io.Process;
 	public var showWatermark:Bool = true;
 	/** Placeholder state for the "show the note-optimisation notice again" action row: a button option must bind a field, but the action never reads it. */
 	public var showNoteOptimizationNotice:Bool = false;
+	public var scriptArgReuse:Bool = true;
 	/** Trim transparent borders and repack large sheets at runtime on the main thread, with XML/dimension validation. */
 	public var gfxRuntimeRepack:Bool = true;
 	public var splashAlpha:Float = 0.6;
@@ -217,6 +218,33 @@ import sys.io.Process;
 
 	// Separate Update/Draw mode
 	public var separateUpdateDraw:Bool = false;
+
+	// ─── Video rendering (FFmpeg pipe) ────────────────────────────────────
+	// Preview mode: everything runs exactly as during a real render (fixed
+	// timestep, per-frame capture) but no ffmpeg process is spawned and no
+	// file is written. Used to rehearse a render and by the codec test.
+	public var previewRender:Bool = false;
+	// Encoder id; must be a key of backend.FFMpeg.CODECS.
+	public var renderCodec:String = 'H.264 (x264)';
+	// Rate control: CRF/CQP | VBR | CBR
+	public var renderMode:String = 'CRF/CQP';
+	// Quality for CRF/CQP (lower = better).
+	public var renderQuality:Int = 18;
+	// Target bitrate in Mbit/s for VBR/CBR.
+	public var renderBitrate:Int = 12;
+	// How many captured frames may be in flight before frames are dropped.
+	// This is what bounds the recorder's memory:
+	//   renderBufferFrames * width * height * 4 bytes.
+	public var renderBufferFrames:Int = 60;
+	// Framerate the render is captured and encoded at. The loop is pinned to it
+	// while rendering and one captured frame is exactly 1/renderFps of song time,
+	// so the video always lasts as long as the song no matter how fast the PC is.
+	// Free choice: any rate from 15 to 480.
+	public var renderFps:Int = 60;
+	// Mix the song's Inst/Voices tracks into the rendered video.
+	public var renderAudio:Bool = true;
+	// Start recording automatically the moment a song starts, with no hotkey.
+	public var renderOnSongStart:Bool = false;
 
 	// Old pause menu style
 	public var oldPauseMenu:Bool = false;
@@ -866,6 +894,7 @@ class ClientPrefs {
 		if (data.modSettings == null)
 			data.modSettings = new Map<String, Map<String, Dynamic>>();
 
+		backend.Scripts.reuseEnabled = data.scriptArgReuse;//何意味
 		// Multi-key: old saves only have four arrowHSV entries; pad to nine (one per A~I lane)
 		// so the NotesSubState carousel and in-game colour lookups cannot go out of bounds.
 		if (data.arrowHSV == null || data.arrowHSV.length < 9)

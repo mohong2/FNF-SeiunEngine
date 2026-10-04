@@ -32,6 +32,15 @@
 		"rpcTitleKey": "option.graphicsSettingsMenu.rctitle"
 	},
 	{
+		"id": "render",
+		"nameKey": "option.render",
+		"defaultName": "Render Video",
+		"type": "settings",
+		"optionsFile": "render",
+		"rpcTitleKey": "option.renderSettings.rctitle",
+		"platform": "desktop"
+	},
+	{
 		"id": "note_optimization",
 		"nameKey": "option.note_optimization",
 		"defaultName": "Note Optimisation",
