@@ -2006,6 +2006,16 @@ class FreeplayState extends SeiunMenuState
 
 		var modUrl:String = online.mods.OnlineMods.getModURL(modDir);
 
+		// Online only promises one-file charts: a segmented (ChartParts) chart has no single file
+		// for `Song.hashRawSong`, and without a hash the server can never set `hasSong`, so the
+		// room would wait forever. Refuse the selection here, with a clear message, instead of
+		// sending `setSong` with the empty md5 a failed hash would leave behind.
+		if (GameClient.chartIsSegmented(poop, songLowercase, modDir)) {
+			GameClient.refuseSegmentedChart();
+			return;
+		}
+
+		var chartMd5:String = null;
 		try {
 			// The chart hash is built after switching `Mods.currentModDirectory` to the song's mod.
 			// Without it
@@ -2016,29 +2026,37 @@ class FreeplayState extends SeiunMenuState
 			// later `currentModDirectory` is unchanged). `songData.folder` is the song's mod:
 			// `WeekData.setDirectoryFromWeek()` (`WeekData.hx:263-268`) sets it to
 			// `leWeek.folder` before `addSong()`, and `SongMetadata.folder` records that value.
-			var chartMd5:String = "";
 			online.util.ShitUtil.tempSwitchMod(modDir, function () {
 				chartMd5 = Song.hashRawSong(poop, songLowercase);
 			});
-
-			var data:Array<Dynamic> = [
-				songLowercase,
-				poop,
-				curDifficulty,
-				chartMd5,
-				modDir,
-				modUrl,
-				backend.Difficulty.list
-			];
-			trace(data);
-			GameClient.send("setSong", data);
-			online.gui.Alert.alert("Room song set to:\n" + songLowercase + " (" + poop + ")"
-				+ (modDir != "" ? "\nMod: " + modDir + (modUrl == null || modUrl == "" ? "\n(WARNING: this mod has no URL, others can't download it)" : "") : ""));
 		}
 		catch (e:Dynamic) {
 			trace('ERROR! $e');
-			online.gui.Alert.alert("Couldn't set the room song!", Std.string(e));
+			// No hash means no `verifyChart` from anyone: the room cannot start. Say so instead of
+			// sending `setSong` and leaving the room stuck.
+			GameClient.refuseUnhashableChart(e);
+			return;
 		}
+
+		// A "" hash would look like a successful selection while the server can never verify it.
+		if (chartMd5 == null || chartMd5.length == 0) {
+			GameClient.refuseUnhashableChart('empty chart hash for ' + poop + ' (' + songLowercase + ')');
+			return;
+		}
+
+		var data:Array<Dynamic> = [
+			songLowercase,
+			poop,
+			curDifficulty,
+			chartMd5,
+			modDir,
+			modUrl,
+			backend.Difficulty.list
+		];
+		trace(data);
+		GameClient.send("setSong", data);
+		online.gui.Alert.alert("Room song set to:\n" + songLowercase + " (" + poop + ")"
+			+ (modDir != "" ? "\nMod: " + modDir + (modUrl == null || modUrl == "" ? "\n(WARNING: this mod has no URL, others can't download it)" : "") : ""));
 	}
 	#end
 }

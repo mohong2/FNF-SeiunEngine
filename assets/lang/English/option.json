@@ -101,7 +101,7 @@
     "option.newchartingstate" : "New Charting State",
     "option.newchartingstate.desc" : "If checked, the new charting state will be used instead of the old one.",
     "option.segmentedCharts": "Multi-file Charts",
-    "option.segmentedCharts.desc": "How charts that were split across several files are loaded.\nAuto: <song>-0.json, <song>-1.json, ... are played as one song.\nManifest: only the parts listed in <song>.parts.json are merged.\nOff: every chart file stays its own difficulty (the stock behavior).\nAt song select, press M (the on-screen D button on Android) to override this for one song.",
+    "option.segmentedCharts.desc": "How charts that were split across several files are loaded.\nAuto: <song>-0.json, <song>-1.json, ... are played as one song.\nManifest: only the parts listed in <song>.parts.json are merged.\nOff: every chart file stays its own difficulty (the stock behavior).\nAt song select, press M (the on-screen D button on Android) to override this for one song.\nOnline only promises single-file charts: a segmented chart combined with the huge-chart cache is out of scope and is not validated there.",
     "option.chartAutosave" : "Chart Auto-save",
     "option.chartAutosave.desc" : "If checked, chart editors will automatically save backups and create autosave data (also when entering Playtest). Unchecked by default so your chart is NEVER saved without you pressing Save manually.",
     "option.oldPauseMenu": "Old Pause Menu",
@@ -310,9 +310,9 @@
     "option.storageType.desc": "Choose how the game accesses storage.\nEXTERNAL_DATA (safest) → /Android/data/<package>/files\nEXTERNAL (legacy) → /storage/emulated/0/.<game>\nEXTERNAL_OBB → /Android/obb/<package>\nEXTERNAL_MEDIA → /Android/media/<package>\n\nIf the selected path fails, the game falls back automatically."
 ,
     "option.turboMode": "Turbo Mode",
-    "option.turboMode.desc": "Extreme-chart switch: forces botplay and settles dense sections as data,\nso millions of notes stay playable. Off = stock behavior.",
+    "option.turboMode.desc": "Extreme-chart switch: forces botplay and settles dense sections as data,\nso millions of notes stay playable. Off = stock behavior.\nOnline disables it automatically.",
     "option.scriptArgReuse": "Reuse Script Callback Arguments",
-    "option.scriptArgReuse.desc": "Reuses one argument array for script callbacks instead of allocating one per hit.\nStops the GC stutter on dense charts. Off = stock per-hit allocation.",
+    "option.scriptArgReuse.desc": "Reuses one argument array for script callbacks instead of allocating one per hit.\nStops the GC stutter on dense charts. Off = stock per-hit allocation.\nOnline disables it automatically.",
 
     "option.perfMode": "Performance Mode",
     "option.perfMode.desc": "Master switch for extreme-chart optimizations. Off = stock gameplay.\nOnly enable on absurd-NPS charts; online disables it automatically.",
@@ -321,7 +321,7 @@
     "option.fastSort": "Fast Note Sorting",
     "option.fastSort.desc": "Sorts only visible/alive notes each frame. Turn off if a mod needs\nthe full group order; online disables it automatically.",
     "option.limitNotes": "Max Simultaneous Notes",
-    "option.limitNotes.desc": "Maximum notes alive at once. 0 = unlimited (high-end machines only).\nHigher values cost more CPU/GPU and memory.",
+    "option.limitNotes.desc": "Maximum notes alive at once. 0 = unlimited (high-end machines only).\nHigher values cost more CPU/GPU and memory.\nOnline disables this cap automatically.",
     "option.chartCache": "Huge Chart Cache",
     "option.chartCache.desc": "Caches the note list of huge charts (64 MB+) so re-entering skips parsing\nand folding. Off always re-reads the chart file.",
     "option.chartCacheCompress": "Compress the Chart Cache",
@@ -386,7 +386,7 @@
     "option.previewRender": "Preview Render",
     "option.previewRender.desc": "Runs everything a real render does (fixed timestep, per-frame capture)\nbut writes no file. Use it to check timing before encoding.",
     "option.renderFps": "Render Framerate",
-    "option.renderFps.desc": "Frames per second the video is captured and encoded at. Free choice, 15 to 480.\\nWhile rendering, the game is pinned to this rate and every captured frame stands\\nfor exactly 1/fps of song time, so the video is always as long as the song even\\nif your PC cannot hold the rate.\\nSet it to a rate your PC can actually draw at for smooth footage.",
+    "option.renderFps.desc": "Frames per second the video is captured and encoded at. Free choice, 15 to 480.\nWhile rendering, the game is pinned to this rate and every captured frame stands\nfor exactly 1/fps of song time, so the video is always as long as the song even\nif your PC cannot hold the rate.\nSet it to a rate your PC can actually draw at for smooth footage.",
     "option.renderCodec": "Render Codec",
     "option.renderCodec.desc": "Encoder used when rendering a video.\nGPU encoders (NVENC/AMF/QSV) need a supported GPU and ffmpeg build.\nVP8/VP9 write .webm, everything else .mp4.",
     "option.renderMode": "Rate Control",
@@ -398,7 +398,7 @@
     "option.renderBufferFrames": "Render Buffer",
     "option.renderBufferFrames.desc": "How many frames may wait for the encoder before frames are dropped.\nThis is what caps render memory (frames x width x height x 4 bytes).\nRaise it if frames drop on a slow encoder; lower it to use less RAM.",
     "option.renderAudio": "Render Audio",
-    "option.renderAudio.desc": "Mixes the song's Inst / Voices tracks into the rendered video.\\nWhen no audio file can be found (an embedded-only song, for example) the video\\nwill have no sound.",
+    "option.renderAudio.desc": "Mixes the song's Inst / Voices tracks into the rendered video.\nWhen no audio file can be found (an embedded-only song, for example) the video\nwill have no sound.",
     "option.renderOnSongStart": "Render on Song Start",
-    "option.renderOnSongStart.desc": "When on, recording starts automatically the moment a song starts - no hotkey.\\nIt stops by itself when the song ends, or when you leave the song.\\nOutput goes to the render_video folder next to the game."
+    "option.renderOnSongStart.desc": "When on, recording starts automatically the moment a song starts - no hotkey.\nIt stops by itself when the song ends, or when you leave the song.\nOutput goes to the render_video folder next to the game."
 }

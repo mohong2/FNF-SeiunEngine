@@ -11,6 +11,13 @@ import io.colyseus.serializer.schema.Schema.It;
 import io.colyseus.serializer.schema.Schema.SPEC;
 import io.colyseus.serializer.schema.encoding.Decode;
 import org.msgpack.MsgPack;
+import online_server.Crypto;
+import online_server.Log;
+// Types declared in ServerBoot.hx (module path online_server.ServerBoot.<Type>).
+import online_server.ServerBoot.ServerCliOptions;
+import online_server.ServerBoot.ServerOptions;
+import online_server.db.Db;
+import online_server.db.LegacyImport;
 import online_server.GameRoom.ClientConn;
 import online_server.GameRoom.SessionRecord;
 import online_server.HttpServer.HttpRequest;
@@ -56,6 +63,18 @@ class Main {
 	static var ngAppId:String = null;
 	/** --discord-webhook: outbound mirror for network-room chat; absent means no-op. */
 	static var discordWebhook:String = null;
+	/** --log-dir: structured JSON Lines log directory (default server/logs). */
+	static var logDir:String = "server/logs";
+	/** --log-level: debug | info | warn | error (default info). */
+	static var logLevel:String = "info";
+	/** --import-legacy-json: re-run the JSON -> SQLite import even when the database already has data. */
+	static var importLegacyJson:Bool = false;
+	/**
+	 * --console-local-readonly: answer GET /api/console/* from 127.0.0.1 without a credential
+	 * (read-only, user ruling D-R3-5). The embedded LAN host always sets this via ServerOptions;
+	 * the flag exists so the standalone neko server can be tested the same way. Default false.
+	 */
+	static var localConsoleReadOnly:Bool = false;
 
 	public static function main() {
 		var args = Sys.args();
@@ -123,56 +142,57 @@ class Main {
 				case "--discord-webhook":
 					discordWebhook = args[i + 1];
 					i += 2;
+				case "--log-dir":
+					logDir = args[i + 1];
+					i += 2;
+				case "--log-level":
+					logLevel = args[i + 1];
+					i += 2;
+				case "--import-legacy-json":
+					importLegacyJson = true;
+					i++;
+				case "--console-local-readonly":
+					localConsoleReadOnly = true;
+					i++;
 				default:
 					i++;
 			}
 		}
 
-		// <data-dir>/config.toml (CLI arguments win; a missing file means code defaults).
-		ServerConfig.load(dataDir + "/config.toml");
-		var cfgLimits = ServerConfig.limits;
-		if (!disableIpLock) disableIpLock = !cfgLimits.ipLock;
-		if (ipLockLimit == 0) ipLockLimit = cfgLimits.ipLockLimit;
-		if (!disableReconnectGuard) disableReconnectGuard = !cfgLimits.reconnectGuard;
-		if (reconnectLimit == 0) reconnectLimit = cfgLimits.reconnectLimit;
-		GameRoom.MAX_CLIENTS = cfgLimits.maxClients;
-
-		// SMTP is fully configured only with both host and sender (user/password may be empty = anonymous relay).
-		var smtp:SmtpConfig = null;
-		if (smtpHost != null && smtpHost != "" && smtpMail != null && smtpMail != "") {
-			smtp = { host: smtpHost, port: smtpPort, user: smtpUser, pass: smtpPass, from: smtpMail };
-		}
-		// Console: --smtp-* wins at startup; otherwise config.toml's [smtp] is used (saved changes apply at once).
-		if (smtp == null && ServerConfig.smtpDefined) smtp = ServerConfig.smtpConfig();
-
-		// Credential TTL (fixed when given on the CLI; otherwise config.toml [auth], default 30 days).
-		var authTtl = cliAuthTtl >= 0 ? cliAuthTtl : ServerConfig.authTtlMinutes;
-		var authTtlLocked = cliAuthTtl >= 0 ? true : ServerConfig.authTtlLocked;
-
-		// Local JSON storage for accounts / leaderboard / comments (directory created if missing).
-		Api.init(dataDir, adminEmail, smtp, ngAppId, discordWebhook, authTtl, authTtlLocked);
-
-		// Console: the [permissions] table overrides role access (absent entries keep the code defaults).
-		if (ServerConfig.permissionRoles != null) {
-			for (key in ServerConfig.ROLE_KEYS) {
-				if (!ServerConfig.permissionRoles.exists(key)) continue;
-				ServerConfig.setRoleAccess(key, ServerConfig.permissionRoles.get(key));
-			}
-			AccountStore.reapplyRoleAccess();
-		}
-
-		var hub = new ServerHub(host, wsPort, publicHost, disableIpLock, ipLockLimit, disableReconnectGuard, reconnectLimit);
-		new HttpServer(host, httpPort, hub.handleHttp).start();
-		trace('[server] HTTP http://$host:$httpPort  WS ws://$host:$wsPort');
-		// Console: print the web-console entry on the command line so nobody has to guess it.
-		var consoleHost = (host == "" || host == "0.0.0.0" || host == "::") ? "127.0.0.1" : host;
-		var lanNote = (consoleHost == host) ? "" : '  (局域网用本机 IP / LAN: use this machine IP)';
-		trace('[console] 网页控制台 / Web console: http://$consoleHost:$httpPort/console' + lanNote);
-		trace('[auth] 凭据有效期 / credential lifetime: ' + (authTtl <= 0 ? "不过期 / never" : authTtl + ' min')
-			+ (authTtlLocked ? '（服务端固定 / pinned by the server）' : '（玩家可自选 / player may choose）'));
-		trace('[console] 登录 / Sign in: ' + (adminEmail == null || adminEmail == "" ? "需要 --admin-email / needs --admin-email" : adminEmail)
-			+ '   ·   ' + (smtp == null ? '验证码在 ' + dataDir + '/mail.log / codes go to mail.log' : 'SMTP 已配置 / SMTP enabled'));
-		hub.run();
+		// Thin CLI shim: the argv loop above filled these statics, and everything it produces is passed
+		// to ServerBoot. The startup itself (logging, config.toml, SQLite storage, HTTP + WS listeners,
+		// room hub) lives in ServerBoot so the game client can start the same server in-process.
+		var opts:ServerOptions = {
+			host: host,
+			httpPort: httpPort,
+			wsPort: wsPort,
+			dataDir: dataDir,
+			logDir: logDir,
+			logLevel: logLevel,
+			adminEmail: adminEmail,
+			publicHost: publicHost,
+			localConsoleReadOnly: localConsoleReadOnly
+		};
+		// Flags that are CLI-only (SMTP credentials, fixtures, legacy import, test switches); embedded
+		// hosts never pass these, so a plain start(opts) always keeps the safe defaults.
+		var cli:ServerCliOptions = {
+			disableIpLock: disableIpLock,
+			ipLockLimit: ipLockLimit,
+			disableReconnectGuard: disableReconnectGuard,
+			reconnectLimit: reconnectLimit,
+			smtpHost: smtpHost,
+			smtpPort: smtpPort,
+			smtpUser: smtpUser,
+			smtpPass: smtpPass,
+			smtpMail: smtpMail,
+			authTtlMinutes: cliAuthTtl,
+			ngAppId: ngAppId,
+			discordWebhook: discordWebhook,
+			importLegacyJson: importLegacyJson,
+			fixtureDir: GameRoom.fixtureDir
+		};
+		var boot = ServerBoot.start(opts, cli);
+		boot.runLoop();
 	}
 }
 
@@ -189,6 +209,8 @@ class ServerHub {
 	public static inline var NETWORK_VERSION:Int = 1;
 	/** Legacy alias: the console and /api/config still read this name. */
 	public static inline var CLIENT_PROTOCOL:Int = 1;
+	/** Application version reported by /api/health (not the wire protocol version). */
+	public static inline var SERVER_VERSION:String = "1.0.0";
 	/** Default max sessions per IP. */
 	public static inline var DEFAULT_IP_LOCK_LIMIT:Int = 4;
 	/** Alphabet used for generated room ids. */
@@ -207,6 +229,12 @@ class ServerHub {
 	var reconnectLimit:Int;
 	var mutex:Mutex = new Mutex();
 	var wsServer:WebSocketServer;
+	/**
+	 * False once stop() runs: run() leaves its loop and the WS listen socket is closed, which is
+	 * what frees the port (accept() returns null immediately afterwards). Plain Bool, like the
+	 * rest of the server: the flag only ever goes true -> false, and run() re-reads it per tick.
+	 */
+	public var running:Bool = true;
 
 	var pending:Array<WebSocket> = [];
 	var pendingSince:Array<Float> = [];
@@ -271,6 +299,11 @@ class ServerHub {
 		}
 		if (path == "/api/onlinecount") {
 			return { status: 200, contentType: "text/plain", body: Std.string(onlineCount()) };
+		}
+		// Read-only health probe (status / uptime / rooms / version / dbSchemaVersion / dbPath).
+		// Added endpoint: it does not change the shape of any existing response.
+		if (path == "/api/health") {
+			return jsonResponse(200, health());
 		}
 		// Read-only server config, used by tests to verify defaults (maxClients=6 / IP lock 4 / reconnect window 20s).
 		if (path == "/api/config") {
@@ -631,6 +664,34 @@ class ServerHub {
 		return list;
 	}
 
+	/**
+	 * Health snapshot for GET /api/health. Read-only: room counters come from the hub lock, the
+	 * database fields from one indexed query each, and nothing here writes.
+	 */
+	public function health():Dynamic {
+		var counts:Dynamic = null;
+		try counts = Db.tableCounts() catch (e:Dynamic) { counts = null; }
+		return {
+			status: "ok",
+			uptime: Math.ffloor((haxe.Timer.stamp() - startedAt) * 1000) / 1000,
+			uptimeSeconds: Std.int(haxe.Timer.stamp() - startedAt),
+			rooms: roomCount(),
+			publicRooms: publicRoomCount(),
+			online: onlineCount(),
+			version: SERVER_VERSION,
+			protocol: PROTOCOL_VERSION,
+			engine: PROTOCOL_MAGIC,
+			dbSchemaVersion: Db.schemaVersion(),
+			dbPath: Db.filePath(),
+			dbJournalMode: Db.journalMode(),
+			dbCounts: counts,
+			// Honest boundary: no OS CSPRNG binding exists for neko/cpp on Windows, so a fallback DRBG
+			// is used there and is reported as such (see server/README.md).
+			entropy: Crypto.osEntropyAvailable ? "os-urandom" : "hmac-sha256-drbg",
+			logPath: Log.currentPath()
+		};
+	}
+
 	public function onlineCount():Int {
 		mutex.acquire();
 		var total = 0;
@@ -948,8 +1009,23 @@ class ServerHub {
 	// WS main loop
 	// ------------------------------------------------------------------
 
+	/**
+	 * Releases the WS listen port and asks run() to leave its loop. Idempotent, and safe to call
+	 * from another thread than run() (ServerBoot.stop calls it from the client thread).
+	 */
+	public function stop():Void {
+		if (!running) return;
+		running = false;
+		wsServer.closeListen();
+	}
+
+	/** True while run() may still serve WS connections (false after stop()). */
+	public function isRunning():Bool return running;
+
 	public function run():Void {
-		while (true) {
+		// stop() sets running = false and closes the listen socket, so the loop leaves without a
+		// forced kill (this is what makes an embedded host stoppable).
+		while (running) {
 			try {
 				var ws = wsServer.accept();
 				if (ws != null) {
@@ -968,6 +1044,12 @@ class ServerHub {
 					sweepRooms(now);
 				}
 
+				// Kept at 2 ms instead of 5 ms: the sleep only bounds how fast a newly connected socket
+				// is picked up (the accept itself is non-blocking), so changing it would alter timing in
+				// the dedicated and the embedded path without evidence that it is safe. The embedded
+				// concern (sharing the hxcpp GC with the render thread) was measured instead: an idle
+				// dedicated server spends 0.00 s of CPU over 10 s wall clock (external Get-Process .CPU
+				// sampling, see temp/embed/EmbedProbe), so the loop is not a CPU hog.
 				Sys.sleep(0.002);
 
 			} catch (e:Dynamic) {

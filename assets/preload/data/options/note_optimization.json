@@ -13,7 +13,7 @@
 		"nameKey": "option.scriptArgReuse",
 		"defaultName": "Reuse Script Callback Arguments",
 		"descKey": "option.scriptArgReuse.desc",
-		"defaultDesc": "Reuses one argument array for script callbacks instead of allocating one per hit.\nStops the GC stutter on dense charts. Off = stock per-hit allocation.",
+		"defaultDesc": "Reuses one argument array for script callbacks instead of allocating one per hit.\nStops the GC stutter on dense charts. Off = stock per-hit allocation.\nOnline disables it automatically.",
 		"variable": "scriptArgReuse",
 		"type": "bool",
 		"defaultValue": true
@@ -31,7 +31,7 @@
 		"nameKey": "option.turboMode",
 		"defaultName": "Turbo Mode",
 		"descKey": "option.turboMode.desc",
-		"defaultDesc": "Extreme-chart switch: forces botplay and settles dense sections as data,\nso millions of notes stay playable. Off = stock behavior.",
+		"defaultDesc": "Extreme-chart switch: forces botplay and settles dense sections as data,\nso millions of notes stay playable. Off = stock behavior.\nOnline disables it automatically.",
 		"variable": "turboMode",
 		"type": "bool",
 		"defaultValue": false
@@ -40,7 +40,7 @@
 		"nameKey": "option.limitNotes",
 		"defaultName": "Max Simultaneous Notes",
 		"descKey": "option.limitNotes.desc",
-		"defaultDesc": "Maximum notes alive at once. 0 = unlimited (high-end machines only).\nHigher values cost more CPU/GPU and memory.",
+		"defaultDesc": "Maximum notes alive at once. 0 = unlimited (high-end machines only).\nHigher values cost more CPU/GPU and memory.\nOnline disables this cap automatically.",
 		"variable": "limitNotes",
 		"type": "int",
 		"defaultValue": 0,

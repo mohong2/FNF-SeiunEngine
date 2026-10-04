@@ -305,6 +305,19 @@ import sys.io.Process;
 	public var onlineScoreDetails:Bool = false;
 	/** Favourite skins, formatted 'charactername-originfolder'. */
 	public var favSkins:Array<String> = []; //format: 'charactername-originfolder'
+	/**
+	 * In-client LAN hosting (OnlineState -> LanHostState). The first HTTP port the host tries;
+	 * a busy port walks upward and the panel shows the ports really in use.
+	 */
+	public var lanHostPort:Int = 2567;
+	/** Max players of the hosted room (1..64, the same clamp ServerConfig applies). */
+	public var lanHostMaxClients:Int = 6;
+	/** True = the hosted room is listed in FIND on the host's own server. Default off = code only. */
+	public var lanHostPublic:Bool = false;
+	/** True = several sessions from one IP may join (local testing on one PC). */
+	public var lanHostAllowSamePc:Bool = false;
+	/** Empty = <applicationStorageDirectory>/lanhost (a writable local volume). */
+	public var lanHostDataDir:String = "";
 	#end
 }
 

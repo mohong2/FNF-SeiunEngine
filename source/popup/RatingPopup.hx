@@ -135,6 +135,16 @@ class RatingPopup
 	 */
 	function _retire(spr:FlxSprite):Void
 	{
+		if (spr == null) return;
+		if (_pool.indexOf(spr) < 0)
+		{
+			// Not ours: another system put this object into our container. Only unlist it. Pooling or
+			// killing a foreign object breaks the *next* popup instead: _acquire() would hand it out as
+			// a rating/digit sprite, and FlxSpriteGroup.loadGraphic() is a no-op, so that slot draws
+			// nothing while its screenCenter()/updateHitbox() use the group's member-derived size.
+			if (container != null) container.remove(spr, true);
+			return;
+		}
 		if (!spr.alive) return; // never push the same sprite twice
 		_tweens.remove(spr);
 		if (container != null) container.remove(spr, true);

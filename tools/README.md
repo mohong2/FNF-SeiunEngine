@@ -1,12 +1,6 @@
 # tools/
 
-Basic engine tooling. **The online-probe toolbox is not here** -- it lives outside the
-repo, next to the engine: `..\FNF-SeiunEngine-online-tools\online_probe\` (not tracked).
-Invoke it **from the engine root** (relative paths inside .hxml resolve against the current
-directory, not the .hxml's directory):
-
-    haxe ../FNF-SeiunEngine-online-tools/online_probe/probe.hxml
-    neko export/online_probe/probe.n --url ws://127.0.0.1:2667
+Basic engine tooling.
 
 ## Crash reports -- one tool: `crash_triage.py`
 

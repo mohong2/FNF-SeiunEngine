@@ -696,6 +696,55 @@ class InputOption extends FlxSpriteGroup {
 		add(borderline);
     }
 
+	/**
+	 * Re-measures the row content and re-fits the background box plus the selection border to it,
+	 * then returns the new row height.
+	 *
+	 * The constructor sizes box and borderline from the height the row happens to have when it is
+	 * built, so a description assigned later (status text, LAN address, room code, probe result)
+	 * grows past a box that stays one line tall and out of a border that no longer encloses it.
+	 * Callers that rewrite descText after construction can call this and re-stack their rows from
+	 * the returned height. Purely additive: existing rows are untouched unless a caller asks.
+	 */
+	public function refreshLayout():Float {
+		// Measure in row-local space: FlxSpriteGroup.preAdd() pushed the group offset into every
+		// child, so the group y has to come back out of each member y.
+		var base:Float = y;
+		var contentBottom:Float = 0;
+
+		if (text != null)
+			contentBottom = Math.max(contentBottom, text.y - base + text.height);
+		if (descText != null)
+			// FlxText.get_height() runs regenGraphic() first, so this is the height of the text
+			// assigned last, not the height the constructor measured.
+			contentBottom = Math.max(contentBottom, descText.y - base + descText.height);
+		if (checkbox != null)
+			contentBottom = Math.max(contentBottom, checkbox.y - base + checkbox.height);
+		if (check != null)
+			contentBottom = Math.max(contentBottom, check.y - base + check.height);
+		for (inputBg in inputBgs)
+			if (inputBg != null)
+				contentBottom = Math.max(contentBottom, inputBg.y - base + inputBg.height);
+		for (inputField in inputs)
+			if (inputField != null)
+				contentBottom = Math.max(contentBottom, inputField.y - base + inputField.height);
+
+		// The constructor used Std.int(height) + 20 with box.y = -10, i.e. 10 px of padding above
+		// the content and 20 px below it; keep that so an unchanged row keeps its size.
+		box.scale.set(box.scale.x, Math.max(1, contentBottom + 30));
+		box.updateHitbox();
+
+		if (borderline != null && Std.int(borderline.height) != Std.int(box.height)) {
+			borderline.makeGraphic(Std.int(box.width), Std.int(box.height), FlxColor.TRANSPARENT);
+			FlxSpriteUtil.drawRect(borderline, 0, 0, borderline.width, borderline.height, FlxColor.TRANSPARENT,
+				{thickness: 6, color: 0x34FFFFFF});
+		}
+
+		// The box is the tallest member, so the group height equals the box height now; callers
+		// stack rows the same way the constructor does (row.y + row.height + gap).
+		return height;
+	}
+
 	//var targetScale:Float = 1;
 	override function update(elapsed) {
 		super.update(elapsed);

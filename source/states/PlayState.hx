@@ -1,4 +1,4 @@
-﻿package states;
+package states;
 
 import substates.PauseSubState;
 import substates.OldPauseSubState;
@@ -173,6 +173,7 @@ class PlayState extends MusicBeatState
 	/**
 	 * Note 优化页的 "复用脚本回调参数" 开关 (ClientPrefs.data.scriptArgReuse), 在 create() 里读一次。
 	 * 关闭时 _laneSingAnim 缓存与 backend.Scripts 的槽都退回原来的逐次分配。
+	 * 联机会在读取之前把该偏好置为 false, 所以联机对局永远走逐次分配 (见 create() 的联机门控)。
 	 */
 	var scriptAllocOpt:Bool = false;
 	/** 'tutorial' 判断用的谱面路径, 第一次需要时缓存 (见 opponentNoteHit)。 */
@@ -411,10 +412,11 @@ class PlayState extends MusicBeatState
 	private var _turboPrevBulk:Bool = false;
 	private var _turboPrevFastSort:Bool = false;
 	#if ONLINE_ALLOWED
-	/** User values of the runtime Note optimisations, saved while silenced online. */
+	/** User values of the runtime Note/script optimisations, saved while silenced online. */
 	private var _onlinePrevPerf:Bool = false;
 	private var _onlinePrevBulk:Bool = false;
 	private var _onlinePrevFastSort:Bool = false;
+	private var _onlinePrevScriptArgReuse:Bool = true;
 	private var _onlineNoteOptsOff:Bool = false;
 	#end
 	/**
@@ -905,19 +907,40 @@ class PlayState extends MusicBeatState
 		// scoring. Disable it for this session only, leaving the persisted preference untouched.
 		// Single-player uses the persisted setting again after leaving the online session.
 		if (turboModeActive && online.GameClient.isConnected()) turboModeActive = false;
-		// Online: silence the runtime Note optimisations too (perfMode / bulkSkip / fastSort).
-		// They bypass the only two reporting points (goodNoteHit / noteMiss), so the room
-		// would see the local player standing still while combo and health keep growing.
+		// Online: silence every runtime Note/script optimisation (perfMode / bulkSkip / fastSort /
+		// limitNotes / scriptArgReuse). They either bypass the only two reporting points
+		// (goodNoteHit / noteMiss) through the data-level settle in bulkSettleNote(), or drop notes
+		// before they can ever be reported (limitNotes), so the room would see the local player
+		// standing still while combo and health keep growing.
+		// Load-time optimisations are deliberately NOT disabled: the streamed chart reader, the
+		// bucketed sort inside it, the huge-chart cache (chartCache / chartCacheCompress) and the
+		// segmented-chart merge (ChartParts) all produce the identical note list, so they cannot
+		// change what gets reported. Online only promises single-file charts: segmented charts
+		// combined with the huge-chart cache are out of scope and are not validated here.
+		// Known risk, left as-is on purpose: a video render (renderOnSongStart / F9) pins
+		// FlxG.fixedTimestep and FlxG.updateFramerate while it runs (see backend.FFMpeg), which is a
+		// timeline-divergence source online. Refusing to auto-start a render in an online session is
+		// a product decision and is not done here; this gate only handles the optimisation switches.
 		// Memory only: user settings are saved here and restored in destroy().
 		if (online.GameClient.isConnected())
 		{
 			_onlinePrevPerf = ClientPrefs.data.perfMode;
 			_onlinePrevBulk = ClientPrefs.data.bulkSkip;
 			_onlinePrevFastSort = ClientPrefs.data.fastSort;
+			_onlinePrevScriptArgReuse = ClientPrefs.data.scriptArgReuse;
 			_onlineNoteOptsOff = true;
 			ClientPrefs.data.perfMode = false;
 			ClientPrefs.data.bulkSkip = false;
 			ClientPrefs.data.fastSort = false;
+			// Silencing the preference is enough for the script path: scriptAllocOpt is read from it
+			// later in create() and pushes the value into the global backend.Scripts.reuseEnabled.
+			ClientPrefs.data.scriptArgReuse = false;
+			// limitNotes is handled differently: the per-song cap (noteLimit) was already derived
+			// from the preference further up in create(), and nothing else reads that preference
+			// during play, so only the per-song field is re-armed (2147483647 = unlimited, the same
+			// sentinel the normal initialisation uses). The user's preference is left completely
+			// alone -- not even changed in memory -- so it needs no restore in destroy().
+			noteLimit = 2147483647;
 		}
 		#end
 		if (turboModeActive)
@@ -5039,6 +5062,12 @@ class PlayState extends MusicBeatState
 				timer.active = true;
 			}
 			paused = false;
+			// A resume the server never saw would leave the other players frozen on a round this
+			// client already continued (and a forced pause would never lift), so the owner reports it.
+			if (onlinePauseLocal && online.GameClient.isConnected() && onlinePauseMode() != ONLINE_PAUSE_LEGACY)
+				online.GameClient.send("resumeGame");
+			onlinePauseLocal = false;
+			onlinePausedBy = "";
 			callOnScripts('onResume', Scripts.EMPTY);
 
 			#if desktop
@@ -5313,7 +5342,16 @@ class PlayState extends MusicBeatState
 		{
 			var ret:Dynamic = callOnScripts('onPause', Scripts.EMPTY, false);
 			if(ret != FunkinLua.Function_Stop#if VIDEOS_ALLOWED && !videoPlaying #end)  {
-				openPauseMenu();
+				if (!onlinePauseAllowed()) {
+					// Host-only pause policy: tell the player instead of freezing this client alone,
+					// which would leave it behind the room for the rest of the song.
+					FlxG.sound.play(Paths.sound('cancelMenu'));
+					onlineAlert(online.util.OnlineLang.L('pause.title', 'Paused'),
+						online.util.OnlineLang.L('pause.hostOnly', 'Only the host can pause the game!'));
+				}
+				else {
+					openPauseMenu();
+				}
 			}
 		}
 
@@ -5757,6 +5795,16 @@ class PlayState extends MusicBeatState
 		persistentUpdate = false;
 		persistentDraw = true;
 		paused = true;
+
+		// Room-wide pause: the server validates the request against the room's policy and echoes it to
+		// everyone (this client included). onlinePauseLocal marks this client as the one that owes the
+		// room a resume; that echo can take the ownership away again when another player paused first.
+		if (sendNetworkPause && online.GameClient.isConnected() && onlinePauseMode() != ONLINE_PAUSE_LEGACY)
+		{
+			onlinePausedBy = "";
+			onlinePauseLocal = true;
+			online.GameClient.send("pauseGame");
+		}
 
 
 		keyboardDisplay.save();
@@ -9885,12 +9933,16 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 			ClientPrefs.data.fastSort = _turboPrevFastSort;
 		}
 		#if ONLINE_ALLOWED
-		// Restore the runtime Note optimisations silenced while online.
+		// Restore the runtime Note/script optimisations silenced while online.
 		if (_onlineNoteOptsOff)
 		{
 			ClientPrefs.data.perfMode = _onlinePrevPerf;
 			ClientPrefs.data.bulkSkip = _onlinePrevBulk;
 			ClientPrefs.data.fastSort = _onlinePrevFastSort;
+			ClientPrefs.data.scriptArgReuse = _onlinePrevScriptArgReuse;
+			// backend.Scripts.reuseEnabled is a global static read by menus and scripts outside this
+			// state, so it has to mirror the restored preference instead of staying silenced.
+			Scripts.reuseEnabled = ClientPrefs.data.scriptArgReuse;
 		}
 		#end
 
@@ -10450,6 +10502,78 @@ function calculateResetTime():Float {
 
 	public var curLight:Int = -1;
 	public var curLightEvent:Int = -1;
+
+	// ── Generic play-HUD visibility helpers (NOT online-only) ──
+	// syncHudExtras() is called from the unguarded score path inside this class and
+	// hideTransientHud() from the unguarded results screen, so both have to compile when
+	// ONLINE_ALLOWED is off. They used to sit inside the online-only section that is appended at
+	// the end of the class on purpose (see the note above that section's #if), which broke the
+	// offline build; they live here now. The single online-only line inside syncHudExtras()
+	// keeps its own #if ONLINE_ALLOWED guard.
+	/**
+	 * 引擎自带的 side HUD（总命中数 / 连击 / 判定统计）与键盘-KPS 面板挂在 `camOther` 上，
+	 * 而 1.0.4 模组关闭 HUD 的写法是把标准 HUD 元素逐个设成不可见（`scoreTxt` / `healthBar` /
+	 * `iconP1` …）。1.0.4 里根本不存在这两个东西，所以那套写法覆盖不到它们 —— 结果是它们直接
+	 * 盖在模组自制界面上（SonicTheFunkChinese 用假歌曲当菜单/设置界面，画面上就多出这两块）。
+	 *
+	 * 这里让它们跟随标准 HUD：脚本把 `scoreTxt` 关掉就等于把整块 HUD 关掉。用户自己的
+	 * `ClientPrefs.data.hideHud`（含在线模式自己关掉 scoreTxt 的情况）不算 —— 那是引擎/用户
+	 * 的选择，两个开关保持互不影响。
+	 */
+	private var _hudExtrasSuppressed:Bool = false;
+	private var _hudExtrasKeyboardForced:Bool = false;
+	private var _hudExtraTexts:Array<FlxText> = null;
+	function syncHudExtras():Void
+	{
+		if (_hudExtrasSuppressed || scoreTxt == null) return;
+
+		var engineHidesHud:Bool = ClientPrefs.data.hideHud;
+		#if ONLINE_ALLOWED
+		if (online.GameClient.isConnected()) engineHidesHud = true;
+		#end
+		var scriptHidHud:Bool = !scoreTxt.visible && !engineHidesHud;
+
+		if (_hudExtraTexts == null) _hudExtraTexts = [tnh, cm, marv, sick, good, bad, shit, miss];
+		for (t in _hudExtraTexts)
+			if (t != null) t.visible = !scriptHidHud;
+
+		if (keyboardDisplay != null)
+		{
+			if (scriptHidHud)
+			{
+				keyboardDisplay.visible = false;
+				_hudExtrasKeyboardForced = true;
+			}
+			else if (_hudExtrasKeyboardForced)
+			{
+				keyboardDisplay.visible = ClientPrefs.data.keyboardDisplay;
+				_hudExtrasKeyboardForced = false;
+			}
+		}
+	}
+
+	/**
+	 * Hides the play-HUD pieces that PlayStateResultsSubstate does not cover with its own panels.
+	 *
+	 * The results screen hides healthBar/scoreTxt/icons/timeBar/keyboardDisplay/strumLineNotes, but the
+	 * side HUD and the BOTPLAY/REPLAY/ms/judge labels live on camOther, which it keeps visible, so they
+	 * were drawn straight over the results panels (the side HUD's 20px text with a 2px black outline
+	 * reads as a black box behind its numbers, and the raw counts collided with the results values).
+	 * Nothing restores them: at that point the song is over and the PlayState is discarded, exactly like
+	 * the other hides the results screen already performs.
+	 */
+	public function hideTransientHud():Void
+	{
+		// 结算界面把这批 HUD 一次性关掉且不再恢复，所以跟随逻辑必须让位，否则会把它们又点亮。
+		_hudExtrasSuppressed = true;
+		for (t in [tnh, cm, marv, sick, good, bad, shit, miss])
+			if (t != null) t.visible = false;
+		if (msTxtKade != null) msTxtKade.visible = false;
+		if (atkText != null) atkText.visible = false;
+		if (botplayTxt != null) botplayTxt.visible = false;
+		if (replayTxt != null) replayTxt.visible = false;
+		if (judgeRestoreTxt != null) judgeRestoreTxt.visible = false;
+	}
 
 	#if ONLINE_ALLOWED
 	/**
@@ -11217,12 +11341,18 @@ function calculateResetTime():Float {
 		// Every popup needs its own FlxSpriteGroup: RatingPopup.clearAll() clears `container.members`,
 		// so sharing comboGroup across sids would share one pool. Cameras must be assigned
 		// explicitly or the children fall back to the default game camera (see create()).
+		//
+		// The group is inserted as a *sibling* of the local popup's container, never as a child of it:
+		// in modern mode comboGroup IS the local container, and `comboStacking` is off by default, so
+		// the local popup calls clearAll() on every hit. A nested remote group was unlisted and killed
+		// by the first local hit (so the opponent's popup never drew again) and was then pushed into
+		// the local sprite pool, where a FlxSpriteGroup -- which has no graphic of its own and whose
+		// loadGraphic() is a no-op -- got handed out as a rating/digit sprite (that is the intermittent
+		// blank / jumping combo number). Sibling containers keep both pools independent.
 		var grp:FlxSpriteGroup = new FlxSpriteGroup();
 		grp.cameras = [camHUD];
-		if (CompatEngine.isModern() && comboGroup != null)
-			comboGroup.add(grp);
-		else
-			insert(members.indexOf(strumLineNotes), grp);
+		var anchor:Int = members.indexOf(ratingPopup != null ? ratingPopup.container : null);
+		insert(anchor >= 0 ? anchor + 1 : members.length, grp);
 		popup.container = grp;
 
 		onlineRatingPopups.set(sid, popup);
@@ -11232,15 +11362,39 @@ function calculateResetTime():Float {
 	/** Whether the BOTPLAY label is visible. */
 	@:unreflective public var botplayVisibility:Bool = false;
 
-	/** Rating placement offset (horizontal / vertical) for the given sid. */
+	/**
+	 * Rating placement offset (horizontal / vertical) for the given sid.
+	 *
+	 * A remote player's popup is anchored to that player's own character. The upstream formula
+	 * (`FlxG.width * (0.4 + (isPlayer == playsAsBF() ? 0.15 : -0.1)) + ox * 250`) evaluates to
+	 * ~0.3 * width for the player on the other side -- in a 1v1 that is every remote player -- which
+	 * is only ~0.05 * width away from the local popup (always `FlxG.width * 0.35` in this engine).
+	 * Both popups therefore landed on top of each other: the remote's icon was invisible (it sat on
+	 * the local one) and the interleaved combo digits made it look like one player's number jumped
+	 * whenever the other player hit a note. Anchoring to the character is also side-correct under
+	 * `swapSides`, because `syncOnlineCharacters()` moves that character with `player.bfSide`.
+	 * Same-side players (coop / 2v2) share a character position here, so `ox` fans their popups out.
+	 */
 	function getRatingOffset(?forSID:String):Array<Float> {
 		var placementX:Float = FlxG.width * 0.35;
 		var placementY:Float = 0;
 		if (online.GameClient.isConnected() && forSID != null) {
 			var char = characters.get(forSID);
 			if (char != null) {
-				placementX = FlxG.width * (0.4 + (char.isPlayer == playsAsBF() ? 0.15 : -0.1));
-				placementX += char.ox * (char.isPlayer == playsAsBF() ? 250 : -250);
+				var localX:Float = FlxG.width * 0.35;
+				placementX = char.x + char.width * 0.5 + char.ox * 90;
+				// A remote popup must never land on the local one (their digits interleave and read as
+				// one player's number jumping): keep it a full popup width to one side of the local x.
+				if (Math.abs(placementX - localX) < 200)
+					placementX = localX + (placementX >= localX ? 200 : -200);
+				// Clamped so a mod character parked at the screen edge still gets its popup on screen.
+				placementX = Math.max(FlxG.width * 0.05, Math.min(FlxG.width * 0.95, placementX));
+			}
+			else {
+				// No character is bound to that sid: fall back to the remote player's own half of the
+				// screen (BF is on the right in this engine) instead of collapsing onto the local popup.
+				var player = online.GameClient.room.state.players.get(forSID);
+				placementX = FlxG.width * ((player != null && player.bfSide) ? 0.65 : 0.2);
 			}
 		}
 		return [placementX, placementY];
@@ -11275,71 +11429,6 @@ function calculateResetTime():Float {
 		return isBF ? 'boyfriend' : 'dad';
 	}
 
-	/**
-	 * 引擎自带的 side HUD（总命中数 / 连击 / 判定统计）与键盘-KPS 面板挂在 `camOther` 上，
-	 * 而 1.0.4 模组关闭 HUD 的写法是把标准 HUD 元素逐个设成不可见（`scoreTxt` / `healthBar` /
-	 * `iconP1` …）。1.0.4 里根本不存在这两个东西，所以那套写法覆盖不到它们 —— 结果是它们直接
-	 * 盖在模组自制界面上（SonicTheFunkChinese 用假歌曲当菜单/设置界面，画面上就多出这两块）。
-	 *
-	 * 这里让它们跟随标准 HUD：脚本把 `scoreTxt` 关掉就等于把整块 HUD 关掉。用户自己的
-	 * `ClientPrefs.data.hideHud`（含在线模式自己关掉 scoreTxt 的情况）不算 —— 那是引擎/用户
-	 * 的选择，两个开关保持互不影响。
-	 */
-	private var _hudExtrasSuppressed:Bool = false;
-	private var _hudExtrasKeyboardForced:Bool = false;
-	private var _hudExtraTexts:Array<FlxText> = null;
-	function syncHudExtras():Void
-	{
-		if (_hudExtrasSuppressed || scoreTxt == null) return;
-
-		var engineHidesHud:Bool = ClientPrefs.data.hideHud;
-		#if ONLINE_ALLOWED
-		if (online.GameClient.isConnected()) engineHidesHud = true;
-		#end
-		var scriptHidHud:Bool = !scoreTxt.visible && !engineHidesHud;
-
-		if (_hudExtraTexts == null) _hudExtraTexts = [tnh, cm, marv, sick, good, bad, shit, miss];
-		for (t in _hudExtraTexts)
-			if (t != null) t.visible = !scriptHidHud;
-
-		if (keyboardDisplay != null)
-		{
-			if (scriptHidHud)
-			{
-				keyboardDisplay.visible = false;
-				_hudExtrasKeyboardForced = true;
-			}
-			else if (_hudExtrasKeyboardForced)
-			{
-				keyboardDisplay.visible = ClientPrefs.data.keyboardDisplay;
-				_hudExtrasKeyboardForced = false;
-			}
-		}
-	}
-
-	/**
-	 * Hides the play-HUD pieces that PlayStateResultsSubstate does not cover with its own panels.
-	 *
-	 * The results screen hides healthBar/scoreTxt/icons/timeBar/keyboardDisplay/strumLineNotes, but the
-	 * side HUD and the BOTPLAY/REPLAY/ms/judge labels live on camOther, which it keeps visible, so they
-	 * were drawn straight over the results panels (the side HUD's 20px text with a 2px black outline
-	 * reads as a black box behind its numbers, and the raw counts collided with the results values).
-	 * Nothing restores them: at that point the song is over and the PlayState is discarded, exactly like
-	 * the other hides the results screen already performs.
-	 */
-	public function hideTransientHud():Void
-	{
-		// 结算界面把这批 HUD 一次性关掉且不再恢复，所以跟随逻辑必须让位，否则会把它们又点亮。
-		_hudExtrasSuppressed = true;
-		for (t in [tnh, cm, marv, sick, good, bad, shit, miss])
-			if (t != null) t.visible = false;
-		if (msTxtKade != null) msTxtKade.visible = false;
-		if (atkText != null) atkText.visible = false;
-		if (botplayTxt != null) botplayTxt.visible = false;
-		if (replayTxt != null) replayTxt.visible = false;
-		if (judgeRestoreTxt != null) judgeRestoreTxt.visible = false;
-	}
-
 	/** Shows the BOTPLAY label. */
 	function showBotplay():Void {
 		if (botplayTxt == null)
@@ -11365,6 +11454,97 @@ function calculateResetTime():Float {
 	}
 
 	
+	/*
+	 * ============================================================================================
+	 * Online pause policy (the room settings' "Pause Policy").
+	 * ============================================================================================
+	 *
+	 * The policy is the schema field Room.pauseMode, written by the server (RoomLogic.PAUSE_*):
+	 *   0 = only the host may pause, and pausing freezes everyone else too;
+	 *   1 = anyone may pause, and pausing freezes everyone else too (default);
+	 *   2 = legacy -- a pause stays local to the player who pressed ESC (the old behaviour).
+	 *
+	 * Under the two room-wide policies ESC sends "pauseGame"; the server validates the request and
+	 * echoes it to everyone, this client included. That echo is what freezes the other clients, and
+	 * it is also how two players pausing in the same tick settle who owns the pause: only the first
+	 * request reaches the server, so the loser reads someone else's sid from the echo, hands the
+	 * ownership over and can no longer resume the room on its own. The resume is symmetrical: only
+	 * the owner (or the host, in host-only rooms) may send "resumeGame", and the broadcast that
+	 * follows lifts the forced pause everywhere at once -- which is what keeps every client on the
+	 * same song position instead of letting the unpaused ones run ahead.
+	 */
+
+	/** Room pause policy values; mirrors RoomLogic.PAUSE_*. */
+	static inline var ONLINE_PAUSE_HOST_ONLY:Int = 0;
+	static inline var ONLINE_PAUSE_EVERYONE:Int = 1;
+	static inline var ONLINE_PAUSE_LEGACY:Int = 2;
+
+	/** sid of the player who froze this room ("" when this client knows of no room-wide pause). */
+	public var onlinePausedBy:String = "";
+	/** True while this client is the one that owes the room a resume (it pressed ESC itself). */
+	public var onlinePauseLocal:Bool = false;
+
+	/** The room's pause policy; legacy whenever this client is not in a room. */
+	function onlinePauseMode():Int {
+		if (!online.GameClient.isConnected() || online.GameClient.room == null || online.GameClient.room.state == null) {
+			return ONLINE_PAUSE_LEGACY;
+		}
+		return Std.int(online.GameClient.room.state.pauseMode);
+	}
+
+	/** Whether the local player may freeze the room (a host-only room answers false for a guest). */
+	function onlinePauseAllowed():Bool {
+		if (onlinePauseMode() == ONLINE_PAUSE_HOST_ONLY) {
+			return online.GameClient.isOwner;
+		}
+		return true;
+	}
+
+	/**
+	 * Whether the local pause menu may resume the room: the owner of the pause may, and in host-only
+	 * rooms the host may as well. A client that knows of no pause is allowed, so an out-of-sync
+	 * client can never be trapped behind a pause nobody owns.
+	 */
+	public function onlineResumeAllowed():Bool {
+		var mode:Int = onlinePauseMode();
+		if (mode == ONLINE_PAUSE_LEGACY || onlinePausedBy == "") {
+			return true;
+		}
+		if (mode == ONLINE_PAUSE_HOST_ONLY) {
+			return online.GameClient.isOwner;
+		}
+		return online.GameClient.room != null && onlinePausedBy == online.GameClient.room.sessionId;
+	}
+
+	/** Tells the player that this client may not lift the room's pause (someone else owns it). */
+	public function onlineResumeNotice():Void {
+		var hostOnly:Bool = (onlinePauseMode() == ONLINE_PAUSE_HOST_ONLY);
+		onlineAlert(online.util.OnlineLang.L('pause.title', 'Paused'),
+			hostOnly
+				? online.util.OnlineLang.L('pause.resumeHostOnly', 'Only the host can resume the game!')
+				: online.util.OnlineLang.L('pause.waitResume', 'Wait for the player who paused the game to resume!'));
+	}
+
+	/** Display name of a room player, falling back to the sid. */
+	function onlinePlayerName(sid:String):String {
+		if (online.GameClient.room == null || online.GameClient.room.state == null) {
+			return sid;
+		}
+		var player:Dynamic = online.GameClient.room.state.players.get(sid);
+		if (player != null && player.name != null && player.name != "") {
+			return player.name;
+		}
+		return sid;
+	}
+
+	/** Room-message notice; a no-op when the online Alert overlay was never created. */
+	inline function onlineAlert(title:String, message:String):Void {
+		if (Reflect.field(online.gui.Alert, "instance") == null) {
+			return;
+		}
+		online.gui.Alert.alert(title, message);
+	}
+
 	/*
 	 * ============================================================================================
 	 * Online note-loop gating + ready gating + registerMessages().
@@ -11720,6 +11900,59 @@ function calculateResetTime():Float {
 
 				canEndSongOnline = true;
 				endSong();
+			});
+		});
+
+		// Room-wide pause (room settings' "Pause Policy"). The server echoes the request to everyone,
+		// sender included: an echo carrying our own sid means this client owns the pause, an echo
+		// carrying someone else's hands the ownership over (so two players pressing ESC in the same
+		// tick settle instead of both believing they may resume).
+		online.GameClient.registerStateMessage(this, "pauseGame", function(message) {
+			online.backend.Waiter.put(() -> {
+				if (destroyed || message == null) {
+					return;
+				}
+				if (onlinePauseMode() == ONLINE_PAUSE_LEGACY) {
+					return; // the policy changed since the request; keep pausing locally
+				}
+
+				var sid:String = Std.string(message);
+				var selfSid:String = (online.GameClient.room != null) ? online.GameClient.room.sessionId : null;
+				onlinePausedBy = sid;
+				onlinePauseLocal = (selfSid != null && sid == selfSid);
+
+				if (paused || boyfriend == null) {
+					return; // already frozen (own menu, or a forced pause that is still opening)
+				}
+				if (!onlinePauseLocal) {
+					onlineAlert(online.util.OnlineLang.L('pause.title', 'Paused'),
+						online.util.OnlineLang.L('pause.by', 'Paused by ') + onlinePlayerName(sid));
+				}
+				openPauseMenu(false);
+			});
+		});
+
+		// The room is running again: every client leaves the forced pause together.
+		online.GameClient.registerStateMessage(this, "resumeGame", function(_) {
+			online.backend.Waiter.put(() -> {
+				if (destroyed) {
+					return;
+				}
+				onlinePausedBy = "";
+				onlinePauseLocal = false;
+				if (!paused) {
+					return;
+				}
+				var sub = subState;
+				if (sub != null && Std.isOfType(sub, PauseSubState)) {
+					(cast sub : PauseSubState).onlineResume();
+				}
+				else if (sub != null && Std.isOfType(sub, OldPauseSubState)) {
+					(cast sub : OldPauseSubState).onlineResume();
+				}
+				else {
+					closeSubState();
+				}
 			});
 		});
 

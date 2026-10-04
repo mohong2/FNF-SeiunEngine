@@ -1,0 +1,28 @@
+# SeiunEngine server - Haxe -> hxcpp (native executable, no neko runtime needed)
+#
+# Run from the repository root:
+#   haxe server/server-cpp.hxml              # build  -> server/bin/SeiunServer.exe
+#   haxe server/server-cpp.hxml --no-output  # typecheck only
+#   server\bin\SeiunServer.exe               # run
+#
+# Requires a C++ toolchain (MSVC on Windows, see server/README.md). The neko target
+# (server/server.hxml) stays the default; use server\build.ps1 -Target cpp|both to drive both.
+#
+# Dependencies: Haxe 4.3.7 + hxcpp + neko (neko is only needed by the neko target).
+# Compile closure:
+#   server/src/online_server/**            <- the server itself (this folder)
+#   source/online/backend/schema/**        <- colyseus schema shared with the client
+#   source/_online_libs/**                 <- io.colyseus.* / org.msgpack.*
+# NOTE: neko (or cpp). `--interp` has no sys.thread.Thread/Mutex, which both the
+#       HTTP server and io.colyseus.Connection need.
+-cp server/src
+-cp source
+-cp source/_online_libs
+-D server_build
+# hxcpp links its bundled sqlite (src/hx/libs/sqlite) for sys.db.Sqlite; the produced binary
+# must sit next to the data directory the operator passes with --data-dir.
+# hxcpp resolves this name relative to the -cpp output directory, so ../../ lands the binary in
+# server/bin/SeiunServer.exe (next to server.n / server.exe) instead of under server/bin/cpp/.
+-D HAXE_FULL_OUTPUT_NAME=../SeiunServer.exe
+-main online_server.Main
+-cpp server/bin/cpp

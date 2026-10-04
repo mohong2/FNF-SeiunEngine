@@ -1,5 +1,7 @@
 package online_server;
 
+import haxe.io.Bytes;
+import haxe.io.BytesBuffer;
 import haxe.io.Path;
 import sys.FileSystem;
 import sys.io.File;
@@ -131,7 +133,9 @@ class ServerConfig {
 		var sections = parseToml(text);
 		var srv = sections.get("server");
 		if (srv != null) {
-			if (srv.exists("announcement")) limits.announcement = Std.string(srv.get("announcement"));
+			// sanitizeAnnouncement() repairs an announcement whose UTF-8 was cut mid-codepoint by an
+			// older build, so a config.toml already damaged on disk does not keep /api/console/status 500.
+			if (srv.exists("announcement")) limits.announcement = sanitizeAnnouncement(Std.string(srv.get("announcement")));
 			if (srv.exists("ip_lock")) limits.ipLock = boolOf(srv.get("ip_lock"), limits.ipLock);
 			if (srv.exists("ip_lock_limit")) limits.ipLockLimit = intOf(srv.get("ip_lock_limit"), limits.ipLockLimit);
 			if (srv.exists("reconnect_guard")) limits.reconnectGuard = boolOf(srv.get("reconnect_guard"), limits.reconnectGuard);
@@ -141,11 +145,13 @@ class ServerConfig {
 		var mail = sections.get("smtp");
 		if (mail != null) {
 			smtpDefined = true;
-			if (mail.exists("host")) smtp.host = Std.string(mail.get("host"));
+			// repairUtf8: a hand-edited config.toml must not carry invalid bytes into a JSON response
+			// (the console echoes the smtp view).
+			if (mail.exists("host")) smtp.host = repairUtf8(Std.string(mail.get("host")));
 			if (mail.exists("port")) smtp.port = intOf(mail.get("port"), smtp.port);
-			if (mail.exists("user")) smtp.user = Std.string(mail.get("user"));
-			if (mail.exists("pass")) smtp.pass = Std.string(mail.get("pass"));
-			if (mail.exists("from")) smtp.from = Std.string(mail.get("from"));
+			if (mail.exists("user")) smtp.user = repairUtf8(Std.string(mail.get("user")));
+			if (mail.exists("pass")) smtp.pass = repairUtf8(Std.string(mail.get("pass")));
+			if (mail.exists("from")) smtp.from = repairUtf8(Std.string(mail.get("from")));
 			if (mail.exists("ssl")) smtp.ssl = boolOf(mail.get("ssl"), smtp.ssl);
 		}
 		var auth = sections.get("auth");
@@ -163,7 +169,10 @@ class ServerConfig {
 					warnings.push("[permissions] " + key + " is not an array of strings; ignored");
 					continue;
 				}
-				permissionRoles.set(key, arr);
+				// Permission patterns are echoed by /api/console/config, so repair them on load too.
+				var repaired:Array<String> = [];
+				for (pattern in arr) repaired.push(repairUtf8(pattern));
+				permissionRoles.set(key, repaired);
 			}
 			if (Lambda.count(permissionRoles) == 0) permissionRoles = null;
 		}
@@ -215,7 +224,7 @@ class ServerConfig {
 			reconnectLimit: cur.reconnectLimit,
 			maxClients: cur.maxClients
 		};
-		if (Reflect.hasField(body, "announcement")) next.announcement = sanitize(Std.string(Reflect.field(body, "announcement")), 500);
+		if (Reflect.hasField(body, "announcement")) next.announcement = sanitizeAnnouncement(Std.string(Reflect.field(body, "announcement")));
 		if (Reflect.hasField(body, "ipLock")) next.ipLock = boolOf(Reflect.field(body, "ipLock"), next.ipLock);
 		if (Reflect.hasField(body, "ipLockLimit")) next.ipLockLimit = clamp(intOf(Reflect.field(body, "ipLockLimit"), next.ipLockLimit), 1, 1024);
 		if (Reflect.hasField(body, "reconnectGuard")) next.reconnectGuard = boolOf(Reflect.field(body, "reconnectGuard"), next.reconnectGuard);
@@ -351,7 +360,7 @@ class ServerConfig {
 				if (!StringTools.endsWith(name, ".toml")) continue;
 				var full = dir + "/" + name;
 				var st = FileSystem.stat(full);
-				out.push({ name: name, size: st.size, mtime: Std.string(st.mtime) });
+				out.push({ name: repairUtf8(name), size: st.size, mtime: Std.string(st.mtime) });
 			}
 		} catch (e:Dynamic) {}
 		out.sort(function(a, b) return Reflect.field(a, "name") < Reflect.field(b, "name") ? 1 : -1);
@@ -369,7 +378,13 @@ class ServerConfig {
 		return { host: host, port: smtp.port, user: smtp.user, pass: smtp.pass, from: from, ssl: useSsl };
 	}
 
-	public static function smtpView():SmtpView return smtp;
+	/** Repaired view for the console: invalid bytes in a hand-edited [smtp] table must not reach JSON. */
+	public static function smtpView():SmtpView {
+		return {
+			host: repairUtf8(smtp.host), port: smtp.port, user: repairUtf8(smtp.user),
+			pass: repairUtf8(smtp.pass), from: repairUtf8(smtp.from), ssl: smtp.ssl
+		};
+	}
 
 	static function strField(o:Dynamic, name:String, fallback:String):String {
 		var v = Reflect.field(o, name);
@@ -508,10 +523,371 @@ class ServerConfig {
 		return n == null ? fallback : n;
 	}
 
-	static function sanitize(s:String, max:Int):String {
+	/** Announcement cap: the console form and the config field are used as a 500-CHARACTER field. */
+	public static inline var ANNOUNCEMENT_MAX_CHARS:Int = 500;
+	/**
+	 * Hard byte ceiling for the announcement. 500 codepoints are at most 2000 UTF-8 bytes, so this
+	 * never rejects a legal value; it only bounds how much a pathological payload can write into
+	 * config.toml (and lets capUtf8 stop scanning early).
+	 */
+	public static inline var ANNOUNCEMENT_MAX_BYTES:Int = 2048;
+
+	/**
+	 * Generic byte cap: strip the CR characters a TOML basic string cannot hold, then keep at most
+	 * max UTF-8 BYTES without splitting a codepoint (see truncateUtf8). Byte-based on purpose: only
+	 * caps documented in characters should use sanitizeAnnouncement / capUtf8 with maxChars.
+	 */
+	public static function sanitize(s:String, max:Int):String {
 		var v = s == null ? "" : s;
 		v = StringTools.replace(v, "\r", "");
-		if (v.length > max) v = v.substring(0, max);
-		return v;
+		return truncateUtf8(v, max);
 	}
-}
+
+	/**
+	 * Announcement text: strip CR, then cap at ANNOUNCEMENT_MAX_CHARS characters (codepoints) and
+	 * ANNOUNCEMENT_MAX_BYTES bytes. Counting bytes here made the "500" field a ~166-character wall
+	 * for Chinese text; the character cap is what the console UI implies.
+	 */
+	public static function sanitizeAnnouncement(s:String):String {
+		var v = s == null ? "" : s;
+		v = StringTools.replace(v, "\r", "");
+		return capUtf8(v, ANNOUNCEMENT_MAX_CHARS, ANNOUNCEMENT_MAX_BYTES);
+	}
+
+	/**
+	 * Keep at most maxChars codepoints and maxBytes UTF-8 bytes. The text is normalized first:
+	 * invalid byte sequences are dropped and a CESU-8 surrogate pair is folded to its real
+	 * codepoint. Never splits a codepoint, never emits an invalid sequence.
+	 */
+	public static function capUtf8(s:String, maxChars:Int, maxBytes:Int):String {
+		return normalizeUtf8(s, maxChars, maxBytes);
+	}
+	
+	/**
+	 * Repair a string into well-formed UTF-8 with no length cap: drop NUL and every invalid
+	 * sequence, fold CESU-8 surrogate pairs. Used by readers that echo stored or file text.
+	 */
+	public static function repairUtf8(s:String):String {
+		return normalizeUtf8(s, -1, -1);
+	}
+	
+	/**
+	 * Normalize to well-formed UTF-8, copying codepoint by codepoint:
+	 *   * a CESU-8 surrogate pair is folded into its real 4-byte codepoint,
+	 *   * NUL is dropped (a TOML/JSON string cannot carry a raw NUL),
+	 *   * every other invalid sequence is dropped, never guessed,
+	 *   * stops when maxChars or maxBytes would be exceeded (negative = uncapped).
+	 * The result is always valid UTF-8 (see validUtf8Bytes). Strictness rules: C0/C1 overlong leads,
+	 * overlong E0/F0 forms, UTF-8-encoded surrogates (ED A0..BF), code points above U+10FFFF
+	 * (F4 90..), orphan/truncated continuation bytes and NUL are all rejected.
+	 */
+	public static function normalizeUtf8(s:String, maxChars:Int, maxBytes:Int):String {
+		if (s == null) return "";
+		var b = Bytes.ofString(s);
+		var out = new BytesBuffer();
+		var i = 0;
+		var chars = 0;
+		var charLimit = maxChars < 0 ? 0x7FFFFFFF : maxChars;
+		var byteLimit = maxBytes < 0 ? 0x7FFFFFFF : maxBytes;
+		while (i < b.length && chars < charLimit) {
+			var cp = -1;
+			var len = 0;
+			var pair = cesu8Pair(b, i);
+			if (pair >= 0) {
+				cp = pair;
+				len = 6;
+			} else {
+				var dec = decodeUtf8Strict(b, i);
+				if (dec == null) { i++; continue; }
+				cp = dec.code;
+				len = dec.len;
+			}
+			var need = utf8EncodedLength(cp);
+			if (out.length + need > byteLimit) break;
+			appendCodepoint(out, cp);
+			i += len;
+			chars++;
+		}
+		return out.getBytes().toString();
+	}
+	
+	/**
+	 * Strict UTF-8 decode of one sequence at b[i]; null when those bytes are not a well-formed
+	 * scalar value. Rejects overlong forms, surrogates, > U+10FFFF, orphans/truncations and NUL.
+	 */
+	static function decodeUtf8Strict(b:Bytes, i:Int):Null<{code:Int, len:Int}> {
+		var lead = b.get(i);
+		if (lead == 0x00) return null;
+		if (lead < 0x80) return { code: lead, len: 1 };
+		var need = 0;
+		var code = 0;
+		var lo = 0x80;
+		var hi = 0xBF;
+		if (lead >= 0xC2 && lead <= 0xDF) { need = 1; code = lead & 0x1F; }
+		else if (lead == 0xE0) { need = 2; lo = 0xA0; } // A0..BF: E0 80..9F would be overlong
+		else if (lead >= 0xE1 && lead <= 0xEC) { need = 2; code = lead & 0x0F; }
+		else if (lead == 0xED) { need = 2; code = 0x0D; hi = 0x9F; }
+		else if (lead >= 0xEE && lead <= 0xEF) { need = 2; code = lead & 0x0F; }
+		else if (lead == 0xF0) { need = 3; lo = 0x90; }
+		else if (lead >= 0xF1 && lead <= 0xF3) { need = 3; code = lead & 0x07; }
+		else if (lead == 0xF4) { need = 3; code = 0x04; hi = 0x8F; }
+		else return null;
+		if (i + need >= b.length) return null;
+		var c1 = b.get(i + 1);
+		if (c1 < lo || c1 > hi) return null;
+		code = (code << 6) | (c1 & 0x3F);
+		for (k in 2...(need + 1)) {
+			var c = b.get(i + k);
+			if ((c & 0xC0) != 0x80) return null;
+			code = (code << 6) | (c & 0x3F);
+		}
+		return { code: code, len: need + 1 };
+	}
+	
+	/**
+	 * CESU-8 surrogate pair at b[i]: ED A0..AF xx followed by ED B0..BF xx. Returns the folded
+	 * codepoint (>= U+10000) or -1. Python's json.dumps(ensure_ascii=True) and Java emit this
+	 * encoding for astral characters.
+	 */
+	static function cesu8Pair(b:Bytes, i:Int):Int {
+		if (i + 5 >= b.length) return -1;
+		if (b.get(i) != 0xED) return -1;
+		var h = b.get(i + 1);
+		if (h < 0xA0 || h > 0xAF) return -1;
+		if ((b.get(i + 2) & 0xC0) != 0x80) return -1;
+		if (b.get(i + 3) != 0xED) return -1;
+		var l = b.get(i + 4);
+		if (l < 0xB0 || l > 0xBF) return -1;
+		if ((b.get(i + 5) & 0xC0) != 0x80) return -1;
+		var high = 0xD800 | ((h & 0x3F) << 6) | (b.get(i + 2) & 0x3F);
+		var low = 0xDC00 | ((l & 0x3F) << 6) | (b.get(i + 5) & 0x3F);
+		return 0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00);
+	}
+	
+	static inline function utf8EncodedLength(cp:Int):Int {
+		if (cp < 0x80) return 1;
+		if (cp < 0x800) return 2;
+		if (cp < 0x10000) return 3;
+		return 4;
+	}
+	
+	/** UTF-8 encode one code point (all values produced by decodeUtf8Strict/cesu8Pair are valid). */
+	public static function appendCodepoint(out:BytesBuffer, cp:Int):Void {
+		if (cp < 0x80) {
+			out.addByte(cp);
+		} else if (cp < 0x800) {
+			out.addByte(0xC0 | (cp >> 6));
+			out.addByte(0x80 | (cp & 0x3F));
+		} else if (cp < 0x10000) {
+			out.addByte(0xE0 | (cp >> 12));
+			out.addByte(0x80 | ((cp >> 6) & 0x3F));
+			out.addByte(0x80 | (cp & 0x3F));
+		} else {
+			out.addByte(0xF0 | (cp >> 18));
+			out.addByte(0x80 | ((cp >> 12) & 0x3F));
+			out.addByte(0x80 | ((cp >> 6) & 0x3F));
+			out.addByte(0x80 | (cp & 0x3F));
+		}
+	}
+	
+	/**
+	 * Decode a byte range to well-formed UTF-8, replacing every invalid sequence with U+FFFD and
+	 * folding CESU-8 pairs. This is the console log reader's decoder AND the same strict decoder the
+	 * config/announce path uses (decodeUtf8Strict), so the two paths can never disagree.
+	 */
+	public static function decodeUtf8Replacing(b:Bytes, start:Int):String {
+		var out = new BytesBuffer();
+		var i = start < 0 ? 0 : start;
+		while (i < b.length) {
+			var pair = cesu8Pair(b, i);
+			if (pair >= 0) {
+				appendCodepoint(out, pair);
+				i += 6;
+				continue;
+			}
+			var d = decodeUtf8Strict(b, i);
+			if (d == null) {
+				appendCodepoint(out, 0xFFFD);
+				i++;
+				continue;
+			}
+			appendCodepoint(out, d.code);
+			i += d.len;
+		}
+		return out.getBytes().toString();
+	}
+
+	/**
+	 * Strict validity check of a byte string. A CESU-8 surrogate pair counts as invalid (it still
+	 * needs folding), so callers that must store the original only when it is already well-formed
+	 * use this.
+	 */
+	public static function validUtf8Bytes(b:Bytes):Bool {
+		var i = 0;
+		while (i < b.length) {
+			var d = decodeUtf8Strict(b, i);
+			if (d == null) return false;
+			i += d.len;
+		}
+		return true;
+	}
+	
+	/**
+	 * The stored [server].announcement as a valid UTF-8 string. Defensive: every reader goes through
+	 * sanitizeAnnouncement() so a value that reached memory before the codepoint-safe cap (or a
+	 * hand-edited config.toml) can never make the JSON printer throw and brick the console page.
+	 */
+	public static function announcement():String {
+		return limits == null ? "" : sanitizeAnnouncement(limits.announcement);
+	}
+	
+	/** UTF-8 byte length. String.length is a byte count on neko/hxcpp, but say it out loud. */
+	public static function utf8ByteLength(s:String):Int {
+		return s == null ? 0 : Bytes.ofString(s).length;
+	}
+	
+	/**
+	 * Number of UTF-8 codepoints, counted with the strict decoder: a CESU-8 pair counts as one
+	 * codepoint (the one normalizeUtf8 will store) and invalid bytes are not counted.
+	 */
+	public static function utf8Length(s:String):Int {
+		if (s == null) return 0;
+		var b = Bytes.ofString(s);
+		var i = 0;
+		var n = 0;
+		while (i < b.length) {
+			var pair = cesu8Pair(b, i);
+			if (pair >= 0) { n++; i += 6; continue; }
+			var d = decodeUtf8Strict(b, i);
+			if (d == null) { i++; continue; }
+			n++;
+			i += d.len;
+		}
+		return n;
+	}
+	
+	/**
+	 * Keep at most maxBytes UTF-8 bytes and normalize away invalid sequences. Also repairs a
+	 * config.toml damaged by an older build, which is why the load path uses it.
+	 */
+	public static function truncateUtf8(s:String, maxBytes:Int):String {
+		if (s == null) return "";
+		var b = Bytes.ofString(s);
+		if (b.length <= maxBytes && validUtf8Bytes(b)) return s;
+		return normalizeUtf8(s, -1, maxBytes);
+	}
+
+	// ------------------------------------------------------------------
+	// JSON output (safe on every target)
+	// ------------------------------------------------------------------
+	
+	/**
+	 * JSON-encode a response or an embedded DB value with two guarantees:
+	 *   * every string is repaired to well-formed UTF-8, so a legacy row with CESU-8 / overlong /
+	 *     NUL bytes can never make a response body invalid, and
+	 *   * non-BMP codepoints survive the cpp target. hxcpp's haxe.Json.stringify writes U+FFFD U+FFFD
+	 *     for an astral character (proven by temp/announce/JsonCpp.hx), so each one is carried through
+	 *     a NUL-delimited token and substituted with its \uXXXX escape after stringification. NUL is
+	 *     dropped by repairUtf8, so a token can never collide with user text.
+	 */
+	public static function jsonEncode(data:Dynamic):String {
+		var astral = new Map<Int, Bool>();
+		var prepared = prepareJson(data, astral);
+		var text = haxe.Json.stringify(prepared);
+		if (text == null) text = "null";
+		for (cp in astral.keys()) {
+			var token = "\u0000" + StringTools.hex(cp, 6) + "\u0000";
+			var serialized = haxe.Json.stringify(token);
+			if (serialized == null || serialized.length < 2) continue;
+			// replace the escaped token body inside the surrounding quotes of the user's string literal
+			var inner = serialized.substr(1, serialized.length - 2);
+			text = text.split(inner).join(surrogateEscape(cp));
+		}
+		return text;
+	}
+	
+	/**
+	 * Rebuild a JSON value with every string repaired and every astral codepoint tokenized.
+	 * Anonymous structures and arrays are rebuilt (same fields, same order); anything else is passed
+	 * through untouched, so exotic values keep haxe.Json's existing behaviour.
+	 */
+	static function prepareJson(v:Dynamic, astral:Map<Int, Bool>):Dynamic {
+		if (v == null) return null;
+		if (Std.isOfType(v, String)) return prepareJsonString(cast(v, String), astral);
+		if (Std.isOfType(v, Array)) {
+			var out:Array<Dynamic> = [];
+			for (item in (cast v : Array<Dynamic>)) out.push(prepareJson(item, astral));
+			return out;
+		}
+		if (Std.isOfType(v, haxe.ds.StringMap)) {
+			var out:Dynamic = {};
+			var m:haxe.ds.StringMap<Dynamic> = cast v;
+			for (k in m.keys()) Reflect.setField(out, repairUtf8(k), prepareJson(m.get(k), astral));
+			return out;
+		}
+		if (Std.isOfType(v, haxe.ds.IntMap)) {
+			var out:Dynamic = {};
+			var m:haxe.ds.IntMap<Dynamic> = cast v;
+			for (k in m.keys()) Reflect.setField(out, Std.string(k), prepareJson(m.get(k), astral));
+			return out;
+		}
+		switch (Type.typeof(v)) {
+			case TObject:
+				var out:Dynamic = {};
+				for (f in Reflect.fields(v)) {
+					var fv:Dynamic = null;
+					try fv = Reflect.field(v, f) catch (e:Dynamic) fv = null;
+					Reflect.setField(out, f, prepareJson(fv, astral));
+				}
+				return out;
+			default:
+				return v;
+		}
+	}
+	
+	/** One string: repair invalid bytes, fold CESU-8 pairs, tokenize non-BMP codepoints. */
+	static function prepareJsonString(s:String, astral:Map<Int, Bool>):String {
+		if (s == null) return "";
+		var b = Bytes.ofString(s);
+		var out = new BytesBuffer();
+		var i = 0;
+		while (i < b.length) {
+			var pair = cesu8Pair(b, i);
+			var code = -1;
+			var len = 0;
+			if (pair >= 0) {
+				code = pair;
+				len = 6;
+			} else {
+				var d = decodeUtf8Strict(b, i);
+				if (d == null) { i++; continue; }
+				code = d.code;
+				len = d.len;
+			}
+			if (code >= 0x10000) {
+				astral.set(code, true);
+				out.add(Bytes.ofString("\u0000" + StringTools.hex(code, 6) + "\u0000"));
+			} else {
+				for (k in 0...len) out.addByte(b.get(i + k));
+			}
+			i += len;
+		}
+		return out.getBytes().toString();
+	}
+	
+	/** repairUtf8 over a string list (null in = null out). */
+	public static function repairUtf8List(list:Array<String>):Array<String> {
+		if (list == null) return null;
+		var out:Array<String> = [];
+		for (s in list) out.push(repairUtf8(s));
+		return out;
+	}
+
+	/** The two-escape form haxe.Json itself would emit for a non-BMP codepoint. */
+	static function surrogateEscape(cp:Int):String {
+		var v = cp - 0x10000;
+		var hi = 0xD800 | (v >> 10);
+		var lo = 0xDC00 | (v & 0x3FF);
+		return "\\u" + StringTools.hex(hi, 4) + "\\u" + StringTools.hex(lo, 4);
+	}
+	}

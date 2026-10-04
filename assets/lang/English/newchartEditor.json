@@ -324,6 +324,7 @@
 
   "newchartEditor_selected_event_none": "Selected Event: None",
   "newchartEditor_selected_event_format": "Selected Event: ",
+  "charting_warning_clear_progress": "This will clear the current progress.\n\nContinue?",
 
   "newchartEditor_select_difficulty": "Select difficulty to load:",
   "newchartEditor_load_btn": "Load",

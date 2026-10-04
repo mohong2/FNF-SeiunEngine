@@ -357,7 +357,9 @@ class GameClient {
 			"gameplaySettings" => ClientPrefs.data.gameplaySettings
 		];
 
-		if (reqAddress == networkServerAddress && Auth.authID != null && Auth.authToken != null) {
+		// A LAN host is account-free: the embedded server keeps accounts in its own local DB, so
+		// the player's global networkId/token are never sent to it while hosting.
+		if (lanLocalOverride == null && reqAddress == networkServerAddress && Auth.authID != null && Auth.authToken != null) {
 			options.set("networkId", Auth.authID);
 			options.set("networkToken", Auth.authToken);
 		}
@@ -679,9 +681,20 @@ class GameClient {
 
 		GameClient.room.onMessage("checkChart", function(message) {
 			Waiter.putPersist(() -> {
+				var chartSong:String = GameClient.room.state.song;
+				var chartFolder:String = GameClient.room.state.folder;
+				var chartModDir:String = GameClient.room.state.modDir;
+
+				// A segmented chart has no one-file chart to hash: refuse it loudly instead of
+				// letting hashRawSong throw and leaving the room waiting for hasSong forever.
+				if (GameClient.chartIsSegmented(chartSong, chartFolder, chartModDir)) {
+					GameClient.refuseSegmentedChart();
+					return;
+				}
+
 				try {
-					var hash = Song.hashRawSong(GameClient.room.state.song, GameClient.room.state.folder);
-					trace("verifying song: " + GameClient.room.state.song + " | " + GameClient.room.state.folder + " : " + hash);
+					var hash = Song.hashRawSong(chartSong, chartFolder);
+					trace("verifying song: " + chartSong + " | " + chartFolder + " : " + hash);
 					GameClient.send("verifyChart", hash);
 					states.FreeplayState.destroyFreeplayVocals();
 					// flixel 4.11: switchState takes a state, not a factory.
@@ -690,7 +703,10 @@ class GameClient {
 					FlxG.autoPause = ClientPrefs.data.runInBackground ? false : ClientPrefs.data.autoPause;
 				}
 				catch (exc:Dynamic) {
+					// The room cannot start without this client's hasSong, so the failure must not be
+					// swallowed: the local player gets the alert, the room gets the status line.
 					Sys.println(exc);
+					GameClient.refuseUnhashableChart(exc);
 				}
 			});
 		});
@@ -777,7 +793,132 @@ class GameClient {
 		return GameClient.isOwner || GameClient.room.state.anarchyMode;
 	}
 
+	/**
+	 * Whether a play of `song` would load a segmented (ChartParts) chart.
+	 *
+	 * The online slice only promises one-file charts: the host hashes the chart text
+	 * (`Song.hashRawSong`) and the server verifies that hash, which a chart merged from part files
+	 * has no single file for. `Song.loadRawSong()` throws `Missing file:` for such a chart, so the
+	 * online paths must refuse it *before* the hash -- otherwise `verifyChart` is never sent and the
+	 * room waits for `hasSong` forever.
+	 *
+	 * The detection itself is `ChartParts.resolveForChart()`, the same call `Song` loads by and the
+	 * one `FreeplayState.songHasSegmentedChart()` makes. MODE_AUTO is deliberate: the question is
+	 * "does this chart have parts on disk", not "did the player choose to merge them" -- the parts
+	 * are what a play uses, whatever the saved preference says.
+	 *
+	 * `song` is the chart key and `folder` the song folder, exactly as `Song.loadRawSong(song,
+	 * folder)` receives them. `modDir` is the song's mod directory when it is not the active one
+	 * (the room remembers it); null falls back to `Paths.currentModDirectory`.
+	 */
+	public static function chartIsSegmented(song:String, ?folder:String, ?modDir:String):Bool
+	{
+		#if sys
+		if (song == null || song.length == 0) return false;
+
+		var formattedFolder:String = Paths.formatToSongPath(folder == null ? song : folder);
+		var formattedSong:String = Paths.formatToSongPath(song);
+		// "" from the room means "this song has no mod dir": do not fall back to whatever
+		// mod happens to be active, which would probe an unrelated folder.
+		var mod:String = (modDir != null) ? modDir : Paths.currentModDirectory;
+
+		var dirs:Array<String> = [];
+		#if MODS_ALLOWED
+		if (mod != null && mod.length > 0)
+			dirs.push(Paths.mods(mod + '/data/' + formattedFolder));
+		dirs.push(Paths.mods('data/' + formattedFolder));
+		#end
+		dirs.push(Paths.getPreloadPath('data/' + formattedFolder));
+
+		for (dir in dirs)
+			if (ChartParts.resolveForChart(dir, formattedFolder, formattedSong, ChartParts.MODE_AUTO) != null)
+				return true;
+		#end
+		return false;
+	}
+
+	/**
+	 * Player-facing refusal for a segmented (ChartParts) chart on an online path.
+	 *
+	 * Shared by every `verifyChart` / `setSong` site so the reason reads the same wherever the
+	 * player meets it, and mirrored into the room-wide `status` field (an existing protocol
+	 * message, so the wire format is unchanged) so the host can see why this player's `hasSong`
+	 * stays false instead of waiting for a room that can never start.
+	 */
+	public static function refuseSegmentedChart():Void
+	{
+		Alert.alert(
+			OnlineLang.L('room.chartSegmented', 'Segmented chart: unsupported online\n分段谱面：联机不支持'),
+			OnlineLang.L('room.chartSegmented.desc',
+				'Online play only supports one-file charts (data/<song>/<song>.json).\n'
+				+ 'This chart is split into several part files, so its hash cannot be verified and the room cannot start.\n'
+				+ '联机只支持单文件谱面（data/<歌曲>/<歌曲>.json）。本谱面被拆分为多个分段文件，无法校验谱面哈希，房间无法开局。'));
+		if (GameClient.isConnected())
+			GameClient.send("status", "Segmented chart (unsupported online)");
+	}
+
+	/**
+	 * Player-facing refusal for a chart that exists but could not be hashed (unreadable file,
+	 * missing chart). Same contract as refuseSegmentedChart(): a failure is never silent, because
+	 * the room cannot start without this client's `hasSong`.
+	 */
+	public static function refuseUnhashableChart(exc:Dynamic):Void
+	{
+		Alert.alert(
+			OnlineLang.L('room.chartHashFailed', 'Chart hash failed\n谱面哈希失败'),
+			ShitUtil.readableError(exc));
+		if (GameClient.isConnected())
+			GameClient.send("status", "Chart hash failed");
+	}
+
+	/**
+	 * Runtime-only override of the server address used while this process hosts a LAN server
+	 * (design temp/lan-host-recon/design.md 2.6). While set it wins over ServerList/ClientPrefs
+	 * in BOTH address getters, so the game room and the social/network room talk to the local
+	 * server - one server, never two (user ruling: the embedded host IS the server).
+	 *
+	 * It is deliberately NOT persisted: setLanLocalOverride() must never touch
+	 * ClientPrefs.saveSettings() / ServerList, so the player's saved server selection survives
+	 * hosting untouched.
+	 */
+	@:unreflective
+	public static var lanLocalOverride:String = null;
+
+	/**
+	 * Runtime-only address a copied room code advertises while hosting (the host's LAN IPv4).
+	 * getRoomSecret() uses it so a friend can paste "ROOMID;ws://192.168.x.y:port" straight into
+	 * JOIN, instead of the loopback address the host itself connects to.
+	 */
+	@:unreflective
+	public static var lanShareAddress:String = null;
+
+	/**
+	 * Set (or clear) the local-hosting override and re-point the derived clients exactly like
+	 * set_networkServerAddress() does (see below) - minus every ClientPrefs and ServerList write.
+	 * Clearing restores the player's selected network server.
+	 */
+	public static function setLanLocalOverride(address:String):Void {
+		var next:String = (address == null || address.trim() == '') ? null : address.trim();
+		if (next == lanLocalOverride)
+			return;
+
+		lanLocalOverride = next;
+
+		var social = get_networkServerAddress();
+		FunkinNetwork.client = new online.http.HTTPHandler(GameClient.addressToUrl(social));
+		if (NetworkClient.room != null) {
+			NetworkClient.room.leave();
+			NetworkClient.room = null;
+			NetworkClient.connecting = false;
+			NetworkClient.connect();
+		}
+	}
+
 	static function get_serverAddress():String {
+		// While hosting, the local embedded server is the server for every online feature.
+		if (lanLocalOverride != null && lanLocalOverride != '')
+			return lanLocalOverride;
+
 		// The selected ServerList entry wins; the legacy single-address fields stay as a mirror
 		// so older saves keep working.
 		var fromList = ServerList.selectedAddress();
@@ -802,6 +943,11 @@ class GameClient {
 	}
 
 	static function get_networkServerAddress():String {
+		// Same override as get_serverAddress(): hosting must not leave the social/chat room
+		// connected to the player's remote server (user ruling: everything local, like MC).
+		if (lanLocalOverride != null && lanLocalOverride != '')
+			return lanLocalOverride;
+
 		var fromList = ServerList.selectedNetworkAddress();
 		if (fromList != null && fromList != "")
 			return fromList;
@@ -1063,6 +1209,11 @@ class GameClient {
 	}
 
 	public static function getRoomSecret(?forceAddress:Bool = false) {
+		// While hosting, advertise the LAN address instead of the loopback address the host
+		// itself connects to, so the copied code is directly joinable by a friend on the LAN.
+		if (lanShareAddress != null && lanShareAddress != '' && GameClient.room != null)
+			return '${GameClient.room.roomId};${lanShareAddress}';
+
 		if (forceAddress || GameClient.address != GameClient.getDefaultServer())
 			return '${GameClient.room.roomId};${GameClient.address}';
 		return GameClient.room.roomId;

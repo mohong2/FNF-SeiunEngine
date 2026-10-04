@@ -1,26 +1,29 @@
 package online_server;
 
 import haxe.Json;
-import haxe.crypto.Sha256;
-import haxe.io.Path;
 import sys.FileSystem;
 import sys.io.File;
 import sys.thread.Mutex;
 
 /**
- * Local JSON storage primitives.
+ * Legacy JSON utilities.
  *
- * Accounts / scores / comments all use local JSON files (sys.io.File + haxe.Json); no
- * external storage or auth dependency is used.
+ * Persistence no longer goes through this class: accounts / leaderboard / clubs / mods / admin /
+ * public data live in SQLite (see online_server.db.Db and the repositories). What remains here is
+ *  - mutex/lock(), still used for purely in-memory structures (the online-player list, the image
+ *    index) that never touch the database,
+ *  - read(), used exactly once by db.LegacyImport to ingest an old JSON file,
+ *  - randomHex / isoNow / isoOf, the small helpers that predate Crypto and are still referenced
+ *    by existing call sites.
  *
- * Threading: HTTP handles one thread per connection, so the storage layer serializes
- * read-modify-write with one static Mutex. Callers use lock() and must not call a locking public
- * method from inside the callback (self-deadlock). Every successful write flushes immediately,
- * which is enough at LAN transaction rates.
+ * There is deliberately no write() anymore: nothing in this server rewrites a whole JSON file.
+ * randomHex now delegates to Crypto, which draws from the OS entropy device or the HMAC-SHA256
+ * DRBG instead of a time+Math.random seed.
  */
 class JsonStore {
 	public static var mutex(default, null):Mutex = new Mutex();
 
+	/** Serialises an in-memory read-modify-write; never hold it while taking the DB lock (or the reverse). */
 	public static inline function lock<T>(cb:Void->T):T {
 		mutex.acquire();
 		var result = cb();
@@ -38,38 +41,14 @@ class JsonStore {
 				return fallback;
 			return Json.parse(text);
 		} catch (e:Dynamic) {
-			trace('[store] parse failed: ' + path + ' -> ' + Std.string(e));
+			Log.warn("legacy", "JSON parse failed", { path: path, error: Std.string(e) });
 			return fallback;
 		}
 	}
 
-	public static function write(path:String, data:Dynamic):Void {
-		if (path == null) return;
-		try {
-			var dir = Path.directory(path);
-			if (dir != "" && !FileSystem.exists(dir)) FileSystem.createDirectory(dir);
-			File.saveContent(path, Json.stringify(data));
-		} catch (e:Dynamic) {
-			trace('[store] write failed: ' + path + ' -> ' + Std.string(e));
-		}
-	}
-
-	/**
-	 * Random hex string (account token). No JWT dependency: a time / Math.random / Std.random
-	 * seed goes through the built-in SHA256.
-	 */
-	static var tokenSeq:Int = 0;
-
+	/** Random hex string with `hexChars` characters, from the Crypto CSPRNG/DRBG. */
 	public static function randomHex(hexChars:Int = 64):String {
-		tokenSeq++;
-		var seed = Std.string(Date.now().getTime()) + ':' + Std.string(tokenSeq) + ':' + Std.string(haxe.Timer.stamp());
-		try {
-			// Std.random throws on neko (missing std@random_int), so only Math.random is used;
-			// if even that throws, the time + counter seed is still sufficient.
-			seed += ':' + Std.string(Math.random()) + ':' + Std.string(Math.random());
-		} catch (e:Dynamic) {}
-		var digest = Sha256.encode(seed);
-		return digest.substr(0, hexChars > digest.length ? digest.length : hexChars);
+		return Crypto.randomHexChars(hexChars);
 	}
 
 	/** ISO-8601 UTC with a fixed format, independent of locale. */

@@ -34,6 +34,7 @@ class RoomSettingsSubstate extends MusicBeatSubstate {
 	var teamMode:Option;
 	var royalMode:Option;
 	var royalModeDadSide:Option;
+	var pausePolicy:Option;
 
 	override function create() {
 		super.create();
@@ -169,6 +170,31 @@ class RoomSettingsSubstate extends MusicBeatSubstate {
 			prevCond = GameClient.room.state.winCondition;
 		}, 0, 0, false, true));
 
+		var prevPausePolicy:Int = -1;
+		items.add(pausePolicy = new Option(OnlineLang.L('settings.pausePolicy', 'Pause Policy'), '...', () -> {
+			GameClient.send("nextPauseMode");
+		}, (elapsed) -> {
+			pausePolicy.alpha = GameClient.hasPerms() ? 1 : 0.8;
+
+			var policy:Int = Std.int(GameClient.room.state.pauseMode);
+			if (policy != prevPausePolicy) {
+				switch (policy) {
+					case 0:
+						pausePolicy.descText.text = OnlineLang.L('settings.pause.hostOnly', 'Only the host can pause; everyone else is paused too.');
+					case 1:
+						pausePolicy.descText.text = OnlineLang.L('settings.pause.everyone', 'When anyone pauses, everyone is paused.');
+					case 2:
+						pausePolicy.descText.text = OnlineLang.L('settings.pause.legacy', 'Pauses stay local to each player (old behaviour).');
+					default:
+						pausePolicy.descText.text = '...';
+				}
+				pausePolicy.descText.text += OnlineLang.L('settings.pause.clickToChange', ' (Click to Change)');
+				pausePolicy.box.makeGraphic(Std.int(pausePolicy.descText.x - pausePolicy.x + pausePolicy.descText.width) + 10, Std.int(pausePolicy.height), 0x81000000);
+			}
+
+			prevPausePolicy = policy;
+		}, 0, 0, false, true));
+
 		items.add(modifers = new Option(OnlineLang.L('settings.modifiers', 'Game Modifiers'), OnlineLang.L('settings.modifiers.desc', 'Set your Gameplay Modifiers here!'), () -> {
 			close();
 			FlxG.state.openSubState(new GameplayChangersSubstate());
@@ -232,6 +258,7 @@ class RoomSettingsSubstate extends MusicBeatSubstate {
 		nextItem(hideGF);
 		nextItem(disableSkins);
 		nextItem(winCondition);
+		nextItem(pausePolicy);
 		nextItem(modifers);
 		nextItem(stageSelect);
 		nextItem(skinSelect);

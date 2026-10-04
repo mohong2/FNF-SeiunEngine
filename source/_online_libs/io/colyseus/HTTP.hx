@@ -6,6 +6,13 @@ using io.colyseus.error.HttpException;
 using tink.http.Method;
 using tink.http.Header;
 
+#if ONLINE_ALLOWED
+// Project-local JSON printer: haxe.Json.stringify mangles astral characters on cpp (see
+// source/online/util/JsonSafe.hx). Only the game client uses it; the standalone server build has
+// no ONLINE_ALLOWED and keeps haxe.Json until the parallel server-side fix lands.
+import online.util.JsonSafe;
+#end
+
 typedef HttpOptions = {
     ?headers: Map<String, String>,
     ?body: Dynamic
@@ -44,7 +51,11 @@ class HTTP {
             if (Std.isOfType(options.body, String)) {
                 body = cast options.body;
             } else {
+                #if ONLINE_ALLOWED
+                body = JsonSafe.stringify(options.body);
+                #else
                 body = haxe.Json.stringify(options.body);
+                #end
             }
 			headers.push(new HeaderField(HeaderName.CONTENT_TYPE, 'application/json'));
 			headers.push(new HeaderField(HeaderName.CONTENT_LENGTH, body.length));

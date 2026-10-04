@@ -9,7 +9,7 @@ const fixed = (v, n) => (v == null ? '-' : Number(v).toFixed(n == null ? 2 : n))
 const int = (v) => (v == null || v === '' ? '-' : String(Math.round(Number(v))));
 const pill = (text, kind) => '<span class="pill ' + (kind || '') + '">' + esc(text) + '</span>';
 
-const state = { sess: null, route: 'overview', config: null, tick: null, errors: [], search: '', logs: { source: 'actions', lines: 200, auto: false } };
+const state = { sess: null, route: 'overview', config: null, tick: null, errors: [], search: '', localReadOnly: false, logs: { source: 'actions', lines: 200, auto: false } };
 
 /* ---------------- transport ---------------- */
 
@@ -17,11 +17,20 @@ function basic(id, token) { return 'Basic ' + btoa(id + ':' + token); }
 
 async function api(path, opts) {
   opts = opts || {};
+  const method = opts.method || 'GET';
+  // Local read-only mode (server ruling D-R3-5): the server refuses these anyway, but the page
+  // must say so visibly instead of quietly failing the write.
+  if (state.localReadOnly && (method !== 'GET' || path.indexOf('/api/admin/') === 0)) {
+    const msg = '本机只读模式：' + method + ' ' + path + ' 已拒绝（只能查看） Local read-only mode refuses ' + method + ' ' + path;
+    note(msg, 'bad');
+    toast(msg, 'bad');
+    throw { status: 0, data: { error: msg } };
+  }
   const headers = { 'Content-Type': 'application/json' };
   if (state.sess) headers['Authorization'] = basic(state.sess.id, state.sess.token);
   let res, text = '';
   try {
-    res = await fetch(path, { method: opts.method || 'GET', headers, body: opts.body === undefined ? undefined : JSON.stringify(opts.body) });
+    res = await fetch(path, { method: method, headers, body: opts.body === undefined ? undefined : JSON.stringify(opts.body) });
     text = await res.text();
   } catch (e) {
     note('网络错误 ' + path + ': ' + e.message, 'bad');
@@ -75,10 +84,40 @@ async function boot() {
   bindChrome();
   const initial = (location.hash || '').replace('#/', '');
   if (PAGES[initial]) state.route = initial;
+
+  // Always probe WITHOUT the stored credential before trusting a session (D-R3-5). The loopback
+  // read-only bypass ignores the Authorization header, so with a stale "seiun.console" entry for
+  // this origin verifySession() would answer 200 with the synthetic account and the page would
+  // render as signed in, hiding read-only mode. The probe decides on its own when nothing is stored.
+  const probe = await probeStatus();
   const sess = loadSession();
-  if (!sess || !sess.id) { showLogin(); return; }
+
+  if (!sess || !sess.id) {
+    if (probe.ok && isLocalReadOnly(probe.data)) { enterLocalReadOnly(probe.data); return; }
+    showLogin(probe.error ? '网络错误 Network error: ' + probe.error : '');
+    return;
+  }
+
+  // A stored session only counts if the server answers with a REAL account. A read-only answer means
+  // the server ignored the credential (loopback bypass), so the stored session is stale or belongs to
+  // another server on this origin: read-only mode wins and the credential is not used.
   state.sess = sess;
-  try { await verifySession(); } catch (e) { showLogin('登录已失效：' + (e.data && e.data.error ? e.data.error : e.status)); return; }
+  state.localReadOnly = false;
+  $('#local-ro').classList.add('hidden');
+  let data = null;
+  try {
+    data = await api('/api/console/status');
+  } catch (e) { showLogin('登录已失效：' + (e.data && e.data.error ? e.data.error : e.status)); return; }
+  if (isLocalReadOnly(data)) {
+    // Stop sending the stale credential; localStorage is deliberately left untouched so a later
+    // visit to a server that does recognise it still works.
+    state.sess = null;
+    enterLocalReadOnly(data);
+    return;
+  }
+  state.sess.name = data.me.name;
+  state.sess.role = data.me.role;
+  saveSession(state.sess);
   $('#login').classList.add('hidden');
   $('#app').classList.remove('hidden');
   $('#app').classList.add('app-in');
@@ -89,9 +128,51 @@ async function boot() {
 }
 
 function showLogin(msg) {
+  state.localReadOnly = false;
+  $('#local-ro').classList.add('hidden');
   $('#app').classList.add('hidden');
   $('#login').classList.remove('hidden');
   if (msg) $('#login-msg').textContent = msg;
+}
+
+/*
+ * Local read-only mode (user ruling D-R3-5). The embedded LAN host has no admin account, so its
+ * server answers GET /api/console/* from 127.0.0.1 without a credential: the status probe returns
+ * 200 with localReadOnly = true. A dedicated server (or any other peer) returns 401 here, and the
+ * normal login wall stays.
+ *
+ * probeStatus() sends no Authorization header on purpose and always runs before the stored session
+ * is trusted, see boot().
+ */
+async function probeStatus() {
+  try {
+    const res = await fetch('/api/console/status', { method: 'GET' });
+    if (res.status !== 200) return { ok: false, status: res.status };
+    let data = null;
+    try { data = await res.json(); } catch (e) { data = null; }
+    return { ok: true, status: 200, data: data };
+  } catch (e) {
+    return { ok: false, status: 0, error: e.message };
+  }
+}
+
+/** True when a status payload is the synthetic loopback read-only session, never a real account. */
+function isLocalReadOnly(data) {
+  return !!data && (data.localReadOnly === true || (data.me && data.me.id === 'local-console'));
+}
+
+function enterLocalReadOnly(data) {
+  state.localReadOnly = true;
+  state.sess = null;
+  state.me = data.me || null;
+  $('#local-ro').classList.remove('hidden');
+  $('#login').classList.add('hidden');
+  $('#app').classList.remove('hidden');
+  $('#app').classList.add('app-in');
+  $('#me-name').textContent = '本机只读 local read-only';
+  $('#me-avatar').textContent = 'R';
+  renderSidebar();
+  route();
 }
 
 function bindLogin() {
@@ -148,11 +229,12 @@ async function loginCheck() {
 
 /* ---------------- chrome ---------------- */
 
+/* Third item = needs /api/admin/*: hidden in local read-only mode, where those routes stay 401. */
 const NAV = [
   { group: '运行 Runtime', items: [['overview', '概览 Overview'], ['rooms', '房间 Rooms'], ['players', '玩家 Players'], ['connections', '连接 Connections']] },
   { group: '数据 Data', items: [['accounts', '账号 Accounts'], ['leaderboard', '排行榜 Leaderboard'], ['clubs', '俱乐部 Clubs'], ['mods', 'mod 仓库 Mod repo'], ['comments', '评论 Comments']] },
-  { group: '运维 Operations', items: [['config', '配置 Config'], ['iplock', 'IP 锁与重连 IP lock & reconnect'], ['cooldown', '冷却 Cooldowns'], ['logs', '日志 Logs'], ['tasks', '任务 Tasks']] },
-  { group: '个人 Personal', items: [['admin', 'admin 账号 Admin accounts'], ['about', '关于 About']] }
+  { group: '运维 Operations', items: [['config', '配置 Config'], ['iplock', 'IP 锁与重连 IP lock & reconnect'], ['cooldown', '冷却 Cooldowns'], ['logs', '日志 Logs'], ['tasks', '任务 Tasks', true]] },
+  { group: '个人 Personal', items: [['admin', 'admin 账号 Admin accounts', true], ['about', '关于 About']] }
 ];
 
 function renderSidebar(counts) {
@@ -160,7 +242,8 @@ function renderSidebar(counts) {
   let html = '';
   for (const g of NAV) {
     html += '<h4>' + esc(g.group) + '</h4>';
-    for (const [route, label] of g.items) {
+    for (const [route, label, needsAdmin] of g.items) {
+      if (state.localReadOnly && needsAdmin) continue;
       const c = counts[route] != null ? '<span class="cnt">' + esc(counts[route]) + '</span>' : '';
       html += '<a data-route="' + route + '" class="' + (state.route === route ? 'active' : '') + '"><span>' + esc(label) + '</span>' + c + '</a>';
     }
@@ -624,10 +707,17 @@ const PAGES = {
       return title('admin 账号 Admin accounts', '控制台身份完全由服务端判定（--admin-email / access 含 *）') +
         '<div class="card"><h3>' + esc(s.me.name) + '</h3><div class="sub">' + esc(s.me.id) + '</div>' +
         '<div class="kv">' + kv('角色 Role', s.me.role) + kv('access', (s.me.access || []).join(', ')) + kv('data-dir', s.process.dataDir) + kv('config.toml', s.process.configPath) + '</div>' +
-        '<div class="row"><button class="btn danger" id="btn-logout">退出登录 Sign out</button><button class="btn" id="btn-reverify">重新校验 Re-verify</button></div></div>' +
+        '<div class="row">' + (state.localReadOnly
+          ? '<button class="btn" id="btn-reverify">刷新 Refresh</button>'
+          : '<button class="btn danger" id="btn-logout">退出登录 Sign out</button><button class="btn" id="btn-reverify">重新校验 Re-verify</button>') + '</div></div>' +
         '<div class="card"><h3>启动参数 Launch args</h3><pre class="log">' + esc((s.process.args || []).join(' ') || '(none)') + '</pre></div>';
     },
     after: () => {
+      if (state.localReadOnly) {
+        // No credential to re-verify in local read-only mode; a reload re-probes the server.
+        $('#btn-reverify').addEventListener('click', () => location.reload());
+        return;
+      }
       $('#btn-logout').addEventListener('click', logout);
       $('#btn-reverify').addEventListener('click', async () => { await verifySession(); toast('凭据有效 Credentials valid', 'ok'); });
     }

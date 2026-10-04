@@ -60,6 +60,48 @@ function Test-PortInUse([int]$port) {
   }
 }
 
+function Get-LanIPv4 {
+  # Best-effort list of the addresses other machines on the same LAN can reach this host with.
+  # Get-NetIPAddress is preferred; DNS resolution is the fallback when the cmdlet is unavailable.
+  $addresses = @()
+  try {
+    $addresses = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
+      Where-Object { $_.IPAddress -ne '127.0.0.1' -and $_.IPAddress -notlike '169.254.*' } |
+      Select-Object -ExpandProperty IPAddress -Unique)
+  } catch {
+    try {
+      $addresses = @([System.Net.Dns]::GetHostAddresses([System.Net.Dns]::GetHostName()) |
+        Where-Object { $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork } |
+        ForEach-Object { $_.IPAddressToString } |
+        Where-Object { $_ -ne '127.0.0.1' -and $_ -notlike '169.254.*' } |
+        Select-Object -Unique)
+    } catch { $addresses = @() }
+  }
+  return $addresses
+}
+
+function Show-LanHelp([string]$bindAddr, [int]$httpPort, [int]$wsPort) {
+  # Only meaningful when every interface is bound (start.ps1 -Lan, or -BindHost 0.0.0.0).
+  if ($bindAddr -ne '0.0.0.0') { return }
+
+  Write-Host ''
+  Write-Host 'LAN: bound to 0.0.0.0, so other machines can reach this server.'
+  $ips = Get-LanIPv4
+  if ($ips.Count -eq 0) {
+    Write-Host '  Could not list a LAN IPv4 here -- run ipconfig on this PC and read its "IPv4 Address".' -ForegroundColor Yellow
+  } else {
+    foreach ($ip in $ips) {
+      Write-Host ("  other players connect to: ws://{0}:{1}    (Server Address field: {0})" -f $ip, $httpPort)
+    }
+  }
+  Write-Host ("  In the game, type the host's LAN IP only (no port): the client adds :{0} itself. {0} is the HTTP/room port." -f $httpPort)
+  Write-Host '  Windows Firewall must allow both server ports on this PC (once, elevated PowerShell):'
+  Write-Host ("    New-NetFirewallRule -DisplayName 'SeiunEngine Server HTTP {0}' -Direction Inbound -Action Allow -Protocol TCP -LocalPort {0}" -f $httpPort)
+  Write-Host ("    New-NetFirewallRule -DisplayName 'SeiunEngine Server WS {0}' -Direction Inbound -Action Allow -Protocol TCP -LocalPort {0}" -f $wsPort)
+  Write-Host ("  check from the other PC: Test-NetConnection <host-lan-ip> -Port {0}" -f $httpPort)
+  Write-Host ''
+}
+
 function Get-ServerPid {
   if (Test-Path $pidFile) {
     $raw = Get-Content $pidFile -Raw
@@ -161,6 +203,7 @@ if ($Background) {
   "started (background) pid=$($proc.Id)  bind=$bindAddr  http://127.0.0.1:$HttpPort  ws://127.0.0.1:$WsPort"
   "console: http://127.0.0.1:$HttpPort/console   (web console)"
   "logs: $outLog / $errLog"
+  Show-LanHelp $bindAddr $HttpPort $WsPort
   exit 0
 }
 
@@ -172,6 +215,7 @@ Write-Host "server : $runner"
 Write-Host "bind   : $bindAddr   http://127.0.0.1:$HttpPort   ws://127.0.0.1:$WsPort"
 Write-Host "console: http://127.0.0.1:$HttpPort/console   (web console)"
 Write-Host "logs   : $outLog"
+Show-LanHelp $bindAddr $HttpPort $WsPort
 Write-Host 'Ctrl+C to stop.'
 Write-Host ''
 

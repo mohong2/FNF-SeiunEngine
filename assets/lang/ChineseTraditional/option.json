@@ -100,7 +100,7 @@
     "option.newchartingstate" : "新谱面編器",
     "option.newchartingstate.desc" : "如果选中,将使用新的谱面編輯器而不是旧的谱面編輯器",
     "option.segmentedCharts": "分段譜面",
-    "option.segmentedCharts.desc": "被拆成多個檔案的譜面如何載入。\n自動: <song>-0.json、<song>-1.json… 合併成一首歌播放。\n僅清單: 只合併 <song>.parts.json 裡列出的分片。\n關閉: 每個檔案仍是一個獨立難度（原版行為）。\n在選歌介面按 M（安卓為屏幕上的 D 鍵）可只對當前歌曲臨時切換。",
+    "option.segmentedCharts.desc": "被拆成多個檔案的譜面如何載入。\n自動: <song>-0.json、<song>-1.json… 合併成一首歌播放。\n僅清單: 只合併 <song>.parts.json 裡列出的分片。\n關閉: 每個檔案仍是一個獨立難度（原版行為）。\n在選歌介面按 M（安卓為屏幕上的 D 鍵）可只對當前歌曲臨時切換。\n連線只承諾單檔譜面：分段譜面與巨譜快取疊加的情境不在承諾範圍內。",
     "option.chartAutosave" : "譜面自動保存",
     "option.chartAutosave.desc" : "如果選中，譜面編輯器會自動保存備份並建立自動保存資料（進入試玩時也會保存）。預設關閉，這樣你的譜面在你手動按下儲存之前絕不會被自動保存。",
 
@@ -199,9 +199,6 @@
 
     "option.highPerformanceMode": "高效能模式",
     "option.highPerformanceMode.desc": "如果啟用，移除 Update 累積上限，\n允許遊戲以最大速度執行更新邏輯。\n自動啟用分離 Update/Draw 模式。無執行緒安全問題。",
-
-    "option.vsyncEnabled": "垂直同步 (V-Sync)",
-    "option.vsyncEnabled.desc": "如果啟用，幀渲染與顯示器刷新率同步。\n停用後可以獲得更高 FPS（可能導致畫面撕裂）。\n需要重新啟動遊戲才能完全生效。",
 
     "controls.left": "左鍵",
     "controls.down": "下鍵",
@@ -312,9 +309,9 @@
     "trace.consoleDisabled": "Trace 主控台輸出已停用。",
     "trace.consoleEnabled": "Trace 主控台輸出已啟用。",
     "option.turboMode": "Turbo 模式",
-    "option.turboMode.desc": "極限譜面開關：強制 botplay，密集段走資料級結算，百萬級音符也能流暢。關閉 = 原版行為。",
+    "option.turboMode.desc": "極限譜面開關：強制 botplay，密集段走資料級結算，百萬級音符也能流暢。關閉 = 原版行為。\n連線時自動關閉。",
     "option.scriptArgReuse": "重複使用腳本回呼參數",
-    "option.scriptArgReuse.desc": "腳本回呼重複使用同一個參數陣列，不再每次新建。消除密集譜面的 GC 卡頓。\n關閉 = 每次都重新分配，與原版一致。",
+    "option.scriptArgReuse.desc": "腳本回呼重複使用同一個參數陣列，不再每次新建。消除密集譜面的 GC 卡頓。\n關閉 = 每次都重新分配，與原版一致。\n連線時自動關閉。",
 
     "option.perfMode": "效能模式",
     "option.perfMode.desc": "極限譜面最佳化總開關。關閉 = 原版行為，僅建議極端高 NPS 譜面開啟；連線自動關閉。",
@@ -323,7 +320,7 @@
     "option.fastSort": "快速音符排序",
     "option.fastSort.desc": "每幀只排序可見且存活的音符。模組若依賴完整組順序請關閉；連線自動關閉。",
     "option.limitNotes": "最大同屏音符數",
-    "option.limitNotes.desc": "同屏最多存活的音符數。0 = 不限（僅高階機器）。數值越高越吃 CPU/GPU/記憶體。",
+    "option.limitNotes.desc": "同屏最多存活的音符數。0 = 不限（僅高階機器）。數值越高越吃 CPU/GPU/記憶體。\n連線時自動關閉此上限。",
     "option.chartCache": "超大譜面快取",
     "option.chartCache.desc": "快取超大譜面（64 MB 以上）的 note 清單，重複進曲免去解析與折疊。\n關閉後每次都重新讀取譜面檔案。",
     "option.chartCacheCompress": "壓縮譜面快取",
@@ -382,5 +379,25 @@
     "Storage.rootWarning.dismiss": "不再提示",
     "Dialog.yes": "是",
     "Dialog.no": "否",
-    "Dialog.ok": "確定"
+    "Dialog.ok": "確定",
+    "option.render": "渲染影片",
+    "option.render.desc": "把目前歌曲錄製成影片檔案。\n在「設定 → Render Video」裡開啟「進歌自動錄製」即可，不需要任何快捷鍵。\n編碼由 ffmpeg 完成，需要在 PATH 中找到 ffmpeg.exe。",
+    "option.previewRender": "預覽渲染",
+    "option.previewRender.desc": "完整執行真實渲染的所有步驟（固定時間步長、逐格擷取），\n但不寫入檔案。用來在正式編碼前確認幀率是否跟得上。",
+    "option.renderFps": "渲染幀率",
+    "option.renderFps.desc": "影片擷取與編碼使用的幀率，15 到 480 自由選擇。\n渲染期間遊戲會被釘在這個幀率上，每一格正好代表 1/幀率 的歌曲時間，\n所以即使電腦跑不滿這個幀率，影片長度也永遠等於歌曲長度（不會倍速）。\n想要畫面真正順暢，請設成電腦實際畫得出的幀率。",
+    "option.renderCodec": "渲染編碼器",
+    "option.renderCodec.desc": "渲染影片時使用的編碼器。\nGPU 編碼器（NVENC/AMF/QSV）需要顯卡與 ffmpeg 都支援。\nVP8/VP9 輸出 .webm，其餘輸出 .mp4。",
+    "option.renderMode": "位元率控制方式",
+    "option.renderMode.desc": "CRF/CQP：恆定品質（用下面的「渲染品質」）。\nVBR：目標位元率。CBR：固定位元率，檔案大小可預測。",
+    "option.renderQuality": "渲染品質",
+    "option.renderQuality.desc": "CRF/CQP 模式下的品質。數值越小畫質越好、檔案越大。\n18 已接近無損，0 為無損。",
+    "option.renderBitrate": "渲染位元率",
+    "option.renderBitrate.desc": "VBR / CBR 模式使用的目標位元率，單位 Mbit/s。\n1080p60 用 12 即可，1440p/4K 請調高。",
+    "option.renderBufferFrames": "渲染緩衝幀數",
+    "option.renderBufferFrames.desc": "允許等待編碼器的幀數，超過就丟幀。\n這是渲染記憶體的上限（幀數 × 寬 × 高 × 4 位元組）。\n編碼器慢導致丟幀時調高；想省記憶體就調低。",
+    "option.renderAudio": "渲染音訊",
+    "option.renderAudio.desc": "把歌曲的 Inst / Voices 音軌混入渲染出的影片。\n找不到音訊檔案時（例如歌曲只存在於打包資源裡）影片將沒有聲音。",
+    "option.renderOnSongStart": "進歌自動錄製",
+    "option.renderOnSongStart.desc": "開啟後，歌曲一開始就自動開始錄製，不需要任何快捷鍵。\n歌曲結束或離開歌曲時會自動停止。\n成品輸出到遊戲目錄下的 render_video 資料夾。"
 }

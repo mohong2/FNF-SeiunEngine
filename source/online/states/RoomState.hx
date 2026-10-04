@@ -949,14 +949,24 @@ class RoomState extends MusicBeatState /*#if interpret implements interpret.Inte
 
 						if (!selfPlayer.hasSong && GameClient.room.state.song != "" && (Mods.getModDirectories().contains(GameClient.room.state.modDir) || GameClient.room.state.modDir == "")) {
 							Mods.currentModDirectory = GameClient.room.state.modDir;
-							try {
-								GameClient.send("verifyChart", Song.hashRawSong(GameClient.room.state.song, GameClient.room.state.folder));
-							}
-							catch (exc) {
-								Alert.alert(OnlineLang.L('room.exception', 'Caught an exception!'), ShitUtil.readableError(exc));
+							if (GameClient.chartIsSegmented(GameClient.room.state.song, GameClient.room.state.folder, GameClient.room.state.modDir)) {
+								// Segmented chart: no one-file chart to hash, so say why the play button refuses
+								// instead of letting hashRawSong throw (or, worse, verifying nothing at all).
+								GameClient.refuseSegmentedChart();
 								if (optionShake != null)
 									optionShake.cancel();
 								optionShake = ShitUtil.shake(playIcon, 0.05, 0.3, FlxAxes.X);
+							}
+							else {
+								try {
+									GameClient.send("verifyChart", Song.hashRawSong(GameClient.room.state.song, GameClient.room.state.folder));
+								}
+								catch (exc) {
+									Alert.alert(OnlineLang.L('room.exception', 'Caught an exception!'), ShitUtil.readableError(exc));
+									if (optionShake != null)
+										optionShake.cancel();
+									optionShake = ShitUtil.shake(playIcon, 0.05, 0.3, FlxAxes.X);
+								}
 							}
 						}
 						else if (selfPlayer.hasSong) {
@@ -1053,11 +1063,20 @@ class RoomState extends MusicBeatState /*#if interpret implements interpret.Inte
 
 			if (Mods.getModDirectories().contains(GameClient.room.state.modDir) || GameClient.room.state.modDir == null || GameClient.room.state.modDir == "") {
 				Mods.currentModDirectory = GameClient.room.state.modDir;
+				if (GameClient.chartIsSegmented(GameClient.room.state.song, GameClient.room.state.folder, GameClient.room.state.modDir)) {
+					// The background callers pass ignoreAlert; only the verify button raises the popup.
+					if (!ignoreAlert)
+						GameClient.refuseSegmentedChart();
+					return false;
+				}
 				try {
 					GameClient.send("verifyChart", Song.hashRawSong(GameClient.room.state.song, GameClient.room.state.folder));
 					return false;
 				}
 				catch (exc) {
+					// Used to be silent: the verify button could do nothing and say nothing.
+					if (!ignoreAlert)
+						GameClient.refuseUnhashableChart(exc);
 				}
 			}
 
@@ -1073,7 +1092,21 @@ class RoomState extends MusicBeatState /*#if interpret implements interpret.Inte
 					if (GameClient.isConnected() && GameClient.room.state.modDir == mod) {
 						if (Mods.getModDirectories().contains(GameClient.room.state.modDir)) {
 							Mods.currentModDirectory = GameClient.room.state.modDir;
-							GameClient.send("verifyChart", Song.hashRawSong(GameClient.room.state.song, GameClient.room.state.folder));
+							// This runs in the async download callback: an exception here has no caller left
+							// to catch it, so it is handled inside -- otherwise the hash is lost silently and
+							// the room waits for hasSong forever.
+							try {
+								if (GameClient.chartIsSegmented(GameClient.room.state.song, GameClient.room.state.folder, GameClient.room.state.modDir)) {
+									GameClient.refuseSegmentedChart();
+								}
+								else {
+									GameClient.send("verifyChart", Song.hashRawSong(GameClient.room.state.song, GameClient.room.state.folder));
+								}
+							}
+							catch (exc:Dynamic) {
+								Sys.println(exc);
+								GameClient.refuseUnhashableChart(exc);
+							}
 						}
 					}
 				});

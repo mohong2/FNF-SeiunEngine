@@ -100,7 +100,7 @@
     "option.newchartingstate" : "新谱面编辑器",
     "option.newchartingstate.desc" : "如果选中,将使用新的谱面编辑器而不是旧的谱面编辑器",
     "option.segmentedCharts": "分段谱面",
-    "option.segmentedCharts.desc": "被拆成多个文件的谱面如何载入。\n自动: <song>-0.json、<song>-1.json… 合并成一首歌播放。\n仅清单: 只合并 <song>.parts.json 里列出的分片。\n关闭: 每个文件仍是一个独立难度（原版行为）。\n在选歌界面按 M（安卓为屏幕上的 D 键）可只对当前歌曲临时切换。",
+    "option.segmentedCharts.desc": "被拆成多个文件的谱面如何载入。\n自动: <song>-0.json、<song>-1.json… 合并成一首歌播放。\n仅清单: 只合并 <song>.parts.json 里列出的分片。\n关闭: 每个文件仍是一个独立难度（原版行为）。\n在选歌界面按 M（安卓为屏幕上的 D 键）可只对当前歌曲临时切换。\n联机只承诺单文件谱面：分段谱面与巨谱缓存叠加的场景不在承诺范围内。",
     "option.chartAutosave" : "谱面自动保存",
     "option.chartAutosave.desc" : "如果选中，谱面编辑器将自动保存备份并创建自动保存数据（进入试玩时也会保存）。默认关闭，这样你的谱面在你手动按下保存之前绝不会被自动保存。",
     "option.oldPauseMenu": "旧版暂停界面",
@@ -309,9 +309,9 @@
     "option.storageType.desc": "选择游戏访问存储的方式。\nEXTERNAL_DATA（最安全）→ /Android/data/<package>/files\nEXTERNAL（旧版）→ /storage/emulated/0/.<game>\nEXTERNAL_OBB → /Android/obb/<package>\nEXTERNAL_MEDIA → /Android/media/<package>\n\n如果所选路径不可用，游戏会自动回退。",
     "option.preloadAssets.desc": "如果勾选，会在游玩前用加载界面预加载脚本所需图片。\n减少歌曲中的卡顿，代价是首次加载时间增加。",
     "option.turboMode": "Turbo 模式",
-    "option.turboMode.desc": "极限谱面开关：强制 botplay，密集段走数据级结算，百万级音符也能流畅。关闭 = 原版行为。",
+    "option.turboMode.desc": "极限谱面开关：强制 botplay，密集段走数据级结算，百万级音符也能流畅。关闭 = 原版行为。\n联机时自动关闭。",
     "option.scriptArgReuse": "复用脚本回调参数",
-    "option.scriptArgReuse.desc": "脚本回调复用同一个参数数组，不再每次新建。消除密集谱面的 GC 卡顿。\n关闭 = 每次都重新分配，与原版一致。",
+    "option.scriptArgReuse.desc": "脚本回调复用同一个参数数组，不再每次新建。消除密集谱面的 GC 卡顿。\n关闭 = 每次都重新分配，与原版一致。\n联机时自动关闭。",
 
     "option.perfMode": "性能模式",
     "option.perfMode.desc": "极限谱面优化总开关。关闭 = 原版行为，仅建议极端高 NPS 谱面开启；联机自动关闭。",
@@ -320,7 +320,7 @@
     "option.fastSort": "快速音符排序",
     "option.fastSort.desc": "每帧只排序可见且存活的音符。模组若依赖完整组顺序请关闭；联机自动关闭。",
     "option.limitNotes": "最大同屏音符数",
-    "option.limitNotes.desc": "同屏最多存活的音符数。0 = 不限（仅高端机器）。数值越高越吃 CPU/GPU/内存。",
+    "option.limitNotes.desc": "同屏最多存活的音符数。0 = 不限（仅高端机器）。数值越高越吃 CPU/GPU/内存。\n联机时自动关闭该上限。",
     "option.chartCache": "超大谱面缓存",
     "option.chartCache.desc": "缓存超大谱面（64 MB 以上）的 note 列表，重复进曲免去解析与折叠。\n关闭后每次都重新读取谱面文件。",
     "option.chartCacheCompress": "压缩谱面缓存",
@@ -385,7 +385,7 @@
     "option.previewRender": "预览渲染",
     "option.previewRender.desc": "完整执行真实渲染的所有步骤（固定时间步长、逐帧截取），\n但不写文件。用来在正式编码前确认帧率是否跟得上。",
     "option.renderFps": "渲染帧率",
-    "option.renderFps.desc": "视频截取与编码使用的帧率，15 到 480 自由选择。\\n渲染期间游戏会被钉在这个帧率上，每一帧正好代表 1/帧率 的歌曲时间，\\n所以即使电脑跑不满这个帧率，视频长度也永远等于歌曲长度（不会倍速）。\\n想要画面真正顺滑，请设成电脑实际画得出的帧率。",
+    "option.renderFps.desc": "视频截取与编码使用的帧率，15 到 480 自由选择。\n渲染期间游戏会被钉在这个帧率上，每一帧正好代表 1/帧率 的歌曲时间，\n所以即使电脑跑不满这个帧率，视频长度也永远等于歌曲长度（不会倍速）。\n想要画面真正顺滑，请设成电脑实际画得出的帧率。",
     "option.renderCodec": "渲染编码器",
     "option.renderCodec.desc": "渲染视频时使用的编码器。\nGPU 编码器（NVENC/AMF/QSV）需要显卡与 ffmpeg 都支持。\nVP8/VP9 输出 .webm，其余输出 .mp4。",
     "option.renderMode": "码率控制方式",
@@ -397,7 +397,7 @@
     "option.renderBufferFrames": "渲染缓冲帧数",
     "option.renderBufferFrames.desc": "允许等待编码器的帧数，超过就丢帧。\n这是渲染内存的上限（帧数 × 宽 × 高 × 4 字节）。\n编码器慢导致丢帧时调高；想省内存就调低。",
     "option.renderAudio": "渲染音频",
-    "option.renderAudio.desc": "把歌曲的 Inst / Voices 音轨混入渲染出的视频。\\n找不到音频文件时（例如歌曲只存在于打包资源里）视频将没有声音。",
+    "option.renderAudio.desc": "把歌曲的 Inst / Voices 音轨混入渲染出的视频。\n找不到音频文件时（例如歌曲只存在于打包资源里）视频将没有声音。",
     "option.renderOnSongStart": "进歌自动录制",
-    "option.renderOnSongStart.desc": "开启后,歌曲一开始就自动开始录制,不需要任何快捷键。\\n歌曲结束或离开歌曲时会自动停止。\\n成品输出到游戏目录下的 render_video 文件夹。"
+    "option.renderOnSongStart.desc": "开启后,歌曲一开始就自动开始录制,不需要任何快捷键。\n歌曲结束或离开歌曲时会自动停止。\n成品输出到游戏目录下的 render_video 文件夹。"
 }

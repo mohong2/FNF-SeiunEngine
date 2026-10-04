@@ -31,13 +31,35 @@ class OnlineState extends MusicBeatState {
         "FIND",
 		"OPTIONS",
 		"LEADERBOARD",
-		"MOD DOWNLOADER"
+		"MOD DOWNLOADER",
+		// Appended last: the switches below match on the string, and every existing index keeps
+		// its meaning (itms index == row ID, see create()).
+		"LAN HOST"
     ];
 
 	var presenceInfo:FlxText;
 	// var networkBg:FlxSprite;
 	var itemDesc:FlxText;
 	var playersOnline:FlxText;
+
+	/**
+	 * Reserved band for the persisted server announcement (/api/front.announcement): top-left,
+	 * above the menu rows. Layout numbers, chosen against the existing screen:
+	 *   label  x=ANNOUNCE_X  y=ANNOUNCE_Y                        font 16, yellow, left-aligned
+	 *   body   x=ANNOUNCE_X  y=label.y + label.height + 2         fieldWidth=ANNOUNCE_WIDTH, font 16,
+	 *                                                             white at alpha 0.8, FlxText wordWrap
+	 *   input is clamped to ANNOUNCE_MAX_CHARS codepoints, so the worst case (CJK) is ~5 lines
+	 *   (~95 px): the block never leaves y <= 150, and the menu rows start at y=155.
+	 *   Every other header is centred (playersOnline y=100, availableRooms y=130, credit at the
+	 *   bottom) or right-aligned (frontMessage), so x <= ANNOUNCE_X + ANNOUNCE_WIDTH never collides.
+	 */
+	static inline var ANNOUNCE_X:Float = 20;
+	static inline var ANNOUNCE_Y:Float = 26;
+	static inline var ANNOUNCE_WIDTH:Int = 340;
+	static inline var ANNOUNCE_MAX_CHARS:Int = 100;
+
+	var announceLabel:FlxText;
+	var announcementText:FlxText;
 	var itemHeight:Float = 40;
 	static inline var MENU_ROW_GAP:Float = 4;
 
@@ -206,6 +228,21 @@ class OnlineState extends MusicBeatState {
 		availableRooms.screenCenter(X);
 		add(availableRooms);
 
+		// Server announcement (see ANNOUNCE_*): hidden until /api/front answers, so an empty
+		// announcement costs nothing on screen.
+		// The label is created WITH its text: an empty FlxText is only VERTICAL_GUTTER (~4 px) tall,
+		// so measuring it before the localized title is set would put the body on top of the label.
+		announceLabel = new FlxText(ANNOUNCE_X, ANNOUNCE_Y, 0, OnlineLang.L('front.announcement', 'ANNOUNCEMENT'));
+		announceLabel.setFormat(OnlineLang.font(), 16, FlxColor.YELLOW, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
+		announceLabel.visible = false;
+		add(announceLabel);
+
+		announcementText = new FlxText(ANNOUNCE_X, announceLabel.y + announceLabel.height + 2, ANNOUNCE_WIDTH, '');
+		announcementText.setFormat(OnlineLang.font(), 16, FlxColor.WHITE, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
+		announcementText.alpha = 0.8;
+		announcementText.visible = false;
+		add(announcementText);
+
 		var credit = new FlxText(0, 0, 0, 'SeiunEngine Online by mo_hong\nUI reference: Funkin-Psych-Online (Snirozu)');
 		credit.setFormat(OnlineLang.font(), 16, FlxColor.WHITE, CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 		credit.alpha = 0.3;
@@ -272,6 +309,11 @@ class OnlineState extends MusicBeatState {
 					availableRooms.text = OnlineLang.L('rooms.available', 'Available Rooms: ') + data.rooms;
 					frontMessage.text = data.sez;
 					frontMessage.y = FlxG.height - frontMessage.height - 20;
+
+					// Additive field (task-1). Reflect keeps this working against an older server that
+					// does not send it yet: missing -> hidden.
+					var rawAnnouncement:Dynamic = Reflect.hasField(data, 'announcement') ? Reflect.field(data, 'announcement') : null;
+					applyAnnouncement(rawAnnouncement == null ? null : Std.string(rawAnnouncement));
 				}
 
 				playersOnline.screenCenter(X);
@@ -352,6 +394,9 @@ class OnlineState extends MusicBeatState {
 					case "mod downloader":
 						disableInput = true;
 						FlxG.switchState(new DownloaderState());
+					case "lan host":
+						disableInput = true;
+						FlxG.switchState(new LanHostState());
 				}
 			}
 
@@ -439,6 +484,27 @@ class OnlineState extends MusicBeatState {
 
 
 
+	/**
+	 * Show the persisted server announcement, or hide the block when there is none.
+	 *
+	 * The text is clamped by CODEPOINTS first (ShitUtil.truncateCodepoints; String.substr counts
+	 * bytes on cpp and would split a CJK character), then FlxText wraps it at ANNOUNCE_WIDTH, so
+	 * even a huge announcement cannot reach the menu rows below.
+	 */
+	function applyAnnouncement(raw:String):Void {
+		var text = raw == null ? '' : raw.trim();
+		if (text == '') {
+			announceLabel.visible = false;
+			announcementText.visible = false;
+			return;
+		}
+
+		announceLabel.text = OnlineLang.L('front.announcement', 'ANNOUNCEMENT');
+		announcementText.text = ShitUtil.truncateCodepoints(text, ANNOUNCE_MAX_CHARS);
+		announceLabel.visible = true;
+		announcementText.visible = true;
+	}
+
 	function changeSelection(diffe:Int) {
 		curSelected += diffe;
 
@@ -462,6 +528,8 @@ class OnlineState extends MusicBeatState {
 				itemDesc.text = OnlineLang.L('desc.leaderboard', 'The Funkin Points Leaderboard!');
 			case 5:
 				itemDesc.text = OnlineLang.L('desc.downloader', 'Download mods from Gamebanana here!');
+			case 6:
+				itemDesc.text = OnlineLang.L('desc.lanhost', 'Host the server on this PC and let LAN friends join with a room code');
 		}
 		itemDesc.screenCenter(X);
 
@@ -537,6 +605,11 @@ class OnlineState extends MusicBeatState {
 
 		if (inputString.length >= 0) {
 			switch (itms[curSelected].toLowerCase()) {
+				// Checked when LAN HOST was appended: enterInput() only runs while the JOIN row's
+				// input has focus, so this row never consumes a typed room code. The explicit case
+				// keeps the new row documented instead of silently falling through.
+				case "lan host":
+					disableInput = false;
 				case "join":
 					disableInput = true;
 					if (daCoomCode.toLowerCase() == "adachi") {

@@ -12,7 +12,7 @@ import HealthIcon;
 import flixel.FlxState;
 // The root `import.hx` does not pull in `FlxAnimate`, and `Paths.loadAnimateAtlas()` is
 // declared against the engine wrapper `flxanimate.PsychFlxAnimate` (`loadAtlasEx`,
-// source/flxanimate/PsychFlxAnimate.hx, as in ResultsSoloState.hx). The sprites use
+// source/flxanimate/PsychFlxAnimate.hx). The sprites use
 // `PsychFlxAnimate`; field types keep the `FlxAnimate` superclass.
 import flxanimate.FlxAnimate;
 import flxanimate.PsychFlxAnimate;
@@ -98,7 +98,7 @@ class SkinsState extends MusicBeatState {
 
 	// These are `PsychFlxAnimate` because `Paths.loadAnimateAtlas(spr)` is typed against
 	// typed against `flxanimate.PsychFlxAnimate` (the `loadAtlasEx` wrapper), so the fields must be
-	// that type for the `loadAnimateAtlas` calls below to type-check (as in ResultsSoloState.hx:38).
+	// that type for the `loadAnimateAtlas` calls below to type-check (see source/flxanimate/PsychFlxAnimate.hx).
 	var stageCrowd:PsychFlxAnimate;
 	var stageSpeakers:PsychFlxAnimate;
 	var defaultGirlfriend:PsychFlxAnimate;

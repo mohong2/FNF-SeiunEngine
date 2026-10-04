@@ -1,7 +1,8 @@
 package online_server;
 
 import haxe.Json;
-import sys.FileSystem;
+import online_server.db.Db;
+import online_server.db.LeaderboardRepo;
 // Account is a secondary type of the online_server.AccountStore module.
 import online_server.AccountStore.Account;
 
@@ -74,43 +75,48 @@ typedef PlayerStats = {
 }
 
 /**
- * Local JSON storage for scores / replays / song comments / reports (no new dependencies).
+ * Scores / replays / song comments / reports, stored in SQLite through LeaderboardRepo.
  * Submission validation: ReplayData version 4, non-empty inputs, and points / score caps.
- * Pagination is a fixed PAGE_SIZE and 'week' is approximated as the last 7 days.
+ * Pagination is a fixed PAGE_ROWS and 'week' is approximated as the last 7 days.
+ *
+ * This class is the validation / response-assembly facade: parameter checks, the key-mode and
+ * category filters, the legacy comparators and the return shapes live here, while every statement
+ * and row projection lives in LeaderboardRepo. All database work runs under Db's single lock, so
+ * cross-store calls (AccountStore) still happen outside it in Api, exactly as before.
+ *
+ * storagePath() still reports the legacy JSON path; db/LegacyImport reads that file once, and the
+ * database itself is opened through Db.openFor() from init().
  */
 class LeaderboardStore {
 	/**
 	 * Leaderboard page size. The client's Scoreboard row count is hard-coded to 15
 	 * (TopPlayerSubstate.hx:9), so returning more (20 was tried) makes Scoreboard.setRow(i)
 	 * index rows[15] out of bounds, a null dereference crash on cpp.
+	 *
+	 * Named PAGE_ROWS, not PAGE_SIZE: the Android NDK's <sys/user.h> defines PAGE_SIZE as a
+	 * C macro, and hxcpp emits statics under their Haxe name, so a Haxe `static var PAGE_SIZE`
+	 * becomes `static int PAGE_SIZE;` -> `static int 4096;` and the module fails to compile on
+	 * Android (the in-client LAN host links server/src into the APK). Same reason
+	 * PLAYER_PAGE_SIZE/SEARCH_PAGE_SIZE are safe: those are not macros.
 	 */
-	public static inline var PAGE_SIZE:Int = 15;
+	public static inline var PAGE_ROWS:Int = 15;
 	static inline var WEEK_SECONDS:Float = 7 * 24 * 60 * 60;
 
 	static var path:String = null;
-	/** { seq:Int, scores:Array<ScoreEntry>, comments:Array<CommentEntry>, reports:Array<ReportEntry> } */
-	static var db:Dynamic = null;
 
+	/**
+	 * Records the legacy data path and opens the process-wide SQLite database that replaced the
+	 * JSON file; nothing is read from or written to the JSON path here (db/LegacyImport owns the
+	 * one-shot import). Idempotent, matching the old "reload the store" behavior. The isOpen()
+	 * guard only avoids Db.open()'s "called twice" warning when an earlier Store.init already
+	 * opened the shared file.
+	 */
 	public static function init(file:String):Void {
 		path = file;
-		JsonStore.lock(function() {
-			var loaded = JsonStore.read(path, null);
-			if (loaded == null || loaded.scores == null) {
-				loaded = { seq: 0, scores: [], comments: [], reports: [] };
-			}
-			if (loaded.comments == null) loaded.comments = [];
-			if (loaded.reports == null) loaded.reports = [];
-			db = loaded;
-			if (!FileSystem.exists(path)) JsonStore.write(path, db);
-			return true;
-		});
+		if (!Db.isOpen()) Db.openFor(file);
 	}
 
 	public static function storagePath():String return path;
-
-	static inline function scoresU():Array<ScoreEntry> return cast db.scores;
-	static inline function commentsU():Array<CommentEntry> return cast db.comments;
-	static inline function reportsU():Array<ReportEntry> return cast db.reports;
 
 	// ---- parsing helpers (replay is arbitrary client JSON) ----
 
@@ -180,10 +186,11 @@ class LeaderboardStore {
 		var songId = slug(song) + "-" + slug(difficulty) + "-" + slug(chartHash);
 		var strum = boolOf(replay, "opponent_mode", false) ? 1 : 2;
 
-		return JsonStore.lock(function() {
-			db.seq = db.seq + 1;
+		return Db.lockTx(function() {
+			// One counter is shared by scores / comments / reports, so ids stay s4 / c1 / r3.
+			var seq = LeaderboardRepo.nextSeq();
 			var entry:ScoreEntry = {
-				id: "s" + db.seq,
+				id: "s" + seq,
 				songId: songId,
 				song: song,
 				difficulty: difficulty,
@@ -207,19 +214,17 @@ class LeaderboardStore {
 				submitted: JsonStore.isoNow(),
 				submittedTs: Date.now().getTime() / 1000
 			};
-			scoresU().push(entry);
-			JsonStore.write(path, db);
+			LeaderboardRepo.insertScore(entry);
 			return { ok: true, error: null, entry: entry };
 		});
 	}
 
-	public static function count():Int return JsonStore.lock(function() return scoresU().length);
+	public static function count():Int {
+		return Db.lock(function() return LeaderboardRepo.countScores());
+	}
 
 	public static function getScore(id:String):ScoreEntry {
-		return JsonStore.lock(function() {
-			for (s in scoresU()) if (s.id == id) return s;
-			return null;
-		});
+		return Db.lock(function() return LeaderboardRepo.scoreById(id));
 	}
 
 	// ---- leaderboard ----
@@ -236,19 +241,18 @@ class LeaderboardStore {
 	}
 
 	public static function topSongs(songId:String, strum:Int, page:Int, keys:Int, category:String, sort:String):Array<ScoreEntry> {
-		return JsonStore.lock(function() {
+		return Db.lock(function() {
 			var out:Array<ScoreEntry> = [];
-			for (s in scoresU()) {
-				if (s.songId != songId) continue;
+			for (s in LeaderboardRepo.scoresBySongId(songId)) {
 				if (strum > 0 && s.strum != strum) continue;
 				if (!matchesKeys(s, keys)) continue;
 				if (!withinCategory(s, category)) continue;
 				out.push(s);
 			}
 			sortEntries(out, sort);
-			var start = (page <= 0 ? 0 : page) * PAGE_SIZE;
+			var start = (page <= 0 ? 0 : page) * PAGE_ROWS;
 			if (start >= out.length) return [];
-			return out.slice(start, start + PAGE_SIZE);
+			return out.slice(start, start + PAGE_ROWS);
 		});
 	}
 
@@ -290,37 +294,33 @@ class LeaderboardStore {
 	// ---- reports ----
 
 	public static function report(reporter:Account, content:String):ReportEntry {
-		return JsonStore.lock(function() {
-			db.seq = db.seq + 1;
+		return Db.lockTx(function() {
+			var seq = LeaderboardRepo.nextSeq();
 			var entry:ReportEntry = {
-				id: "r" + db.seq,
+				id: "r" + seq,
 				reporter: reporter != null ? reporter.name : "anonymous",
 				content: content,
 				submitted: JsonStore.isoNow()
 			};
-			reportsU().push(entry);
-			JsonStore.write(path, db);
+			LeaderboardRepo.insertReport(entry);
 			return entry;
 		});
 	}
 
-	public static function reportCount():Int return JsonStore.lock(function() return reportsU().length);
+	public static function reportCount():Int {
+		return Db.lock(function() return LeaderboardRepo.countReports());
+	}
 
 	// ---- song comments ----
 
 	public static function comments(songId:String):Array<CommentEntry> {
-		return JsonStore.lock(function() {
-			var out:Array<CommentEntry> = [];
-			for (c in commentsU()) if (c.songId == songId) out.push(c);
-			return out;
-		});
+		return Db.lock(function() return LeaderboardRepo.commentsBySongId(songId));
 	}
 
 	/** Console: newest-first comment page across all songs. */
 	public static function recentComments(page:Int, size:Int):{total:Int, rows:Array<CommentEntry>} {
-		return JsonStore.lock(function() {
-			var all = commentsU().copy();
-			all.reverse();
+		return Db.lock(function() {
+			var all = LeaderboardRepo.allCommentsNewestFirst();
 			var start = (page <= 0 ? 0 : page) * size;
 			var rows = (start >= all.length) ? [] : all.slice(start, start + size);
 			return { total: all.length, rows: rows };
@@ -328,20 +328,17 @@ class LeaderboardStore {
 	}
 
 	public static function addComment(player:String, songId:String, content:String, at:Float):Array<CommentEntry> {
-		return JsonStore.lock(function() {
-			db.seq = db.seq + 1;
+		return Db.lockTx(function() {
+			var seq = LeaderboardRepo.nextSeq();
 			var entry:CommentEntry = {
-				id: "c" + db.seq,
-				songId: songId,
-				player: player,
-				content: content,
+				id: "c" + seq,
+				songId: ServerConfig.repairUtf8(songId),
+				player: ServerConfig.repairUtf8(player),
+				content: ServerConfig.repairUtf8(content),
 				at: at
 			};
-			commentsU().push(entry);
-			JsonStore.write(path, db);
-			var out:Array<CommentEntry> = [];
-			for (c in commentsU()) if (c.songId == songId) out.push(c);
-			return out;
+			LeaderboardRepo.insertComment(entry);
+			return LeaderboardRepo.commentsBySongId(songId);
 		});
 	}
 
@@ -357,10 +354,9 @@ class LeaderboardStore {
 	 * skip 15*page.
 	 */
 	public static function playerScores(playerId:String, page:Int, keys:Int, category:String, sort:String):Array<ScoreEntry> {
-		return JsonStore.lock(function() {
+		return Db.lock(function() {
 			var out:Array<ScoreEntry> = [];
-			for (s in scoresU()) {
-				if (s.player != playerId) continue;
+			for (s in LeaderboardRepo.scoresByPlayer(playerId)) {
 				if (!matchesKeys(s, keys)) continue;
 				if (!withinCategory(s, category)) continue;
 				out.push(s);
@@ -374,11 +370,11 @@ class LeaderboardStore {
 
 	/** /api/search/songs: contains match, take 50 / skip 50*page, returns {id, fp}. */
 	public static function searchSongs(q:String, page:Int):Array<Dynamic> {
-		return JsonStore.lock(function() {
+		return Db.lock(function() {
 			var needle = q == null ? "" : q.toLowerCase();
 			var ids:Array<String> = [];
 			var best:Map<String, Float> = new Map();
-			for (s in scoresU()) {
+			for (s in LeaderboardRepo.allScores()) {
 				if (s.songId == null || s.songId.toLowerCase().indexOf(needle) < 0) continue;
 				if (!best.exists(s.songId)) {
 					ids.push(s.songId);
@@ -401,29 +397,23 @@ class LeaderboardStore {
 
 	/**
 	 * /api/score/delete. Returns the player's stats after deletion. Stats are not written back
-	 * to AccountStore here because JsonStore has a single global Mutex; Api does the cross-store
-	 * write outside the lock.
+	 * to AccountStore here because Db's Mutex is not reentrant; Api does the cross-store write
+	 * outside the lock.
 	 */
 	public static function removeScore(id:String, checkPlayerID:String):RemoveResult {
-		return JsonStore.lock(function() {
-			var entry:ScoreEntry = null;
-			for (s in scoresU()) if (s.id == id) {
-				entry = s;
-				break;
-			}
+		return Db.lockTx(function() {
+			var entry = LeaderboardRepo.scoreById(id);
 			if (entry == null) return { ok: true, error: null, playerId: null, points: 0.0, accuracy: 0.0, games: 0 };
 			if (checkPlayerID != null && entry.player != checkPlayerID)
 				return { ok: false, error: "Unauthorized!", playerId: null, points: 0.0, accuracy: 0.0, games: 0 };
 
 			var playerId = entry.player;
-			scoresU().remove(entry);
-			JsonStore.write(path, db);
+			LeaderboardRepo.deleteScore(entry.id);
 
 			var sum = 0.0;
 			var acc = 0.0;
 			var games = 0;
-			for (s in scoresU()) {
-				if (s.player != playerId) continue;
+			for (s in LeaderboardRepo.scoresByPlayer(playerId)) {
 				sum += s.points;
 				acc += s.accuracy;
 				games++;
@@ -441,16 +431,7 @@ class LeaderboardStore {
 
 	/** /api/score/set/modurl. Returns false when the score does not exist. */
 	public static function setModURL(id:String, url:String):Bool {
-		return JsonStore.lock(function() {
-			for (s in scoresU()) {
-				if (s.id == id) {
-					s.modURL = url;
-					JsonStore.write(path, db);
-					return true;
-				}
-			}
-			return false;
-		});
+		return Db.lockTx(function() return LeaderboardRepo.setModURL(id, url));
 	}
 
 	// ------------------------------------------------------------------
@@ -459,12 +440,11 @@ class LeaderboardStore {
 
 	/** Aggregate stats over all of a player's scores. */
 	public static function statsOf(playerId:String):PlayerStats {
-		return JsonStore.lock(function() {
+		return Db.lock(function() {
 			var sum = 0.0;
 			var acc = 0.0;
 			var games = 0;
-			for (s in scoresU()) {
-				if (s.player != playerId) continue;
+			for (s in LeaderboardRepo.scoresByPlayer(playerId)) {
 				sum += s.points;
 				acc += s.accuracy;
 				games++;
@@ -475,14 +455,7 @@ class LeaderboardStore {
 
 	/** Ids of players with a score in a category (used by /api/admin/updateweekly). */
 	public static function playerIdsWithCategory(category:String):Array<String> {
-		return JsonStore.lock(function() {
-			var out:Array<String> = [];
-			for (s in scoresU()) {
-				if (category != null && s.category != category) continue;
-				if (out.indexOf(s.player) < 0) out.push(s.player);
-			}
-			return out;
-		});
+		return Db.lock(function() return LeaderboardRepo.playerIdsWithCategory(category));
 	}
 
 	/**
@@ -490,49 +463,22 @@ class LeaderboardStore {
 	 * Api writes the stats back outside the lock.
 	 */
 	public static function purgeCategory(category:String):Array<String> {
-		return JsonStore.lock(function() {
-			var affected:Array<String> = [];
-			var i = scoresU().length - 1;
-			while (i >= 0) {
-				if (category == null || scoresU()[i].category == category) {
-					if (affected.indexOf(scoresU()[i].player) < 0) affected.push(scoresU()[i].player);
-					scoresU().splice(i, 1);
-				}
-				i--;
-			}
-			JsonStore.write(path, db);
-			return affected;
-		});
+		return Db.lockTx(function() return LeaderboardRepo.purgeCategory(category));
 	}
 
 	/** All reports, in insertion order. */
 	public static function reports():Array<ReportEntry> {
-		return JsonStore.lock(function() return reportsU().copy());
+		return Db.lock(function() return LeaderboardRepo.allReports());
 	}
 
 	/** /api/admin/report/content. Returns null when not found. */
 	public static function reportOf(id:String):ReportEntry {
-		return JsonStore.lock(function() {
-			for (r in reportsU()) if (r.id == id) return r;
-			return null;
-		});
+		return Db.lock(function() return LeaderboardRepo.reportById(id));
 	}
 
 	/** Removes a report. Returns false when there is no such report. */
 	public static function removeReport(id:String):Bool {
-		return JsonStore.lock(function() {
-			if (id == null || id == "") return false;
-			var i = reportsU().length - 1;
-			while (i >= 0) {
-				if (reportsU()[i].id == id) {
-					reportsU().splice(i, 1);
-					JsonStore.write(path, db);
-					return true;
-				}
-				i--;
-			}
-			return false;
-		});
+		return Db.lockTx(function() return LeaderboardRepo.deleteReport(id));
 	}
 
 	/**
@@ -540,27 +486,12 @@ class LeaderboardStore {
 	 * id; comments and reports match by player name (both store names locally).
 	 */
 	public static function purgePlayer(playerId:String, playerName:String):Void {
-		JsonStore.lock(function() {
-			if (playerId != null) {
-				var i = scoresU().length - 1;
-				while (i >= 0) {
-					if (scoresU()[i].player == playerId) scoresU().splice(i, 1);
-					i--;
-				}
-			}
+		Db.lockTx(function() {
+			if (playerId != null) LeaderboardRepo.purgeScoresByPlayer(playerId);
 			if (playerName != null) {
-				var j = commentsU().length - 1;
-				while (j >= 0) {
-					if (commentsU()[j].player == playerName) commentsU().splice(j, 1);
-					j--;
-				}
-				var k = reportsU().length - 1;
-				while (k >= 0) {
-					if (reportsU()[k].reporter == playerName) reportsU().splice(k, 1);
-					k--;
-				}
+				LeaderboardRepo.purgeCommentsByPlayer(playerName);
+				LeaderboardRepo.purgeReportsByReporter(playerName);
 			}
-			JsonStore.write(path, db);
 			return true;
 		});
 	}

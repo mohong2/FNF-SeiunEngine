@@ -310,7 +310,8 @@ class Api {
 		if (cred == null) return sessionExpired();
 
 		var account = AccountStore.byId(cred.id);
-		if (account == null || account.token == null || account.token != cred.token) return sessionExpired();
+		// The stored credential is a hash: compare it in constant time instead of reading a token back.
+		if (account == null || !AccountStore.verifyToken(account, cred.token)) return sessionExpired();
 		if (!cooldownOk(account.id, "auth.refresh")) return fail(429, "Too many requests");
 		if (AccountStore.isBanned(account)) return fail(403, AccountStore.banMessage(account));
 
@@ -572,7 +573,7 @@ class Api {
 			banReason: AccountStore.banReasonOf(account),
 			joined: JsonStore.isoOf(account.createdAt),
 			lastActive: JsonStore.isoOf(account.lastActive),
-			profileHue: account.profileHue != null ? account.profileHue : 250,
+			profileHue: account.profileHue,
 			profileHue2: account.profileHue2,
 			points: account.points,
 			avgAccuracy: account.avgAccuracy,
@@ -628,7 +629,9 @@ class Api {
 	/** The latest 5 front messages; the player name is stored directly. */
 	static function sezDetail():HttpResponse {
 		var out:Array<Dynamic> = [];
-		for (m in PublicStore.frontMessages()) out.push({ player: m.player, message: m.message });
+		for (m in PublicStore.frontMessages()) out.push({
+			player: ServerConfig.repairUtf8(m.player), message: ServerConfig.repairUtf8(m.message)
+		});
 		return json(200, out);
 	}
 
@@ -953,7 +956,7 @@ class Api {
 			bio: account.bio,
 			friends: friends,
 			canFriend: AccountStore.canFriend(account, viewer == null ? null : viewer.id),
-			profileHue: account.profileHue != null ? account.profileHue : 250,
+			profileHue: account.profileHue,
 			profileHue2: account.profileHue2,
 			points: account.points,
 			avgAccuracy: account.avgAccuracy,
@@ -1051,7 +1054,8 @@ class Api {
 		var params = query(request);
 		var q = params.get("q");
 		if (q == null) q = "";
-		if (StringTools.trim(q).length < 3) return plain(400, "Search query needs to be longer than 3!");
+		// 3 CHARACTERS (song titles can be CJK; byte counting accepted a single CJK character).
+		if (ServerConfig.utf8Length(StringTools.trim(q)) < 3) return plain(400, "Search query needs to be longer than 3!");
 		return json(200, LeaderboardStore.searchSongs(q, parseIntParam(params, "page", 0)));
 	}
 
@@ -1060,7 +1064,8 @@ class Api {
 		var params = query(request);
 		var q = params.get("q");
 		if (q == null) q = "";
-		if (StringTools.trim(q).length < 3) return plain(400, "Search query needs to be longer than 3!");
+		// 3 CHARACTERS (same threshold as searchSongsRoute).
+		if (ServerConfig.utf8Length(StringTools.trim(q)) < 3) return plain(400, "Search query needs to be longer than 3!");
 		return json(200, AccountStore.searchUsers(q, parseIntParam(params, "page", 0)));
 	}
 
@@ -1088,7 +1093,12 @@ class Api {
 		return json(200, {
 			online: hub.onlineCount(),
 			rooms: hub.publicRoomCount(),
-			sez: latest == null ? "" : latest.message
+			// Repair on read: a row written by an older build could carry invalid UTF-8 (2-D1 class).
+			sez: latest == null ? "" : ServerConfig.repairUtf8(latest.message),
+			// Additive field: the console announcement stored in config.toml, so a player who was not
+			// connected when it was published can still see the current announcement. online / rooms /
+			// sez keep their existing values and types.
+			announcement: ServerConfig.announcement()
 		});
 	}
 
@@ -1104,7 +1114,9 @@ class Api {
 		if (body == null) return fail(400, "Invalid JSON body");
 		var message = strOf(body, "message");
 		if (message == null || message == "") return plain(418, "I'm a teapot");
-		if (message.length >= 100 || message.indexOf("\n") >= 0) return plain(413, "Payload Too Large");
+		// 100 CHARACTERS, not bytes: String.length counts UTF-8 bytes on neko/hxcpp, so the old check
+		// rejected a 34-character CJK message (102 bytes) that is well under the documented cap.
+		if (ServerConfig.utf8Length(message) >= 100 || message.indexOf("\n") >= 0) return plain(413, "Payload Too Large");
 		if (!PublicStore.addFrontMessage(account.name, StringTools.trim(message))) return plain(418, "I'm a teapot");
 		return plain(200, "OK");
 	}
@@ -1128,8 +1140,12 @@ class Api {
 		if (id == null || id == "") return fail(400, "missing id");
 		if (content == null || StringTools.trim(content) == "") return fail(400, "Empty comment");
 
-		var at:Float = 0;
-		try at = cast Reflect.field(body, "at") catch (e:Dynamic) at = 0;
+		// A missing/non-numeric "at" must become a real timestamp: NaN formats as SQL NULL, and the
+		// comments.at column is NOT NULL, so the old default made every such post fail with a 500.
+		var at:Float = Date.now().getTime();
+		var atField:Dynamic = null;
+		try atField = Reflect.field(body, "at") catch (e:Dynamic) atField = null;
+		if (atField != null && (Std.isOfType(atField, Float) || Std.isOfType(atField, Int))) at = cast atField;
 
 		return json(200, publicComments(LeaderboardStore.addComment(account.name, id, content, at)));
 	}
@@ -1352,10 +1368,10 @@ class Api {
 			return 0;
 		});
 
-		var start = (page <= 0 ? 0 : page) * LeaderboardStore.PAGE_SIZE;
+		var start = (page <= 0 ? 0 : page) * LeaderboardStore.PAGE_ROWS;
 		var out:Array<Dynamic> = [];
 		var i = start;
-		while (i < accounts.length && out.length < LeaderboardStore.PAGE_SIZE) {
+		while (i < accounts.length && out.length < LeaderboardStore.PAGE_ROWS) {
 			var a = accounts[i];
 			var obj:Dynamic = {
 				player: a.name,
@@ -1403,7 +1419,7 @@ class Api {
 			members.push({
 				player: a.name,
 				points: a.points,
-				profileHue: a.profileHue != null ? a.profileHue : 250,
+				profileHue: a.profileHue,
 				profileHue2: a.profileHue2,
 				country: a.country
 			});
@@ -1948,11 +1964,104 @@ class Api {
 	static function ok():HttpResponse return plain(200, "OK");
 
 	/**
+	 * Local read-only console (user ruling D-R3-5). Off by default. When on, the console's own auth
+	 * wrapper accepts a GET from a loopback peer without a credential, because the embedded game
+	 * host has no admin account at all (ServerOptions.adminEmail is null there), so nobody could
+	 * ever log in. requireAccess itself is untouched: writes and non-loopback peers still go
+	 * through its four checks, and the LAN is never opened up.
+	 */
+	static var localConsoleReadOnly:Bool = false;
+
+	/** Stable id of the synthetic read-only session; never stored, never carries a credential. */
+	public static inline var LOCAL_CONSOLE_ID:String = "local-console";
+
+	/** Set once by ServerBoot.start() from ServerOptions.localConsoleReadOnly; Api.init stays unchanged. */
+	public static function setLocalConsoleReadOnly(on:Bool):Void localConsoleReadOnly = on;
+
+	public static function localConsoleReadOnlyEnabled():Bool return localConsoleReadOnly;
+
+	/** True when this account is the synthetic loopback read-only session. */
+	public static function isLocalConsoleAccount(account:Account):Bool {
+		return account != null && account.id == LOCAL_CONSOLE_ID;
+	}
+
+	static var localConsoleSession:Account = null;
+
+	/**
+	 * The synthetic account handed to the console's read endpoints in local read-only mode. It has
+	 * no token and only the console path prefix in its access table, so it is useless anywhere the
+	 * normal four checks or the admin routes are consulted.
+	 */
+	static function localConsoleAccount():Account {
+		if (localConsoleSession == null) {
+			localConsoleSession = {
+				id: LOCAL_CONSOLE_ID,
+				name: "local-console (read-only)",
+				email: "",
+				token: null,
+				points: 0,
+				avgAccuracy: 0,
+				games: 0,
+				profileHue: 0,
+				role: "Member",
+				ips: [],
+				access: ["/api/console/*"],
+				createdAt: 0
+			};
+		}
+		return localConsoleSession;
+	}
+
+	/**
+	 * Loopback peer: 127.0.0.0/8, "::1", the fully expanded IPv6 loopback, the IPv4-mapped form of a
+	 * loopback address, and the literal "localhost".
+	 *
+	 * Any OTHER string containing a colon is not loopback. The earlier version took the tail after
+	 * the last colon and tested it as a dotted quad, so a textual peer such as "evil:127.0.0.1"
+	 * matched. request.ip is kernel-assigned, but this check should not rely on that.
+	 */
+	static function isLoopbackPeer(ip:String):Bool {
+		if (ip == null) return false;
+		var s = StringTools.trim(ip).toLowerCase();
+		if (s == "") return false;
+		if (s == "localhost" || s == "::1") return true;
+		if (s.indexOf(":") >= 0) {
+			// Exactly the expanded IPv6 loopback ...
+			if (s == "0:0:0:0:0:0:0:1") return true;
+			// ... or the IPv4-mapped spelling "::ffff:a.b.c.d" with a loopback quad in the tail.
+			// Everything else with a colon (e.g. "evil:127.0.0.1", "fe80::1") is not loopback.
+			if (StringTools.startsWith(s, "::ffff:")) return isLoopbackIpv4(s.substr("::ffff:".length));
+			return false;
+		}
+		return isLoopbackIpv4(s);
+	}
+
+	/** Strict dotted-quad test for 127.0.0.0/8: a name like "127.example.com" must not match. */
+	static function isLoopbackIpv4(s:String):Bool {
+		var parts = s.split(".");
+		if (parts.length != 4) return false;
+		for (p in parts) {
+			if (p.length == 0 || p.length > 3) return false;
+			for (i in 0...p.length) {
+				var c = p.charCodeAt(i);
+				if (c < 48 || c > 57) return false;
+			}
+		}
+		return parts[0] == "127";
+	}
+
+	/**
 	 * Console: public wrapper around requireAccess (AccessResult is module-private and
 	 * ConsoleApi cannot see it). Same semantics: missing credential / no permission -> 401,
 	 * rate limited -> 429, right id with wrong token -> 403.
+	 *
+	 * Local read-only mode (D-R3-5) short-circuits only for a GET whose peer is loopback; every
+	 * write and every other peer falls through to the normal four checks below.
 	 */
 	public static function consoleAuth(request:HttpRequest):{denied:HttpResponse, account:Account} {
+		if (localConsoleReadOnly && request.method == "GET" && isLoopbackPeer(request.ip)) {
+			return { denied: null, account: localConsoleAccount() };
+		}
 		var a = requireAccess(request);
 		return { denied: a.denied, account: a.account };
 	}
@@ -2063,8 +2172,8 @@ class Api {
 		var to = params.get("to") == "true";
 		if (to) {
 			var reason = params.get("reason");
-			// A reason shorter than 5 characters is rejected with 500.
-			if (reason == null || StringTools.trim(reason).length < 5) return fail(500, "Reason too short!");
+			// A reason shorter than 5 CHARACTERS is rejected with 500 (bytes let 2 CJK chars pass).
+			if (reason == null || ServerConfig.utf8Length(StringTools.trim(reason)) < 5) return fail(500, "Reason too short!");
 			sendNotification(hub, target, "You have been warned by a moderator!", "Reason: " + reason, null, null);
 			AdminStore.addWarn(target.id, access.account.id, reason);
 			AccountStore.setBanRole(target, true, reason);
@@ -2090,7 +2199,8 @@ class Api {
 		if (target == null) return fail(404, "No user found with this name!");
 		if (priorityOfAccount(target) >= priorityOfAccount(access.account)) return fail(403, "Missing permission");
 		var reason = params.get("reason");
-		if (reason == null || StringTools.trim(reason).length < 5) return fail(400, "Reason too short!");
+		// 5 CHARACTERS (same as adminUserBan).
+		if (reason == null || ServerConfig.utf8Length(StringTools.trim(reason)) < 5) return fail(400, "Reason too short!");
 		sendNotification(hub, target, "You have been warned by a moderator!", "Reason: " + reason, null, null);
 		AdminStore.addWarn(target.id, access.account.id, reason);
 		return ok();
@@ -2356,7 +2466,7 @@ class Api {
 			&& Date.now().getTime() > account.tokenExpiresAt)
 			return { account: null, denied: sessionExpired() };
 
-		if (account.token != cred.token) return { account: null, denied: fail(403, "Invalid token") };
+		if (!AccountStore.verifyToken(account, cred.token)) return { account: null, denied: fail(403, "Invalid token") };
 
 		// Record the IP for the account: unseen IPs only, loopback excluded.
 		AccountStore.recordIp(account, request.ip);
@@ -2440,7 +2550,8 @@ class Api {
 		if (account.email != null && account.email.toLowerCase() == adminEmail.toLowerCase()) {
 			account.access = ["*"];
 			account.role = "Admin";
-			AccountStore.persist();
+			// Projected accounts are detached values now, so the grant has to be written explicitly.
+			AccountStore.grantRootAccess(account);
 		}
 	}
 
@@ -2507,7 +2618,9 @@ class Api {
 	}
 
 	static function json(status:Int, data:Dynamic):HttpResponse {
-		return { status: status, contentType: "application/json", body: Json.stringify(data) };
+		// Response-boundary guarantee: ServerConfig.jsonEncode repairs invalid UTF-8 in every string
+		// (legacy rows included) and keeps non-BMP characters intact on the cpp target.
+		return { status: status, contentType: "application/json", body: ServerConfig.jsonEncode(data) };
 	}
 
 	static function fail(status:Int, message:String):HttpResponse {
@@ -2515,7 +2628,8 @@ class Api {
 	}
 
 	static function plain(status:Int, body:String, ?contentType:String = "text/plain"):HttpResponse {
-		return { status: status, contentType: contentType, body: body };
+		// Non-JSON bodies are written as raw UTF-8, so only invalid bytes need repair.
+		return { status: status, contentType: contentType, body: ServerConfig.repairUtf8(body) };
 	}
 }
 

@@ -11,8 +11,16 @@
 	
 	<!-- requestLegacyExternalStorage: lets Android 10 (API 29) users keep using
 	     the public /storage/emulated/0 root (legacy storage) without root.
-	     Ignored on Android 11+ where All-files-access is requested instead. -->
-	<application android:label="::APP_TITLE::" ::if (HAS_ICON):: android:icon="@drawable/icon"::end:: android:allowBackup="true" android:requestLegacyExternalStorage="true" android:theme="@android:style/Theme.NoTitleBar::if (WIN_FULLSCREEN)::.Fullscreen::end::" android:hardwareAccelerated="true">
+	     Ignored on Android 11+ where All-files-access is requested instead.
+
+	     usesCleartextTraffic: SeiunEngine Online self-hosted servers speak plain
+	     ws:// (port 2568) and http:// (port 2567) -- a LAN host has no TLS
+	     certificate to offer. Since targetSdk 28 Android blocks cleartext by
+	     default, so without this flag even ws://localhost is refused with a
+	     "Cleartext HTTP traffic not permitted" error. It only relaxes the
+	     platform's cleartext policy for this app; TLS (wss:// / https://)
+	     addresses keep working exactly as before. -->
+	<application android:label="::APP_TITLE::" ::if (HAS_ICON):: android:icon="@drawable/icon"::end:: android:allowBackup="true" android:requestLegacyExternalStorage="true" android:usesCleartextTraffic="true" android:theme="@android:style/Theme.NoTitleBar::if (WIN_FULLSCREEN)::.Fullscreen::end::" android:hardwareAccelerated="true">
 
 		::if (WIN_ORIENTATION=="portrait")::
 		<meta-data android:name="SDL_ENV.SDL_IOS_ORIENTATIONS" android:value=  "Portrait PortraitUpsideDown" />

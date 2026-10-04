@@ -62,7 +62,7 @@
 		"nameKey": "option.segmentedCharts",
 		"defaultName": "Multi-file Charts",
 		"descKey": "option.segmentedCharts.desc",
-		"defaultDesc": "How charts that were split across several files are loaded.\nAuto: <song>-0.json, <song>-1.json, ... are played as one song.\nManifest: only the parts listed in <song>.parts.json are merged.\nOff: every chart file stays its own difficulty (the stock behavior).\nPress M at song select (D on-screen button on Android) to override this per song.",
+		"defaultDesc": "How charts that were split across several files are loaded.\nAuto: <song>-0.json, <song>-1.json, ... are played as one song.\nManifest: only the parts listed in <song>.parts.json are merged.\nOff: every chart file stays its own difficulty (the stock behavior).\nPress M at song select (D on-screen button on Android) to override this per song.\nOnline only promises single-file charts: a segmented chart combined with the huge-chart cache is out of scope there.",
 		"variable": "segmentedCharts",
 		"type": "string",
 		"defaultValue": "Auto",

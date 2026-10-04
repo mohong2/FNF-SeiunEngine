@@ -24,7 +24,7 @@
 
 需要 Haxe **4.3.7**（最低 4.3.0），以及由 `haxelib setup` 自动装好的 hxcpp 移植版：
 Haxe 4.3 要求 hxcpp 按 4.3 API 构建，旧的 4.2.1 分叉会被拒绝并提示 "Hxcpp is out of date"。
-Haxe 4.2.5 基线仍能通过同一套类型检查，所以源码层面两个编译器都能用。
+4.2.5 基线不再是本仓库支持的编译工具链：客户端与联机服务端都以 4.3.7 构建并在 CI 里做类型检查（见 `server/README.md`）。
 
 ```sh
 haxelib setup .haxelib
@@ -54,9 +54,10 @@ lime build windows
 
 ## 联机
 
-- 桌面构建默认启用局域网联机（主菜单 → 联机）。
-- 离线构建：`art\build_x64_offline.bat`（`-D SEIUN_NO_ONLINE`），不编译联机代码、不发起任何网络请求。
-- 专用服务器：`server\start_server.bat`，详见 `docs/online-usage.md` 与 `docs/multiplayer-protocol.md`。
+- 桌面构建默认启用联机（主菜单 → 联机）；`Project.xml` 里 `ONLINE_ALLOWED` 恒为开启。
+- 局域网：房主跑 `powershell -NoProfile -File server/start.ps1 -Lan`，其他人进「联机 → 服务器列表」填房主的**内网 IP**（裸 IP 会自动补 `:2567`）；同机双开加 `--disable-ip-lock`，防火墙放行 2567/2568。
+- 专用服务器：`server\start.ps1`（或 `server\build.ps1` 后跑 `server\bin\server.n` / `server\bin\SeiunServer.exe`）；持久化已改 SQLite，旧 JSON 首次启动自动导入，详见 `docs/online-usage.md` 与 `docs/multiplayer-protocol.md`。
+- 离线构建：`art\build_x64_offline.bat`（等价于 `lime build windows -release -D SEIUN_NO_ONLINE`）不含联机代码与内嵌服务端，设置见 `docs/online-usage.md` 第 6 节。
 - 联机菜单 UI / 房间协议模型**移植 / 参照**自 [Funkin-Psych-Online](https://github.com/Snirozu/Funkin-Psych-Online)（Snirozu，Apache-2.0），本仓库内为自研 Haxe 实现；完整署名见 [`NOTICE`](NOTICE) 与「制作人员」。
 
 ## 制作人员

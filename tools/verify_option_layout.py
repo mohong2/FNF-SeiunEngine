@@ -11,13 +11,15 @@ Read-only. Fails (exit 1) when
 
 BASELINE_VARIABLES is the 87 options that existed before the settings were
 re-ordered; keeping it frozen here is what makes "no option was dropped or
-duplicated by the reshuffle" a checkable statement instead of a claim.
+duplicated by the reshuffle" a checkable statement instead of a claim. Options
+added on purpose afterwards are listed in EXPECTED_NEW_VARIABLES, so a variable
+that appears out of nowhere still fails.
 
-NOTE_OPTIMISATION_VARIABLES pins the note-optimisation page to exactly the five
-extreme-chart switches the user asked for: lowQuality, cacheOnGPU, gfxLruCache,
-gfxRuntimeRepack, gfxCpuRelease, asyncImageLoading, clearImageCache,
-globalAntialiasing, shaders, disableGC, separateUpdateDraw, framerate and
-drawFramerate must stay on the graphics page.
+NOTE_OPTIMISATION_VARIABLES pins the note-optimisation page to exactly the
+switches it holds (the extreme-chart switches plus the runtime script-callback
+and huge-chart-cache switches); NOTE_OPTIMISATION_ACTIONS lists the action rows
+allowed next to them. GRAPHICS_PAGE_VARIABLES pins the graphics page to exactly
+the performance/quality switches that must NOT drift onto the note page.
 """
 import json
 import os
@@ -30,13 +32,34 @@ LANGUAGES = ['English', 'ChineseSimplified', 'ChineseTraditional']
 
 # Options added after the reshuffle on purpose: the A5 storage-location warning
 # toggle, the "show the note-optimisation notice again" action row, the
-# bottom-right version watermark toggle and the multi-file chart mode
-# (ChartParts / ClientPrefs.segmentedCharts).
-EXPECTED_NEW_VARIABLES = {'showStorageRootWarning', 'showNoteOptimizationNotice', 'showWatermark', 'segmentedCharts'}
+# bottom-right version watermark toggle, the multi-file chart mode
+# (ChartParts / ClientPrefs.segmentedCharts), the 1.0.4 judgement-name compat
+# toggle, the runtime part of the note-optimisation page (scriptArgReuse plus the
+# huge-chart cache switches) and the whole video-render page (backend.FFMpeg /
+# render.json).
+EXPECTED_NEW_VARIABLES = {
+    'showStorageRootWarning', 'showNoteOptimizationNotice', 'showWatermark', 'segmentedCharts',
+    'judgementNameCompat',
+    'scriptArgReuse', 'chartCache', 'chartCacheCompress', 'clearChartCache',
+    'renderOnSongStart', 'previewRender', 'renderFps', 'renderAudio', 'renderCodec',
+    'renderMode', 'renderQuality', 'renderBitrate', 'renderBufferFrames',
+}
 
-# The only five switches that belong to the note-optimisation page (plus action rows).
-NOTE_OPTIMISATION_VARIABLES = {'perfMode', 'turboMode', 'limitNotes', 'fastSort', 'bulkSkip'}
-NOTE_OPTIMISATION_ACTIONS = {'showNoteOptimizationNotice'}
+# The switches that belong to the note-optimisation page (plus the action rows below).
+NOTE_OPTIMISATION_VARIABLES = {
+    'perfMode', 'turboMode', 'limitNotes', 'fastSort', 'bulkSkip',
+    'scriptArgReuse', 'chartCache', 'chartCacheCompress',
+}
+NOTE_OPTIMISATION_ACTIONS = {'showNoteOptimizationNotice', 'clearChartCache'}
+
+# The graphics page must keep exactly these performance/quality switches: they are
+# engine-wide rendering settings and must never be moved onto the note page.
+GRAPHICS_PAGE_VARIABLES = {
+    'lowQuality', 'globalAntialiasing', 'shaders', 'cacheOnGPU', 'asyncImageLoading',
+    'gfxLruCache', 'gfxRuntimeRepack', 'gfxCpuRelease', 'clearImageCache', 'disableGC',
+    'separateUpdateDraw', 'framerate', 'drawFramerate', 'windowedmode', 'runInBackground',
+    'backgroundDim', 'closeAnimStyle', 'closeAnimSpeed',
+}
 
 BASELINE_VARIABLES = {
     # general
@@ -68,7 +91,7 @@ BASELINE_VARIABLES = {
 }
 
 EXPECTED_CATEGORY_ORDER = [
-    'general', 'gameplay', 'visuals', 'graphics', 'note_optimization', 'audio',
+    'general', 'gameplay', 'visuals', 'graphics', 'render', 'note_optimization', 'audio',
     'controls', 'adjust', 'notecolor', 'notecolor_rgb', 'android_settings',
     'extra_settings', 'backup', 'touch_controls',
 ]
@@ -135,8 +158,9 @@ def main():
     if not general or general[0] != 'language':
         failures.append('language is not the first entry of the general page: %s' % general)
 
-    # The note-optimisation page must hold exactly the five extreme-chart switches.
-    # Action rows ("button") are allowed on top of them and are checked separately.
+    # The note-optimisation page must hold exactly the switches in
+    # NOTE_OPTIMISATION_VARIABLES. Action rows ("button") are allowed on top of
+    # them and are checked separately.
     note_page = pages.get('note_optimization')
     if note_page is None:
         failures.append('note_optimization.json is missing')
@@ -153,6 +177,20 @@ def main():
             if owner is not None and owner != 'note_optimization':
                 failures.append('%s must live on the note_optimization page, found in %s'
                                 % (variable, owner))
+
+    # The graphics page keeps exactly its own switches: moving one of them onto
+    # the note page (or adding a new engine-wide switch there) must fail.
+    graphics_page = pages.get('graphics')
+    if graphics_page is None:
+        failures.append('graphics.json is missing')
+    else:
+        graphics_vars = {e['variable'] for e in graphics_page}
+        if graphics_vars != GRAPHICS_PAGE_VARIABLES:
+            failures.append('graphics page holds %s, expected exactly %s'
+                            % (sorted(graphics_vars), sorted(GRAPHICS_PAGE_VARIABLES)))
+        overlap = graphics_vars & NOTE_OPTIMISATION_VARIABLES
+        if overlap:
+            failures.append('graphics page and note_optimisation page overlap: %s' % sorted(overlap))
 
     notes.append('pages: %s' % ', '.join('%s=%d' % (p, len(pages[p])) for p in sorted(pages)))
     notes.append('unique variables: %d (baseline %d + %d new)'

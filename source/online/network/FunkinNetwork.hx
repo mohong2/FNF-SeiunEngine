@@ -30,7 +30,9 @@ class FunkinNetwork {
 		var response = requestAPI({
 			path: "/api/auth/login",
 			headers: ["content-type" => "application/json"],
-			body: Json.stringify({
+			// JsonSafe, not haxe.Json: cpp's printer turns a non-BMP character (emoji) into two
+			// U+FFFD bytes, which would mangle a nickname/bio/message sent from the game.
+			body: JsonSafe.stringify({
 				email: email,
 				code: code,
 				// The per-server switches are decided before logging in; a server that pins its
@@ -56,7 +58,7 @@ class FunkinNetwork {
 		var response = requestAPI({
 			path: "/api/account/email/set",
 			headers: ["content-type" => "application/json"],
-			body: Json.stringify({
+			body: JsonSafe.stringify({
 				email: emailSplit[0].trim(),
 				old_email: emailSplit[1].trim(),
 				code: code
@@ -102,7 +104,7 @@ class FunkinNetwork {
 		var response = requestAPI({
 			path: "/api/auth/refresh",
 			headers: ["content-type" => "application/json"],
-			body: Json.stringify({
+			body: JsonSafe.stringify({
 				remember: Auth.remember(),
 				ttlMinutes: Auth.ttlMinutes()
 			}),
@@ -185,7 +187,7 @@ class FunkinNetwork {
 		var response = requestAPI({
 			path: "/api/auth/register",
 			headers: ["content-type" => "application/json"],
-			body: Json.stringify({
+			body: JsonSafe.stringify({
 				username: username,
 				email: email,
 				code: code
@@ -230,7 +232,7 @@ class FunkinNetwork {
 		var response = requestAPI({
 			path: "/api/account/rename",
 			headers: ["content-type" => "application/json"],
-			body: Json.stringify({
+			body: JsonSafe.stringify({
 				username: name
 			}),
 			post: true
@@ -246,7 +248,7 @@ class FunkinNetwork {
 		var response = requestAPI({
 			path: "/api/sez",
 			headers: ["content-type" => "application/json"],
-			body: Json.stringify({
+			body: JsonSafe.stringify({
 				message: message
 			}),
 			post: true
@@ -292,7 +294,7 @@ class FunkinNetwork {
 		var response = requestAPI({
 			path: "/api/song/comment",
 			headers: ["content-type" => "application/json"],
-			body: Json.stringify({
+			body: JsonSafe.stringify({
 				id: songId,
 				content: content,
 				at: at

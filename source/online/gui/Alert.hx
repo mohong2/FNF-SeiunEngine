@@ -56,8 +56,15 @@ class AlertMessage extends Sprite implements IMousable {
 		this.onClick = onClick;
 		freeze = false;
 
-		title.setText(ShitUtil.wordWrapText(titleText, 55), MAX_WIDTH - title.x * 2);
-		content.setText(ShitUtil.wordWrapText(messageText, 55), MAX_WIDTH - title.x * 2);
+		// One null-safe pair for every use below: the bg-scale guard already tested the message with
+		// a null fallback, while the display-time expression read .length on it directly. hxcpp treats
+		// a null String as empty (proved by a cpp probe in temp/lead/NullStringProbe.hx), so this is
+		// consistency, not a crash fix; callers that omit the message rely on it.
+		var safeTitle:String = titleText == null ? '' : titleText;
+		var safeMessage:String = messageText == null ? '' : messageText;
+
+		title.setText(ShitUtil.wordWrapText(safeTitle, 55), MAX_WIDTH - title.x * 2);
+		content.setText(ShitUtil.wordWrapText(safeMessage, 55), MAX_WIDTH - title.x * 2);
 		
 		title.x = 10;
 		content.x = title.x;
@@ -67,7 +74,7 @@ class AlertMessage extends Sprite implements IMousable {
 
 		bg.alpha = 0.8;
 		bg.scaleX = Math.max(title.getTextWidth(), content.getTextWidth()) + 20;
-		if ((messageText != null ? messageText : '').trim().length == 0 || content.getTextHeight() == 0)
+		if (safeMessage.trim().length == 0 || content.getTextHeight() == 0)
 			bg.scaleY = title.y + title.getTextHeight() + 25;
 		else
 			bg.scaleY = content.y + content.getTextHeight() + 25;
@@ -75,7 +82,7 @@ class AlertMessage extends Sprite implements IMousable {
 		bar.y = bg.scaleY - 5;
 		bar.scaleX = _targetAlpha / displayTime * bg.scaleX;
 
-		displayTime = Math.min(5 + (titleText.length + messageText.length) * 0.05, 20);
+		displayTime = Math.min(5 + (safeTitle.length + safeMessage.length) * 0.05, 20);
 		_targetAlpha = displayTime;
 
 		return this;

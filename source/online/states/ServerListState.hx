@@ -2,6 +2,8 @@ package online.states;
 
 import flixel.FlxObject;
 import flixel.util.FlxSpriteUtil;
+import online.GameClient.ServerProbe;
+import online.Protocol;
 import online.network.Auth;
 import online.states.OnlineOptionsState.InputOption;
 import online.util.RowLayout;
@@ -28,6 +30,14 @@ class ServerListState extends MusicBeatState {
 
 	/** Set from the /api/config probe when the selected server pins its own credential lifetime. */
 	var serverTtlNote:String = '';
+
+	/**
+	 * Probe outcome per server id: 'checking' before it answers, then one of the reasons that matter
+	 * to a LAN player -- 'reachable', 'timeout' (nothing listened) or 'wrongProtocol' (an HTTP server
+	 * answered, but it is not SeiunEngine). The row text says which one, so "it does not work" turns
+	 * into an actionable message.
+	 */
+	var probeStates:Map<String, String> = new Map();
 
 	var inputWait(default, set):Bool = false;
 	function set_inputWait(value:Bool) {
@@ -71,7 +81,7 @@ class ServerListState extends MusicBeatState {
 			var row:InputOption;
 			var id:String = entry.id;
 			var label = (ServerList.selectedId() == id ? '> ' : '  ') + (entry.name != '' ? entry.name : entry.address);
-			items.add(row = new InputOption(label, entryDesc(entry.address, entry.networkAddress, entry.lastPingMs), null, () -> connectTo(id)));
+			items.add(row = new InputOption(label, entryDesc(entry), null, () -> connectTo(id)));
 			row.y = y;
 			row.screenCenter(X);
 			row.ID = i++;
@@ -87,6 +97,27 @@ class ServerListState extends MusicBeatState {
 				GameClient.applySelectedServer();
 				FlxG.resetState();
 			});
+
+		// One row per LAN IPv4 of this machine: the host clicks it instead of reading the address
+		// out of ipconfig and typing it. The enumeration is best-effort and desktop-only, so an
+		// empty result is expected on phones and gets an explanatory row rather than nothing.
+		var lanAddresses = ServerList.localLanAddresses();
+		if (lanAddresses.length == 0) {
+			y = addActionRow(OnlineLang.L('options.serverLan', 'Use This PC (LAN)'),
+				OnlineLang.L('options.serverLanNone', 'No LAN address was detected; read the host PC IPv4 from ipconfig and type it into the Server Address field.'),
+				i++, y, () -> Alert.alert(OnlineLang.L('options.serverLanNoneAlert', 'No LAN address detected'),
+					OnlineLang.L('options.serverLanNoneAlert.desc', 'On this platform the address cannot be listed automatically. Run ipconfig on the host PC and type its IPv4 address into the Server Address field, for example 192.168.1.50.')));
+		}
+		else {
+			for (ip in lanAddresses) {
+				// Copy per iteration: the closure must not capture the loop variable.
+				var address:String = ServerList.lanAddress(ip);
+				var detail:String = OnlineLang.L('options.serverLan.desc', 'Fills the selected entry with this PC\'s LAN address (the host must run the server with -Lan).');
+				y = addActionRow(OnlineLang.L('options.serverLan', 'Use This PC (LAN)') + ': ' + ip,
+					address + ' | ' + detail,
+					i++, y, () -> applyLanAddress(address));
+			}
+		}
 
 		y = addActionRow(OnlineLang.L('options.serverDelete', 'Delete This Server'),
 			OnlineLang.L('options.serverDelete.desc', 'Removes the selected server from the list.'), i++, y, () -> {
@@ -214,11 +245,22 @@ class ServerListState extends MusicBeatState {
 		return text.y + text.height + 40;
 	}
 
-	function entryDesc(address:String, networkAddress:String, lastPingMs:Int):String {
-		var desc = address;
-		if (networkAddress != '' && networkAddress != address)
-			desc += ' | ' + OnlineLang.L('options.networkShort', 'net') + ': ' + networkAddress;
-		return desc + ' | ' + OnlineLang.L('room.ping', 'Ping: ') + (lastPingMs >= 0 ? Std.string(lastPingMs) + 'ms' : '?');
+	function entryDesc(entry:ServerEntry):String {
+		var desc = entry.address;
+		if (entry.networkAddress != '' && entry.networkAddress != entry.address)
+			desc += ' | ' + OnlineLang.L('options.networkShort', 'net') + ': ' + entry.networkAddress;
+
+		var state = probeStates.get(entry.id);
+		if (state == 'reachable')
+			desc += ' | ' + OnlineLang.L('options.serverProbeOk', 'reachable');
+		else if (state == 'timeout')
+			desc += ' | ' + OnlineLang.L('options.serverProbeTimeout', 'timeout');
+		else if (state == 'wrongProtocol')
+			desc += ' | ' + OnlineLang.L('options.serverProbeBadProtocol', 'not a SeiunEngine server');
+		else if (state == 'checking')
+			desc += ' | ' + OnlineLang.L('options.serverProbeChecking', 'checking...');
+
+		return desc + ' | ' + OnlineLang.L('room.ping', 'Ping: ') + (entry.lastPingMs >= 0 ? Std.string(entry.lastPingMs) + 'ms' : '?');
 	}
 
 	/** Read-only status line: the credential of the currently selected server. */
@@ -319,15 +361,35 @@ class ServerListState extends MusicBeatState {
 
 	function probeEntry(id:String, address:String):Void {
 		var self = this;
+		probeStates.set(id, 'checking');
 		GameClient.probeServer(address, (result) -> {
 			if (result != null && result.ok)
 				ServerList.markResult(id, result.pingMs, true);
+			probeStates.set(id, probeOutcome(result));
 			if (!self.exists)
 				return;
 			if (id == ServerList.selectedId())
 				self.serverTtlNote = pinnedTtlNote(result != null ? result.config : null);
 			self.refreshDescriptions();
 		});
+	}
+
+	/**
+	 * Why a probe is or is not usable. A socket that never answered is a timeout; an HTTP server
+	 * that answered but did not greet with engine=seiunengine-online (Protocol.MAGIC) is a
+	 * protocol mismatch -- the two look identical to a player watching a spinner, and the fixes
+	 * differ (firewall / address vs. wrong server).
+	 */
+	static function probeOutcome(result:ServerProbe):String {
+		if (result == null || !result.reachable)
+			return 'timeout';
+
+		var config:Dynamic = result.config;
+		var engine:Dynamic = (config != null && Reflect.hasField(config, 'engine')) ? config.engine : null;
+		if (engine == null || Std.string(engine) != Protocol.MAGIC)
+			return 'wrongProtocol';
+
+		return 'reachable';
 	}
 
 	/**
@@ -351,7 +413,7 @@ class ServerListState extends MusicBeatState {
 				break;
 			var row = items.members[i];
 			if (row != null && row.descText != null)
-				row.descText.text = entryDesc(entry.address, entry.networkAddress, entry.lastPingMs);
+				row.descText.text = entryDesc(entry);
 			i++;
 		}
 	}
@@ -363,6 +425,22 @@ class ServerListState extends MusicBeatState {
 	function connectTo(id:String):Void {
 		if (!ServerList.select(id))
 			return;
+		GameClient.applySelectedServer();
+		FlxG.resetState();
+	}
+
+	/**
+	 * Fills the selected entry with a LAN address found on this machine. The network (chat / HTTP)
+	 * address is left alone: empty means "same host as the game address", which is exactly right
+	 * when the address already points at this PC.
+	 */
+	function applyLanAddress(address:String):Void {
+		var targetId:String = ServerList.selectedId();
+		var entry = ServerList.find(targetId);
+		if (entry == null)
+			return;
+		ServerList.setAddresses(targetId, address, entry.networkAddress);
+		ServerList.select(targetId);
 		GameClient.applySelectedServer();
 		FlxG.resetState();
 	}

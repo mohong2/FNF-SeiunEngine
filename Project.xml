@@ -1,12 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <project>
-	<!-- Build toolchain gate: Haxe 4.3.7 (minimum 4.3.0). Haxe 4.3.x additionally
-	     requires an hxcpp built against the 4.3 API - the old 4.2.1 fork is
-	     rejected with "Hxcpp is out of date - please update". Running
-	     `haxe -cp ./setup -main Main --interp` installs hxcpp from the
-	     mohong2/hxcpp fork, branch haxe-4.3. The 4.2.5 baseline still
-	     type-checks this tree, so either compiler works for the source side. -->
-
 	<!-- _________________________ Application Settings _________________________ -->
 
 	<app title="SeiunEngine" file="SeiunEngine" packageName="com.mohong.Seiunengine" package="com.mohong.Seiunengine" main="Main" version="0.2.2preonline2" company="mo_hong" company-url="https://github.com/mohong2/FNF-SeiunEngine"/>
@@ -37,17 +30,6 @@
 	<window if="desktop" orientation="landscape" fullscreen="false" resizable="true" vsync="false" allow-high-dpi="true"/>
 
 	<!--Mobile-specific-->
-	<!--allow-high-dpi does not lower the render resolution on Android: SDL only consults
-	    SDL_WINDOW_HIGH_PIXEL_DENSITY for the emscripten/cocoa/wayland/uikit backends, while
-	    src/video/android/ never reads it and forces the native surface size, so the backbuffer
-	    is always the device resolution. Lowering it needs ANativeWindow_setBuffersGeometry
-	    (which decouples SDL's reported size from the real EGL surface) or an intermediate
-	    render target, neither of which belongs in a window tag.
-	    depth/stencil="false": flixel's 2D renderer never uses depth/stencil buffers; dropping
-	    the extra attachments saves VRAM and bandwidth. Remove them only if a mod relies on
-	    DisplayObject masks (openfl implements those with stencil).
-	    vsync is omitted on purpose: lime defaults it to false and the engine then paces itself
-	    with a software clock. Enabling it is an experiment, not a default.-->
 	<window if="mobile" orientation="landscape" fullscreen="true" resizable="false" allow-shaders="true" require-shaders="true" allow-high-dpi="true" depth="false" stencil="false"/>
 
 	<!--Switch-specific-->
@@ -71,12 +53,20 @@
 	<define name="lime-sdl3" if="desktop || android" />
 	<define name="TOUCH_CONTROLS" if="android || ios" />
 	<define name="MODS_ALLOWED" if="desktop || mobile" />
-	<define name="ONLINE_ALLOWED"/>
+	<define name="ONLINE_ALLOWED" unless="SEIUN_NO_ONLINE"/>
+	<!-- In-client LAN hosting (design temp/lan-host-recon/design.md, variant A): compile the
+	     embedded server into the client. Wrapped in a section so the macro-off product keeps a
+	     byte-identical command line (source/Main.hx:82-83 records that guarantee) and server/src
+	     is never even resolved without ONLINE_ALLOWED. -->
+	<section if="ONLINE_ALLOWED">
+		<classpath name="server/src" />
+	</section>
 
 	<define name="LUA_ALLOWED" if="desktop || mobile" />
 	<define name="HSCRIPT_ALLOWED" if="desktop || mobile" />
 	<define name="ACHIEVEMENTS_ALLOWED" />
-	<define name="CHECK_FOR_UPDATES" if="desktop || mobile" />
+	<!-- The launch-time update check is a network request, so the offline build must not have it. -->
+	<define name="CHECK_FOR_UPDATES" if="desktop || mobile" unless="SEIUN_NO_ONLINE" />
 
 	<define name="VIDEOS_ALLOWED" if="web || windows || linux || mac || android || ios" unless="32bits"/>
 	<define name="PSYCH_WATERMARKS"/>

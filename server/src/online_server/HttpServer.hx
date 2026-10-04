@@ -37,25 +37,67 @@ typedef HttpResponse = {
 class HttpServer {
 	var listenSocket:Socket;
 	var handler:HttpRequest->HttpResponse;
+	/**
+	 * False once stop() has run: the accept loop leaves instead of spinning on a closed socket.
+	 * A plain Bool (same style as the rest of the server) is enough here: the flag only ever goes
+	 * true, and the loop re-reads it every iteration.
+	 */
+	var running:Bool = true;
+	/** Set by start(): a second start() must not spawn a second accept thread on the same socket. */
+	var started:Bool = false;
 
 	public function new(host:String, port:Int, handler:HttpRequest->HttpResponse) {
 		this.handler = handler;
 
 		listenSocket = new Socket();
+		// Bind errors (port already in use, unresolvable host) stay normal exceptions: an embedded
+		// host catches them and shows an error instead of terminating the process.
 		listenSocket.bind(new Host(host), port);
 		listenSocket.listen(32);
 	}
 
+	/** Starts the accept thread. Idempotent; a no-op after stop(). */
 	public function start():Void {
+		if (!running || started) return;
+		started = true;
 		Thread.create(acceptLoop);
 	}
 
+	/**
+	 * Stops accepting new connections and releases the listen port. Idempotent and safe to call
+	 * from a thread other than the one that called start(). Closing the listen socket is what
+	 * frees the port, so the port is free when this returns; the accept thread leaves on its next
+	 * iteration. In-flight connections are not interrupted: every response is Connection: close
+	 * and short lived.
+	 */
+	public function stop():Void {
+		running = false;
+		var socket = listenSocket;
+		listenSocket = null;
+		if (socket != null) {
+			try socket.close() catch (e:Dynamic) {}
+		}
+	}
+
+	/** True while the accept loop may still take new connections (false after stop()). */
+	public function isAccepting():Bool return running;
+
 	function acceptLoop():Void {
-		while (true) {
+		while (running) {
+			// Read the field once: stop() may null it between this check and accept().
+			var socket = listenSocket;
+			if (socket == null) break;
 			try {
-				var client = listenSocket.accept();
+				var client = socket.accept();
+				if (!running) {
+					// stop() won the race: do not serve a connection accepted after the stop.
+					try client.close() catch (e:Dynamic) {}
+					break;
+				}
 				Thread.create(function() handleClient(client));
 			} catch (e:Dynamic) {
+				// A stop closes the listen socket under the blocked accept(); that is not an error.
+				if (!running) break;
 				Sys.sleep(0.01);
 			}
 		}

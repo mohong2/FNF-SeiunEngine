@@ -61,8 +61,9 @@ class NetworkLogic {
 
 		// Newlines become spaces; there is no word-list filter here.
 		var text:String = (message : String).split("\n").join(" ");
-		if (text.length > 300) {
-			// Exactly 300 characters is allowed; only longer messages are rejected.
+		if (ServerConfig.utf8Length(text) > 300) {
+			// Exactly 300 CHARACTERS is allowed; only longer messages are rejected. String.length
+			// counts UTF-8 bytes on neko/hxcpp, which capped Chinese chat at 100 characters.
 			sendLog(room, "Message length reached!", conn);
 			return;
 		}
@@ -144,7 +145,7 @@ class NetworkLogic {
 			}
 		}
 		// batchLog's payload is a JSON array string, not an object.
-		room.send(conn, GameRoom.frameRoomData("batchLog", haxe.Json.stringify(out)));
+		room.send(conn, GameRoom.frameRoomData("batchLog", ServerConfig.jsonEncode(out)));
 	}
 
 	// ------------------------------------------------------------------
@@ -178,7 +179,7 @@ class NetworkLogic {
 		}
 
 		// The recipient reads inviteData.name / inviteData.roomid.
-		room.send(to, GameRoom.frameRoomData("roominvite", haxe.Json.stringify({
+		room.send(to, GameRoom.frameRoomData("roominvite", ServerConfig.jsonEncode({
 			name: identity,
 			roomid: roomId
 		})));
@@ -191,7 +192,7 @@ class NetworkLogic {
 
 	/** Builds a `log` payload; it is a JSON string, not an object. */
 	public static function formatLog(content:String, ?hue:Float, isPM:Bool = false):String {
-		return haxe.Json.stringify({
+		return ServerConfig.jsonEncode({
 			content: content,
 			hue: hue,
 			date: Date.now().getTime(),

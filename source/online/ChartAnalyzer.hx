@@ -142,18 +142,35 @@ class ChartAnalyzer {
 	 * enter memory, but generateSong already converted the same notes to PreloadedChartNote.
 	 *
 	 * Differences from calc() (deliberate deviation, affects only the online FP readout):
-	 *   - lane: calc() uses raw note[1] % Note.maniaKeys; here the already-normalised pn.noteData;
+	 *   - lane: calc() uses raw note[1] % Note.maniaKeys; here the key count the note was written
+	 *     for (pn.mania, a 0-based index; -1 follows the current chart), which is exactly how
+	 *     PlayState.generateSong() normalised noteData (PlayState.hx:4179-4183);
 	 *   - side: calc() calls PlayState.getMustPressFromRaw(); here pn.mustPress directly;
 	 *   - type: calc() accepts a numeric noteType; here pn.noteType is already a string.
+	 *
+	 * Row access is allocation-free: one scratch DTO serves the whole scan (ChartNotes.rowAt)
+	 * instead of the iterator's get(), which builds a fresh PreloadedChartNote per row -- the
+	 * per-row allocation the column store exists to avoid on a huge streamed chart. A row a script
+	 * has parked still comes back as its live DTO, so every field read here is the value the old
+	 * iterator produced.
 	 */
 	public static function calcFromPreloaded(notes:ChartNotes, mustPress:Bool):FunkinDiffInfo {
 		var unsortedChords:Map<String, Int> = [];
 		if (notes != null) {
-			for (pn in notes) {
+			final scratch:PreloadedChartNote = ChartNotes.scratchNote();
+			final len:Int = notes.length;
+			for (i in 0...len) {
+				final pn:PreloadedChartNote = notes.rowAt(i, scratch);
 				if (pn == null || pn.isSustainNote) continue;
 				if (pn.mustPress != mustPress) continue;
 
-				var daNoteData:Int = pn.noteData % Note.maniaKeys;
+				// Change-Mania charts mix key counts inside one file, so the lane is taken from the key
+				// count the note was authored for; `% Note.maniaKeys` folded a 9K lane onto a 4K lane
+				// whenever PlayState.mania had moved on.
+				final noteMania:Int = pn.mania;
+				final maniaKeys:Int = (noteMania >= 0 && noteMania < Note.ammo.length) ? Note.ammo[noteMania] : Note.maniaKeys;
+
+				var daNoteData:Int = pn.noteData % maniaKeys;
 				if (daNoteData < 0 || daNoteData > 31) continue;
 
 				if (Note.chartNoteTypeCausesMiss(pn.noteType)) continue;
