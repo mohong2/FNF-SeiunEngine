@@ -13,7 +13,9 @@ Reference: https://github.com/Psych-Plus-Team/FNF-PlusEngine/tree/main/source/ob
   why raising `targetSdk`/`compileSdk` crashed the game.
 * hxCodec 2.6+/3.x broke the API and its Android builds are broken.
 * hxvlc ships fresh, 16KB-aligned libVLC binaries for all major Android ABIs and
-  is actively maintained. Pinned version: **2.2.5** (see `hmm.json`).
+  is actively maintained. Pinned version: **2.3.1** (libVLC 3.0.23), kept in the
+  local `hxvlc-stable` fork — see `README-FORK.md` there and `hxvlc-tests/` for
+  the measured A/B results.
 
 ## Class map
 
@@ -38,23 +40,24 @@ Engine entry points wired to these classes:
 
 ## hxvlc fork & installation
 
-hxvlc **2.2.5** is installed from a local git fork at `hxvlc-local/`
-(see `hxvlc-local/README-FORK.md` for the exact patches). It keeps the pinned
-toolchain untouched: **Haxe 4.2.5 + hxcpp 4.2.1** (hxcpp 4.3.x is NOT required
-and must stay 4.2.1 - newer hxcpp breaks Lua colors in this engine).
+hxvlc **2.3.1** (libVLC 3.0.23) is merged into
+[`mohong2/hxvlc`](https://github.com/mohong2/hxvlc) `master` (commit `eea4c47`,
+also on branch `stable-2.3.1`), which is what `hmm.json` already points at. The
+reason for the fork is that
+upstream 2.3.x dropped the CPU `BitmapData` render path this engine needs:
+without it, `onFormatSetup` never fires on a stage without Stage3D and
+`bitmapData.image == null`, so mods that call `loadGraphic(video.bitmapData)`
+render black. See `hxvlc-stable/README-FORK.md` for the full patch list and
+`hxvlc-tests/` for the benchmark harness and measured numbers.
 
-`hmm.json` references it as a git dependency:
+To (re)install: run `install.bat` (or `haxelib remove hxvlc` followed
+by re-installing from `hmm.json`) and build. No `haxelib dev` override is needed.
 
-```json
-{ "name": "hxvlc", "type": "git", "url": "./hxvlc-local", "ref": "master" }
-```
-
-To (re)install: run `install.bat`, or:
-
-```
-haxelib remove hxvlc
-haxelib git hxvlc ./hxvlc-local master
-```
+To follow upstream later, add `https://github.com/MAJigsaw77/hxvlc` as a remote
+of your hxvlc checkout and rebase `stable-2.3.1` onto `MAJigsaw77/hxvlc main`; the
+fork only touches six files (`openfl/Video.hx`, `util/Handle.hx`,
+`flixel/FlxInternalVideo.hx`, `impl/Instance.hx`, `haxelib.json`,
+`README-FORK.md`).
 
 The build scripts (`art/*.bat`) set `HAXELIB_PATH` to the project-local
 `.haxelib` so every build uses the fork. If you run `lime build` by hand, set
@@ -65,6 +68,13 @@ it too, otherwise haxelib may resolve hxvlc from the global repo.
 * All wrappers extend `hxvlc.flixel.FlxInternalVideo`, which resolves embedded
   OpenFL assets (Android APK assets) automatically - no manual copy to storage
   is needed.
+* Every wrapper forces hxvlc's CPU frame path (`useTexture = false` plus
+  `forceRendering = true`), so `video.bitmapData` always holds real, readable
+  pixels for mods - including on the Android/mod path where this used to be the
+  difference between a picture and a black screen.
+* `hxvlc.flixel.FlxInternalVideo.disposeAll()` is called from
+  `PlayState.destroy()`, so a video a mod forgot to dispose cannot outlive the
+  level.
 * Playback is started with hxvlc's `play()` (libvlc_media_player_play).
   `resume()` only unpauses an already-playing player and must NOT be used to
   start a video - older wrappers did this and videos never started.
