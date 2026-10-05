@@ -12,6 +12,7 @@ import sys.io.FileSeek;
 #end
 
 /**
+ * 哦，不不不，我错了还不行吗？
  * NativeCrash - C++-level crash hooks (implementation in native_crash.inc).
  *
  * Haxe's try/catch and UncaughtErrorEvent only see Haxe exceptions; driver
