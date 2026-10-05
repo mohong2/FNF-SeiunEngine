@@ -16,7 +16,6 @@
   "newchartEditor_change_scroll_speed": "值1: 滚动速度倍率 (1是默认)\n值2: 完全改变需要的时间(秒)。",
   "newchartEditor_set_property": "值1: 变量名\n值2: 新值",
   "newchartEditor_play_sound": "值1: 声音文件名\n值2: 音量 (默认: 1), 范围0到1",
-  
   "newchartEditor_information": "信息",
   "newchartEditor_charting": "谱面",
   "newchartEditor_data": "数据",
@@ -27,12 +26,9 @@
   "newchartEditor_file": "文件",
   "newchartEditor_edit": "编辑",
   "newchartEditor_view": "视图",
-  
   "newchartEditor_press_f1_for_help": "按F1查看帮助",
-  "newchartEditor_help_text_size" : "18",
+  "newchartEditor_help_text_size": "18",
   "newchartEditor_help_text": "W/S/鼠标滚轮 - 移动时间轴\nA/D - 切换段落\nQ/E - 减少/增加Note长按长度\n按住Shift/Alt 来4倍加速/减速移动\n\nF12 - 预览谱面\nEnter - 试玩谱面\nSpace - 停止/继续播放\nAlt + 点击 - 选择Note\nShift + 点击 - 选择/取消选择Note\n右键 - 框选\nR - 重置段落\nShift + R - 回到歌曲开头\nZ/X - 放大/缩小\nLeft/Right - 更改吸附\nLeft Bracket / Right Bracket - 改变歌曲播放速度\nALT + Left Bracket / Right Bracket - 重置歌曲播放速度\nCtrl + Z - 撤销\nCtrl + Y - 重做\nCtrl + X - 剪切选中的Note\nCtrl + C - 复制选中的Note\n Ctrl + V - 粘贴复制的Note\nCtrl + A - 全选当前段落\nCtrl + S - 快速保存",
-  
-  
   "newchartEditor_time_song_length": "时间",
   "newchartEditor_beat": "拍",
   "newchartEditor_step": "步",
@@ -40,7 +36,6 @@
   "newchartEditor_beat_snap": "拍子吸附",
   "newchartEditor_selected": "已选",
   "newchartEditor_zoom": "缩放",
-  
   "newchartEditor_playback_rate": "播放速度",
   "newchartEditor_mouse_scroll_snap": "鼠标滚轮吸附",
   "newchartEditor_ignore_progress_warnings": "忽略进度警告",
@@ -51,7 +46,6 @@
   "newchartEditor_main_vocals": "主要音量:",
   "newchartEditor_opp_vocals": "对手音量:",
   "newchartEditor_mute": "静音",
-  
   "newchartEditor_game_over_character": "失败角色",
   "newchartEditor_game_over_death_sound": "失败死亡音效 (sounds/)",
   "newchartEditor_game_over_loop_music": "失败循环音乐 (music/)",
@@ -59,16 +53,13 @@
   "newchartEditor_disable_note_rgb": "禁用NoteRGB",
   "newchartEditor_note_texture": "Note贴图",
   "newchartEditor_note_splashes_texture": "Note粒子贴图",
-  
   "newchartEditor_event": "事件",
   "newchartEditor_value_1": "值1",
   "newchartEditor_value_2": "值2",
   "newchartEditor_selected_event": "已选事件",
-  
   "newchartEditor_sustain_length": "长按长度",
   "newchartEditor_note_hit_time": "Note打击时间 (ms)",
   "newchartEditor_note_type": "Note类型",
-  
   "newchartEditor_must_hit_sec": "玩家段落",
   "newchartEditor_gf_section": "GF段落",
   "newchartEditor_alt_anim": "另类动画",
@@ -82,7 +73,6 @@
   "newchartEditor_swap_section": "交换段落",
   "newchartEditor_duet_section": "对唱段落",
   "newchartEditor_mirror_notes": "镜像Note",
-  
   "newchartEditor_song_name": "歌曲名",
   "newchartEditor_allow_vocals": "允许人声",
   "newchartEditor_reload_audio": "重载音频",
@@ -94,7 +84,6 @@
   "newchartEditor_player": "玩家",
   "newchartEditor_opponent": "对手",
   "newchartEditor_girlfriend": "GF",
-  
   "newchartEditor_new": " 新建",
   "newchartEditor_open_chart": " 打开谱面...",
   "newchartEditor_open_autosave": " 打开自动保存...",
@@ -108,7 +97,6 @@
   "newchartEditor_save_cne": " 保存(CNE)...",
   "newchartEditor_psych_to_vslice": " Psych转V-Slice...",
   "newchartEditor_vslice_to_psych": " V-Slice转Psych...",
-
   "newchartEditor_save_format_title": "选择保存格式...",
   "newchartEditor_format_psych_v1": "Psych Engine v1.0",
   "newchartEditor_format_psych_v0": "Psych Engine v0.x (旧版)",
@@ -139,7 +127,7 @@
   "newchartEditor_custom_k": "自定义键数:",
   "newchartEditor_detected_k": "检测到源谱面: %sK",
   "newchartEditor_pick_difficulty": "选择难度...",
-  "newchartEditor_load_btn": "载入",
+  "newchartEditor_load_btn": "加载",
   "newchartEditor_error_no_chart_in_package": "包里没有找到 .osu/.mc 谱面！",
   "newchartEditor_music_imported": "音乐已导入到: %s",
   "newchartEditor_music_not_found": "未找到音乐文件，已跳过。",
@@ -157,7 +145,6 @@
   "newchartEditor_preview": " 预览(F12)",
   "newchartEditor_playtest": " 试玩(Enter)",
   "newchartEditor_exit": " 退出",
-  
   "newchartEditor_undo": " 撤销",
   "newchartEditor_redo": " 重做",
   "newchartEditor_select_all": " 全选",
@@ -166,7 +153,6 @@
   "newchartEditor_autosave_settings": " 自动保存设置...",
   "newchartEditor_clear_all_notes": " 清除所有Note",
   "newchartEditor_clear_all_events": " 清除所有事件",
-  
   "newchartEditor_hide_last_section": " 隐藏上一段",
   "newchartEditor_show_last_section": " 显示上一段",
   "newchartEditor_hide_next_section": " 隐藏下一段",
@@ -179,20 +165,17 @@
   "newchartEditor_go_to": " 跳转到...",
   "newchartEditor_theme": " 主题...",
   "newchartEditor_reset_ui_boxes": " 重置UI窗口",
-
   "newchartEditor_waveform_settings": "波形设置",
   "newchartEditor_enabled": "启用",
   "newchartEditor_color_hex": "颜色 (十六进制)",
   "newchartEditor_instrumental": "伴奏",
   "newchartEditor_main_vocals_label": "主唱",
   "newchartEditor_opponent_vocals_label": "对手唱",
-  
   "newchartEditor_go_to_title": "跳转到 时间/段落",
   "newchartEditor_time_in_seconds": "时间 (秒)",
   "newchartEditor_go_to_button": "跳转",
   "newchartEditor_cancel": "取消",
   "newchartEditor_play": "试玩",
-  
   "newchartEditor_theme_title": "谱面编辑器主题",
   "newchartEditor_light": "亮色",
   "newchartEditor_dark": "暗色",
@@ -202,22 +185,17 @@
   "newchartEditor_bg_color": "背景颜色",
   "newchartEditor_grid_colors": "网格颜色",
   "newchartEditor_next_grid_colors": "下一段网格颜色",
-  
   "newchartEditor_autosave_settings_title": "自动保存设置",
   "newchartEditor_time_in_minutes": "时间 (分钟)",
   "newchartEditor_file_limit": "文件限制",
   "newchartEditor_autosave_enabled": "启用",
-  
   "newchartEditor_any_options_note": "这里的选项不会影响实际游戏！",
-  
   "newchartEditor_sure_to_start_over": "你确定要重新开始吗？",
   "newchartEditor_warning_unsaved_progress": "警告: 所有未保存的进度\n都会丢失。",
-
   "newchartEditor_unsaved_reload": "你有未保存的更改。\n仍然重新加载吗？",
   "newchartEditor_unsaved_exit": "有未保存的进度，\n你确定要退出吗？",
   "newchartEditor_unsaved_playtest": "你有未保存的更改。\n仍然要试玩吗？（更改不会丢失）",
   "newchartEditor_unsaved_preview": "你有未保存的更改。\n仍然要预览吗？（更改不会丢失）",
-  
   "newchartEditor_choose_autosave": "选择一个自动保存",
   "newchartEditor_load": "加载",
   "newchartEditor_events_found": "找到事件！选择一个操作。",
@@ -227,15 +205,13 @@
   "newchartEditor_artist_composer": "艺术家/作曲家",
   "newchartEditor_charter": "谱师",
   "newchartEditor_difficulties": "难度",
-  
   "newchartEditor_nothing_to_copy": "没啥可复制的！",
   "newchartEditor_nothing_to_paste": "没啥可粘贴的！",
   "newchartEditor_notes_copied": "Note已复制",
   "newchartEditor_events_copied": "事件已复制",
   "newchartEditor_notes_added": "Note已添加",
   "newchartEditor_events_added": "事件已添加",
-
-  "newchartEditor_error": "错误: %s", 
+  "newchartEditor_error": "错误: %s",
   "newchartEditor_error_loading_song": "加载歌曲出错",
   "newchartEditor_error_not_valid_chart": "错误: 加载的文件不是有效的Psych Engine谱面。",
   "newchartEditor_error_file_not_chart": "错误: 加载的文件不是Psych Engine/FNF 0.2.x.x谱面。",
@@ -244,6 +220,7 @@
   "newchartEditor_error_events_empty": "加载的事件文件是空的。",
   "newchartEditor_error_unknown_section": "错误: 未知的段落??",
   "newchartEditor_error_save": "保存谱面时出错！",
+  "newchartEditor_error_autosave_failed": "自动保存失败: %s",
   "newchartEditor_error_save_events": "保存事件时出错！",
   "newchartEditor_error_load_valid_song": "加载一个有效的歌曲才能预览！",
   "newchartEditor_error_must_save_first": "你必须先保存/加载一个谱面才能重载！",
@@ -263,7 +240,6 @@
   "newchartEditor_error_file_not_psych_chart": "错误: 加载的文件不是Psych Engine/FNF 0.2.x.x谱面。",
   "newchartEditor_error_events_file_not_psych": "错误: 加载的文件不是Psych Engine谱面/事件文件。",
   "newchartEditor_error_on_loading_autosave": "加载自动保存时出错",
-  
   "newchartEditor_chart_opened": "谱面\"%s\"打开成功！",
   "newchartEditor_autosave_opened": "自动保存\"%s\"打开成功！",
   "newchartEditor_chart_saved": "谱面保存成功到: %s",
@@ -277,14 +253,12 @@
   "newchartEditor_files_saved": "文件保存成功到: %s!",
   "newchartEditor_notes_reloaded_to": "Note重新加载为",
   "newchartEditor_notes_reloaded_default": "Note重新加载为默认贴图",
-  
   "newchartEditor_undo_action": "撤销 #%d",
   "newchartEditor_redo_action": "重做 #%d",
   "newchartEditor_add_note": "添加Note",
   "newchartEditor_delete_note": "删除Note",
   "newchartEditor_move_note": "移动Note",
   "newchartEditor_select_note": "选择Note",
-  
   "newchartEditor_added_note_at_time": "在时间 %s 添加了Note",
   "newchartEditor_added_event_at_time": "在时间 %s 添加了事件",
   "newchartEditor_removed_note_at_time": "删除了时间 %s 的%s",
@@ -293,7 +267,6 @@
   "newchartEditor_delete_all_events": "删除歌曲中所有的事件？",
   "newchartEditor_overwrite": "覆盖",
   "newchartEditor_overwrite_confirm": "覆盖: \"%s\"?",
-
   "newchartEditor_save_btn": "保存",
   "newchartEditor_song_bpm_label": "歌曲BPM:",
   "newchartEditor_song_offset_label": "歌曲偏移:",
@@ -309,31 +282,24 @@
   "newchartEditor_play_sound_dad": "播放音效(对手音符)",
   "newchartEditor_metronome_enabled": "启用节拍器",
   "newchartEditor_disable_autoscroll": "停用自动滚动(不推荐)",
-
   "newchartEditor_load_autosave_btn": "载入自动存档",
   "newchartEditor_load_events_btn": "载入事件",
   "newchartEditor_save_events_btn": "保存事件",
   "newchartEditor_clear_events_btn": "清除事件",
   "newchartEditor_clear_notes_btn": "清除音符",
   "newchartEditor_change_notes_btn": "更改Note纹理",
-
   "newchartEditor_offset_ms_label": "偏移(毫秒):",
   "newchartEditor_inst_volume_label": "乐器音量",
   "newchartEditor_voices_volume_label": "人声音量",
   "newchartEditor_opponent_voices_volume_label": "对手人声音量",
-
   "newchartEditor_selected_event_none": "已选事件: 无",
   "newchartEditor_selected_event_format": "已选事件: ",
-
   "charting_warning_clear_progress": "此操作将清除当前进度。\n\n确定继续？",
-
   "newchartEditor_select_difficulty": "选择要加载的难度:",
-  "newchartEditor_load_btn": "加载",
   "newchartEditor_cancel_btn": "取消",
-
   "newchartEditor_convert_sequential": "顺序映射",
   "newchartEditor_convert_shuffle": "自动打乱",
   "newchartEditor_convert_double": "自动补双押",
-  "newchartEditor_convert_shuffle_double": "打乱+双押"
-,
-    "newchartEditor_events_tab": "事件"}
+  "newchartEditor_convert_shuffle_double": "打乱+双押",
+  "newchartEditor_events_tab": "事件"
+}

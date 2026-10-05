@@ -952,77 +952,87 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 			//#if debug if(FlxG.keys.justPressed.J) autoSaveTime += 20/60.0; #end
 			if(autoSaveTime >= autoSaveCap #if debug || FlxG.keys.justPressed.NUMPADMULTIPLY #end)
 			{
+				// 自动保存跑在主循环里，任何一步（建目录/写文件/清理旧备份）失败抛出的
+				// 异常都会穿透 lime 的事件分发直接崩溃进程；自动保存只许失败、不许崩溃。
 				FlxTween.cancelTweensOf(autoSaveIcon);
 				autoSaveTime = 0;
 				autoSaveIcon.alpha = 0;
-				updateChartData();
-				var chartName:String = 'unknown';
-				if (PlayState.SONG.song != null) chartName = PlayState.SONG.song;
-				if(Song.chartPath != null && PlayState.SONG.song != null)
+				try
 				{
-					chartName = Song.chartPath.replace('\\', '/');
-					chartName = chartName.substring(chartName.lastIndexOf('/')+1, chartName.lastIndexOf('.'));
-				}
-
-				chartName += DateTools.format(Date.now(), '_%Y-%m-%d_%H-%M-%S');
-				var songCopy:SwagSong = Reflect.copy(PlayState.SONG);
-				Reflect.setField(songCopy, '__original_path', Song.chartPath);
-				var dataToSave:String = haxe.Json.stringify(songCopy);
-				//trace(chartName, dataToSave);
-				#if sys
-				if(!FileSystem.isDirectory('backups')) FileSystem.createDirectory('backups');
-				File.saveContent('backups/$chartName.$BACKUP_EXT', dataToSave);
-
-				if(backupLimit > 0)
-				{
-					var files:Array<String> = FileSystem.readDirectory('backups/').filter((file:String) -> file.endsWith('.$BACKUP_EXT'));
-					if(files.length > backupLimit)
+					updateChartData();
+					var chartName:String = 'unknown';
+					if (PlayState.SONG.song != null) chartName = PlayState.SONG.song;
+					if(Song.chartPath != null && PlayState.SONG.song != null)
 					{
-						var incorrect:Array<String> = [];
-						var map:Map<String, Float> = [];
-						for(file in files)
+						chartName = Song.chartPath.replace('\\', '/');
+						chartName = chartName.substring(chartName.lastIndexOf('/')+1, chartName.lastIndexOf('.'));
+					}
+
+					chartName += DateTools.format(Date.now(), '_%Y-%m-%d_%H-%M-%S');
+					var songCopy:SwagSong = Reflect.copy(PlayState.SONG);
+					Reflect.setField(songCopy, '__original_path', Song.chartPath);
+					var dataToSave:String = haxe.Json.stringify(songCopy);
+					//trace(chartName, dataToSave);
+					#if sys
+					if(!FileSystem.isDirectory('backups')) FileSystem.createDirectory('backups');
+					File.saveContent('backups/$chartName.$BACKUP_EXT', dataToSave);
+
+					if(backupLimit > 0)
+					{
+						var files:Array<String> = FileSystem.readDirectory('backups/').filter((file:String) -> file.endsWith('.$BACKUP_EXT'));
+						if(files.length > backupLimit)
 						{
-							var split:Array<String> = file.split('_');
-							if(split.length > 2) //is properly formatted
+							var incorrect:Array<String> = [];
+							var map:Map<String, Float> = [];
+							for(file in files)
 							{
+								var split:Array<String> = file.split('_');
+								if(split.length > 2) //is properly formatted
+								{
+									try
+									{
+										var timeStr:String = split[split.length-1].replace('-', ':');
+										timeStr = timeStr.substr(0, timeStr.indexOf('.'));
+
+										var fileJoin:String = split[split.length-2] + ' ' + timeStr;
+										var date:Date = Date.fromString(fileJoin);
+										//trace(fileJoin, date.getTime());
+										map.set(file, date.getTime());
+									}
+									catch(e:Exception)
+									{
+										incorrect.push(file);
+									}
+								}
+								else incorrect.push(file);
+							}
+
+							if(incorrect.length > 0) files = files.filter((file:String) -> !incorrect.contains(file));
+							files.sort(function(a:String, b:String) return map.get(a) > map.get(b) ? 1 : -1);
+
+							while(files.length > backupLimit)
+							{
+								var file = files.shift();
+								//trace('removed $file');
 								try
 								{
-									var timeStr:String = split[split.length-1].replace('-', ':');
-									timeStr = timeStr.substr(0, timeStr.indexOf('.'));
-
-									var fileJoin:String = split[split.length-2] + ' ' + timeStr;
-									var date:Date = Date.fromString(fileJoin);
-									//trace(fileJoin, date.getTime());
-									map.set(file, date.getTime());
+									FileSystem.deleteFile('backups/$file');
 								}
-								catch(e:Exception)
-								{
-									incorrect.push(file);
-								}
+								catch(e:Exception) {}
 							}
-							else incorrect.push(file);
-						}
-
-						if(incorrect.length > 0) files = files.filter((file:String) -> !incorrect.contains(file));
-						files.sort(function(a:String, b:String) return map.get(a) > map.get(b) ? 1 : -1);
-
-						while(files.length > backupLimit)
-						{
-							var file = files.shift();
-							//trace('removed $file');
-							try
-							{
-								FileSystem.deleteFile('backups/$file');
-							}
-							catch(e:Exception) {}
 						}
 					}
-				}
-				#end
+					#end
 
-				FlxTween.tween(autoSaveIcon, {alpha: 1}, 0.5, {onComplete: function(_)
-					FlxTween.tween(autoSaveIcon, {alpha: 0}, 0.5, {startDelay: 2})
-				});
+					FlxTween.tween(autoSaveIcon, {alpha: 1}, 0.5, {onComplete: function(_)
+						FlxTween.tween(autoSaveIcon, {alpha: 0}, 0.5, {startDelay: 2})
+					});
+				}
+				catch(e:Dynamic)
+				{
+					TraceManager.error('trace.editor.exception', 'Autosave failed: {}', [Std.string(e)]);
+					showOutput('newchartEditor_error_autosave_failed', true, [Std.string(e)]);
+				}
 			}
 		}
 
@@ -2186,7 +2196,7 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 			File.saveContent('$backupDir$backupName', dataToSave);
 			trace('Playtest backup saved: $backupName');
 		}
-		catch(e:Exception)
+		catch(e:Dynamic)
 		{
 			trace('Failed to create playtest backup: $e');
 		}
@@ -5275,10 +5285,11 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 
 						finishOpenChart(loadedChart, sourcePath);
 					}
-					catch(e:Exception)
+					catch(e:Dynamic)
 					{
-						showOutput('newchartEditor_error', true, [e.message]);
-						TraceManager.error('trace.editor.exception', 'Exception: {}', [e.stack]);
+						// hxcpp 底层文件错误(如 fopen 失败)抛的是普通值, 不是 Exception 实例
+						showOutput('newchartEditor_error', true, [Std.string(e)]);
+						TraceManager.error('trace.editor.exception', 'Exception: {}', [Std.string(e)]);
 					}
 				}, 400);
 			});
@@ -5750,10 +5761,11 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 							}
 						));
 					}
-					catch(e:Exception)
+					catch(e:Dynamic)
 					{
-						showOutput('newchartEditor_error', true, [e.message]);
-						TraceManager.error('trace.editor.exception', 'Exception: {}', [e.stack]);
+						// hxcpp 底层文件错误(如 fopen 失败)抛的是普通值, 不是 Exception 实例
+						showOutput('newchartEditor_error', true, [Std.string(e)]);
+						TraceManager.error('trace.editor.exception', 'Exception: {}', [Std.string(e)]);
 					}
 				});
 			}, btnWid);
@@ -5817,10 +5829,11 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 						prepareReload();
 						showOutput('newchartEditor_chart_reloaded');
 					}
-					catch(e:Exception)
+					catch(e:Dynamic)
 					{
-						showOutput('newchartEditor_error', true, [e.message]);
-						TraceManager.error('trace.editor.exception', 'Exception: {}', [e.stack]);
+						// hxcpp 底层文件错误(如 fopen 失败)抛的是普通值, 不是 Exception 实例
+						showOutput('newchartEditor_error', true, [Std.string(e)]);
+						TraceManager.error('trace.editor.exception', 'Exception: {}', [Std.string(e)]);
 					}
 				}
 				else showOutput('newchartEditor_error_must_save_first', true);
@@ -6103,10 +6116,11 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 						}
 						else showOutput('newchartEditor_error_no_difficulties', true);
 					}
-					catch(e:Exception)
+					catch(e:Dynamic)
 					{
-						showOutput('newchartEditor_error', true, [e.message]);
-						TraceManager.error('trace.editor.exception', 'Exception: {}', [e.stack]);
+						// hxcpp 底层文件错误(如 fopen 失败)抛的是普通值, 不是 Exception 实例
+						showOutput('newchartEditor_error', true, [Std.string(e)]);
+						TraceManager.error('trace.editor.exception', 'Exception: {}', [Std.string(e)]);
 					}
 				});
 			});
@@ -7115,9 +7129,9 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 					}
 				));
 			}
-			catch(e:Exception)
+			catch(e:Dynamic)
 			{
-				showOutput('newchartEditor_error', true, [e.message]);
+				showOutput('newchartEditor_error', true, [Std.string(e)]);
 			}
 		});
 	}
