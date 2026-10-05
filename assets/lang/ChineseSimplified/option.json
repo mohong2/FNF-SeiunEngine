@@ -333,8 +333,6 @@
     "option.disableGC.desc": "游玩时禁用 hxcpp 垃圾回收，用内存换稳定帧时间，离开歌曲后自动恢复。请谨慎使用。",
     "option.gfxCpuRelease": "大图内存释放",
     "option.gfxCpuRelease.desc": "游玩中，大图(≥2048px)上传到显卡后立即释放其CPU副本。\n渲染像素级不变，可为大角色表的曲目节省大量内存。",
-    "option.asyncImageLoading": "异步图片加载",
-    "option.asyncImageLoading.desc": "进歌时显示加载界面，在后台线程并行解码角色大图并显示真实进度。",
     "option.gfxLruCache": "贴图重用缓存 (LRU)",
     "option.gfxLruCache.desc": "离开歌曲后保留已解码的大图（约1.5GB显存预算），同曲再进完全免解码。\n渲染像素级不变；关闭时立即清空缓存。",
     "option.gfxRuntimeRepack": "运行时贴图密排",

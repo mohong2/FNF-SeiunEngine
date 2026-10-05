@@ -462,8 +462,7 @@ class SystemDiag
 
 			var gfxFlags:String = '';
 			try {
-				gfxFlags = ' | asyncGfx=' + Std.string(ClientPrefs.data.asyncImageLoading)
-					+ ' cpuRelease=' + Std.string(ClientPrefs.data.gfxCpuRelease)
+				gfxFlags = ' | cpuRelease=' + Std.string(ClientPrefs.data.gfxCpuRelease)
 					+ ' lowQuality=' + Std.string(ClientPrefs.data.lowQuality);
 			} catch (e:Dynamic) {}
 			NativeCrash.setRuntimeContext('state=' + stateName + ' | song=' + song + ' | glErr=' + GlErrorWatchdog.snapshot() + gfxFlags);

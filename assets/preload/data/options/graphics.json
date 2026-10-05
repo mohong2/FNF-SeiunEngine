@@ -38,15 +38,6 @@
 		"defaultValue": false
 	},
 	{
-		"nameKey": "option.asyncImageLoading",
-		"defaultName": "Async Image Loading",
-		"descKey": "option.asyncImageLoading.desc",
-		"defaultDesc": "When entering a song, shows a loading screen and decodes character sheets on background threads in parallel\nwith real progress. Turn off to load synchronously without the loading screen.",
-		"variable": "asyncImageLoading",
-		"type": "bool",
-		"defaultValue": true
-	},
-	{
 		"nameKey": "option.gfxLruCache",
 		"defaultName": "Texture Reuse Cache (LRU)",
 		"descKey": "option.gfxLruCache.desc",

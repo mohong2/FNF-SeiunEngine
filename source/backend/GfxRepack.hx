@@ -498,10 +498,9 @@ class GfxRepack
 	// garbage. openfl's BitmapData.copyPixels only reads these two objects synchronously
 	// (Image.copyPixels copies the values into its own cached lime Rectangle/Vector2
 	// before the pixel run), so one reused pair is safe: both are rewritten before every
-	// call and blit() never re-enters itself. process() only runs on the main thread --
-	// AsyncGfxLoader workers fetch bytes and drain() decodes and repacks on the main
-	// thread -- and the GfxPolicy/GfxLru byte ledgers plus packedXmls/boundsSkips above
-	// rely on the same single-threaded execution.
+	// call and blit() never re-enters itself. process() only runs on the main thread, and
+	// the GfxPolicy/GfxLru byte ledgers plus packedXmls/boundsSkips above rely on the
+	// same single-threaded execution.
 	static var blitSrcRect:Rectangle = new Rectangle(0, 0, 0, 0);
 	static var blitDstPoint:Point = new Point(0, 0);
 

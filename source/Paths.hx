@@ -1275,9 +1275,7 @@ class Paths
 				var lruMod:FlxGraphic = backend.GfxLru.lookup(modKey);
 				if (lruMod != null)
 					return lruMod;
-				// Reuse pre-decoded bitmap from async loader if available
-				var newBitmap:BitmapData = backend.AsyncGfxLoader.takeDecoded(modKey);
-				if (newBitmap == null) newBitmap = BitmapData.fromFile(modKey);
+				var newBitmap:BitmapData = BitmapData.fromFile(modKey);
 				var newGraphic:FlxGraphic = FlxGraphic.fromBitmapData(newBitmap, false, modKey);
 				newGraphic.persist = true;
 				currentTrackedAssets.set(modKey, newGraphic);
@@ -1298,11 +1296,7 @@ class Paths
 				var lruPath:FlxGraphic = backend.GfxLru.lookup(path);
 				if (lruPath != null)
 					return lruPath;
-				// Reuse pre-decoded bitmap from async loader if available
-				var preBmp:BitmapData = backend.AsyncGfxLoader.takeDecoded(path);
-				var newGraphic:FlxGraphic = preBmp != null
-					? FlxGraphic.fromBitmapData(preBmp, false, path)
-					: FlxG.bitmap.add(path, false, path);
+				var newGraphic:FlxGraphic = FlxG.bitmap.add(path, false, path);
 				newGraphic.persist = true;
 				currentTrackedAssets.set(path, newGraphic);
 				#if android

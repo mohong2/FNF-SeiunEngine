@@ -138,8 +138,6 @@ import sys.io.Process;
 	public var disableGC:Bool = false;
 	/** Release CPU-side copies of large textures (>=2048px) only after confirming no live sprite/atlas/script references. */
 	public var gfxCpuRelease:Bool = true;
-	/** Decode character sheets on the controlled main-thread loading queue (no background BitmapData threads). */
-	public var asyncImageLoading:Bool = true;
 	/** Store uploaded graphics in LRU cache upon song exit, with strict cache/atlas synchronization and reference-safe eviction. */
 	public var gfxLruCache:Bool = true;
 	/** Placeholder state for the "clear image cache" action button: a button option must bind a field, but the action never reads it. */

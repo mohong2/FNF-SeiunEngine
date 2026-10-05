@@ -9,11 +9,12 @@ Read-only. Fails (exit 1) when
   * "language" is not the first entry of the general page,
   * a category nameKey / description key is missing in one of the languages.
 
-BASELINE_VARIABLES is the 87 options that existed before the settings were
-re-ordered; keeping it frozen here is what makes "no option was dropped or
-duplicated by the reshuffle" a checkable statement instead of a claim. Options
-added on purpose afterwards are listed in EXPECTED_NEW_VARIABLES, so a variable
-that appears out of nowhere still fails.
+BASELINE_VARIABLES is the set of options that existed before the settings were
+re-ordered, minus the ones removed on purpose since (asyncImageLoading); keeping
+it frozen here is what makes "no option was dropped or duplicated by the
+reshuffle" a checkable statement instead of a claim. Options added on purpose
+afterwards are listed in EXPECTED_NEW_VARIABLES, so a variable that appears out
+of nowhere still fails.
 
 NOTE_OPTIMISATION_VARIABLES pins the note-optimisation page to exactly the
 switches it holds (the extreme-chart switches plus the runtime script-callback
@@ -55,7 +56,7 @@ NOTE_OPTIMISATION_ACTIONS = {'showNoteOptimizationNotice', 'clearChartCache'}
 # The graphics page must keep exactly these performance/quality switches: they are
 # engine-wide rendering settings and must never be moved onto the note page.
 GRAPHICS_PAGE_VARIABLES = {
-    'lowQuality', 'globalAntialiasing', 'shaders', 'cacheOnGPU', 'asyncImageLoading',
+    'lowQuality', 'globalAntialiasing', 'shaders', 'cacheOnGPU',
     'gfxLruCache', 'gfxRuntimeRepack', 'gfxCpuRelease', 'clearImageCache', 'disableGC',
     'separateUpdateDraw', 'framerate', 'drawFramerate', 'windowedmode', 'runInBackground',
     'backgroundDim', 'closeAnimStyle', 'closeAnimSpeed',
@@ -78,7 +79,7 @@ BASELINE_VARIABLES = {
     'flashing', 'camZooms',
     # graphics
     'lowQuality', 'perfMode', 'turboMode', 'globalAntialiasing', 'shaders', 'cacheOnGPU',
-    'asyncImageLoading', 'gfxLruCache', 'gfxRuntimeRepack', 'gfxCpuRelease', 'clearImageCache',
+    'gfxLruCache', 'gfxRuntimeRepack', 'gfxCpuRelease', 'clearImageCache',
     'limitNotes', 'fastSort', 'bulkSkip', 'disableGC', 'separateUpdateDraw', 'framerate',
     'drawFramerate', 'windowedmode', 'runInBackground', 'backgroundDim', 'closeAnimStyle',
     'closeAnimSpeed',

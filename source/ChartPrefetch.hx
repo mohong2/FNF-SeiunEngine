@@ -207,7 +207,7 @@ private class Chunk
 }
 
 /**
- * T4 线程原语现代化的兼容层(与 backend.AsyncGfxLoader 里的同名私有类型一致)。
+ * T4 线程原语现代化的兼容层。
  *
  * 4.3.7 + 有原子操作的目标: Counter = haxe.atomic.AtomicInt, 完成计数无锁。
  * 4.2.5: haxe.atomic 在 4.2.5 的 std 里不存在, 退回普通 Int —— 该分支下 done 仍由

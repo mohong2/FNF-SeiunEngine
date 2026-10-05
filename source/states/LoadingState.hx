@@ -89,21 +89,6 @@ class LoadingState extends MusicBeatState
 				callbacks = new MultiCallback(onLoad);
 				var introComplete = callbacks.add("introComplete");
 
-				// Pre-decode character sheets on background threads in parallel
-				#if sys
-				if (backend.AsyncGfxLoader.available() && Std.isOfType(target, PlayState) && PlayState.SONG != null)
-				{
-					backend.AsyncGfxLoader.beginBatch(); // Reset batch counter for current song session
-					var gfxJobs = backend.AsyncGfxLoader.collectSongImages(PlayState.SONG);
-					for (gfxJob in gfxJobs)
-					{
-						var gfxDone = callbacks.add("gfx:" + gfxJob.cacheKey);
-						backend.AsyncGfxLoader.enqueue(gfxJob.cacheKey, gfxJob.filePath, gfxDone);
-					}
-					TraceManager.info('trace.asyncGfx.enqueue',
-						'AsyncGfxLoader enqueued {} images for {}', [gfxJobs.length, PlayState.SONG.song]);
-				}
-				#end
 				#if VIDEOS_ALLOWED
 				// Make sure LibVLC is ready before entering the next state, so
 				// the first cutscene video starts immediately instead of being
@@ -216,10 +201,6 @@ class LoadingState extends MusicBeatState
 	
 	override function update(elapsed:Float)
 	{
-		#if sys
-		// Drain background decoding results and fire callbacks on main thread
-		backend.AsyncGfxLoader.drain();
-		#end
 		#if LUA_ALLOWED
 		callOnLuas('onUpdate', [elapsed]);
 		#end
@@ -318,14 +299,6 @@ class LoadingState extends MusicBeatState
 		Paths.setCurrentLevel(directory);
 		TraceManager.info('trace.loading.setAssetFolder', 'Setting asset folder to {}', [directory]);
 
-		// When async image loading is enabled, display loading state to pre-decode character sheets
-		#if sys
-		if (backend.AsyncGfxLoader.available() && Std.isOfType(target, PlayState) && PlayState.SONG != null)
-		{
-			return new LoadingState(target, stopMusic, directory);
-		}
-		#end
-
 		/*#if NO_PRELOAD_ALL
 		var loaded:Bool = false;
 		if (PlayState.SONG != null) {
@@ -356,10 +329,6 @@ class LoadingState extends MusicBeatState
 	override function destroy()
 	{
 		instance = null;
-		#if sys
-		// Clean up scheduling leftovers without clearing pre-decoded graphics
-		backend.AsyncGfxLoader.reset();
-		#end
 		super.destroy();
 		
 		callbacks = null;

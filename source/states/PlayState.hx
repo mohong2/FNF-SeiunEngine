@@ -2143,38 +2143,23 @@ class PlayState extends MusicBeatState
 		GfxPolicy.preloadWarm();
 
 		#if cpp
-		// 强制 GC / compact 之前先把异步图形线程停在任务边界上: 收集期间不应该有
-		// 第二个线程正在 new hxcpp 对象、或往共享表里写指针。超时也继续, 只记一条日志。
-		var gfxQuiet:Bool = backend.AsyncGfxLoader.quiesce();
-		try
+		if (ClientPrefs.data.disableGC)
 		{
-			if (ClientPrefs.data.disableGC)
-			{
-				_gcDisabledForSong = true;
-				GcState.setDisabled(false);
-				cpp.vm.Gc.run(true);
-				cpp.vm.Gc.compact();
-				GcState.setDisabled(true);
-			}
+			_gcDisabledForSong = true;
+			GcState.setDisabled(false);
+			cpp.vm.Gc.run(true);
+			cpp.vm.Gc.compact();
+			GcState.setDisabled(true);
+		}
 
-			// Force a full GC after creation so the load-time collection does not
-			// hit first gameplay. Disable with FNF_GC_FULL_ON_PLAY_CREATE=0.
-			if (!ClientPrefs.data.disableGC && Sys.getEnv("FNF_GC_FULL_ON_PLAY_CREATE") != "0")
-			{
-				cpp.vm.Gc.run(true);
-				// Compacts the heap after a major collection and returns free blocks to the OS (pure GC, no logic impact).
-				cpp.vm.Gc.compact();
-			}
-		}
-		catch (e:Dynamic)
+		// Force a full GC after creation so the load-time collection does not
+		// hit first gameplay. Disable with FNF_GC_FULL_ON_PLAY_CREATE=0.
+		if (!ClientPrefs.data.disableGC && Sys.getEnv("FNF_GC_FULL_ON_PLAY_CREATE") != "0")
 		{
-			// Haxe 没有 finally: 异常路径也要把 worker 放回去再往上抛。
-			backend.AsyncGfxLoader.resume();
-			throw e;
+			cpp.vm.Gc.run(true);
+			// Compacts the heap after a major collection and returns free blocks to the OS (pure GC, no logic impact).
+			cpp.vm.Gc.compact();
 		}
-		backend.AsyncGfxLoader.resume();
-		if (!gfxQuiet)
-			backend.ScriptLog.write('gc', 'async graphics worker still busy when the post-create forced GC ran (quiesce timed out)');
 		#end
 
 		CustomFadeTransition.nextCamera = camOther;
