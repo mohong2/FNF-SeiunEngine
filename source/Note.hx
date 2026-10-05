@@ -555,6 +555,51 @@ class Note extends FlxSprite implements NoteSplashOwner {
     }
 
     /**
+     * 当前帧"真正画出来的"高度 —— Sparrow 图集里的可见区域高度 (SubTexture 的 width/height),
+     * 而不是逻辑帧高 frameHeight (SubTexture 的 frameWidth/frameHeight)。
+     *
+     * 为什么长条高度必须用这个值归一化 (模组材质兼容):
+     * 图集允许裁剪帧。模组把 hold piece 导出成
+     *   <SubTexture width="50" height="44" frameX="55" frameY="-10" frameWidth="52" frameHeight="64"/>
+     * 时, 44px 才是屏幕上那截长条的像素高, 64px 只是 flixel 用来定位的逻辑方框。
+     * 长条段之间是靠"可见高度 × scale.y >= step 间距"才连成一整条;
+     * 若按 frameHeight 归一化 (44/64), 一段只剩 33px 可见高、间距却是 45px,
+     * 长条就会断成一节一节 —— 这正是自定义 arrowSkin 尾部错位/断裂的根因。
+     *
+     * 默认皮肤 (内容 44 = 帧 44)、New 皮肤 (50x44)、chip (114x77)、future (146x77)
+     * 取到的值都与旧代码的 frameHeight 完全一致 (chip 依然是 44/77), 所以行为不变;
+     * 只有"帧框比内容大"的裁剪图集会被修正。
+     */
+    /**
+     * 当前帧的内容在 flixel "帧坐标系"（原点 = 帧框左上角）里的上沿。
+     * 屏幕上的可见内容上沿 = sprite.y + contentTopInFrame() * scale.y
+     * （updateHitbox 写入的 offset 与 centerOrigin 的 origin 在这一项上正好相消）。
+     *
+     *   - 未翻转 (flipY = false): 内容上沿 = frame.offset.y
+     *   - 翻转   (flipY = true) : 内容上沿 = frameHeight - frame.offset.y - 可见高
+     *
+     * 未裁剪帧 (offset 0 且 可见高 == frameHeight) 两个分支都得 0，与旧表达式完全一致。
+     */
+    public function contentTopInFrame():Float
+    {
+        var f:FlxFrame = frame;
+        if (f == null) return 0;
+        return flipY ? (frameHeight - f.offset.y - sustainContentHeight()) : f.offset.y;
+    }
+
+    public function sustainContentHeight():Float
+    {
+        var f:FlxFrame = frame;
+        if (f != null && f.frame != null)
+        {
+            // 旋转帧在 flixel 里把宽高对调, 可见高度要从 region 宽度取。
+            var h:Float = (f.angle == FlxFrameAngle.ANGLE_0) ? f.frame.height : f.frame.width;
+            if (h > 0) return h;
+        }
+        return frameHeight;
+    }
+
+    /**
      * 多k: 中途切换 k 值时, 实时重置该 Note 的缩放大小以匹配新的 k 值布局。
      * 保留该 Note 生成时的 mania 快照 (判定/轨道不变), 仅重算视觉缩放,
      * 避免 >9K 时已生成 Note 与新的 strum 大小不一致。
@@ -587,6 +632,14 @@ class Note extends FlxSprite implements NoteSplashOwner {
                     scale.y *= 1.19;
                     scale.y *= (6 / frameHeight);
                     scale.y *= PlayState.daPixelZoom;
+                }
+                else
+                {
+                    // 与 setupNoteData 保持同一套皮肤自适应公式 (缺这一步时 Change Mania 之后
+                    // 长条高度会和生成时不一致, 模组材质上表现为接缝跳变)。
+                    var contentH:Float = sustainContentHeight();
+                    scale.y *= (44.0 / contentH);
+                    scale.y += (2.0 / contentH);
                 }
             }
             else
@@ -635,9 +688,14 @@ class Note extends FlxSprite implements NoteSplashOwner {
         var stepCrochet:Float = (genStepCrochet > 0) ? genStepCrochet : Conductor.stepCrochet;
         // Scale sustain height by mania (4K = 1.0, unchanged; high-K stays proportional to arrows).
         scale.y = (stepCrochet / 100) * 1.05 * newSongSpeed * multSpeed * Note.getManiaScale(mania);
-        // 皮肤自适应: 非默认帧高时按 (44/frameHeight) 归一化 (默认皮肤行为不变)
-        if(!PlayState.isPixelStage) scale.y *= (44.0 / frameHeight);
-        if(!PlayState.isPixelStage) scale.y += (2.0 / frameHeight);
+        // 皮肤自适应: 按"可见内容高度"归一化 (默认皮肤 44px, 行为不变)。
+        // 不能用 frameHeight: 裁剪帧 (例如 50x44 的内容装在 52x64 的逻辑帧里) 的帧框比内容高,
+        // 用帧高归一化会把长条压短, 段与段之间露出空隙。
+        if(!PlayState.isPixelStage) {
+            var contentH:Float = sustainContentHeight();
+            scale.y *= (44.0 / contentH);
+            scale.y += (2.0 / contentH);
+        }
         if(PlayState.isPixelStage) {
             scale.y *= 1.19;
             scale.y *= (6 / frameHeight);
@@ -882,13 +940,14 @@ class Note extends FlxSprite implements NoteSplashOwner {
                 isSustainEnd = false;
                 prevNote.animation.play(colArray[prevNote.baseTex()] + 'hold');
                 prevNote.scale.y *= Conductor.stepCrochet / 100 * 1.05;
-                if(!PlayState.isPixelStage) prevNote.scale.y *= (44.0 / prevNote.frameHeight);
+                // 皮肤自适应: 按"可见内容高度"归一化 (默认皮肤 44px, 行为不变)。
+                if(!PlayState.isPixelStage) prevNote.scale.y *= (44.0 / prevNote.sustainContentHeight());
                 if(PlayState.instance != null) prevNote.scale.y *= PlayState.instance.songSpeed;
                 if(PlayState.isPixelStage) {
                     prevNote.scale.y *= 1.19;
                     prevNote.scale.y *= (6 / prevNote.frameHeight);
                 } else {
-                    prevNote.scale.y += (2.0 / prevNote.frameHeight);
+                    prevNote.scale.y += (2.0 / prevNote.sustainContentHeight());
                 }
                 prevNote.updateHitbox();
             }
@@ -1457,9 +1516,13 @@ class Note extends FlxSprite implements NoteSplashOwner {
                     var stepCrochet:Float = (genStepCrochet > 0) ? genStepCrochet : Conductor.stepCrochet;
                     var songSpeedVal:Float = PlayState.instance.songSpeed;
                     scale.y = (stepCrochet / 100) * 1.05 * songSpeedVal * multSpeed * Note.getManiaScale(mania);
-                    // 皮肤自适应: 非默认帧高时按 (44/frameHeight) 归一化 (默认皮肤行为不变)
-                    if(!PlayState.isPixelStage) scale.y *= (44.0 / frameHeight);
-                    if(!PlayState.isPixelStage) scale.y += (2.0 / frameHeight);
+                    // 皮肤自适应: 按"可见内容高度"归一化 (默认皮肤 44px, 行为不变)。
+                    // 不能用 frameHeight: 裁剪帧 (50x44 内容 + 52x64 帧框) 会被压短并露出空隙。
+                    if(!PlayState.isPixelStage) {
+                        var contentH:Float = sustainContentHeight();
+                        scale.y *= (44.0 / contentH);
+                        scale.y += (2.0 / contentH);
+                    }
                     if(PlayState.isPixelStage) {
                         scale.y *= 1.19;
                         scale.y *= (6 / frameHeight);

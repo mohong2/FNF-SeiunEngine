@@ -8890,8 +8890,16 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 					var anchor:Float = (Note.swagWidth / 2) * maniaScale
 						+ 0.45 * stepCrochet * daNote.multSpeed * maniaScale
 						- daNote.height;
+					// 裁剪帧 (trimmed atlas) 补偿 —— 符号很关键。
+					// 目标是 0.7.3 对未裁剪帧做的事: 把"可见内容的下沿"钉在
+					//   strumY + distance + swagWidth/2   (y -= frameHeight*scale.y - swagWidth/2)
+					// 对裁剪帧，内容在帧框里的上沿是 frameHeight - frame.offset.y - 可见高，
+					// 所以需要的整体位移 = swagWidth/2 + step - (frameHeight - frame.offset.y)*scale.y，
+					// 也就是 anchor 必须 **加** frame.offset.y*scale.y。
+					// 写成减号时: 尾帽 (frame.offset.y 为负) 会被往下拽 2*|offset.y|*scale.y 卡进长条里，
+					// 同时普通长条段因为少了一段可见高而够不到 TAP —— 且随 scale.y(∝ BPM/速度) 线性放大。
 					var contentOffsetY:Float = (daNote.frame != null) ? daNote.frame.offset.y * daNote.scale.y : 0.0;
-					daNote.y += anchor - contentOffsetY;
+					daNote.y += anchor + contentOffsetY;
 				}
 			}
 		}
@@ -8910,8 +8918,9 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 			#end
 		)
 		{
+			// 翻转帧下"内容上沿"不等于 frame.offset.y，统一交给 Note.contentTopInFrame()。
 			var drawnTop:Float = daNote.y - daNote.offset.y + daNote.origin.y * (1 - daNote.scale.y)
-				+ daNote.frame.offset.y * daNote.scale.y;
+				+ daNote.contentTopInFrame() * daNote.scale.y;
 			var drawnBottom:Float = drawnTop + daNote.height;
 			var swagRect:FlxRect = daNote.clipRect;
 			if (swagRect == null)

@@ -452,6 +452,47 @@
 
 ---
 
+### 2026年10月5日 — 模组 Note 材质：裁剪帧（trimmed Sparrow）长条几何修复
+
+- 修复自定义 `arrowSkin` 的**裁剪帧**（trimmed Sparrow）图集长条断裂 / 尾部（尾帽）错位：
+  模组把 `hold piece` 导出成
+  `<SubTexture width="50" height="44" frameX="55" frameY="-10" frameWidth="52" frameHeight="64"/>`
+  时，屏幕上那一截长条其实只有 44px 高，64px 只是 flixel 用来定位的逻辑帧框。
+  旧代码用 `frameHeight`(64) 归一化（`44/64`），每段可见高只剩 33px，而段间距是
+  `0.45 × stepCrochet × songSpeed` = 45px —— 于是长条断成一节一节、尾帽与长条之间露出空洞。
+  现改为按图集可见区域高 `frame.frame.height` 归一化（`44 / 可见高`），与 0.6.3 的
+  "内容等比" 结果一致，同时保留 0.7.3/1.0.4 `Note.SUSTAIN_SIZE / 帧高` 这条公式的**本意**
+  （默认皮肤可见高就是 44，画出来的长条恒定 46.2px）。
+- 新增 `Note.sustainContentHeight()`，把 `setupNoteData` / `initNote` / `recalcSustainScale` /
+  `resetNoteScaleForMania` 四处长条高度公式统一到同一个皮肤自适应系数。其中
+  `resetNoteScaleForMania` 原先**完全没有**这层归一化，Change Mania 之后长条高度会和生成时
+  不一致（模组材质上表现为接缝跳变），现已对齐。
+- 默认/内置皮肤行为零变化：`NOTE_assets`(51x44)、`noteSkins/NOTE_assets`(50x44)、
+  `classic`(51x44)、`chip`(114x77)、`future`(146x77) 的可见高与帧高相同，取值与旧代码逐位一致；
+  工作区 46 个 Note 图集 × 4 轨的对照里只有 `varelt-NOTE.xml` 的输出发生变化。
+- **修复下落模式长条锚点的裁剪帧补偿符号（本次真正的主因）**：`PlayState` 每帧定位长条段时用了
+  `daNote.y += anchor - daNote.frame.offset.y*daNote.scale.y`，符号用反了。裁剪帧的内容在**翻转帧**里的
+  上沿是 `frameHeight - frame.offset.y - 可见高`，要满足 0.7.3 的目标（把"可见内容下沿"钉在
+  `strumY + distance + swagWidth/2`）必须**加** `frame.offset.y*scale.y`。用减号的后果：
+  ① 尾帽（`frame.offset.y` 为负）被往下拽 `2*|offset.y|*scale.y`，直接**卡进长条段里面**；
+  ② 普通段因为少算了一段可见高而**够不到 TAP**；两者都随 `scale.y`（∝ BPM / 滚动速度）线性放大，
+  这就是"BPM 越高越偏"。写成加号后，长条近端落点精确等于
+  `distance + swagWidth/2 + 0.45*stepCrochet`，与 BPM / 速度 / 是否裁剪全部无关。
+  `EditorPlayState` 里同一处（复制粘贴的第二份）一并修正。
+- 裁剪帧的**裁剪上沿**改用新的 `Note.contentTopInFrame()`（翻转帧下不再是 `frame.offset.y`），
+  否则尾帽跨过判定线时 `clipRect` 会切错位置；未裁剪帧两分支都得 0，行为不变。
+- 实测数据（Paranoia 模组 `varelt-NOTE.png`，hold piece 50x44 / 逻辑帧 52x64，4K 下落）：
+  长条近端相对 TAP 的落点 `34.1 / 0.5 / 49.1 / 39.4 px`（150BPM×1.0、150BPM×2.6、522BPM×1.0、522BPM×2.6）
+  → 全部变成 **56.0px**（等于 0.7.3 的目标值）；尾帽与相邻段的交叠量由
+  `85 / 121 / 69 / 80 px`（深埋进长条）→ **`3.2 / 5.1 / 2.3 / 2.9 px`**（正常搭接）。
+
+> 验证：`haxe build.hxml` 0 error；`lime build windows -debug` 链接通过并冒烟启动无崩溃；
+> 数值前后对照（`temp/notefix/anchor_before_after.txt`）、46 图集 × 4 轨长条高度对照
+> （`temp/notefix/sustain_geometry_sweep.txt`）、尾帽/长条拼接示意图（`temp/notefix/tail_before_after.png`）。
+> 注：实机截图验证未完成（试了自动化引导到目标歌曲，未成功），需用户在真实谱面上复测。
+
+---
+
 ### 鸣谢
 
 感谢所有参与测试的人员，你们的宝贵反馈是推动引擎不断完善的重要力量。
