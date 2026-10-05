@@ -166,14 +166,16 @@ category/option label is missing from any of the three languages.
 
 ## 排查构建
 
-默认就是安全模式(`Project.xml` 的 `hxcpp_safe`): 空指针/非法指针直接抛 Haxe 异常, logcat 里
-带 `.hx` 文件+行号, 不需要符号表/崩溃报告那一套。复现后:
+默认就是安全模式(`Project.xml` 的 `hxcpp_safe`, 本地/CI/发布构建都是): 空指针/非法指针直接抛
+Haxe 异常, logcat 里带 `.hx` 文件+行号, 不需要符号表/崩溃报告那一套。复现后:
 
     adb logcat -d -s HXCPP:E Exception:E
     E Exception: Null Object Reference
     E HXCPP    : Called from Foo::bar Foo.hx line 123
 
-- `-D hxcpp_nosafe`: 退回旧流程(嵌入行号表 + 未剥离 .so + postbuild 刷新); 符号脚本会自动带上它。
+- `-D hxcpp_symbols`: 额外做符号产物(嵌入行号表 + 未剥离 .so + postbuild 刷新)。默认不做(省步骤);
+  `tools/build_*_symbols.ps1` 与 CI 的符号构建自动带上它 —— 那时**空指针检查仍然开着**。
+- `-D hxcpp_nosafe`: 关掉检查(只用于对照排查)。
 - `-D hxcpp_gc_check`: 额外校验"指针还是活着的 GC 对象吗"(有假阳性风险, 因为开了 GC_BIG_BLOCKS)。
 - 开关名必须小写 `hxcpp_` 开头: hxcpp 的 obj 缓存只认含小写 `hxcpp` 的选项行, 大写 `HXCPP_*` 变了它不重编。
 - 切一次开关 = 全量重编一次(故意的, 理由同上)。

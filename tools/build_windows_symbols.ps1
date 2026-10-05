@@ -140,8 +140,9 @@ function Get-BuildArgs {
     # with 'You must have a "project.xml" file' on case-sensitive filesystems.
     $a.Add('build'); $a.Add((Join-Path $root 'Project.xml')); $a.Add('windows')
     if ($WithDebug) { $a.Add('-DHXCPP_DEBUG_LINK') }
-    # Project.xml defaults to safe mode now; symbol builds need the old pipeline back.
-    $a.Add('-Dhxcpp_nosafe')
+    # Only -Dhxcpp_symbols turns the linemap/unstripped-.so/postbuild pipeline on;
+    # the null-pointer checks stay on in these builds (Project.xml hxcpp_safe).
+    $a.Add('-Dhxcpp_symbols')
     $a.Add('-DCRASH_LINEMAP')
     if ($AppVersion) { $a.Add("--app-version=$AppVersion") }
     return $a.ToArray()

@@ -203,7 +203,7 @@ class NativeCrash
 	 */
 	public static function loadLinemap(storageDir:String, libName:String = 'libApplicationMain'):Void
 	{
-		#if hxcpp_safe
+		#if !hxcpp_symbols
 		return;
 		#else
 		#if (cpp && sys)
