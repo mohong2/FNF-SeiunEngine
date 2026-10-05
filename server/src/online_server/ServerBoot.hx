@@ -2,6 +2,7 @@ package online_server;
 
 import online_server.Main.ServerHub;
 import online_server.ServerMail.SmtpConfig;
+import online.util.LanDiscovery;
 import online_server.db.Db;
 import online_server.db.LegacyImport;
 
@@ -283,6 +284,11 @@ class ServerBoot {
 		boot.running = true;
 		instance = boot;
 
+		// "Open to LAN": shout the HTTP port at the broadcast address every couple of seconds so a
+		// client's "Search for servers on this network" can find this server without anybody typing
+		// an address. Best-effort -- see online.util.LanDiscovery.
+		LanDiscovery.startAnnouncing(httpPort, null);
+
 		trace('[server] HTTP http://$host:$httpPort  WS ws://$host:$wsPort');
 		// Operator-visible one-liner: where the data lives, what the schema version is and whether the
 		// random source is the OS entropy device or the documented HMAC-SHA256 DRBG fallback.
@@ -353,6 +359,8 @@ class ServerBoot {
 		// Flags first, then both listen sockets: closing a listen socket is what frees the port, and
 		// each accept loop leaves on its own flag.
 		running = false;
+		// Stop claiming to be up: a stale announcement would keep this server in everyone's list.
+		LanDiscovery.stopAnnouncing();
 		if (http != null) {
 			try http.stop() catch (e:Dynamic) Log.warn("server", "HTTP stop failed", { error: Std.string(e) });
 		}

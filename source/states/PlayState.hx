@@ -58,6 +58,11 @@ import flixel.effects.particles.FlxEmitter;
 import flixel.effects.particles.FlxParticle;
 import flixel.util.FlxSave;
 import flixel.animation.FlxAnimationController;
+import FlxTextMenuItem;
+// `addVirtualPad` takes these two; the module import alone would make a bare `NONE` ambiguous
+// with the FlxKey.NONE used further down this file, so the enum types are imported by name.
+import android.flixel.FlxVirtualPad.FlxDPadMode;
+import android.flixel.FlxVirtualPad.FlxActionMode;
 import animateatlas.AtlasFrameMaker;
 import flash.media.Sound;
 import Achievements;
@@ -5254,16 +5259,30 @@ class PlayState extends MusicBeatState
 		if (FlxG.keys.pressed.CONTROL && FlxG.keys.justPressed.P)
 			playOtherSide = !playOtherSide;
 
-		// Ready gating: the ACCEPT branch tells the room this client is ready. The overlay is a
-		// plain Alphabet, so its text is swapped instead of flickering a dedicated ready sprite.
+		// Ready gating: telling the room this client is ready opens the gate. The overlay is a
+		// FlxTextMenuItem now, so its text is swapped instead of flickering a dedicated sprite; a
+		// click or tap on the prompt counts too, because the on-screen A button is the only ACCEPT
+		// Android has (see spawnWaitReadyOverlay).
 
-		if (online.GameClient.isConnected() && !isReady && controls.ACCEPT && canStart && !inCutscene)
+		if (online.GameClient.isConnected() && !isReady && canStart && !inCutscene)
 		{
-			isReady = true;
-			FlxG.sound.play(Paths.sound('confirmMenu'), 0.5);
-			if (waitReadySpr != null)
-				waitReadySpr.text = "waiting for other player...";
-			online.GameClient.send("playerReady");
+			var readyPressed:Bool = controls.ACCEPT;
+
+			if (!readyPressed && waitReadySpr != null && FlxG.mouse.justPressed)
+				// camOther does not scroll, so its world position is already the screen position.
+				readyPressed = waitReadySpr.overlapsPoint(FlxG.mouse.getWorldPosition(camOther));
+
+			if (readyPressed)
+			{
+				isReady = true;
+				FlxG.sound.play(Paths.sound('confirmMenu'), 0.5);
+				if (waitReadySpr != null)
+				{
+					waitReadySpr.text = online.util.OnlineLang.L('game.waiting', 'Waiting for other player...');
+					layoutWaitReadyOverlay();
+				}
+				online.GameClient.send("playerReady");
+			}
 		}
 
 		// Report the local health delta to the room, which accumulates it into Room.health and broadcasts it.
@@ -11630,7 +11649,7 @@ function calculateResetTime():Float {
 	 *     engine's method is performance-gated and cannot be edited outside a guard, so
 	 *     `opponentNoteHitSID` reuses it with `note.noAnimation` raised and animates the remote
 	 *     player's own character afterwards.
-	 *   * `Alphabet` stands in for the overlay (same constructor signature).
+	 *   * `FlxTextMenuItem` stands in for the overlay (same `new(x, y, text, size)` shape).
 	 *   * the "noteMiss" listener's `unspawnNotes.remove(note)` is NOT portable (this engine's
 	 *     unspawnNotes holds PreloadedChartNote, not Note); the note goes back to the engine's note
 	 *     pool through recycleNote() instead.
@@ -11644,8 +11663,10 @@ function calculateResetTime():Float {
 	var isReady:Bool = false;
 	var waitReady(default, set):Bool = false;
 	var canStart:Bool = true;
-	var waitReadySpr:Alphabet;
+	var waitReadySpr:FlxTextMenuItem;
 	var readyTween:FlxTween;
+	/** True while the on-screen A created for the ready gate is on screen. */
+	var waitReadyPad:Bool = false;
 
 	function set_waitReady(v:Bool):Bool {
 		if (readyTween != null)
@@ -11654,21 +11675,61 @@ function calculateResetTime():Float {
 		if (waitReadySpr != null)
 			readyTween = FlxTween.tween(waitReadySpr, {alpha: v ? 1 : 0}, 0.5, {ease: FlxEase.quadIn});
 
+		// The pad exists only to open the ready gate; once the room starts the song it would sit on
+		// top of the note pad that androidControls reveals in startCountdown().
+		if (!v && waitReadyPad) {
+			waitReadyPad = false;
+			removeVirtualPad();
+		}
+
 		return waitReady = v;
 	}
 
-	/** Creates the wait-ready overlay. */
+	/** Re-centres the prompt; a FlxText only re-measures its own width when asked to. */
+	function layoutWaitReadyOverlay():Void {
+		if (waitReadySpr == null)
+			return;
+
+		waitReadySpr.updateHitbox();
+		waitReadySpr.x = (camOther.width - waitReadySpr.width) / 2;
+		waitReadySpr.y = (camOther.height - waitReadySpr.height) / 2;
+	}
+
+	/**
+	 * Creates the wait-ready overlay.
+	 *
+	 * A FlxTextMenuItem rather than an Alphabet: it goes through Paths.languageFont() with the same
+	 * outline as the rest of the UI, so the localized string renders in the selected language
+	 * instead of the bitmap font's fixed ASCII glyphs. `isMenuItem = false` keeps the menu lerp
+	 * from dragging it back to its start position.
+	 *
+	 * Android note: this engine binds PlayState's own pad with Action = NONE
+	 * (MusicBeatState.addAndroidControls -> setVirtualPadNOTES(..., RIGHT_FULL, NONE)), so the
+	 * touch build has no button wired to `controls.ACCEPT` at all -- the gate in update() could
+	 * never open and the song could never start. When addVirtualPad() really created a pad
+	 * (TOUCH_CONTROLS, or the desktop touch setting), one A button is added for the wait and the
+	 * prompt names that button instead of a key this device does not have.
+	 */
 	function spawnWaitReadyOverlay():Void {
 		if (waitReadySpr != null)
 			return;
 
-		waitReadySpr = new Alphabet(0, 0, "PRESS ACCEPT TO START", true);
+		addVirtualPad(FlxDPadMode.NONE, FlxActionMode.A);
+		waitReadyPad = (virtualPad != null);
+		if (waitReadyPad)
+		{
+			// camGame follows the camera mid-song; camOther is the overlay camera the prompt is on.
+			virtualPad.cameras = [camOther];
+		}
+
+		waitReadySpr = new FlxTextMenuItem(0, 0, waitReadyPad
+			? online.util.OnlineLang.L('game.readyTouch', 'Tap A to Start')
+			: online.util.OnlineLang.L('game.ready', 'Press ACCEPT to Start'), 48);
+		waitReadySpr.isMenuItem = false;
 		waitReadySpr.cameras = [camOther];
-		waitReadySpr.setAlignmentFromString('center');
-		waitReadySpr.x = FlxG.width / 2;
-		waitReadySpr.y = (FlxG.height - waitReadySpr.height) / 2;
 		waitReadySpr.alpha = 0;
 		add(waitReadySpr);
+		layoutWaitReadyOverlay();
 		waitReady = true;
 	}
 
@@ -11818,7 +11879,7 @@ function calculateResetTime():Float {
 
 		online.GameClient.registerStateMessage(this, "log", function(message) {
 			online.backend.Waiter.putPersist(() -> {
-				online.gui.Alert.alert("New message", online.util.ShitUtil.parseLog(message).content);
+				online.gui.Alert.alert(online.util.OnlineLang.L('game.newMessage', 'New message'), online.util.ShitUtil.parseLog(message).content);
 			});
 		});
 

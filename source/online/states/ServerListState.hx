@@ -5,7 +5,10 @@ import flixel.util.FlxSpriteUtil;
 import online.GameClient.ServerProbe;
 import online.Protocol;
 import online.network.Auth;
+import online.gui.LoadingScreen;
 import online.states.OnlineOptionsState.InputOption;
+// Module-level typedef: the package wildcard in import.hx exposes the class, not this.
+import online.util.LanDiscovery.LanServer;
 import online.util.RowLayout;
 import online.util.ServerList;
 
@@ -24,6 +27,12 @@ class ServerListState extends MusicBeatState {
 	var camFollow:FlxObject;
 	static var curSelected:Int = 0;
 	var curOption:InputOption;
+
+	/** UP/DOWN hold-to-repeat, shared with the on-screen pad. */
+	var nav = new NavRepeat();
+
+	/** Hovered row, or null. Hover only lights the row up; it never selects it. */
+	var hoveredOption:InputOption = null;
 
 	var tip:FlxText;
 	var tipBg:FlxSprite;
@@ -52,6 +61,13 @@ class ServerListState extends MusicBeatState {
 
 		camera.follow(camFollow = new FlxObject(), TOPDOWN_TIGHT, 0.1);
 
+		// On-screen controls: UP/DOWN move the selection, A accepts, B backs out. Mounted by every
+		// online screen; a pad tap is ignored by the pointer hit tests below.
+		addVirtualPad(UP_DOWN, A_B);
+		// Online pad layout: shrunk buttons tucked into the corners, clear of the UI.
+		OnlineNav.layoutColumn(virtualPad);
+		addPadCamera();
+
 		#if DISCORD_ALLOWED
 		DiscordClient.changePresence("In the Menus", "Servers");
 		#end
@@ -77,6 +93,38 @@ class ServerListState extends MusicBeatState {
 		y = currentText.y + currentText.height + 30;
 
 		var i = 0;
+
+		// Whatever the last search heard, listed for the player to choose from. Nothing is saved
+		// here: the rows are pickers, and only "Add Selected Servers" writes into the server list.
+		if (lanFound.length > 0) {
+			y = addSection(OnlineLang.L('options.serverScan.section', 'Found on This Network'), y);
+
+			for (server in lanFound) {
+				var address:String = server.address;
+				var label:String = server.name != '' ? server.name : address;
+
+				if (hasAddress(address)) {
+					y = addNoteRow(label, address + '  ' + OnlineLang.L('options.serverScan.found.already', 'Already in the list.'), i++, y);
+				}
+				else {
+					// Copy per iteration: the closure must not capture the loop variable.
+					var pickedAddress:String = address;
+					y = addToggleRow(label, address, lanPicked.get(pickedAddress) == true, i++, y,
+						(value) -> lanPicked.set(pickedAddress, value));
+				}
+			}
+
+			y = addActionRow(OnlineLang.L('options.serverScan.add', 'Add Selected Servers'),
+				OnlineLang.L('options.serverScan.add.desc', 'Adds every ticked server above to your server list.'), i++, y, () -> addPickedLanServers());
+
+			y = addActionRow(OnlineLang.L('options.serverScan.clear', 'Clear These Results'),
+				OnlineLang.L('options.serverScan.clear.desc', 'Hides the servers found by the last search.'), i++, y, () -> clearLanResults());
+		}
+
+		// Saved-server rows start here; refreshDescriptions() writes their latency / status line and
+		// must not touch the pickers above.
+		serverRowStart = items.length;
+
 		for (entry in ServerList.all()) {
 			var row:InputOption;
 			var id:String = entry.id;
@@ -90,6 +138,12 @@ class ServerListState extends MusicBeatState {
 
 		y = addSection(OnlineLang.L('options.serverManage', 'Manage'), y);
 
+		// Listen for the announcements a running host broadcasts (see online.util.LanDiscovery)
+		// instead of asking the player for an IP. The results are only *listed*; see lanFound.
+		y = addActionRow(OnlineLang.L('options.serverScan', 'Search for Servers on This Network'),
+			OnlineLang.L('options.serverScan.desc', 'Listens for servers that announce themselves on this local network, then lists them for you to pick from.'),
+			i++, y, () -> startLanScan());
+
 		y = addActionRow(OnlineLang.L('options.serverAdd', 'Add Server'),
 			OnlineLang.L('options.serverAdd.desc', 'Creates a new entry with the default address and selects it.'), i++, y, () -> {
 				var created = ServerList.create(OnlineLang.L('options.serverNewName', 'New Server'), ServerList.DEFAULT_ADDRESS);
@@ -98,26 +152,11 @@ class ServerListState extends MusicBeatState {
 				FlxG.resetState();
 			});
 
-		// One row per LAN IPv4 of this machine: the host clicks it instead of reading the address
-		// out of ipconfig and typing it. The enumeration is best-effort and desktop-only, so an
-		// empty result is expected on phones and gets an explanatory row rather than nothing.
-		var lanAddresses = ServerList.localLanAddresses();
-		if (lanAddresses.length == 0) {
-			y = addActionRow(OnlineLang.L('options.serverLan', 'Use This PC (LAN)'),
-				OnlineLang.L('options.serverLanNone', 'No LAN address was detected; read the host PC IPv4 from ipconfig and type it into the Server Address field.'),
-				i++, y, () -> Alert.alert(OnlineLang.L('options.serverLanNoneAlert', 'No LAN address detected'),
-					OnlineLang.L('options.serverLanNoneAlert.desc', 'On this platform the address cannot be listed automatically. Run ipconfig on the host PC and type its IPv4 address into the Server Address field, for example 192.168.1.50.')));
-		}
-		else {
-			for (ip in lanAddresses) {
-				// Copy per iteration: the closure must not capture the loop variable.
-				var address:String = ServerList.lanAddress(ip);
-				var detail:String = OnlineLang.L('options.serverLan.desc', 'Fills the selected entry with this PC\'s LAN address (the host must run the server with -Lan).');
-				y = addActionRow(OnlineLang.L('options.serverLan', 'Use This PC (LAN)') + ': ' + ip,
-					address + ' | ' + detail,
-					i++, y, () -> applyLanAddress(address));
-			}
-		}
+		// The "Use This PC (LAN)" rows that used to sit here are gone: they listed *every* IPv4 of
+		// the machine (Ethernet, Wi-Fi, WSL/Hyper-V virtual adapters, ...) as its own clickable row,
+		// and clicking one overwrote the address of whichever server was selected -- three rows of
+		// clutter for an action that hijacked the entry being edited. The LAN address a host has to
+		// hand out is shown, with click-to-copy, on the LAN Host screen instead.
 
 		y = addActionRow(OnlineLang.L('options.serverDelete', 'Delete This Server'),
 			OnlineLang.L('options.serverDelete.desc', 'Removes the selected server from the list.'), i++, y, () -> {
@@ -157,14 +196,7 @@ class ServerListState extends MusicBeatState {
 		y = addFieldRow(OnlineLang.L('options.server', 'Server Address'),
 			OnlineLang.L('options.server.desc', 'The server that hosts game rooms.'),
 			GameClient.getDefaultServer(), ServerList.selected().address, OnlineLang.L('options.serverConnect', 'Connect'),
-			i++, y, (text) -> {
-				var prepared = ServerList.normalizeAddress(text);
-				var entry = ServerList.find(targetId);
-				ServerList.setAddresses(targetId, prepared, entry != null ? entry.networkAddress : '');
-				ServerList.select(targetId);
-				GameClient.applySelectedServer();
-				FlxG.resetState();
-			});
+			i++, y, (text) -> connectTo(targetId, text));
 
 		y = addFieldRow(OnlineLang.L('options.networkServer', 'Network Server Address'),
 			OnlineLang.L('options.networkServer.desc', 'Chat, friends and leaderboards use this address.'),
@@ -221,6 +253,8 @@ class ServerListState extends MusicBeatState {
 		tip.setFormat(OnlineLang.font(), 18, FlxColor.WHITE, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 		tip.scrollFactor.set(0, 0);
 		tip.screenCenter(X);
+		// Centred along the bottom: that band is the free one, between the pad's left column and
+		// its action buttons. Sitting "above the pad" pushed the hint into the middle of the screen.
 		tip.y = FlxG.height - tip.height - 40;
 		tip.alpha = 0.6;
 
@@ -284,6 +318,16 @@ class ServerListState extends MusicBeatState {
 		if (serverTtlNote != '')
 			label += ' | ' + serverTtlNote;
 		return label;
+	}
+
+	/** Read-only row that carries its own description (addInfoRow hardcodes one of its own). */
+	function addNoteRow(title:String, desc:String, id:Int, y:Float):Float {
+		var row:InputOption;
+		items.add(row = new InputOption(title, desc, null, null));
+		row.y = y;
+		row.screenCenter(X);
+		row.ID = id;
+		return row.y + row.height + 30;
 	}
 
 	function addInfoRow(title:String, id:Int, y:Float):Float {
@@ -409,9 +453,9 @@ class ServerListState extends MusicBeatState {
 	function refreshDescriptions():Void {
 		var i = 0;
 		for (entry in ServerList.all()) {
-			if (i >= items.length)
+			if (serverRowStart + i >= items.length)
 				break;
-			var row = items.members[i];
+			var row = items.members[serverRowStart + i];
 			if (row != null && row.descText != null)
 				row.descText.text = entryDesc(entry);
 			i++;
@@ -422,30 +466,173 @@ class ServerListState extends MusicBeatState {
 	// Interaction
 	// ------------------------------------------------------------------
 
-	function connectTo(id:String):Void {
-		if (!ServerList.select(id))
+	/** True while a connect check is in flight, so a second click cannot start a second probe. */
+	var connecting:Bool = false;
+
+	/**
+	 * Switch to a server -- but ask it first.
+	 *
+	 * This used to select + applySelectedServer() + FlxG.resetState() in one go, so a typo, a host
+	 * that is not running yet or a machine on another network produced a one-frame black flash and
+	 * then the same screen again, with nothing to explain what had happened.
+	 *
+	 * Now the address is probed first (the same check the latency column uses):
+	 *   - an answer switches immediately, so the common case stays one click;
+	 *   - silence, or something that is not a SeiunEngine server, says so in a dialog and asks
+	 *     whether to switch anyway -- refusing outright would make a server that is simply down
+	 *     impossible to select, and its address impossible to fix.
+	 *
+	 * @param newAddress the text typed into the Server Address field. `null` means "use
+	 *                   the entry as it is", which is what clicking a row in the list above does.
+	 */
+	function connectTo(id:String, ?newAddress:String = null):Void {
+		if (connecting)
 			return;
-		GameClient.applySelectedServer();
-		FlxG.resetState();
+
+		if (newAddress != null && newAddress.trim() == '') {
+			Alert.alert(OnlineLang.L('options.connectEmpty', 'No address typed'),
+				OnlineLang.L('options.connectEmpty.desc', 'Type the address of the server, for example ws://192.168.1.50:2567.'));
+			return;
+		}
+
+		var entry = ServerList.find(id);
+		var address:String = newAddress != null
+			? ServerList.normalizeAddress(newAddress)
+			: (entry != null ? entry.address : ServerList.DEFAULT_ADDRESS);
+		var writeAddress:Null<String> = newAddress != null ? address : null;
+
+		connecting = true;
+		LoadingScreen.toggle(true);
+		// probeServer runs on a worker thread and hands the result back through Waiter, so this
+		// callback is already on the render thread and may touch flixel objects.
+		GameClient.probeServer(address, (result) -> {
+			LoadingScreen.toggle(false);
+			connecting = false;
+			if (!exists)
+				return;
+
+			var outcome:String = probeOutcome(result);
+			if (outcome == 'reachable') {
+				applyServer(id, writeAddress);
+				return;
+			}
+
+			RequestSubstate.request(
+				outcome == 'wrongProtocol'
+					? OnlineLang.L('options.connectBad.title', 'Not a SeiunEngine server')
+					: OnlineLang.L('options.connectFail.title', 'The server did not answer'),
+				(outcome == 'wrongProtocol'
+					? OnlineLang.L('options.connectBad.desc', 'Something answered, but it did not identify itself as a SeiunEngine online server. Check the address and the port (the default is 2567).')
+					: OnlineLang.L('options.connectFail.desc', 'Nothing answered in time. Check that the server is running, and that the address and port are correct.'))
+					+ '\n\n' + address + '\n\n' + OnlineLang.L('options.connectAnyway', 'Connect anyway?'),
+				(_) -> applyServer(id, writeAddress),
+				null,
+				true);
+		});
+	}
+
+	/** True from the moment the scan row is used until its results have been shown. */
+	var scanningLan:Bool = false;
+
+	/**
+	 * Servers heard by the last search, and which of them the player ticked. Static so they survive
+	 * the FlxG.resetState() that redraws this screen; cleared once they have been acted on.
+	 */
+	static var lanFound:Array<LanServer> = [];
+	static var lanPicked:Map<String, Bool> = new Map();
+
+	/** Index of the first saved-server row inside items; refreshDescriptions() maps onto these. */
+	var serverRowStart:Int = 0;
+
+	/** Starts a LAN scan; update() shows the result once the listener publishes it. */
+	function startLanScan():Void {
+		if (scanningLan)
+			return;
+
+		scanningLan = true;
+		LanDiscovery.startScan();
+		LoadingScreen.toggle(true);
 	}
 
 	/**
-	 * Fills the selected entry with a LAN address found on this machine. The network (chat / HTTP)
-	 * address is left alone: empty means "same host as the game address", which is exactly right
-	 * when the address already points at this PC.
+	 * Hands the scan results to the screen and redraws it.
+	 *
+	 * They are deliberately NOT saved: they become a "Found on This Network" section whose rows are
+	 * tick boxes, and only the Add Selected Servers row writes anything into the server list.
 	 */
-	function applyLanAddress(address:String):Void {
-		var targetId:String = ServerList.selectedId();
-		var entry = ServerList.find(targetId);
-		if (entry == null)
+	function finishLanScan():Void {
+		var heard = LanDiscovery.found;
+		if (heard.length == 0) {
+			Alert.alert(OnlineLang.L('options.serverScan.none.title', 'No server found'),
+				OnlineLang.L('options.serverScan.none.desc', 'Nothing announced itself on this network. The host has to be running the game\'s built-in LAN Host, or a dedicated server built from this version; check that both machines are on the same Wi-Fi / LAN.'));
 			return;
-		ServerList.setAddresses(targetId, address, entry.networkAddress);
-		ServerList.select(targetId);
+		}
+
+		lanFound = heard;
+		lanPicked = new Map();
+		curSelected = 0;
+		FlxG.resetState();
+	}
+
+	/** Adds the servers the player ticked. The only place a search result is ever saved. */
+	function addPickedLanServers():Void {
+		var added:Array<String> = [];
+		for (server in lanFound) {
+			if (lanPicked.get(server.address) != true || hasAddress(server.address))
+				continue;
+
+			ServerList.create(server.name != '' ? server.name : server.address, server.address);
+			added.push(server.address);
+		}
+
+		if (added.length == 0) {
+			Alert.alert(OnlineLang.L('options.serverScan.add.none.title', 'Nothing ticked'),
+				OnlineLang.L('options.serverScan.add.none.desc', 'Tick at least one server in the list first.'));
+			return;
+		}
+
+		lanFound = [];
+		lanPicked = new Map();
+		Alert.alert(OnlineLang.L('options.serverScan.add.done.title', 'Servers added'),
+			OnlineLang.L('options.serverScan.add.done.desc', 'Added to your list:') + '\n' + added.join('\n'),
+			() -> FlxG.resetState());
+	}
+
+	/** Drops the search results without adding anything. */
+	function clearLanResults():Void {
+		lanFound = [];
+		lanPicked = new Map();
+		FlxG.resetState();
+	}
+
+	function hasAddress(address:String):Bool {
+		for (entry in ServerList.all())
+			if (entry != null && entry.address == address)
+				return true;
+		return false;
+	}
+
+	/** Writes the new address into the entry (when one was typed), selects it and reboots the screen. */
+	function applyServer(id:String, ?newAddress:String = null):Void {
+		if (newAddress != null) {
+			var entry = ServerList.find(id);
+			ServerList.setAddresses(id, newAddress, entry != null ? entry.networkAddress : '');
+		}
+		ServerList.select(id);
 		GameClient.applySelectedServer();
 		FlxG.resetState();
 	}
 
 	override function update(elapsed:Float) {
+		// The LAN listener runs on a worker thread and publishes its scanning flag when it is done;
+		// this is the hand-off point back to the render thread. Checked before the dialog guard so
+		// the result is not delayed by whatever happens to be on top.
+		if (scanningLan && !LanDiscovery.scanning) {
+			scanningLan = false;
+			LoadingScreen.toggle(false);
+			finishLanScan();
+		}
+
 		// A confirmation dialog on top owns the pointer and the keys; without this the click that
 		// closes it would also land on whatever row sits underneath.
 		if (subState != null) {
@@ -456,9 +643,13 @@ class ServerListState extends MusicBeatState {
 		if (curOption != null)
 			camFollow.setPosition(curOption.getMidpoint().x, curOption.getMidpoint().y);
 
+		// A tap that lands on the on-screen pad belongs to the pad, never to a row or button behind it.
+		var padTap = OnlineNav.padBlocks(virtualPad);
+		var pointerClick = FlxG.mouse.justPressed && !padTap;
+
 		// Buttons own the click when the pointer is over one; rows keep their own hitboxes.
 		var buttonHit = false;
-		if (FlxG.mouse.justPressed) {
+		if (pointerClick) {
 			for (button in buttons) {
 				if (mouseOverButton(button)) {
 					button.action();
@@ -478,27 +669,35 @@ class ServerListState extends MusicBeatState {
 				return;
 			}
 
-			if (controls.UI_UP_P || FlxG.mouse.wheel == 1)
-				changeSelection(-1);
-			else if (controls.UI_DOWN_P || FlxG.mouse.wheel == -1)
-				changeSelection(1);
-			else if ((FlxG.mouse.deltaX != 0 || FlxG.mouse.deltaY != 0) || FlxG.mouse.justPressed) {
-				if (FlxG.mouse.justPressed)
-					curSelected = -1;
-				var index = 0;
-				for (item in items) {
-					if (FlxG.mouse.overlaps(item, camera))
-						curSelected = index;
-					index++;
-				}
+			// Wheel (1 = up) plus the pad/keyboard, with hold-to-repeat. The pointer no longer
+			// drags the selection along as it moves: a click is what selects a row.
+			var steps = nav.poll(controls.UI_UP, controls.UI_DOWN, elapsed) - FlxG.mouse.wheel;
+			while (steps != 0) {
+				var dir = steps > 0 ? 1 : -1;
+				changeSelection(dir);
+				steps -= dir;
+			}
+
+			var pointerRow = padTap ? -1 : optionIndexUnderPointer();
+			if (pointerClick && pointerRow >= 0)
+				changeSelection(pointerRow - curSelected);
+
+			// Hover is recomputed every frame so the highlight matches what a click would hit.
+			var newHover:InputOption = pointerRow >= 0 ? items.members[pointerRow] : null;
+			if (newHover != hoveredOption) {
+				hoveredOption = newHover;
 				updateOptions();
 			}
+		}
+		else if (hoveredOption != null) {
+			hoveredOption = null;
+			updateOptions();
 		}
 
 		super.update(elapsed);
 
 		// Clicking a field's input box moves focus there (same rule as the options screen).
-		if (FlxG.mouse.justPressed && curOption != null && curOption.isInput) {
+		if (pointerClick && curOption != null && curOption.isInput) {
 			var target:Int = -1;
 			for (i => input in curOption.inputs)
 				if (mouseOverInputBg(curOption.inputBgs[i]))
@@ -507,9 +706,9 @@ class ServerListState extends MusicBeatState {
 		}
 
 		if (!inputWait && !buttonHit) {
-			if ((controls.ACCEPT || FlxG.mouse.justPressed) && curOption != null) {
+			if ((controls.ACCEPT || pointerClick) && curOption != null) {
 				if (curOption.isInput) {
-					if (!FlxG.mouse.justPressed)
+					if (!pointerClick)
 						setInputFocus(curOption, 0);
 				}
 				else if (curOption.onClick != null) {
@@ -529,6 +728,20 @@ class ServerListState extends MusicBeatState {
 					inputWait = true;
 				}
 		}
+	}
+
+	/**
+	 * Index of the row under the pointer, or -1. Uses the row group's own world box, so it stays
+	 * correct while the camera follows the selection.
+	 */
+	function optionIndexUnderPointer():Int {
+		var index = 0;
+		for (item in items) {
+			if (item != null && OnlineNav.pointerOver(item, camera))
+				return index;
+			index++;
+		}
+		return -1;
 	}
 
 	/** Same camera-space comparison as mouseOverInputBg: both sides in the state camera's world. */
@@ -583,14 +796,15 @@ class ServerListState extends MusicBeatState {
 			curOption = items.members[curSelected];
 
 		for (item in items) {
+			// Only the selected row gets the border and full opacity; the hovered row is brightened
+			// just enough to show what a click would hit.
 			item.borderline.visible = item == curOption;
-			item.alpha = inputWait ? 0.5 : 0.6;
+			item.alpha = inputWait ? 0.5 : (item == curOption ? 1 : (item == hoveredOption ? 0.9 : 0.6));
 			if (item.isInput)
 				for (input in item.inputs)
 					input.alpha = 0.5;
 		}
 		if (curOption != null) {
-			curOption.alpha = 1;
 			if (curOption.isInput)
 				for (input in curOption.inputs)
 					input.alpha = inputWait ? 1 : 0.7;

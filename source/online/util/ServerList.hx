@@ -396,130 +396,18 @@ class ServerList {
 	}
 
 	/**
-	 * Best-effort list of this machine's private (RFC 1918) IPv4 addresses, in the order the
-	 * platform's interface lister prints them and without duplicates. The server-list UI turns each
-	 * one into a one-click "this PC" entry, so the LAN host does not have to read ipconfig and type
-	 * an IP by hand.
+	 * Best-effort list of this machine's private (RFC 1918) IPv4 addresses.
 	 *
-	 * Desktop only. On mobile the platform owns the interfaces and the player types the host's
-	 * address, so the empty array here is the documented fallback (the UI then shows the hint).
-	 * Nothing is guaranteed: a missing tool, an unusual locale or a virtual-only adapter all end in
-	 * an empty result, which is a normal outcome rather than an error.
+	 * The implementation lives in online.util.LanDiscovery, which needs it for the "Open to LAN"
+	 * broadcast targets and is compiled into the standalone server as well (this class is not: it
+	 * pulls in ClientPrefs). Kept here because LanHost / the server-list UI ask for it by this name.
 	 */
 	public static function localLanAddresses():Array<String> {
-		// Neko is included because it is a desktop-class sys target (the server tooling runs on it)
-		// and that makes this path observable from a probe; mobile targets stay excluded.
-		#if (desktop || neko)
-		var system:Null<String> = Sys.systemName();
-		for (command in lanCommands(system)) {
-			var output = runInterfaceCommand(command);
-			if (output == null)
-				continue;
-			var addresses = parseLanAddresses(system, output);
-			if (addresses.length > 0)
-				return addresses;
-		}
-		return [];
-		#else
-		return [];
-		#end
+		return LanDiscovery.localAddresses();
 	}
 
-	#if (desktop || neko)
-	/** argv of the platform commands that list interfaces; the first one is preferred. */
-	static function lanCommands(system:Null<String>):Array<Array<String>> {
-		return switch (system) {
-			case 'Windows': [['ipconfig']];
-			// The ip tool is the modern Linux lister; ifconfig is the fallback on older installs.
-			case 'Linux': [['ip', '-4', 'addr', 'show'], ['ifconfig']];
-			case 'Mac': [['ifconfig']];
-			default: [];
-		};
-	}
-
-	/** Runs one lister and returns its stdout, or null when the command is missing / cannot run. */
-	static function runInterfaceCommand(command:Array<String>):Null<String> {
-		if (command == null || command.length == 0)
-			return null;
-		try {
-			var process = new sys.io.Process(command[0], command.slice(1));
-			var output = process.stdout.readAll().toString();
-			process.exitCode();
-			process.close();
-			return output;
-		} catch (e:Dynamic) {
-			// A missing lister throws here; the caller just tries the next command.
-			return null;
-		}
-	}
-	#end
-
-	/**
-	 * Pull the private IPv4 addresses out of one interface listing. Pure (no process, no state) so
-	 * the probe can feed it ipconfig / ip / ifconfig text from all three platforms.
-	 *
-	 * Windows ipconfig marks its lines with the literal token "IPv4" (localised builds keep it) and
-	 * puts the address after the last ':'; the ip and ifconfig tools write "inet <addr>[/prefix]".
-	 */
+	/** Kept as the public name of the parser, which now lives in online.util.LanDiscovery. */
 	public static function parseLanAddresses(systemName:Null<String>, output:String):Array<String> {
-		var found:Array<String> = [];
-		if (output == null)
-			return found;
-
-		for (line in output.split('\n')) {
-			var candidate:String = null;
-			if (systemName == 'Windows') {
-				if (line.indexOf('IPv4') < 0)
-					continue;
-				var colon = line.lastIndexOf(':');
-				if (colon < 0)
-					continue;
-				candidate = line.substr(colon + 1);
-			} else {
-				// "inet 192.168.1.5/24 ..." and "inet 192.168.1.5 netmask ..."; "inet6" has no
-				// space after "inet" and is skipped by the search below.
-				var marker = line.indexOf('inet ');
-				if (marker < 0)
-					continue;
-				candidate = line.substr(marker + 'inet '.length);
-			}
-
-			var token = StringTools.trim(candidate);
-			var space = token.indexOf(' ');
-			if (space >= 0)
-				token = token.substr(0, space);
-			var slash = token.indexOf('/');
-			if (slash >= 0)
-				token = token.substr(0, slash);
-
-			if (isPrivateIPv4(token) && found.indexOf(token) < 0)
-				found.push(token);
-		}
-
-		return found;
-	}
-
-	/** True for a plain RFC 1918 IPv4 literal: 10/8, 172.16/12 and 192.168/16. */
-	static function isPrivateIPv4(token:String):Bool {
-		if (token == null || token == '')
-			return false;
-
-		var parts = token.split('.');
-		if (parts.length != 4)
-			return false;
-		for (part in parts) {
-			var value = Std.parseInt(part);
-			// Reject "", "+1", "01" and anything outside a byte, so only dotted decimals pass.
-			if (value == null || value < 0 || value > 255 || Std.string(value) != part)
-				return false;
-		}
-
-		var a = Std.parseInt(parts[0]);
-		var b = Std.parseInt(parts[1]);
-		if (a == 10)
-			return true;
-		if (a == 172 && b >= 16 && b <= 31)
-			return true;
-		return a == 192 && b == 168;
+		return LanDiscovery.parsePrivateIPv4s(systemName, output);
 	}
 }

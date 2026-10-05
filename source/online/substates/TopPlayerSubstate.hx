@@ -18,6 +18,18 @@ class TopPlayerSubstate extends MusicBeatSubstate {
 	var curCategory:Int = 0;
 	var curKeys:Int = 4;
 
+	/** UP/DOWN hold-to-repeat, shared with the on-screen pad. */
+	var nav = new NavRepeat();
+
+	/** Row under the pointer, or -1. Hover only lights that row; it never moves curSelected. */
+	var hoverIndex:Int = -1;
+
+	/**
+	 * Highlights the hovered row. `Scoreboard` keeps its cells private, so the hover cannot reuse
+	 * the cell alpha the other online lists use and a translucent bar stands in for it instead.
+	 */
+	var hoverBox:FlxSprite;
+
 	var categoryTxt:FlxText;
 	var keysTxt:FlxText;
 	/** Weekly view only: "resets in N days". */
@@ -46,6 +58,14 @@ class TopPlayerSubstate extends MusicBeatSubstate {
 		leaderboardTimer = new FlxTimer().start(0.5, t -> { generateLeaderboard(); });
 		add(topShit);
 
+		// Hover feedback: `Scoreboard` owns its cells' alpha, so the row under the pointer is lit
+		// with a translucent bar instead of the cell alpha the other online lists use.
+		hoverBox = new FlxSprite();
+		hoverBox.makeGraphic(Std.int(topShit.background.width), topShit.rowHeight, FlxColor.WHITE);
+		hoverBox.alpha = 0.12;
+		hoverBox.visible = false;
+		add(hoverBox);
+
 		categoryTxt = new FlxText(0, 20);
 		categoryTxt.setFormat(OnlineLang.font(), 20, FlxColor.WHITE, CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 		add(categoryTxt);
@@ -57,6 +77,16 @@ class TopPlayerSubstate extends MusicBeatSubstate {
 		resetTxt = new FlxText(0, topShit.y + topShit.background.height + 8);
 		resetTxt.setFormat(OnlineLang.font(), 16, 0xFF9FB2C0, CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 		add(resetTxt);
+
+		// On-screen controls (Android always, desktop when "touch controls" is on): UP/DOWN walk
+		// the board and A opens the profile of the selected row; B is wired to BACK.
+		// LEFT/RIGHT turn the page, UP/DOWN pick a row and A selects it, so this screen needs
+		// both axes -- UP_DOWN would leave the page keys unreachable from the pad.
+		addVirtualPad(LEFT_FULL, A_B);
+
+		// Online pad layout: shrunk buttons tucked into the corners, clear of the UI.
+		OnlineNav.layoutCross(virtualPad);
+		addPadCamera();
     }
 
     var top:Array<Dynamic> = [];
@@ -198,6 +228,16 @@ class TopPlayerSubstate extends MusicBeatSubstate {
     override function update(elapsed) {
         super.update(elapsed);
 
+		// A tap that lands on the on-screen pad belongs to the pad (UP/DOWN/A/B), never to the row
+		// drawn behind it.
+		var padTap = OnlineNav.padBlocks(virtualPad);
+		var pointerClick = FlxG.mouse.justPressed && !padTap;
+
+		// Hover is recomputed every frame and only lights the row under the pointer up; it never
+		// changes the selection, which is what made the board unusable on a touchscreen.
+		hoverIndex = padTap ? -1 : rowUnderPointer();
+		updateHover();
+
 		if (controls.UI_LEFT_P && (curSelected < 0 || curPage != 0)) {
 			if (curSelected == -2) {
 				curPage = 0;
@@ -242,35 +282,84 @@ class TopPlayerSubstate extends MusicBeatSubstate {
 				leaderboardTimer.cancel();
 			leaderboardTimer = new FlxTimer().start(0.5, t -> { generateLeaderboard(); });
         }
-		else if (controls.UI_UP_P || FlxG.mouse.wheel > 0) {
-			curSelected--;
-			if (curSelected < -2)
-				curSelected = 14;
-			topShit.selectRow(curSelected);
-		}
-		else if (controls.UI_DOWN_P || FlxG.mouse.wheel < 0) {
-			curSelected++;
-			if (curSelected > 14)
-				curSelected = -2;
-			topShit.selectRow(curSelected);
-		}
-        else if (controls.BACK #if android || FlxG.android.justReleased.BACK #end) {
-			LoadingScreen.toggle(false);
-            close();
-        }
-        else if (controls.ACCEPT || FlxG.mouse.justPressed) {
-			if (top[curSelected] != null) {
-				// This engine has no sidebar `ProfileTab.view(...)`, so the card below is the
-				// replacement.
-				showProfile(top[curSelected].player);
+		else {
+			// Wheel (1 = up) plus the pad/keyboard, with hold-to-repeat, so the whole board can be
+			// walked without tapping the direction once per row.
+			var steps = nav.poll(controls.UI_UP, controls.UI_DOWN, elapsed) - FlxG.mouse.wheel;
+			while (steps != 0) {
+				var dir = steps > 0 ? 1 : -1;
+				changeSelection(dir);
+				steps -= dir;
 			}
-        }
+
+			if (controls.BACK #if android || FlxG.android.justReleased.BACK #end) {
+				LoadingScreen.toggle(false);
+				close();
+			}
+			else if (controls.ACCEPT || pointerClick) {
+				// A pointer click first moves the selection onto the row it hit, then runs it.
+				if (pointerClick && hoverIndex >= 0)
+					changeSelection(hoverIndex - curSelected);
+				if (top[curSelected] != null) {
+					// This engine has no sidebar `ProfileTab.view(...)`, so the card below is the
+					// replacement.
+					showProfile(top[curSelected].player);
+				}
+			}
+		}
     }
 
 	function set_curSelected(v) {
 		categoryTxt.alpha = v == -2 ? 1 : 0.7;
 		keysTxt.alpha = v == -1 ? 1 : 0.7;
 		return curSelected = v;
+	}
+
+	/**
+	 * Moves the selection one step. The bands are -2 (category), -1 (key count) and 0..14 (rows),
+	 * wrapping exactly like the old key handler did.
+	 */
+	function changeSelection(change:Int):Void {
+		if (change == 0)
+			return;
+
+		curSelected += change;
+		if (curSelected < -2)
+			curSelected = 14;
+		else if (curSelected > 14)
+			curSelected = -2;
+		topShit.selectRow(curSelected);
+	}
+
+	/**
+	 * Row index under the pointer, or -1. The board rows are private to `Scoreboard`, so the
+	 * background box plus `rowHeight` stands in for a per-cell hit test.
+	 */
+	function rowUnderPointer():Int {
+		// coolCam, not `camera`: this substate draws on its own camera (cameras = [coolCam]) while
+		// `camera` resolves through FlxCamera.defaultCameras to the lobby camera behind it, which is
+		// scrolled and zoomed -- a hit test against that would never line up with the board.
+		if (!OnlineNav.pointerOver(topShit.background, coolCam))
+			return -1;
+
+		var point = FlxG.mouse.getWorldPosition(coolCam);
+		var row = Math.floor((point.y - topShit.background.y) / topShit.rowHeight) - 1;
+		point.put();
+
+		if (row < 0 || row >= topShit.rowsAmount)
+			return -1;
+		return row;
+	}
+
+	/** Lights the row under the pointer; hover never adds the selection's white outline. */
+	function updateHover():Void {
+		if (hoverIndex < 0 || hoverIndex >= topShit.rowsAmount) {
+			hoverBox.visible = false;
+			return;
+		}
+
+		hoverBox.visible = true;
+		hoverBox.setPosition(topShit.background.x, topShit.background.y + (hoverIndex + 1) * topShit.rowHeight);
 	}
 }
 #end

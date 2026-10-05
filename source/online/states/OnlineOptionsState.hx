@@ -20,6 +20,12 @@ class OnlineOptionsState extends MusicBeatState {
 	var camFollow:FlxObject;
 
 	var scrollToRegister:Bool = false;
+
+	/** UP/DOWN hold-to-repeat, shared with the on-screen pad. */
+	var nav = new NavRepeat();
+
+	/** Hovered row, or null. Hover only lights the row up; it never selects it. */
+	var hoveredOption:InputOption = null;
 	
 	public function new(?scrollToRegister:Bool = false) {
 		super();
@@ -31,6 +37,13 @@ class OnlineOptionsState extends MusicBeatState {
         super.create();
 
 		camera.follow(camFollow = new FlxObject(), TOPDOWN_TIGHT, 0.1);
+
+		// On-screen controls: UP/DOWN move the selection, A accepts, B backs out. Mounted by every
+		// online screen; a pad tap is ignored by the pointer hit tests below.
+		addVirtualPad(UP_DOWN, A_B);
+		// Online pad layout: shrunk buttons tucked into the corners, clear of the UI.
+		OnlineNav.layoutColumn(virtualPad);
+		addPadCamera();
 
 		#if DISCORD_ALLOWED
 		DiscordClient.changePresence("In the Menus", "Online Options");
@@ -358,15 +371,23 @@ class OnlineOptionsState extends MusicBeatState {
         changeSelection(0);
     }
 
-	var mouseMoveTimeout = 0.0;
-
     override function update(elapsed:Float) {
+		// A dialog on top (a confirm or a URL prompt) owns the pointer and the keys. Without this
+		// the pad's A would also run the row underneath it.
+		if (subState != null) {
+			super.update(elapsed);
+			return;
+		}
+
 		if (curOption != null) {
 			camFollow.setPosition(curOption.getMidpoint().x, curOption.getMidpoint().y);
 		}
 
-		if (mouseMoveTimeout > 0)
-			mouseMoveTimeout -= elapsed;
+		// A tap that lands on the on-screen pad belongs to the pad (UP/DOWN/A/B), never to the
+		// row drawn behind it.
+		var padTap = OnlineNav.padBlocks(virtualPad);
+		var pointerClick = FlxG.mouse.justPressed && !padTap;
+		var pointerRow = (!inputWait && !padTap) ? optionIndexUnderPointer() : -1;
 
 		if (!inputWait) {
 			if (controls.BACK #if android || FlxG.android.justReleased.BACK #end) {
@@ -377,28 +398,25 @@ class OnlineOptionsState extends MusicBeatState {
 				FlxG.sound.play(Paths.sound('cancelMenu'));
 			}
 
-			if (controls.UI_UP_P || FlxG.mouse.wheel == 1) {
-				mouseMoveTimeout = 0.6;
-				changeSelection(-1);
+			// Wheel (1 = up) and the pad/keyboard walk the list, with hold-to-repeat. The pointer
+			// no longer drags the selection along as it moves: a click is what selects a row.
+			var steps = nav.poll(controls.UI_UP, controls.UI_DOWN, elapsed) - FlxG.mouse.wheel;
+			while (steps != 0) {
+				var dir = steps > 0 ? 1 : -1;
+				changeSelection(dir);
+				steps -= dir;
 			}
-			else if (controls.UI_DOWN_P || FlxG.mouse.wheel == -1) {
-				mouseMoveTimeout = 0.6;
-				changeSelection(1);
-			}
-			else if ((mouseMoveTimeout <= 0 && (FlxG.mouse.deltaX != 0 || FlxG.mouse.deltaY != 0)) || FlxG.mouse.justPressed) {
-				if (FlxG.mouse.justPressed)
-                	curSelected = -1;
-                var i = 0;
-                 for (item in items) {
-                    if (FlxG.mouse.overlaps(item, camera)) {
-                        curSelected = i;
-                        break;
-                    }
-                    i++;
-                }
-                updateOptions();
-            }
-        }
+
+			if (pointerClick && pointerRow >= 0)
+				changeSelection(pointerRow - curSelected);
+		}
+
+		// Hover is recomputed every frame so the highlight matches what a click would hit.
+		var newHover:InputOption = pointerRow >= 0 ? items.members[pointerRow] : null;
+		if (newHover != hoveredOption) {
+			hoveredOption = newHover;
+			updateOptions();
+		}
 
 		super.update(elapsed);
 
@@ -406,7 +424,7 @@ class OnlineOptionsState extends MusicBeatState {
 		// `mouseOverlapping()`: that uses FlxText's own height, and an empty input is only 4px
 		// (FlxText.VERTICAL_GUTTER), so the middle of the visible field never hits. With one input
 		// focused the `!inputWait` block is skipped, so switching boxes relied on this broken test.
-		if (FlxG.mouse.justPressed && curOption != null && curOption.isInput) {
+		if (pointerClick && curOption != null && curOption.isInput) {
 			var targetIndex:Int = -1;
 			for (i => input in curOption.inputs)
 				if (mouseOverInputBg(curOption.inputBgs[i]))
@@ -416,9 +434,9 @@ class OnlineOptionsState extends MusicBeatState {
 		}
 
 		if (!inputWait) {
-			if ((controls.ACCEPT || FlxG.mouse.justPressed) && curOption != null) {
+			if ((controls.ACCEPT || pointerClick) && curOption != null) {
 				if (curOption.isInput) {
-					if (!FlxG.mouse.justPressed)
+					if (!pointerClick)
 						setInputFocus(curOption, 0);
 				}
 				else if (curOption.onClick != null) {
@@ -521,6 +539,20 @@ class OnlineOptionsState extends MusicBeatState {
 		return hit;
 	}
 
+    /**
+	 * Index of the row under the pointer, or -1. Uses the row group's own world box, so it stays
+	 * correct while the camera follows the selection.
+	 */
+    function optionIndexUnderPointer():Int {
+		var index = 0;
+		for (item in items) {
+			if (item != null && OnlineNav.pointerOver(item, camera))
+				return index;
+			index++;
+		}
+		return -1;
+	}
+
     function changeSelection(diffe:Int) {
 		curSelected += diffe;
 
@@ -540,15 +572,16 @@ class OnlineOptionsState extends MusicBeatState {
         else
             curOption = items.members[curSelected];
 
-        for (item in items) {
+		for (item in items) {
+			// Only the selected row gets the border and full opacity; the hovered row is brightened
+			// just enough to show what a click would hit.
 			item.borderline.visible = item == curOption;
-			item.alpha = inputWait ? 0.5 : 0.6;
+			item.alpha = inputWait ? 0.5 : (item == curOption ? 1 : (item == hoveredOption ? 0.9 : 0.6));
 			if (item.isInput)
 				for (input in item.inputs)
 					input.alpha = 0.5;
-        }
-        if (curOption != null) {
-			curOption.alpha = 1;
+		}
+		if (curOption != null) {
 			if (curOption.isInput)
 				for (input in curOption.inputs)
 					input.alpha = inputWait ? 1 : 0.7;

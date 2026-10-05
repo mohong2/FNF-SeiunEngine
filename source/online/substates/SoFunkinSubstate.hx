@@ -29,6 +29,9 @@ class SoFunkinSubstate extends MusicBeatSubstate {
 	public var grpIconsOverlay:FlxTypedGroup<FlxSprite>;
 
 	var lerpSelected:Float = 0;
+
+	/** UP/DOWN hold-to-repeat, shared with the on-screen pad. */
+	var nav = new NavRepeat();
 	public var curSelected:Int = 0;
 
 	var searchInput:FlxText;
@@ -101,6 +104,15 @@ class SoFunkinSubstate extends MusicBeatSubstate {
 		FlxG.stage.addEventListener(KeyboardEvent.KEY_DOWN, onKeyDown);
 
 		super.create();
+
+		// On-screen controls (Android always, desktop when "touch controls" is on): a full d-pad,
+		// because UP/DOWN walk the list and LEFT/RIGHT switch groups; A accepts a row and B is
+		// wired to BACK, which closes this substate. An UP_DOWN pad would leave group switching
+		// unreachable on a touchscreen.
+		addVirtualPad(LEFT_FULL, A_B);
+		// Online pad layout: shrunk buttons tucked into the corners, clear of the UI.
+		OnlineNav.layoutCross(virtualPad);
+		addPadCamera();
 	}
 	
 	override function destroy() {
@@ -226,6 +238,8 @@ class SoFunkinSubstate extends MusicBeatSubstate {
 		if (!searchInputWait && FlxG.keys.justPressed.F) {
 			searchInputWait = true;
 			searchString = searchString;
+			// The list loses focus while typing; do not carry a held direction back into it.
+			nav.reset();
 		}
 
 		if (searchInputWait) {
@@ -236,15 +250,13 @@ class SoFunkinSubstate extends MusicBeatSubstate {
 			return;
 		}
 
-		var shiftMult = FlxG.keys.pressed.SHIFT ? 2 : 1;
-		if (controls.UI_UP_P) {
-			changeSelection(-1 * shiftMult);
-		}
-		if (controls.UI_DOWN_P) {
-			changeSelection(1 * shiftMult);
-		}
-		if (FlxG.mouse.wheel != 0) {
-			changeSelection(-shiftMult * FlxG.mouse.wheel);
+		// Wheel (1 = up) plus the pad/keyboard, with hold-to-repeat, so a long list can be walked
+		// without tapping the direction once per row.
+		var steps = nav.poll(controls.UI_UP, controls.UI_DOWN, elapsed) - FlxG.mouse.wheel;
+		while (steps != 0) {
+			var dir = steps > 0 ? 1 : -1;
+			changeSelection(dir);
+			steps -= dir;
 		}
 
 		if (controls.UI_LEFT_P) {

@@ -604,6 +604,14 @@ class ResultsState extends MusicBeatState {
 		});
 
 		registerMessages();
+
+		// On-screen controls: this screen has no list, only "leave" -- A accepts and B backs out.
+		// Without a pad the screen is a dead end on Android.
+		addVirtualPad(NONE, A_B);
+		// Online pad layout: shrunk buttons tucked into the corners, clear of the UI.
+		OnlineNav.layoutActions(virtualPad);
+		addPadCamera();
+
 		FlxG.mouse.visible = true;
 
 		var debugPoser = new online.objects.DebugPosHelper();
@@ -720,7 +728,9 @@ class ResultsState extends MusicBeatState {
 			if (back.animation.curAnim.name != "press")
 				back.animation.play('idle');
 
-			if (!chatBox.focused && (!FlxG.keys.justPressed.TAB && controls.BACK #if android || FlxG.android.justReleased.BACK #end || FlxG.keys.justPressed.BACKSPACE || FlxG.keys.justPressed.ENTER)) {
+			// controls.ACCEPT is what the on-screen A button feeds; ENTER is covered by it too,
+			// but the key check is kept so the plain-keyboard path cannot regress.
+			if (!chatBox.focused && (!FlxG.keys.justPressed.TAB && controls.BACK #if android || FlxG.android.justReleased.BACK #end || FlxG.keys.justPressed.BACKSPACE || FlxG.keys.justPressed.ENTER || controls.ACCEPT)) {
 				FlxG.sound.music.stop();
 				FlxG.sound.play(Paths.sound('cancelMenu'));
 

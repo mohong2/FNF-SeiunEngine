@@ -1,6 +1,5 @@
 package online.substates;
 
-import flixel.FlxObject;
 import openfl.filters.BlurFilter;
 import online.util.OnlineLang;
 
@@ -11,12 +10,24 @@ class SelectStageSubstate extends MusicBeatSubstate {
     public var options:FlxTypedGroup<StageText>;
     public var optionsDetails:FlxTypedGroup<FlxText>;
     public var curSelected:Int;
+    var nav = new NavRepeat();
+    /** Hovered row, or -1. Hover only lights the row up; it never selects it. */
+    var hoverIndex:Int = -1;
 
     var stageNames:Array<String>;
     var stageMods:Array<String>;
 
     override function create() {
 		super.create();
+
+		// On-screen controls (Android always, desktop when "touch controls" is on): UP/DOWN pick a
+		// row and A selects it; B is wired to BACK, which closes this substate.
+		//
+		// Mounted before the rows so the stage list can start to the right of the pad's direction
+		// column; the camera is added at the end, once coolCam exists, so the pad draws on top.
+		addVirtualPad(UP_DOWN, A_B);
+		// Online pad layout: shrunk buttons tucked into the corners, clear of the UI.
+		OnlineNav.layoutColumn(virtualPad);
 
 		trace(GameClient.room.state.stageName);
 		
@@ -77,7 +88,9 @@ class SelectStageSubstate extends MusicBeatSubstate {
 
         var endScrollY:Float = FlxG.height;
         for (i in 0...stageNames.length) {
-            var text = new StageText(this, 50, 50 + 50 * i, stageNames[i]);
+			// x 0..128 is the pad's UP/DOWN column on touch builds, so the stage names start to
+			// the right of it there; without a pad they keep the original x.
+            var text = new StageText(this, virtualPad != null ? 120 : 50, 50 + 50 * i, stageNames[i]);
             if (stageNames[i] == "(default)")
                 text.createDetails(OnlineLang.L('stage.default.desc', 'Default option uses the stage of the currently selected song'));
             else {
@@ -97,6 +110,9 @@ class SelectStageSubstate extends MusicBeatSubstate {
         }
 
         coolCam.setScrollBounds(FlxG.width, FlxG.width, 0, endScrollY > FlxG.height ? endScrollY : FlxG.height);
+
+        // Added last: the pad camera must be registered after coolCam so it draws over the list.
+        addPadCamera();
     }
 
 	/**
@@ -157,71 +173,84 @@ class SelectStageSubstate extends MusicBeatSubstate {
 
 		return [stages, stagePaths];
 	}
+	override function update(elapsed) {
+		super.update(elapsed);
 
-    var holdUp = 0.0;
-    var holdDown = 0.0;
-    override function update(elapsed) {
-        super.update(elapsed);
+		Conductor.songPosition = FlxG.sound.music.time;
 
-        Conductor.songPosition = FlxG.sound.music.time;
+		if (controls.BACK #if android || FlxG.android.justReleased.BACK #end) {
+			close();
+		}
 
-        if (controls.BACK #if android || FlxG.android.justReleased.BACK #end) {
-            close();
-        }
+		// UP/DOWN holds and the wheel move the selection with hold-to-repeat; SHIFT keeps its
+		// three-row jump, which the old stepHit repeat used to provide.
+		var step = FlxG.keys.pressed.SHIFT ? 3 : 1;
+		var steps = nav.poll(controls.UI_UP, controls.UI_DOWN, elapsed) - FlxG.mouse.wheel;
+		while (steps != 0) {
+			var dir = steps > 0 ? 1 : -1;
+			changeSelection(dir * step);
+			steps -= dir;
+		}
 
-        if (controls.UI_UP)
-            holdUp += elapsed;
-        else
-            holdUp = 0;
+		// A tap that lands on the on-screen pad belongs to the pad (UP/DOWN/A/B), never to the row
+		// drawn behind it.
+		var padTap = OnlineNav.padBlocks(virtualPad);
+		var pointerClick = FlxG.mouse.justPressed && !padTap;
 
-        if (controls.UI_DOWN)
-            holdDown += elapsed;
-        else
-            holdDown = 0;
+		// Moving the pointer only lights the row under it up; selecting a stage takes a click.
+		hoverIndex = padTap ? -1 : rowUnderPointer();
 
-        if (controls.UI_UP_P || FlxG.mouse.wheel == 1) {
-            curSelected -= FlxG.keys.pressed.SHIFT ? 3 : 1;
-            updateSelection();
-        }
+		for (option in options) {
+			if (option.ID == curSelected)
+				option.alpha = 1;
+			else
+				option.alpha = option.ID == hoverIndex ? 0.9 : 0.7;
+		}
 
-        if (controls.UI_DOWN_P || FlxG.mouse.wheel == -1) {
-            curSelected += FlxG.keys.pressed.SHIFT ? 3 : 1;
-            updateSelection();
-        }
+		if (controls.ACCEPT || (pointerClick && hoverIndex >= 0)) {
+			// A click first moves the selection onto the row it hit, then runs it.
+			if (pointerClick && hoverIndex >= 0)
+				changeSelection(hoverIndex - curSelected);
 
-        if (controls.ACCEPT || (FlxG.mouse.justPressed && mouseHovers(options.members[curSelected]))) {
-            if (curSelected == 0) {
-                Alert.alert(OnlineLang.L('stage.setDefault', 'Stage set to default!'));
-                GameClient.send("setStage", ['', '', '']);
-                close();
-                return;
-            }
+			if (curSelected == 0) {
+				Alert.alert(OnlineLang.L('stage.setDefault', 'Stage set to default!'));
+				GameClient.send("setStage", ['', '', '']);
+				close();
+				return;
+			}
 
-            var stageURL = '';
-            if (stageMods[curSelected] != "") {
-                stageURL = OnlineMods.getModURL(stageMods[curSelected]);
-            }
-            GameClient.send("setStage", [stageNames[curSelected], stageMods[curSelected], stageURL]);
-            Alert.alert(OnlineLang.L('stage.set', 'Stage set to ') + stageNames[curSelected] + "!");
-            close();
-        }
+			var stageURL = '';
+			if (stageMods[curSelected] != "") {
+				stageURL = OnlineMods.getModURL(stageMods[curSelected]);
+			}
+			GameClient.send("setStage", [stageNames[curSelected], stageMods[curSelected], stageURL]);
+			Alert.alert(OnlineLang.L('stage.set', 'Stage set to ') + stageNames[curSelected] + "!");
+			close();
+		}
     }
-
 	/**
-	 * FlxG.mouse.overlaps() builds the pointer from the *main* camera but the object from the camera
-	 * passed in, so every hit is off by the scroll difference between the two. This list scrolls with
-	 * coolCam.follow(), so compare both sides in coolCam's world instead.
+	 * Index of the row under the pointer, or -1. The rows are plain FlxTexts drawn on coolCam,
+	 * which follows the selection, so their box is compared in that camera's world space.
 	 */
-	public function mouseHovers(object:FlxObject):Bool {
-		if (object == null || camera == null)
-			return false;
-
-		var point = FlxG.mouse.getWorldPosition(camera);
-		var hit:Bool = object.overlapsPoint(point, false);
-		point.put();
-		return hit;
+	function rowUnderPointer():Int {
+		for (option in options) {
+			if (option != null && OnlineNav.pointerOverRect(option.x, option.y, option.width, option.height, coolCam))
+				return option.ID;
+		}
+		return -1;
 	}
 
+	/** Steps the selection by `diff` rows, wrapping at either end like the old code did. */
+	function changeSelection(diff:Int) {
+		var count = options.length;
+		if (count <= 0)
+			return;
+
+		// A modulo keeps the original wrap-around for the +/-1 steps and also lands on the right
+		// row when a click jumps several rows at once.
+		curSelected = (curSelected + diff % count + count) % count;
+		updateSelection();
+	}
     function updateSelection() {
         if (curSelected < 0)
             curSelected = options.length - 1;
@@ -241,20 +270,6 @@ class SelectStageSubstate extends MusicBeatSubstate {
 		}
 		FlxG.cameras.remove(coolCam);
 	}
-
-    override function stepHit() {
-        super.stepHit();
-
-        if (holdUp > 0.5) {
-            curSelected -= FlxG.keys.pressed.SHIFT ? 3 : 1;
-            updateSelection();
-        }
-
-        if (holdDown > 0.5) {
-            curSelected += FlxG.keys.pressed.SHIFT ? 3 : 1;
-            updateSelection();
-        }
-    }
 }
 
 class StageText extends FlxText {
@@ -267,13 +282,6 @@ class StageText extends FlxText {
 
         this.parent = parent;
         updateText();
-    }
-
-    override function update(elapsed) {
-		if (parent.curSelected != ID && parent.mouseHovers(this)) {
-            parent.curSelected = ID;
-            for (option in parent.options) option.updateText();
-        }
     }
 
     public function createDetails(content:String) {

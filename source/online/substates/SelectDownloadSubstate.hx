@@ -25,6 +25,9 @@ class SelectDownloadSubstate extends MusicBeatSubstate {
 
 	var blurFilter:BlurFilter;
 	var coolCam:FlxCamera;
+	var nav = new NavRepeat();
+	/** Hovered row, or -1. Hover only lights the row up; it never selects it. */
+	var hoverIndex:Int = -1;
 
 	function set_selected(v) {
 		if (v >= items.length) {
@@ -129,6 +132,13 @@ class SelectDownloadSubstate extends MusicBeatSubstate {
 
 		var endScrollBound = endCoord + 20 > FlxG.height ? endCoord + 20 : FlxG.height;
 		coolCam.setScrollBounds(FlxG.width, FlxG.width, 0, endScrollBound);
+
+		// On-screen controls (Android always, desktop when "touch controls" is on): UP/DOWN pick a
+		// row and A downloads it; B is wired to BACK, which closes this substate.
+		addVirtualPad(UP_DOWN, A_B);
+		// Online pad layout: shrunk buttons tucked into the corners, clear of the UI.
+		OnlineNav.layoutColumn(virtualPad);
+		addPadCamera();
     }
 
 	override function destroy() {
@@ -140,21 +150,60 @@ class SelectDownloadSubstate extends MusicBeatSubstate {
 		}
 		FlxG.cameras.remove(coolCam);
 	}
-
 	override function update(elapsed) {
-		if (controls.UI_UP_P)
-			selected--;
-		else if (controls.UI_DOWN_P)
-			selected++;
+		super.update(elapsed);
 
-		if (controls.BACK #if android || FlxG.android.justReleased.BACK #end || (FlxG.mouse.justPressed && !FlxG.mouse.overlaps(bg, camera))) {
+		// UP/DOWN and the wheel move the selection with hold-to-repeat, shared with the pad.
+		var steps = nav.poll(controls.UI_UP, controls.UI_DOWN, elapsed) - FlxG.mouse.wheel;
+		while (steps != 0) {
+			var dir = steps > 0 ? 1 : -1;
+			selected += dir;
+			steps -= dir;
+		}
+
+		// A tap that lands on the on-screen pad belongs to the pad (UP/DOWN/A/B), never to the row
+		// drawn behind it.
+		var padTap = OnlineNav.padBlocks(virtualPad);
+		var pointerClick = FlxG.mouse.justPressed && !padTap;
+
+		// Hover only lights the row under the pointer up; a click moves the selection onto it.
+		hoverIndex = padTap ? -1 : indexUnderPointer();
+
+		for (item in items) {
+			if (item.ID == selected)
+				item.alpha = 1;
+			else
+				item.alpha = item.ID == hoverIndex ? 0.9 : 0.7;
+		}
+
+		// `bg` is pinned with scrollFactor 0, so a world-space hit test would drift once coolCam
+		// scrolls; compare in screen space instead. It spans the full height, so x is enough.
+		var outsideBg = FlxG.mouse.screenX < bg.x || FlxG.mouse.screenX >= bg.x + bg.width;
+
+		if (controls.BACK #if android || FlxG.android.justReleased.BACK #end || (pointerClick && outsideBg)) {
 			close();
 		}
 
-		super.update(elapsed);
+		if (pointerClick && hoverIndex >= 0) {
+			// A click first moves the selection onto the box it hit, then runs it.
+			selected = hoverIndex;
+			items.members[selected].onClick();
+		}
+		else if (controls.ACCEPT && items.length > 0) {
+			items.members[selected].onClick();
+		}
 
 		if (items.length > 0)
 			coolCam.follow(items.members[selected], TOPDOWN, 0.1);
+	}
+
+	/** Index of the row under the pointer, or -1. The rows scroll with coolCam, so compare there. */
+	function indexUnderPointer():Int {
+		for (item in items) {
+			if (item != null && OnlineNav.pointerOver(item, coolCam))
+				return item.ID;
+		}
+		return -1;
 	}
 }
 
@@ -235,30 +284,13 @@ class DownloadBox extends FlxSpriteGroup {
 
 		screenCenter(X);
 	}
-
-	override function update(elapsed) {
-		super.update(elapsed);
-
-		if (FlxG.mouse.overlaps(bg, camera) && (FlxG.mouse.deltaX != 0 || FlxG.mouse.deltaY != 0 || FlxG.mouse.justPressed)) {
-			SelectDownloadSubstate.instance.selected = ID;
-		}
-
-		if (ID == SelectDownloadSubstate.instance.selected) {
-			alpha = 1.0;
-
-			@:privateAccess
-			if (SelectDownloadSubstate.instance.controls.ACCEPT || (FlxG.mouse.justPressed && FlxG.mouse.overlaps(bg, camera))) {
-				if (name.color == FlxColor.RED) {
-					RequestSubstate.requestURL(url, null, true);
-				}
-				else {
-					OnlineMods.downloadMod(url, true);
-				}
-				SelectDownloadSubstate.instance.close();
-			}
+	public function onClick() {
+		if (name.color == FlxColor.RED) {
+			RequestSubstate.requestURL(url, null, true);
 		}
 		else {
-			alpha = 0.7;
+			OnlineMods.downloadMod(url, true);
 		}
+		SelectDownloadSubstate.instance.close();
 	}
 }

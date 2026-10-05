@@ -482,6 +482,14 @@ class SkinsState extends MusicBeatState {
 		CustomFadeTransition.nextCamera = hud; // wat
 
 		GameClient.send("status", "Selecting their skin");
+
+		// On-screen controls (Android always, desktop when "touch controls" is on): the skin ring
+		// moves on LEFT/RIGHT, A confirms, B backs out and C resets. This screen had no pad at all,
+		// so it was a dead end on a touchscreen.
+		addVirtualPad(LEFT_RIGHT, A_B_C);
+		// Online pad layout: shrunk buttons tucked into the corners, clear of the UI.
+		OnlineNav.layoutRow(virtualPad);
+		addPadCamera();
     }
 
 	function getCharacterName(i:Int) {
@@ -757,7 +765,11 @@ class SkinsState extends MusicBeatState {
 			ClientPrefs.saveSettings();
 		}
 
-		if (controls.RESET) {
+		// RESET is what jumps back to the default skin. The pad has no binding for it
+		// (setVirtualPadUI only wires A and B), so the C button is read directly -- otherwise it
+		// would be decoration on a touchscreen.
+		var padReset = virtualPad != null && virtualPad.buttonC != null && virtualPad.buttonC.justPressed;
+		if (controls.RESET || padReset) {
 			curCharacter = -2;
 			setCharacter(1);
 		}

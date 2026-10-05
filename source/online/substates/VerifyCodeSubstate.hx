@@ -44,15 +44,25 @@ class VerifyCodeSubstate extends MusicBeatSubstate {
 		title.scrollFactor.set();
 		add(title);
 
-		input = new InputText(0, 0, FlxG.width, text -> {
-			onEnter(text.trim().toUpperCase());
-			close();
-		});
+		input = new InputText(0, 0, FlxG.width, text -> submit(text));
 		input.setFormat(OnlineLang.font(), 30, FlxColor.WHITE, CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 		input.y = FlxG.height / 2 - input.height / 2;
 		input.scrollFactor.set();
 		add(input);
+
+		// On-screen controls: A confirms the code, B cancels. There is no list to navigate, so the
+		// D-pad is omitted.
+		addVirtualPad(NONE, A_B);
+		// Online pad layout: shrunk buttons tucked into the corners, clear of the UI.
+		OnlineNav.layoutActions(virtualPad);
+		addPadCamera();
     }
+
+	/** Submits the current code; ENTER and the on-screen A button both go through here. */
+	function submit(text:String):Void {
+		onEnter(text.trim().toUpperCase());
+		close();
+	}
 
 	override function destroy() {
 		super.destroy();
@@ -82,5 +92,10 @@ class VerifyCodeSubstate extends MusicBeatSubstate {
 		else if (input.text.length > 0) {
 			confirmBack = false;
         }
+
+		// The pad's A confirms. `controls.ACCEPT` is not used here because this engine also binds
+		// it to SPACE, and a space is a character the player has to be able to type.
+		if (virtualPad != null && virtualPad.buttonA != null && virtualPad.buttonA.justPressed)
+			submit(input.text);
     }
 }
