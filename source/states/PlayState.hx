@@ -521,6 +521,28 @@ class PlayState extends MusicBeatState
 	var _npsSeenOp:Float = 0;
 	var _npsSeenBf:Float = 0;
 	/**
+	 * NPS window clock (ms of song time, monotone) -- the KeyboardDisplay rule applied to hits.
+	 *
+	 * KeyboardDisplay's KPS keeps a Date.now() window, and a wall clock never steps backwards; this
+	 * window instead read Conductor.songPosition, which *is* re-synced backwards to the music
+	 * (unpause, after a video, a seek, a restart). A backwards step walked the ring back into
+	 * buckets that were still inside the window and evicted them early, so the readout silently
+	 * lost hits -- and its maxima were taken from a window that mixed "future" hits with the current
+	 * second -- until the ring rolled over. Accumulating FlxG.elapsed is exactly how the song clock
+	 * advances while the song plays (same increment, same playbackRate), minus the resets.
+	 */
+	var _npsClock:Float = 0;
+	/**
+	 * Botplay score line refresh floor (ms of real time) plus the stamp of the last rebuild.
+	 *
+	 * The line carries live counters, so it changes every frame -- but a 60 Hz counter is
+	 * unreadable, and outside botplay every hit rebuilt the string (String build + up to two
+	 * TextField layouts, thousands of them per frame on a dense chart). Botplay now only marks the
+	 * text dirty per hit and rebuilds the line at most once per frame, no faster than this interval.
+	 */
+	static inline var BOTPLAY_HUD_MIN_MS:Float = 50;
+	var _botplayHudTicks:Float = -1e9;
+	/**
 	 * Private, monotone copy of the opponent-side hit count. The NPS window reads this instead of
 	 * `opCombo`, because scripts can write the public field (H-Slice parity) and an upward write
 	 * would otherwise be indistinguishable from a burst of real hits. Only addOpponentHit() bumps it.
@@ -3347,7 +3369,13 @@ class PlayState extends MusicBeatState
 			if (preResult == LuaUtils.Function_Stop || preResult == FunkinLua.Function_Stop)
 				return;
 
-			applyScoreText();
+			// Botplay: a hit only marks the line dirty (the readout is a per-frame counter, and
+			// flushHitPresentation() rebuilds it at frame end). Outside botplay the per-hit rebuild
+			// is the original behaviour and stays exactly as it was.
+			if (cpuControlled)
+				_scoreTextDirty = true;
+			else
+				applyScoreText();
 			if(ClientPrefs.data.scoreZoom && !miss && !cpuControlled)
 				bounceScoreTxt();
 			callOnScripts('onUpdateScore', Scripts.fill1(Scripts.get(1), miss));
@@ -3356,7 +3384,10 @@ class PlayState extends MusicBeatState
 
 		if (!ClientPrefs.data.perfMode)
 		{
-			applyScoreText();
+			if (cpuControlled)
+				_scoreTextDirty = true;
+			else
+				applyScoreText();
 			if(ClientPrefs.data.scoreZoom && !miss && !cpuControlled)
 				bounceScoreTxt();
 			return;
@@ -3452,9 +3483,20 @@ class PlayState extends MusicBeatState
 	inline function bfNotesHit():Float
 		return (totalPlayed : Float) - songMisses;
 
-	/** Readout number: whole notes / NPS (Turbo counts are far past display precision anyway). */
+	/**
+	 * Readout number: whole notes / NPS. Past six digits it switches to the compact form the release
+	 * notes document (1.03M / 2.06B): a raw 2064278444 is wide enough that the full line no longer
+	 * fits the HUD, which used to flip the line to its "combined NPS only" fallback and back as the
+	 * counters moved. The exact value stays in the left stats column.
+	 */
 	inline function readoutNum(v:Float):String
-		return Std.string(Math.ffloor(v + 0.5));
+	{
+		var n:Float = Math.ffloor(v + 0.5);
+		if (n < 1000000) return Std.string(n);
+		if (n < 1000000000) return Std.string(FlxMath.roundDecimal(n / 1000000, 2)) + 'M';
+		if (n < 1000000000000) return Std.string(FlxMath.roundDecimal(n / 1000000000, 2)) + 'B';
+		return Std.string(FlxMath.roundDecimal(n / 1000000000000, 2)) + 'T';
+	}
 
 	/**
 	 * Writes the score line into scoreTxt. In botplay the readout has to stay one centered line, so the
@@ -3469,6 +3511,24 @@ class PlayState extends MusicBeatState
 			return;
 		}
 
+		// Hidden HUD (hideHud, or a mod that switched scoreTxt off): there is nothing to draw, so
+		// skip the string build. The dirty flag is raised again every frame while botplay runs, so
+		// the line catches up as soon as it is visible again.
+		if (!scoreTxt.visible)
+			return;
+
+		// Botplay line: at most one rebuild per BOTPLAY_HUD_MIN_MS. Its counters change every frame,
+		// but nobody reads a 60 Hz counter and each rebuild costs a String build plus a TextField
+		// layout (the full form is measured on the field, then possibly replaced by the compact one).
+		// A skipped rebuild leaves the text dirty; flushHitPresentation() runs every frame.
+		var ticks:Float = FlxG.game.ticks;
+		if (ticks - _botplayHudTicks < BOTPLAY_HUD_MIN_MS)
+		{
+			_scoreTextDirty = true;
+			return;
+		}
+		_botplayHudTicks = ticks;
+
 		scoreTxt.wordWrap = false;
 		scoreTxt.text = buildBotplayScoreText();
 		if (scoreTxt.textField.textWidth > FlxG.width)
@@ -3476,14 +3536,20 @@ class PlayState extends MusicBeatState
 	}
 
 	/**
-	 * Botplay/Turbo readout: slides the 1 s NPS window to the current song time, adds the notes hit since
-	 * the last frame on each side, then filters the displayed current values (fast attack, slow release)
-	 * so a burst leaving the window fades the readout out instead of snapping it to 0. Allocation-free
-	 * after the first call and only run while cpuControlled, so manual play pays nothing.
+	 * Botplay/Turbo readout: slides the 1 s NPS window along the monotone play clock (_npsClock, the
+	 * KeyboardDisplay rule applied to hits), adds the notes hit since the last frame on each side, then
+	 * filters the displayed current values (fast attack, slow release) so a burst leaving the window
+	 * fades the readout out instead of snapping it to 0. Allocation-free after the first call and only
+	 * run while cpuControlled, so manual play pays nothing.
 	 */
 	function updateBotplayReadout(elapsed:Float):Void
 	{
-		var idx:Int = Std.int(Conductor.songPosition / NPS_BUCKET_MS);
+		// Monotone play clock, same rate as Conductor.songPosition (see _npsClock): it must never
+		// step backwards, or the ring would re-enter buckets that are still inside the window. A
+		// script-set playbackRate of 0 or below must not stall or reverse it either.
+		var step:Float = elapsed * 1000 * playbackRate;
+		if (step > 0) _npsClock += step;
+		var idx:Int = Std.int(_npsClock / NPS_BUCKET_MS);
 		if (_npsOp == null)
 		{
 			_npsOp = [for (i in 0...NPS_BUCKETS) 0.0];
@@ -3498,21 +3564,16 @@ class PlayState extends MusicBeatState
 		{
 			if (idx < _npsSlot)
 			{
-				// The song clock moved backwards. Only a real seek/restart (further back than the whole
-				// window) makes the contents meaningless; a small step happens every time the engine
-				// re-syncs the song position to the music (unpause, after a video), and blanking the
-				// window there would snap the readout to 0 for no reason. Re-entered buckets are already
-				// zero, so keeping them cannot double count.
-				if (_npsSlot - idx > NPS_BUCKETS)
+				// Defensive only: _npsClock cannot step backwards, but a script can rewrite
+				// playbackRate and a restart may reuse nothing here. Both invalidate the window, so
+				// treat them like a seek instead of trusting the ring's partially evicted state.
+				for (i in 0...NPS_BUCKETS)
 				{
-					for (i in 0...NPS_BUCKETS)
-					{
-						_npsOp[i] = 0;
-						_npsBf[i] = 0;
-					}
-					_npsOpVal = 0;
-					_npsBfVal = 0;
+					_npsOp[i] = 0;
+					_npsBf[i] = 0;
 				}
+				_npsOpVal = 0;
+				_npsBfVal = 0;
 			}
 			else
 			{
