@@ -5243,6 +5243,10 @@ class PlayState extends MusicBeatState
 
 	override public function onFocus():Void
 	{
+		// Losing/regaining focus makes FlxKeyManager.reset() release every key without a KEY_UP
+		// event, so the replay recorder would otherwise never learn that those keys came up.
+		// Bumping the tick here makes the next recorded frame scan the (now released) key table.
+		Replay.notifyInput();
 		#if desktop
 		if (health > 0 && !paused && iconP2 != null)
 		{
@@ -5262,6 +5266,7 @@ class PlayState extends MusicBeatState
 
 	override public function onFocusLost():Void
 	{
+		Replay.notifyInput(); // see onFocus()
 		#if desktop
 		if (health > 0 && !paused && iconP2 != null)
 		{

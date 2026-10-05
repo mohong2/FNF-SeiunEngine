@@ -450,6 +450,11 @@ class HScript
 			// Shaders
 			"ShaderFilter" => ShaderFilter, "ColorMatrixFilter" => ColorMatrixFilter,
 			#if (!flash && sys) "FlxRuntimeShader" => FlxRuntimeShader, #end
+			// 1.0.4 exposes its error-reporting FlxRuntimeShader subclass as a global
+			// (PE 1.0.4 HScript.hx:175). That subclass only adds shader-compile error reporting,
+			// so the stock FlxRuntimeShader is a behaviour-compatible stand-in: a mod's
+			// `new ErrorHandledRuntimeShader('x.frag')` still compiles and renders.
+			#if (!flash && sys) "ErrorHandledRuntimeShader" => FlxRuntimeShader, #end
 			#if VIDEOS_ALLOWED
 			"VideoSpriteManager" => backend.VideoSpriteManager,
 			#end
@@ -845,6 +850,29 @@ class HScript
 			if (funk != null) funk.addLocalCallback(name, func);
 		});
 		#end
+
+		// 0.7.3+/1.0.4 HScript globals: debugPrint / addHaxeLibrary.
+		// PE registers both on its HScript interpreter (0.7.3 HScript.hx:136/:254, 1.0.4 HScript.hx:202/:320).
+		// A script ported from those engines dies with "Unknown identifier" on the first call
+		// without them, which is exactly the mod compatibility this engine promises.
+		set('debugPrint', function(text:String, ?color:FlxColor = null) {
+			if (color == null) color = FlxColor.WHITE;
+			if (PlayState.instance != null)
+				PlayState.instance.addTextToDebug(text, color);
+			else
+				trace(text);
+		});
+
+		// PE semantics: import a Haxe class into this script's globals under its own name.
+		// set() writes into this interpreter's variables, so the binding is per-script, like PE's.
+		set('addHaxeLibrary', function(libName:String, ?libPackage:String = '') {
+			if (libName == null || libName.length == 0) return;
+			var qualified:String = (libPackage != null && libPackage.length > 0) ? libPackage + '.' + libName : libName;
+			var resolved:Dynamic = Type.resolveClass(qualified);
+			set(libName, resolved);
+			if (resolved == null)
+				TraceManager.warn('trace.hscript.addHaxeLibraryMissing', 'addHaxeLibrary: class not found: {}', [qualified]);
+		});
 
 		// Pre-register the hxCodec-compatible video classes so LUA addHaxeLibrary/runHaxeCode works.
 		// Use direct compiled references (not Type.resolveClass) to guarantee the class is available.

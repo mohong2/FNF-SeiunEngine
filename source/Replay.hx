@@ -1,5 +1,6 @@
 package;
 
+import openfl.events.KeyboardEvent;
 import flixel.input.keyboard.FlxKey;
 import flixel.input.FlxInput;
 import flixel.FlxBasic;
@@ -102,11 +103,40 @@ class Replay extends FlxBasic
 		#end
 	}
 
+	/**
+	 * Monotonic input-event counter.
+	 *
+	 * Why: Replay.update() used to ask FlxG.keys.justPressed.ANY / justReleased.ANY every frame.
+	 * FlxKey.fromStringMap holds 95 keys, so each ANY getter walks the 93 entries of
+	 * FlxKeyManager._keyListArray and probes every one of them (see FlxBaseKeyList.get_ANY).
+	 * Two getters per frame = 186 probes to learn "nothing happened" (measured 1547 ns/frame on a
+	 * desktop hxcpp build, see _seiun-perf-work/callback-perf/inputtick). This counter is bumped by
+	 * the keyboard listeners attached while recording (below) and by the Android controls / focus
+	 * changes, so the same question is answered in O(1) (measured 0.9 ns/frame).
+	 *
+	 * Semantics: the keyboard listeners observe exactly the same events that move FlxG.keys, and the
+	 * focus hooks cover FlxKeyManager.reset() (which releases every key without a KEY_UP event), so
+	 * "tick changed" is equivalent to "some key state may have changed" for the recording pipeline.
+	 */
+	public static var inputTick:Int = 0;
+
+	/** Bumps inputTick. Cheap enough to call from every key event; see inputTick. */
+	public static inline function notifyInput():Void
+	{
+		inputTick++;
+	}
+
 	/** Frame data (written while recording, read during playback). */
 	private var frameData:Array<FrameSave> = [];
 
 	/** Whether recording is in progress. */
 	public var isRecording:Bool = true;
+
+	/** inputTick seen by the previous update() (see Replay.inputTick). */
+	private var _lastInputTick:Int = 0;
+
+	/** True while this instance owns the two stage keyboard listeners. */
+	private var _listening:Bool = false;
 
 	/** Path of the replay file currently loaded. */
 	public static var preparedPath:String;
@@ -185,12 +215,53 @@ class Replay extends FlxBasic
 		replayVersion = 1;
 		replayTime = 0;
 		lastReplayTimeForResync = Math.NaN;
+		// Start from the current tick: the first update() must not see a stale value and scan.
+		_lastInputTick = Replay.inputTick;
+		ensureInputListener();
 	}
 
 	/** Stops recording. */
 	public function stopRecording():Void
 	{
 		isRecording = false;
+		removeInputListener();
+	}
+
+	// ---- keyboard change detection (see Replay.inputTick) ----
+	// Attached only while recording, so playback and the menus never add a stage listener. The
+	// handler does nothing but bump a counter: the actual key names are still resolved by
+	// captureFrame()'s scan, so the recorded frames stay byte-identical to the old implementation.
+
+	private function ensureInputListener():Void
+	{
+		if (_listening || FlxG.stage == null) return;
+		try
+		{
+			FlxG.stage.addEventListener(KeyboardEvent.KEY_DOWN, onAnyKeyEvent);
+			FlxG.stage.addEventListener(KeyboardEvent.KEY_UP, onAnyKeyEvent);
+			_listening = true;
+		}
+		catch (e:Dynamic) { _listening = false; }
+	}
+
+	private function removeInputListener():Void
+	{
+		if (!_listening) return;
+		_listening = false;
+		try
+		{
+			if (FlxG.stage != null)
+			{
+				FlxG.stage.removeEventListener(KeyboardEvent.KEY_DOWN, onAnyKeyEvent);
+				FlxG.stage.removeEventListener(KeyboardEvent.KEY_UP, onAnyKeyEvent);
+			}
+		}
+		catch (e:Dynamic) {}
+	}
+
+	private function onAnyKeyEvent(event:KeyboardEvent):Void
+	{
+		Replay.inputTick++;
 	}
 
 	/** Loads a replay from an external frame array plus a state record. */
@@ -492,6 +563,7 @@ class Replay extends FlxBasic
 
 	override public function destroy():Void
 	{
+		removeInputListener();
 		super.destroy();
 	}
 
@@ -517,8 +589,14 @@ class Replay extends FlxBasic
 		// the old forced 60fps sampling is gone, so silent frames are not written and the replay file
 		// and its memory footprint shrink a lot (playback keeps key state from press/release events).
 		var hasChanges:Bool = false;
-		if (FlxG.keys.justPressed.ANY || FlxG.keys.justReleased.ANY)
+		// O(1) change detection (see Replay.inputTick). The two FlxG.keys.*.ANY getters this replaces
+		// scanned the whole key table twice on every frame, including the thousands of frames where
+		// no key is touched.
+		if (_lastInputTick != Replay.inputTick)
+		{
+			_lastInputTick = Replay.inputTick;
 			hasChanges = true;
+		}
 		if (_pendingPressKeys.length > 0 || _pendingReleaseKeys.length > 0)
 			hasChanges = true;
 		if (pendingJudgments.length > 0)
@@ -606,6 +684,7 @@ class Replay extends FlxBasic
 	public function recordPress(keyName:String):Void
 	{
 		if (!isRecording) return;
+		Replay.inputTick++;
 		if (_pendingPressKeys.indexOf(keyName) < 0)
 			_pendingPressKeys.push(keyName);
 	}
@@ -614,6 +693,7 @@ class Replay extends FlxBasic
 	public function recordRelease(keyName:String):Void
 	{
 		if (!isRecording) return;
+		Replay.inputTick++;
 		if (_pendingReleaseKeys.indexOf(keyName) < 0)
 			_pendingReleaseKeys.push(keyName);
 	}

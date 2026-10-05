@@ -226,17 +226,20 @@ class Rating
 	public var ratingMod:Float = 1;
 	public var noteSplash:Bool = true;
 	public var score:Int = 350;
+	/** ClientPrefs 上对应的窗口字段名, 构造时算好: 判定是每命中一次的热路径, 不该每次都拼一次字符串。 */
+	var windowField:String = '';
 	public function new(name:String)
 	{
 		this.name = name;
 		this.image = name;
+		this.windowField = name + 'Window';
 		// 'marvelous' 的复数不是 'marvelouss', 单独处理, 对应 PlayState.marvelouses
 		this.counter = (name == 'marvelous') ? 'marvelouses' : name + 's';
 	}
 
 	function get_hitWindow():Null<Int>
 	{
-		var w:Null<Int> = Reflect.field(ClientPrefs.data, name + 'Window');
+		var w:Null<Int> = Reflect.field(ClientPrefs.data, windowField);
 		if (w == null) w = 0;
 		return w;
 	}

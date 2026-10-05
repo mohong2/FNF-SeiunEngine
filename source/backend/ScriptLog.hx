@@ -71,6 +71,34 @@ class ScriptLog
 	static var started:Bool = false;
 	static var broken:Bool = false;
 
+	/**
+	 * 常驻输出句柄 / Resident output handle.
+	 *
+	 * 旧实现每写一行就 `File.append(...)` + `close()` (打开 / 写入 / 关闭三次系统调用)。诊断生命周期回调时
+	 * 这无所谓, 但**报错路径**不一样: `registerError()` 对 onKeyPress / onEvent / goodNoteHit 这类一次性回调
+	 * 永远返回 false (见 FunkinLua.registerError), 而 FunkinLua.callInner 的 catch 分支无条件写日志 ——
+	 * 一个在 onKeyPress 里报错的模组, 玩家**每次按键**都会触发一次打开+写入+关闭, 这正是"按键掉帧"的直接来源。
+	 * 现在文件在第一次写入时打开一次, 之后每行只做 write + flush: 仍然逐行落盘 (进程被强杀也不丢日志),
+	 * 但每次写入从 3 次系统调用降到 1 次 write。
+	 * English: one long-lived handle instead of open+write+close per line. Error paths are not covered by the
+	 * lifecycle whitelist, so a mod that throws inside a per-key callback used to hit the disk on every press.
+	 */
+	#if sys
+	static var handle:sys.io.FileOutput = null;
+	#end
+
+	/** 关闭常驻句柄 (begin() 重建日志前, 或写入失败后)。 */
+	public static function closeHandle():Void
+	{
+		#if sys
+		if (handle != null)
+		{
+			try { handle.close(); } catch (e:Dynamic) {}
+			handle = null;
+		}
+		#end
+	}
+
 	/** 新建本次运行的日志文件。启动时调用一次即可; 未调用会在首次 write 时自动补上。 */
 	public static function begin(?session:String):Void
 	{
@@ -78,6 +106,7 @@ class ScriptLog
 		if (broken) return;
 		started = true;
 		written = 0;
+		closeHandle(); // rebuild the file only after releasing the previous resident handle
 		if (!enabled) return;
 		try
 		{
@@ -108,14 +137,17 @@ class ScriptLog
 		if (written >= maxLines) return;
 		try
 		{
+			// 常驻句柄: 见 handle 的说明。第一次写到文件时打开, 之后每行只 write + flush。
 			// sys.io.File.append 的第二个参数是 binary:Bool, 所以必须拿 Output 再写字符串。
-			var out = File.append(FILE_PATH);
-			out.writeString('[' + tag + '] ' + (message == null ? 'null' : message) + '\n');
-			out.close();
+			if (handle == null)
+				handle = File.append(FILE_PATH);
+			handle.writeString('[' + tag + '] ' + (message == null ? 'null' : message) + '\n');
+			handle.flush();
 			written++;
 		}
 		catch (e:Dynamic)
 		{
+			closeHandle();
 			broken = true;
 		}
 		#end
