@@ -16,7 +16,18 @@ enum abstract DialogType(Int) {
  */
 
 #if (cpp && windows)
-@:headerCode('
+// Windows declarations must stay inside this class' own .cpp.
+//
+// They used to be injected with @:headerCode, i.e. into the generated
+// "mohong/Windows.h". hxcpp includes every class header from __boot__.cpp, so
+// that leaked windows.h (and with it OUT/TRANSPARENT/WAIT_FAILED/COLOR_*) into
+// thousands of unrelated headers; as long as this class happened to be included
+// last it went unnoticed, and the moment hxcpp picked a different order the next
+// headers with a Haxe field of the same name stopped compiling (C2208/C2059).
+// Scoping the include to the .cpp removes the whole class of failure, whatever
+// order hxcpp decides on. backend/Dialog.hx and backend/NativeMem.hx, the only
+// other files with raw Win32 code, carry their own copy of this block.
+@:cppFileCode('
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -29,6 +40,11 @@ enum abstract DialogType(Int) {
 #undef TRUE
 #undef NO_ERROR
 #undef DELETE
+#undef OUT
+#undef IN
+#undef TRANSPARENT
+#undef WAIT_FAILED
+#undef COLOR_HIGHLIGHT
 ')
 #end
 class Windows
@@ -65,13 +81,23 @@ class Windows
 	}
 
 	/**
-	 * Allocate a console. Returns success.
+	 * Whether *this process* allocated the console. A console inherited from the
+	 * launching terminal is not ours, so the Trace Console option must not close it
+	 * when it is switched off.
+	 */
+	public static var consoleOwned:Bool = false;
+
+	/**
+	 * Allocate a console. Returns success (true when one is already attached).
 	 * false off Windows.
 	 */
 	public static function allocConsole():Bool
 	{
 		#if (cpp && windows)
-		return untyped __cpp__('AllocConsole() != 0');
+		if (hasConsole()) return true;
+		var ok:Bool = untyped __cpp__('AllocConsole() != 0');
+		if (ok) consoleOwned = true;
+		return ok;
 		#else
 		return false;
 		#end
@@ -84,7 +110,9 @@ class Windows
 	public static function freeConsole():Bool
 	{
 		#if (cpp && windows)
-		return untyped __cpp__('FreeConsole() != 0');
+		var ok:Bool = untyped __cpp__('FreeConsole() != 0');
+		if (ok) consoleOwned = false;
+		return ok;
 		#else
 		return false;
 		#end

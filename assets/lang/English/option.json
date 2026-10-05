@@ -59,7 +59,7 @@
     "option.drawFramerate.desc": "How many frames per second the game renders at.\nCan be higher than Update Framerate for smooth visuals on high-refresh monitors.\nWorks best when Separate Update/Draw is enabled.",
     "option.cacheOnGPU.desc": "If checked, allows the GPU to be used for caching textures, decreasing RAM usage.\nDon't turn this on if you have a shitty Graphics Card.",
     "option.preloadAssets.desc": "If checked, preloads script images before gameplay with a loading screen.\nReduces lag during songs at the cost of initial load time.",
-    "option.windowedmode.desc": "Choose your window mode (Press ACCEPT to apply changes).",
+    "option.windowedmode.desc": "Choose your window mode (Press ACCEPT to apply changes).\nBorderless is a true borderless window that covers the screen without switching the display mode, so it avoids the black flash / Auto HDR switch real fullscreen can cause.\nPress F11 at any time to switch between windowed and borderless.",
     "option.closeAnimStyle.desc": "Play an animation before the window closes when you press Alt+F4 or click X.\nOff: close instantly.\nSqueeze: squish the window height first, then the width.\nZoom: shrink everything toward the center.\nDrop: shrink while falling down.\nSlide: shrink while sliding to the left.",
     "option.closeAnimSpeed.desc": "How fast the close animation plays. 1.0x is the default speed; higher values play faster.",
     "option.controllerMode.desc": "Check this if you want to play with a controller instead of using your Keyboard.",

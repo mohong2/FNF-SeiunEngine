@@ -136,24 +136,15 @@ class Main extends Sprite
 		#end
 	}  
 		#if desktop
+		/**
+		 * Normalises the boot window. The *saved* mode cannot be applied from here: main()
+		 * runs before the save file is read, so ClientPrefs still holds its defaults (which is
+		 * why the saved mode used to be forgotten on every launch). TitleState applies the real
+		 * mode as soon as the preferences are in memory.
+		 */
 		private static function applyWindowMode():Void
 		{
-			var mode = ClientPrefs.data.windowedmode;
-			var window = Lib.application.window;
-			
-			switch(mode) {
-				case 'borderless':
-				{
-					window.fullscreen = true;
-				}
-
-				case 'fullscreen':
-					window.fullscreen = true;
-				default:
-					FlxG.fullscreen = false;
-					Lib.application.window.fullscreen = false;
-					Lib.application.window.borderless = false;
-			}
+			backend.WindowMode.apply(ClientPrefs.data.windowedmode);
 		}
 		#end
 

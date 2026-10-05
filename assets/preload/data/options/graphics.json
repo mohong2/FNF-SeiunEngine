@@ -123,7 +123,7 @@
 		"nameKey": "option.windowedmode",
 		"defaultName": "Windowed mode",
 		"descKey": "option.windowedmode.desc",
-		"defaultDesc": "Choose your window mode (Press ACCEPT to apply changes).",
+		"defaultDesc": "Choose your window mode (Press ACCEPT to apply changes).\nBorderless is a true borderless window that covers the screen without switching the display mode, so it avoids the black flash / Auto HDR switch real fullscreen can cause.\nPress F11 at any time to switch between windowed and borderless.",
 		"variable": "windowedmode",
 		"type": "string",
 		"defaultValue": "windowed",

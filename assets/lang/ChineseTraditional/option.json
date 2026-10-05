@@ -58,7 +58,7 @@
     "option.framerate.desc": "每秒遊戲邏輯更新次數（物理、動畫、輸入處理）。",
     "option.drawFramerate.desc": "每秒遊戲渲染的幀數。\n在高刷新率螢幕上可高於更新幀率以獲得流暢畫面。\n啟用「渲染與更新分離」效果最佳。",
     "option.cacheOnGPU.desc": "如果選中，則允許GPU用於快取紋理，從而減少RAM使用量。\n如果你的顯示卡效能較差，請不要開啟此選項。",
-    "option.windowedmode.desc": "選擇你的視窗模式（按ACCEPT鍵應用更改）。",
+    "option.windowedmode.desc": "選擇你的視窗模式（按ACCEPT鍵應用更改）。\n「無邊框」是真正的無邊框視窗全螢幕：鋪滿螢幕但不切換顯示模式，所以不會像真全螢幕那樣觸發黑屏 / Windows 自動 HDR 切換。\n遊戲中按 F11 可隨時在「視窗化」與「無邊框」之間切換。",
     "option.closeAnimStyle.desc": "按 Alt+F4 或點擊關閉按鈕時，在視窗關閉前播放的動畫。\n關閉：立即退出。\n壓扁：先壓扁高度，再壓扁寬度。\n縮放：向中心縮小。\n墜落：一邊縮小一邊下落。\n滑出：一邊縮小一邊向左滑出。",
     "option.closeAnimSpeed.desc": "關閉動畫的播放速度。1.0 為預設速度，數值越大播放越快。",
     "option.controllerMode.desc": "如果你想用手把玩而不是用鍵盤，可以試試這個。",

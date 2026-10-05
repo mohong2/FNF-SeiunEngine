@@ -315,6 +315,11 @@ class PsychUIBox extends FlxSpriteGroup
 
 	private function set_selectedTab(v:PsychUITab)
 	{
+		// An expanded drop-down list is hosted by the state (so nothing can cover it), which
+		// means leaving this tab has to close it explicitly: the tab's menu stops being
+		// updated/drawn as soon as another tab is selected, and the list would stay on screen.
+		if(v != selectedTab) PsychUIDropDownMenu.closeAll();
+
 		if(v != null)
 		{
 			@:bypassAccessor selectedName = v.name;
@@ -385,6 +390,8 @@ class PsychUIBox extends FlxSpriteGroup
 		else
 		{
 			// Minimize – animate height down
+			// The menu stops being updated while the box is minimized, so close any open list.
+			PsychUIDropDownMenu.closeAll();
 			selectedTab = null;
 			var minimizeH:Int = tabHeight + 20;
 			if(bg.frameHeight > 0 && smoothMinimize)

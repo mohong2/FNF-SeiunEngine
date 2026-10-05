@@ -78,6 +78,26 @@ class FreeplayState extends SeiunMenuState
 	public var grpSongs:FlxTypedGroup<Alphabet>;
 	public var iconArray:Array<HealthIcon> = [];
 
+	/**
+	 * Row the selection look was last applied to (-1 = a freshly built list needs a
+	 * full re-seat). It is what lets changeSelection() touch only the two rows that
+	 * actually changed instead of re-tweening the whole song list on every key press.
+	 */
+	var syncedSelection:Int = -1;
+
+	/**
+	 * Rows further than this from the selection are parked: they keep their target
+	 * position so they stay laid out, but stop updating their letters and stop
+	 * drawing. Only about 2*ROW_WINDOW rows are ever on screen, so a list of several
+	 * hundred songs no longer updates thousands of sprites every frame.
+	 */
+	static inline var ROW_WINDOW:Int = 8;
+
+	/** Last values written into the HUD string; see the score update in update(). */
+	var shownScore:Int = 0;
+	var shownRating:Float = 0;
+	var shownScoreInitialised:Bool = false;
+
 	public var bg:FlxSprite;
 	public var intendedColor:Int;
 	public var colorTween:FlxTween;
@@ -370,9 +390,19 @@ class FreeplayState extends SeiunMenuState
 		}
 		for (i in 0...grpSongs.length)
 		{
-			var it = grpSongs.members[i];
-			var icon = iconArray[i];
+			var it:Alphabet = grpSongs.members[i];
+			var icon:HealthIcon = (i < iconArray.length) ? iconArray[i] : null;
 			var targetAlpha:Float = (i == curSelected) ? 1 : 0.6;
+
+			// Parked rows are neither visible nor updated: animating them in would
+			// allocate a tween per song just to fade in something nobody can see.
+			if (it == null || !it.active)
+			{
+				if (it != null) it.alpha = targetAlpha;
+				if (icon != null) icon.alpha = targetAlpha;
+				continue;
+			}
+
 			// Stagger by distance from the selected song so the song the player
 			// last chose (even at the bottom of the list) appears immediately.
 			var delay:Float = Math.min(Math.abs(i - curSelected) * 0.035, 0.4);
@@ -636,6 +666,7 @@ class FreeplayState extends SeiunMenuState
 		}
 		iconArray = [];
 		mouseOverlapIndex = -1; // Reset mouse tracking to prevent stale index crash
+		syncedSelection = -1;   // the new rows need a full selection re-seat
 
 		// Build filtered indices
 		var currentModFolder:String = modList[curSelectedMod];
@@ -800,16 +831,26 @@ class FreeplayState extends SeiunMenuState
 		if (Math.abs(lerpRating - intendedRating) <= 0.01)
 			lerpRating = intendedRating;
 
-		var ratingSplit:Array<String> = Std.string(Highscore.floorDecimal(lerpRating * 100, 2)).split('.');
-		if(ratingSplit.length < 2) { //No decimals, add an empty space
-			ratingSplit.push('');
+		// The HUD string is only rebuilt when a displayed value actually changed.
+		// Doing it unconditionally concatenated (and re-assigned) a fresh string every
+		// single frame, which is pure garbage-collector pressure while scrolling.
+		if (!shownScoreInitialised || lerpScore != shownScore || lerpRating != shownRating)
+		{
+			shownScoreInitialised = true;
+			shownScore = lerpScore;
+			shownRating = lerpRating;
+
+			var ratingSplit:Array<String> = Std.string(Highscore.floorDecimal(lerpRating * 100, 2)).split('.');
+			if(ratingSplit.length < 2) { //No decimals, add an empty space
+				ratingSplit.push('');
+			}
+
+			while(ratingSplit[1].length < 2) { //Less than 2 decimals in it, add decimals then
+				ratingSplit[1] += '0';
+			}
+			scoreText.text = Language.get("FreeplayState.scoreText", "PERSONAL BEST:") + lerpScore + ' (' + ratingSplit.join('.') + '%)';
+			positionHighscore();
 		}
-		
-		while(ratingSplit[1].length < 2) { //Less than 2 decimals in it, add decimals then
-			ratingSplit[1] += '0';
-		}
-		scoreText.text = Language.get("FreeplayState.scoreText", "PERSONAL BEST:") + lerpScore + ' (' + ratingSplit.join('.') + '%)';
-		positionHighscore();
 
 		var upP = controls.UI_UP_P;
 		var downP = controls.UI_DOWN_P;
@@ -834,11 +875,15 @@ class FreeplayState extends SeiunMenuState
 		var overControls:Bool = (virtualPad != null && virtualPad.isMouseOverAnyButton());
 		if (!overControls)
 		{
+		// Only the rows inside the parked window are on screen, so the hover scan
+		// walks that window instead of the entire song list every single frame.
+		var hoverFirst:Int = Std.int(Math.max(0, curSelected - ROW_WINDOW));
+		var hoverLast:Int = Std.int(Math.min(grpSongs.length, curSelected + ROW_WINDOW + 1));
 		var newMouseOverlapIndex = -1;
-		for (i in 0...grpSongs.length) {
+		for (i in hoverFirst...hoverLast) {
 			var song = grpSongs.members[i];
-			var icon = iconArray[i];
-			if (FlxG.mouse.overlaps(song) || FlxG.mouse.overlaps(icon)) {
+			var icon = (i < iconArray.length) ? iconArray[i] : null;
+			if (song != null && (FlxG.mouse.overlaps(song) || (icon != null && FlxG.mouse.overlaps(icon)))) {
 				newMouseOverlapIndex = i;
 				break;
 			}
@@ -955,8 +1000,21 @@ class FreeplayState extends SeiunMenuState
 			for (i in 0...grpSongs.length)
 			{
 				var it:Alphabet = grpSongs.members[i];
-				var icon:HealthIcon = iconArray[i];
-				var delay:Float = (grpSongs.length - 1 - i) * 0.025;
+				var icon:HealthIcon = (i < iconArray.length) ? iconArray[i] : null;
+
+				// Parked rows are off-screen and the state is gone in 0.42s: fading
+				// them out would allocate a tween per song for nothing.
+				if (it == null || !it.active)
+				{
+					if (it != null) it.alpha = 0;
+					if (icon != null) icon.alpha = 0;
+					continue;
+				}
+
+				// Stagger by distance to the selection: the old formula counted from
+				// the end of the list, so with a few hundred songs the visible rows near
+				// the top were delayed by seconds and never animated at all.
+				var delay:Float = Math.abs(i - curSelected) * 0.025;
 				FlxTween.tween(it, {alpha: 0, x: it.x - 260}, 0.28, {startDelay: delay, ease: FlxEase.quadIn});
 				FlxTween.tween(icon, {alpha: 0}, 0.28, {startDelay: delay, ease: FlxEase.quadIn});
 			}
@@ -1228,9 +1286,17 @@ class FreeplayState extends SeiunMenuState
 				for (i in 0...grpSongs.length)
 				{
 					if (i == curSelected) continue;
-					FlxTween.tween(grpSongs.members[i], {alpha: 0, x: grpSongs.members[i].x + 220}, 0.3, {ease: FlxEase.quadIn});
-					if (i < iconArray.length)
-						FlxTween.tween(iconArray[i], {alpha: 0}, 0.3, {ease: FlxEase.quadIn});
+					var row:Alphabet = grpSongs.members[i];
+					var rowIcon:HealthIcon = (i < iconArray.length) ? iconArray[i] : null;
+					if (row == null || !row.active)
+					{
+						if (row != null) row.alpha = 0;
+						if (rowIcon != null) rowIcon.alpha = 0;
+						continue;
+					}
+					FlxTween.tween(row, {alpha: 0, x: row.x + 220}, 0.3, {ease: FlxEase.quadIn});
+					if (rowIcon != null)
+						FlxTween.tween(rowIcon, {alpha: 0}, 0.3, {ease: FlxEase.quadIn});
 				}
 				stopAutoMusic();
 				destroyFreeplayVocals();
@@ -1333,31 +1399,24 @@ class FreeplayState extends SeiunMenuState
 		missingTextBG.visible = false;
 		isShowingError = false;
 		
-		for (i in 0...grpSongs.length) {
-			var item = grpSongs.members[i];
-			var icon = iconArray[i];
-			FlxTween.cancelTweensOf(item.scale);
-			FlxTween.cancelTweensOf(icon.scale);
-			if (i == curSelected)
-			{
-				FlxTween.tween(item.scale, {x: 1.2, y: 1.2}, 0.25, {ease: FlxEase.backOut});
-				FlxTween.tween(icon.scale, {x: 1.2, y: 1.2}, 0.25, {ease: FlxEase.backOut});
-			}
-			else
-			{
-				FlxTween.tween(item.scale, {x: 0.85, y: 0.85}, 0.25, {ease: FlxEase.quadOut});
-				FlxTween.tween(icon.scale, {x: 0.85, y: 0.85}, 0.25, {ease: FlxEase.quadOut});
-			}
+		// ── Selection look: only the rows that actually changed ──
+		// The previous version cancelled and re-created two tweens for *every* song
+		// on every cursor move (plus a cancelTweensOf sweep over all of them), so a
+		// long list allocated hundreds of tween objects per key press. That is the
+		// frame drop that showed up once there were many songs.
+		var previous:Int = syncedSelection;
+		if (previous < 0 || previous >= grpSongs.length)
+		{
+			// Fresh list (create / mod filter switch): seat every row in one pass.
+			for (i in 0...grpSongs.length)
+				applyRowLook(i, i == curSelected, false);
 		}
-
-		// Icon highlight + losing/winning face (health icons with 3 frames)
-		for (i in 0...iconArray.length) {
-			var isSel:Bool = (i == curSelected);
-			iconArray[i].alpha = isSel ? 1 : 0.6;
-			if (iconArray[i].frameCount == 3) {
-				iconArray[i].animation.curAnim.curFrame = isSel ? 2 : 0;
-			}
+		else if (previous != curSelected)
+		{
+			applyRowLook(previous, false, true);
+			applyRowLook(curSelected, true, true);
 		}
+		syncedSelection = curSelected;
 
 		// selector.y = (70 * curSelected) + 30;
 
@@ -1375,6 +1434,10 @@ class FreeplayState extends SeiunMenuState
 			bullShit++;
 			item.alpha = (item.targetY == 0) ? 1 : 0.6;
 		}
+
+		// Every row now knows where it should sit, so park the ones that are too far
+		// away to be seen (and wake up whichever rows just scrolled into view).
+		applyRowWindow();
 
 		// NOTE: Do NOT set Paths.currentModDirectory here!
 		// The globally active mod (selected via ModSelectSubstate / MainMenuState)
@@ -1444,6 +1507,82 @@ class FreeplayState extends SeiunMenuState
 		#else
 		autoPreviewNext = false;
 		#end
+	}
+
+	/**
+	 * Applies the selected/unselected look (row scale + health icon face) to a single
+	 * song row. `animate` is false during a full re-seat, where every row is placed
+	 * in one pass and nothing should be tweened.
+	 */
+	function applyRowLook(index:Int, selected:Bool, animate:Bool):Void
+	{
+		if (index < 0) return;
+
+		var item:Alphabet = (index < grpSongs.length) ? grpSongs.members[index] : null;
+		if (item != null)
+		{
+			var target:Float = selected ? 1.2 : 0.85;
+			FlxTween.cancelTweensOf(item.scale);
+			if (animate)
+				FlxTween.tween(item.scale, {x: target, y: target}, 0.25, {ease: selected ? FlxEase.backOut : FlxEase.quadOut});
+			else
+				item.scale.set(target, target);
+		}
+
+		var icon:HealthIcon = (index < iconArray.length) ? iconArray[index] : null;
+		if (icon == null) return;
+
+		FlxTween.cancelTweensOf(icon.scale);
+		if (animate)
+			FlxTween.tween(icon.scale, {x: selected ? 1.2 : 0.85, y: selected ? 1.2 : 0.85}, 0.25,
+				{ease: selected ? FlxEase.backOut : FlxEase.quadOut});
+		else
+			icon.scale.set(selected ? 1.2 : 0.85, selected ? 1.2 : 0.85);
+
+		icon.alpha = selected ? 1 : 0.6;
+		// Icon highlight + losing/winning face (health icons with 3 frames)
+		if (icon.frameCount == 3 && icon.animation != null && icon.animation.curAnim != null)
+			icon.animation.curAnim.curFrame = selected ? 2 : 0;
+	}
+
+	/**
+	 * Parks every song row outside the on-screen window.
+	 *
+	 * A parked row keeps its target position (so it is still laid out correctly) but
+	 * stops updating its letters and stops drawing. Waking one up snaps it into place
+	 * first, because its lerp was frozen while the selection moved on - without that
+	 * it would visibly slide in from wherever it was parked.
+	 */
+	function applyRowWindow():Void
+	{
+		var first:Int = Std.int(Math.max(0, curSelected - ROW_WINDOW));
+		var last:Int = Std.int(Math.min(grpSongs.length, curSelected + ROW_WINDOW + 1));
+
+		for (i in 0...grpSongs.length)
+		{
+			var item:Alphabet = grpSongs.members[i];
+			var icon:HealthIcon = (i < iconArray.length) ? iconArray[i] : null;
+			var onScreen:Bool = (i >= first && i < last);
+
+			if (icon != null) icon.visible = onScreen;
+
+			if (item == null) continue;
+			if (onScreen)
+			{
+				if (item.active) continue;
+				item.snapToPosition();
+				item.alpha = (i == curSelected) ? 1 : 0.6;
+				item.visible = true;
+				item.active = true;
+			}
+			else
+			{
+				if (!item.active) continue;
+				item.snapToPosition();
+				item.active = false;
+				item.visible = false;
+			}
+		}
 	}
 
 	public function positionHighscore() {
