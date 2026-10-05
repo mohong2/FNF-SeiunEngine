@@ -1724,10 +1724,17 @@ class FunkinLua {
 		});
 		Lua_helper.add_callback(lua, "setPropertyFromGroup", function(obj:String, index:Int, variable:Dynamic, value:Dynamic, ?allowMaps:Bool = false, ?allowInstances:Bool = false) {
 			if (allowInstances) value = parseInstanceValue(value);
+			if(obj == null || variable == null) return;
 			var shitMyPants:Array<String> = obj.split('.');
 			var realObject:Dynamic = Reflect.getProperty(getInstance(), obj);
 			if(shitMyPants.length>1)
 				realObject = getPropertyLoopThingWhatever(shitMyPants, true, false);
+
+			if(realObject == null)
+			{
+				luaTrace("setPropertyFromGroup: Group: " + obj + " doesn't exist!", false, false, FlxColor.RED);
+				return;
+			}
 
 			// unspawnNotes 是 ChartNotes (列式存储): 直接写 get() 出来的一次性 DTO 会丢,
 			// 表现就是"custom_notetypes 的贴图/属性全部变回原版"。liveAt() 把这一行钉住,
@@ -1741,7 +1748,14 @@ class FunkinLua {
 			}
 
 			if(Std.isOfType(realObject, FlxTypedGroup)) {
-				setGroupStuff(realObject.members[index], variable, value);
+				if(realObject.members == null || index < 0 || index >= realObject.members.length)
+				{
+					luaTrace("setPropertyFromGroup: Object #" + index + " from group: " + obj + " doesn't exist!", false, false, FlxColor.RED);
+					return;
+				}
+				var member:Dynamic = realObject.members[index];
+				if(member == null) return;
+				setGroupStuff(member, variable, value);
 				return;
 			}
 

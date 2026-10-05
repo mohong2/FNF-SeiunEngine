@@ -55,6 +55,89 @@ compatibility with the older gated `Project.xml`; it is a no-op.) A report's
 `Build:` line (fingerprint of the running binary + the loaded linemap) is what
 you match against `build-info.txt` in the bundle.
 
+### Where did this build's symbols go? -- answered after every build
+
+```
+haxelib run lime build windows        # ... compiles ...
+[symbols] --------------------------------------------------------------------
+[symbols] windows debug - symbols for exactly this build
+[symbols]   map      export/symbols/windows-debug/ApplicationMain.map
+[symbols]              MAP MSVC map (symbol -> RVA) 250738898B#410449b5
+[symbols]   exe      export/debug/windows/bin/SeiunEngine.exe
+[symbols]   resolve: python tools/crash_triage.py --crash <report.txt>
+[symbols] --------------------------------------------------------------------
+[symbols]   info: export/symbols/windows-debug/build-info.txt
+```
+
+Project.xml carries a `<postbuild haxe="tools.SymbolsAfterBuild" />` hook that runs
+at the end of **any** plain `lime build`. It is a `haxe --interp` program, not a
+Python script, because haxe is guaranteed to exist wherever lime runs. It reports
+every artifact that can turn a report's module+offset back into a symbol or a
+source line, **moves** the pure link byproducts into
+`export/symbols/<platform>-<mode>/` (move, never copy: no second copy of a 250 MB
+map or an 85 MB .so), and leaves the same list plus build fingerprints in
+`build-info.txt`. Lime ignores the postbuild exit code and the program traps its
+own errors, so it can never fail a build; it takes about a second.
+
+Anything older than the binary that was just linked is *never* collected - the
+hook flags it as `stale` and leaves it where it is, because a restored compile
+cache or an incremental build can make that file the only copy a downstream tool
+has. An older hxcpp layout does leave `obj/obj/<target>/libApplicationMain.so`
+behind, months out of date, and a symbol file from another build resolves offsets
+to plausible, **wrong** symbols.
+
+What actually exists, measured on a plain build:
+
+| target | artifact | addressable? |
+|---|---|---|
+| windows | `obj/ApplicationMain.map` -> moved to the bundle | yes (MSVC map) |
+| android release | `obj/libApplicationMain.so` -> moved to the bundle | yes, once `HXCPP_DEBUG_LINK_AND_STRIP` is set |
+| android debug | `obj/libApplicationMain-debug-64.so` | yes (166 MB of DWARF; never stripped, so it stays put) |
+| linux | `obj/ApplicationMain` | names only, no line table |
+| ios / macos | nothing useful from lime | use the dSYM from the Xcode archive |
+| html5 | `bin/<App>.js.map` | yes |
+
+Two things worth knowing, both reported by the hook when they apply:
+
+* **Android has no .map at all.** `HXCPP_MAP_FILE` is only read by
+  `hxcpp/toolchain/msvc-toolchain.xml`; on gcc targets release links with
+  `-Wl,--strip-all` and is stripped again afterwards, so the shipped `.so` has
+  neither `.symtab` nor `.debug_*` - there is nothing to find. Project.xml
+  therefore sets `HXCPP_DEBUG_LINK_AND_STRIP` for non-debug android builds, which
+  makes hxcpp save an unstripped copy (all DWARF) before stripping the shipped
+  one. The shipped `.so` is unchanged; the cost is one extra ~85 MB file per
+  android release link. The hook names that copy after its ABI
+  (`libApplicationMain-arm64-v8a.so`) because hxcpp itself calls every one of
+  them `libApplicationMain.so`.
+* **A multi-ABI build keeps one symbol file per ABI only if hxcpp links them into
+  per-target directories.** Where it does not, build one ABI at a time
+  (`-arm64` / `-v7`) when you intend to resolve a release report.
+
+Resolving a report from there:
+
+    ndk-stack -sym export/symbols/android-release -dump <report.txt>   # android
+    python tools/crash_triage.py --crash <report.txt>                  # windows
+
+### Android crash report -> source line (offline)
+
+    adb pull /storage/emulated/0/Android/data/com.mohong.Seiunengine/files/crash/ ./crash/
+    python tools/symbolize_android.py crash/native_crash_20261004_221500.txt
+
+It reads the report's `Build:` identity (`so=<size>B@<mtime>s#<hash>`), proves which
+local build the report came from by matching the **shipped** `.so`'s size + hash,
+then resolves every `pc <offset> libApplicationMain.so` frame against the
+**unstripped** `.so` of that build - which the postbuild hook put under
+`export/symbols/android-<mode>/`. The first run builds a SELM line table next to
+that `.so` and caches it.
+
+    ... --lib <unstripped.so>                  pick the symbols yourself
+    ... --bin assets/linemap/arm64-v8a.bin     resolve straight from a linemap
+
+Frames the engine already annotated on-device (`[source/File.cpp:123]`) are shown
+next to the offline answer; `<-- DISAGREES` means the embedded table in that build
+was stale. Exit 1 = the report does not belong to the symbols that were used.
+Requires pyelftools; no NDK and no llvm-symbolizer needed.
+
 ### Check a map before you trust it -- `verify_map.py`
 
     python tools/verify_map.py <exe> <map>
@@ -81,6 +164,20 @@ when a category points at a page that does not exist (or a page has no
 category), when `language` is not the first entry of `general`, or when a
 category/option label is missing from any of the three languages.
 
+## 排查构建
+
+默认就是安全模式(`Project.xml` 的 `hxcpp_safe`): 空指针/非法指针直接抛 Haxe 异常, logcat 里
+带 `.hx` 文件+行号, 不需要符号表/崩溃报告那一套。复现后:
+
+    adb logcat -d -s HXCPP:E Exception:E
+    E Exception: Null Object Reference
+    E HXCPP    : Called from Foo::bar Foo.hx line 123
+
+- `-D hxcpp_nosafe`: 退回旧流程(嵌入行号表 + 未剥离 .so + postbuild 刷新); 符号脚本会自动带上它。
+- `-D hxcpp_gc_check`: 额外校验"指针还是活着的 GC 对象吗"(有假阳性风险, 因为开了 GC_BIG_BLOCKS)。
+- 开关名必须小写 `hxcpp_` 开头: hxcpp 的 obj 缓存只认含小写 `hxcpp` 的选项行, 大写 `HXCPP_*` 变了它不重编。
+- 切一次开关 = 全量重编一次(故意的, 理由同上)。
+
 ## Other files
 
 | File | Purpose |
@@ -90,5 +187,7 @@ category/option label is missing from any of the three languages.
 | `gen_linemap.bat` / `gen_linemap.py` | Android: address -> source-line table from an unstripped `.so` (the resident crash linemap) |
 | `gen_linemap_msvc.py` | Windows: the same table out of an MSVC PDB via dbghelp (`--text-sha` compares two builds' .text) |
 | `fnv1a.py` | the build-fingerprint hash the C++/Haxe side uses (`file` = first/last 64 KB, `whole` = whole file) |
+| `symbolize_android.py` | Android crash report -> source line, offline: matches the report to the build, resolves `pc <offset>` frames against the unstripped `.so` (pyelftools; builds/caches a SELM table) |
+| `SymbolsAfterBuild.hx` | the `<postbuild>` hook (`haxe --interp`, no Python): after any plain `lime build`, moves this build's map / unstripped binary into `export/symbols/<platform>-<mode>/`, parks older leftovers in `_stale/`, and writes `build-info.txt` |
 | `build_android_symbols.ps1` | one command: APK + unstripped `.so` + `<abi>.bin` + `build-info.txt` |
 | `build_windows_symbols.ps1` | one command: exe with the linemap embedded + `.map` + `build-info.txt` (no PDB published) |

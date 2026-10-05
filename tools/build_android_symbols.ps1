@@ -61,7 +61,10 @@ $symbolsDir = Join-Path $outDir 'symbols'
 function Invoke-Lime {
     param([string[]]$LimeArgs)
     Write-Host ("[symbols] haxelib run lime " + ($LimeArgs -join ' ')) -ForegroundColor Cyan
-    & haxelib run lime @LimeArgs
+    # This script runs its own generate-embed-converge loop, so the postbuild hook's
+    # per-build disk refresh must stay out of the way here.
+    $env:SEIUN_LINEMAP_PIPELINE = '1'
+    try { & haxelib run lime @LimeArgs } finally { Remove-Item Env:\SEIUN_LINEMAP_PIPELINE -ErrorAction SilentlyContinue }
     if ($LASTEXITCODE -ne 0) { throw "lime build failed (exit $LASTEXITCODE)" }
 }
 
@@ -77,6 +80,8 @@ function Get-LimeArgs {
     $a.Add('build'); $a.Add((Join-Path $root 'Project.xml')); $a.Add('android')
     if ($Arch) { $a.Add($Arch) }
     $a.Add('-DHXCPP_DEBUG_LINK_AND_STRIP')
+    # Project.xml defaults to safe mode now; symbol builds need the old pipeline back.
+    $a.Add('-Dhxcpp_nosafe')
     $a.Add('-DCRASH_LINEMAP')
     if ($AppVersion) { $a.Add("--app-version=$AppVersion") }
     return $a.ToArray()
@@ -90,13 +95,30 @@ function Get-Fingerprint {
 }
 
 # The unstripped copies hxcpp keeps; the first existing path per ABI wins.
+# tools/SymbolsAfterBuild.hx MOVES them into the bundle after every lime build, and
+# names them after the ABI, so the bundle comes first. obj\obj\<target>\... is the
+# per-target spot (an older layout) and obj\libApplicationMain-*.so is the stripped
+# deployment copy - usable only as a last resort.
+$bundleDir = Join-Path $root 'export\symbols\android-release'
 $abiSources = @(
-    @{ abi = 'arm64-v8a';   src = @("$outDir\obj\obj\android-64\libApplicationMain.so", "$outDir\obj\libApplicationMain-64.so"); so = 'libApplicationMain-64.so' },
-    @{ abi = 'armeabi-v7a'; src = @("$outDir\obj\obj\android-v7\libApplicationMain.so", "$outDir\obj\libApplicationMain-v7.so"); so = 'libApplicationMain-v7.so' }
+    @{ abi = 'arm64-v8a';   src = @("$bundleDir\libApplicationMain-arm64-v8a.so", "$outDir\obj\obj\android-64\libApplicationMain.so", "$outDir\obj\libApplicationMain.so", "$outDir\obj\libApplicationMain-64.so"); so = 'libApplicationMain-64.so' },
+    @{ abi = 'armeabi-v7a'; src = @("$bundleDir\libApplicationMain-armeabi-v7a.so", "$outDir\obj\obj\android-v7\libApplicationMain.so", "$outDir\obj\libApplicationMain-v7.so"); so = 'libApplicationMain-v7.so' }
 )
+
+# A single-ABI build only needs that ABI's table: parsing the other one's DWARF
+# costs minutes and the result would not be embedded by this build anyway.
+if ($Arch -eq '-arm64') { $abiSources = @($abiSources | Where-Object { $_.abi -eq 'arm64-v8a' }) }
+elseif ($Arch -eq '-v7') { $abiSources = @($abiSources | Where-Object { $_.abi -eq 'armeabi-v7a' }) }
+$linemapAbi = ''
+if ($Arch -eq '-arm64') { $linemapAbi = 'arm64-v8a' } elseif ($Arch -eq '-v7') { $linemapAbi = 'armeabi-v7a' }
 
 function Find-Unstripped {
     param($Entry)
+    # Same selector as gen_linemap.bat: the NEWEST copy that actually carries DWARF.
+    # The old fixed list returned $Entry.src[0] - the bundle's copy of an EARLIER
+    # build - while the fresh byproduct sat in obj\obj\<target>\ untouched.
+    $picked = & python (Join-Path $PSScriptRoot 'gen_linemap.py') --find-so 'release' $Entry.abi
+    if ($LASTEXITCODE -eq 0 -and $picked) { return $picked.Trim() }
     foreach ($candidate in $Entry.src) {
         if (Test-Path $candidate) { return $candidate }
     }
@@ -112,6 +134,30 @@ foreach ($entry in $abiSources) {
         New-Item -ItemType Directory -Force -Path (Split-Path $bin) | Out-Null
         [System.IO.File]::WriteAllBytes($bin, $stub)
         Write-Host "[symbols] created stub $bin (replaced by the real table below)"
+    }
+}
+
+# ---- 0/2: never build the table on a poisoned object cache ------------------
+#
+# hxcpp reuses .obj across builds and its cache key does not include the debug
+# flags, so a tree that was ever built without HXCPP_DEBUG_LINK keeps reusing
+# objects that carry no .debug_line, however often it is rebuilt. The linemap
+# generated from such a link covers only the prebuilt static libraries, locates
+# none of the game code - and still "converges", because the embedded table and
+# the freshly generated one are equally blind. Purge and pay the recompile once.
+$objRoot = Join-Path $outDir 'obj\obj'
+if (Test-Path $objRoot) {
+    $poisoned = @()
+    foreach ($dir in Get-ChildItem $objRoot -Directory) {
+        & python (Join-Path $PSScriptRoot 'gen_linemap.py') --check-objdir $dir.FullName
+        if ($LASTEXITCODE -ne 0) { $poisoned += $dir.FullName }
+    }
+    if ($poisoned.Count -gt 0) {
+        foreach ($d in $poisoned) { Remove-Item $d -Recurse -Force }
+        Write-Host "[symbols] purged $($poisoned.Count) object director(ies) with no debug info - the next build recompiles them with -g (slow, once)" -ForegroundColor Yellow
+        foreach ($d in $poisoned) { Write-Host "[symbols]   $d" -ForegroundColor Yellow }
+    } else {
+        Write-Host "[symbols] object cache carries debug info - no purge needed"
     }
 }
 
@@ -136,7 +182,11 @@ $attempts = 0
 $pendingVerify = @()
 while (-not $converged -and $attempts -lt 2) {
     $attempts++
-    & (Join-Path $PSScriptRoot 'gen_linemap.bat') release
+    if ($linemapAbi) {
+        & (Join-Path $PSScriptRoot 'gen_linemap.bat') release $linemapAbi
+    } else {
+        & (Join-Path $PSScriptRoot 'gen_linemap.bat') release
+    }
     if ($LASTEXITCODE -ne 0) { throw "gen_linemap.bat failed (exit $LASTEXITCODE)" }
 
     Invoke-Lime (Get-LimeArgs)

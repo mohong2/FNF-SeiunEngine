@@ -18,6 +18,10 @@ cd /d "%~dp0.."
 set BUILD=%1
 if "%BUILD%"=="" set BUILD=release
 
+rem optional 2nd arg: limit to one ABI (arm64-v8a / armeabi-v7a)
+set ABIOPT=
+if not "%2"=="" set ABIOPT=--abi %2
+
 where python >nul 2>nul
 if errorlevel 1 (
     echo [gen_linemap] python not found on PATH.
@@ -30,28 +34,19 @@ if errorlevel 1 (
     python -m pip install pyelftools || exit /b 1
 )
 
-rem -DHXCPP_DEBUG_LINK_AND_STRIP keeps the unstripped link output in
-rem obj\obj\android-64 (and android-v7); obj\libApplicationMain-*.so next to it is
-rem the stripped deployment copy. Prefer the unstripped one, fall back to the
-rem flat path for older layouts.
-set SO64=
-if exist "export\%BUILD%\android\obj\obj\android-64\libApplicationMain.so" set SO64=export\%BUILD%\android\obj\obj\android-64\libApplicationMain.so
-if "%SO64%"=="" if exist "export\%BUILD%\android\obj\libApplicationMain-64.so" set SO64=export\%BUILD%\android\obj\libApplicationMain-64.so
-if "%SO64%"=="" (
-    echo [gen_linemap] no arm64 .so found.
-    echo Run "haxelib run lime build android -DHXCPP_DEBUG_LINK_AND_STRIP" first.
+rem ---------------------------------------------------------------------------
+rem Candidate discovery, the "newest DWARF-bearing copy wins" rule and the
+rem coverage gate all live in gen_linemap.py. They used to live here as a fixed
+rem priority list, which handed the generator the PREVIOUS build's byproduct
+rem while the fresh one sat in obj\obj\<target>\ - the resulting table located
+rem 1.5% of the binary and still passed every check downstream.
+rem ---------------------------------------------------------------------------
+python tools\gen_linemap.py --android %BUILD% %ABIOPT%
+if errorlevel 1 (
+    echo.
+    echo [gen_linemap] FAILED - nothing was written for the ABIs above.
+    echo [gen_linemap] The table is refused rather than shipped blind; see the message above.
     exit /b 1
-)
-
-echo [gen_linemap] arm64-v8a
-python tools\gen_linemap.py "%SO64%" "assets\linemap\arm64-v8a.bin" || exit /b 1
-
-set SO7=
-if exist "export\%BUILD%\android\obj\obj\android-v7\libApplicationMain.so" set SO7=export\%BUILD%\android\obj\obj\android-v7\libApplicationMain.so
-if "%SO7%"=="" if exist "export\%BUILD%\android\obj\libApplicationMain-v7.so" set SO7=export\%BUILD%\android\obj\libApplicationMain-v7.so
-if not "%SO7%"=="" (
-    echo [gen_linemap] armeabi-v7a
-    python tools\gen_linemap.py "%SO7%" "assets\linemap\armeabi-v7a.bin" || exit /b 1
 )
 
 echo.

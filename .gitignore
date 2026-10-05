@@ -28,6 +28,10 @@ export/*
 
 # Crash linemaps are generated per build (tools/build_*_symbols.ps1)
 assets/linemap/*.bin
+assets/linemap/*.objsig
+
+# Local crash-triage scratch (reports, probes, logs)
+debughunt/
 
 # SeiunEngine local-only artifacts (not for commit)
 server/build/

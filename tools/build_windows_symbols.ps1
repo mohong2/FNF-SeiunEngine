@@ -61,6 +61,16 @@ if ($LASTEXITCODE -ne 0) { throw "gen_buildinfo.py failed (exit $LASTEXITCODE)" 
 $outDir = 'export\release\windows'
 $exe = Join-Path $outDir 'bin\SeiunEngine.exe'
 $objDir = Join-Path $outDir 'obj'
+
+# tools/SymbolsAfterBuild.hx MOVES obj\ApplicationMain.map into the bundle after every
+# lime build, so a plain read of obj\ comes up empty once the hook has run.
+$bundleMap = Join-Path $root 'export\symbols\windows-release\ApplicationMain.map'
+function Get-MapPath {
+    $raw = Join-Path $objDir 'ApplicationMain.map'
+    if (Test-Path $raw) { return $raw }
+    if (Test-Path $bundleMap) { return $bundleMap }
+    return $raw
+}
 $linemap = 'assets\linemap\windows-x64.bin'
 $symbolsDir = Join-Path $outDir 'symbols'
 
@@ -130,6 +140,8 @@ function Get-BuildArgs {
     # with 'You must have a "project.xml" file' on case-sensitive filesystems.
     $a.Add('build'); $a.Add((Join-Path $root 'Project.xml')); $a.Add('windows')
     if ($WithDebug) { $a.Add('-DHXCPP_DEBUG_LINK') }
+    # Project.xml defaults to safe mode now; symbol builds need the old pipeline back.
+    $a.Add('-Dhxcpp_nosafe')
     $a.Add('-DCRASH_LINEMAP')
     if ($AppVersion) { $a.Add("--app-version=$AppVersion") }
     return $a.ToArray()
@@ -178,7 +190,7 @@ Write-Host "[symbols] linemap verified against the embedding build ($h1)"
 # map. Keeping only the newest map is how a release ends up publishing symbols
 # for a binary nobody has.
 $matchedMap = Join-Path $env:TEMP ('seiun_win_map_' + [Guid]::NewGuid().ToString('N') + '.map')
-Copy-Item (Join-Path $objDir 'ApplicationMain.map') $matchedMap -Force
+Copy-Item (Get-MapPath) $matchedMap -Force
 
 # ---- 5/6: pristine release build with the same .text -----------------------
 if (-not $KeepDebugLink) {
@@ -217,7 +229,7 @@ Remove-Item $matchedMap -Force -ErrorAction SilentlyContinue
 
 New-Item -ItemType Directory -Force -Path $symbolsDir | Out-Null
 Get-ChildItem (Join-Path $outDir 'bin') -Filter '*.pdb' -ErrorAction SilentlyContinue | Remove-Item -Force
-Copy-Item (Join-Path $objDir 'ApplicationMain.map') $symbolsDir -Force -ErrorAction SilentlyContinue
+Copy-Item (Get-MapPath) $symbolsDir -Force -ErrorAction SilentlyContinue
 Copy-Item $linemap $symbolsDir -Force
 
 # The published map is only useful if it describes the published exe. Linking is
@@ -237,8 +249,8 @@ $exeFp = (& python (Join-Path $PSScriptRoot 'fnv1a.py') file $exe).Trim()
 $exeWhole = (& python (Join-Path $PSScriptRoot 'fnv1a.py') whole $exe).Trim()
 $linemapFp = (& python (Join-Path $PSScriptRoot 'fnv1a.py') whole $linemap).Trim()
 $mapFp = ''
-if (Test-Path (Join-Path $objDir 'ApplicationMain.map')) {
-    $mapFp = (& python (Join-Path $PSScriptRoot 'fnv1a.py') file (Join-Path $objDir 'ApplicationMain.map')).Trim()
+if (Test-Path (Get-MapPath)) {
+    $mapFp = (& python (Join-Path $PSScriptRoot 'fnv1a.py') file (Get-MapPath)).Trim()
 }
 $text = (& python (Join-Path $PSScriptRoot 'gen_linemap_msvc.py') $exe --text-sha)
 

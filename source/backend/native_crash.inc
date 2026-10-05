@@ -430,6 +430,37 @@ static void seiun_append(char* buf, size_t cap, int* len, const char* fmt, ...)
 	*len += l;
 }
 
+/**
+ * The one actionable block: which tool turns the "module+offset" frames above
+ * into source lines. Kept in one place so every report path - Windows SEH,
+ * abort(), the LuaJIT panic and the POSIX signal handler - says the same thing,
+ * and so it can be updated without hunting four call sites.
+ */
+static void seiun_append_triage(char* buf, size_t cap, int* len)
+{
+#if defined(_WIN32)
+	seiun_append(buf, cap, len,
+		"\n--- Triage ---\n"
+		"python tools/crash_triage.py --crash <this report>    (finds the matching .map itself)\n"
+		"map      : export/symbols/windows-<mode>/ApplicationMain.map\n"
+		"manual   : python tools/mapresolve.py <map> <offset from the backtrace>\n"
+		"check it : python tools/verify_map.py SeiunEngine.exe <map>\n");
+#elif defined(__ANDROID__)
+	seiun_append(buf, cap, len,
+		"\n--- Triage ---\n"
+		"python tools/symbolize_android.py <this report>       (matches the build, uses the unstripped .so)\n"
+		"symbols  : export/symbols/android-<mode>/libApplicationMain*.so\n"
+		"manual   : ndk-stack -sym <that directory> -dump <this report>\n"
+		"A [source/File.cpp:123] suffix came from the linemap embedded in this build; if the\n"
+		"tool disagrees with one, that embedded table is stale (build twice to refresh it).\n");
+#else
+	seiun_append(buf, cap, len,
+		"\n--- Triage ---\n"
+		"names only: export/<mode>/linux/obj/ApplicationMain has .symtab but no DWARF\n"
+		"manual    : addr2line -f -C -e <that binary> <offset from the backtrace>\n");
+#endif
+}
+
 static void seiun_mark_crash_pending(void);
 
 /**
@@ -923,6 +954,7 @@ static void seiun_posix_handler(int sig, siginfo_t* si, void* uctx)
 		seiun_append(body, cap, &len, "  (not available)\n");
 #endif
 	}
+	seiun_append_triage(body, cap, &len);
 	seiun_posix_finish(body, len, btStart);
 
 	signal(sig, SIG_DFL);
@@ -1446,13 +1478,7 @@ static LONG WINAPI seiun_seh_handler(EXCEPTION_POINTERS* info)
 		len += seiun_write_stack_scan(body + len, cap - (size_t)len, (ULONG_PTR)info->ContextRecord->Rsp);
 #endif
 
-	// The one actionable line: how to turn the offsets above into function names
-	// with the symbol bundle published next to the release.
-	seiun_append(body, cap, &len,
-		"\n--- Triage ---\n"
-		"python tools/mapresolve.py ApplicationMain.map <offset from the backtrace>\n"
-		"(first check the map belongs to this exe:"
-		" python tools/verify_map.py SeiunEngine.exe ApplicationMain.map)\n");
+	seiun_append_triage(body, cap, &len);
 	seiun_write_crash_file(body);
 
 	return EXCEPTION_CONTINUE_SEARCH;
@@ -1477,6 +1503,7 @@ static void __cdecl seiun_sigabrt_handler(int sig)
 	seiun_append_build_identity(body, cap, &len);
 	seiun_append(body, cap, &len, "\n");
 	len += seiun_write_live_backtrace(body + len, cap - (size_t)len);
+	seiun_append_triage(body, cap, &len);
 	seiun_write_crash_file(body);
 	seiun_native_crash_popup(seiun_crash_file());
 }
@@ -1529,12 +1556,14 @@ static int seiun_lua_panic_handler(lua_State* L)
 		seiun_native_crash_popup(seiun_crash_file());
 		// Phase 2: overwrite with the backtrace appended.
 		len += seiun_write_live_backtrace(body + len, cap - (size_t)len);
+		seiun_append_triage(body, cap, &len);
 		seiun_write_crash_file(body);
 #else
 		{
 			int btStart = len;
 			seiun_append(body, cap, &len, "\nBacktrace (stack intact at panic time):\n");
 			seiun_write_unwind_backtrace(body, cap, &len);
+			seiun_append_triage(body, cap, &len);
 			seiun_write_crash_file_fd(body, (size_t)len, 0);
 #if defined(__linux__)
 			seiun_dump_maps();

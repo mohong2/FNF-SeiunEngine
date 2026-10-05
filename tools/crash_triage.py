@@ -42,7 +42,18 @@ from datetime import datetime
 TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(TOOL_DIR)
 DEFAULT_CRASH_DIR = os.path.join(REPO_ROOT, 'export', 'release', 'windows', 'bin', 'crash')
-DEFAULT_MAP = os.path.join(REPO_ROOT, 'export', 'release', 'windows', 'obj', 'ApplicationMain.map')
+def _first_existing(*paths):
+    for p in paths:
+        if os.path.isfile(p):
+            return p
+    return paths[0]
+
+# tools/SymbolsAfterBuild.hx MOVES the map into export/symbols/<platform>-<mode>/
+# after every lime build, so look there first and keep the old obj/ spot as a
+# fallback for a tree where the hook has not run yet.
+DEFAULT_MAP = _first_existing(
+    os.path.join(REPO_ROOT, 'export', 'symbols', 'windows-release', 'ApplicationMain.map'),
+    os.path.join(REPO_ROOT, 'export', 'release', 'windows', 'obj', 'ApplicationMain.map'))
 DEFAULT_EXE = os.path.join(REPO_ROOT, 'export', 'release', 'windows', 'bin', 'SeiunEngine.exe')
 
 REPORT_PREFIXES = ('native_crash', 'SeiunEngine_', 'MohonghEngine_')

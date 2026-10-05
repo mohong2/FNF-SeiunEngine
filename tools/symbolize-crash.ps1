@@ -44,6 +44,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 
 if (-not $Map) {
     $candidates = @(
+        (Join-Path $repoRoot 'export/symbols/windows-release/ApplicationMain.map'),
         (Join-Path $repoRoot 'export/release/windows/obj/ApplicationMain.map'),
         (Join-Path $repoRoot 'ApplicationMain.map')
     )

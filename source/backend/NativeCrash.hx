@@ -202,6 +202,9 @@ class NativeCrash
 	 */
 	public static function loadLinemap(storageDir:String, libName:String = 'libApplicationMain'):Void
 	{
+		#if hxcpp_safe
+		return;
+		#else
 		#if (cpp && sys)
 		if (linemapBytes != null) return; // already loaded
 		var abi:String = getCpuAbi();
@@ -235,6 +238,7 @@ class NativeCrash
 			}
 		}
 		catch (e:Dynamic) {}
+		#end
 		#end
 	}
 

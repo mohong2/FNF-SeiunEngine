@@ -10,7 +10,12 @@ native crash report can print the exact "[source/File.cpp:123]" for each frame
 - no root, no tombstones, no host tools needed after the fact.
 
 Usage:
-    python gen_linemap.py <libApplicationMain-64.so> <out.bin>
+    python gen_linemap.py <libApplicationMain-64.so> <out.bin> [--min-coverage 0.90]
+    python gen_linemap.py --android release
+    python gen_linemap.py --check-objdir export/release/android/obj/obj/androidarm64-64
+
+The table is refused (non-zero exit) when it cannot locate most of the binary's
+own functions - see MIN_COVERAGE and coverage().
 
 Requires:  pip install pyelftools
 
@@ -26,6 +31,8 @@ into the next sequence. Only the FIRST row of every constant file:line run is
 kept (the runtime lookup returns the last row <= pc, which is then exact).
 """
 
+import bisect
+import glob
 import struct
 import sys
 import os
@@ -37,6 +44,11 @@ except ImportError:
 
 MAGIC = b"SELM"
 VERSION = 1
+
+# A table that locates almost nothing is worse than no table: it converges,
+# compares equal to itself and ships, so every later crash report reads as
+# "(no line info)". Refuse it at generation time instead.
+MIN_COVERAGE = 0.90
 
 
 def _as_text(value):
@@ -222,16 +234,237 @@ def selftest(out_bytes, entries, lib_path):
     print("selftest: %d/5 lookups exact" % ok)
 
 
+def coverage(entries, lib_path):
+    """How much of the binary's own code the generated table can locate.
+
+    Every STT_FUNC in the ELF symbol table is looked up exactly the way the
+    runtime handler does (last entry <= address). A low ratio means the DWARF
+    is missing for most translation units, i.e. the hxcpp object cache was
+    populated by builds without -g and is being reused.
+
+    Returns (resolved, total, ratio).
+    """
+    addrs = [a for a, _ in entries]
+    resolved = 0
+    total = 0
+    with open(lib_path, "rb") as f:
+        elf = ELFFile(f)
+        symtab = elf.get_section_by_name(".symtab")
+        if symtab is None:
+            return 0, 0, 1.0
+        for sym in symtab.iter_symbols():
+            if sym["st_info"]["type"] != "STT_FUNC":
+                continue
+            addr = sym["st_value"]
+            if not addr or not sym["st_size"]:
+                continue
+            total += 1
+            i = bisect.bisect_right(addrs, addr) - 1
+            if i >= 0 and entries[i][1][1]:
+                resolved += 1
+    return resolved, total, (resolved / float(total)) if total else 1.0
+
+
+def check_objdir(path):
+    """Exit 0 when the objects there carry DWARF, 1 when the cache is poisoned.
+
+    hxcpp reuses .obj across builds and its cache key does not include the debug
+    flags, so a tree that was ever built without HXCPP_DEBUG_LINK keeps shipping
+    objects with no .debug_line no matter how often it is rebuilt. That is the
+    real reason a release linemap comes out blind.
+    """
+    objs = sorted(glob.glob(os.path.join(path, "*.obj")))
+    if not objs:
+        print("%s: no .obj files" % path)
+        return 0
+    with_dbg = 0
+    for p in objs:
+        try:
+            with open(p, "rb") as f:
+                if ELFFile(f).get_section_by_name(".debug_line") is not None:
+                    with_dbg += 1
+        except Exception:
+            pass
+    ratio = with_dbg / float(len(objs))
+    print("%s: %d/%d objects carry .debug_line (%.1f%%)"
+          % (path, with_dbg, len(objs), ratio * 100.0))
+    # A handful of objects (prebuilt extensions, resource blobs) legitimately carry
+    # no line table; demanding 100% would purge the cache before every single build.
+    return 0 if ratio >= 0.90 else 1
+
+
+def has_debug(path):
+    """True when the ELF carries a DWARF line table (i.e. can feed the linemap)."""
+    try:
+        with open(path, "rb") as f:
+            return ELFFile(f).get_section_by_name(".debug_line") is not None
+    except Exception:
+        return False
+
+
+# (abi, unstripped obj dirs used by past/current hxcpp layouts, deployment .so name)
+ANDROID_ABIS = (
+    ("arm64-v8a", ("androidarm64-64", "android-64"), "libApplicationMain-64.so"),
+    ("armeabi-v7a", ("android-v7", "androidarmv7-64"), "libApplicationMain-v7.so"),
+)
+
+
+def find_unstripped(build, abi, objdirs, deployname):
+    """Newest DWARF-bearing unstripped lib for one ABI, or None.
+
+    A fixed priority list is how a stale copy wins: the symbol bundle keeps the
+    previous build's byproduct while the fresh one sits in obj/obj/<target>/,
+    and the resulting table locates nothing while still looking valid.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cands = [
+        os.path.join(root, "export", "symbols", "android-" + build,
+                     "libApplicationMain-" + abi + ".so"),
+        os.path.join(root, "export", "symbols", "android-" + build, "libApplicationMain.so"),
+    ]
+    for d in objdirs:
+        cands.append(os.path.join(root, "export", build, "android", "obj", "obj", d,
+                                  "libApplicationMain.so"))
+    cands.append(os.path.join(root, "export", build, "android", "obj", deployname))
+
+    # The binary that will actually run. A DWARF copy older than it cannot describe
+    # it: addresses move when the linemap is embedded, so such a table prints WRONG
+    # file:line - worse than printing none. Refuse it instead of guessing.
+    deploy = os.path.join(root, "export", build, "android", "obj", deployname)
+    deploy_mtime = os.path.getmtime(deploy) if os.path.isfile(deploy) else 0
+
+    best = None
+    for p in cands:
+        if not os.path.isfile(p) or not has_debug(p):
+            continue
+        if deploy_mtime and os.path.getmtime(p) + 5 < deploy_mtime:
+            print("[gen_linemap] ignoring stale DWARF copy %s (older than %s)"
+                  % (os.path.relpath(p, root), deployname))
+            continue
+        if best is None or os.path.getmtime(p) > os.path.getmtime(best):
+            best = p
+    return best
+
+
+def run_android(build, min_coverage, only_abi=None):
+    """Regenerate every assets/linemap/<abi>.bin from the newest DWARF libs.
+
+    only_abi filters to one ABI: a -arm64 build should not spend minutes parsing
+    the armeabi-v7a DWARF for a table that build will not even embed.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    failed = False
+    found_any = False
+    for abi, objdirs, deployname in ANDROID_ABIS:
+        if only_abi and abi != only_abi:
+            continue
+        lib = find_unstripped(build, abi, objdirs, deployname)
+        if lib is None:
+            print("[gen_linemap] %s: no DWARF copy of the binary just linked." % abi)
+            print("[gen_linemap]   The build must keep one - Project.xml needs")
+            print("[gen_linemap]   <haxedef name=\"HXCPP_DEBUG_LINK_AND_STRIP\" if=\"android\"/>.")
+            print("[gen_linemap]   A bare lime build strips the .so and keeps nothing, and a")
+            print("[gen_linemap]   table from an OLDER link prints wrong file:line. Nothing written.")
+            continue
+        found_any = True
+        print("[gen_linemap] %s\n  from %s (%d B, %s)"
+              % (abi, os.path.relpath(lib, root), os.path.getsize(lib),
+                 __import__("time").strftime("%Y-%m-%d %H:%M:%S", __import__("time").localtime(os.path.getmtime(lib)))))
+        out = os.path.join(root, "assets", "linemap", abi + ".bin")
+        try:
+            rows, file_strings = collect_rows(lib)
+            out_bytes, entries = build_map(rows, file_strings)
+            resolved, total, ratio = coverage(entries, lib)
+            print("[gen_linemap]   coverage: %d/%d function entries locatable (%.1f%%)"
+                  % (resolved, total, ratio * 100.0))
+            if total and ratio < min_coverage:
+                failed = True
+                print("[gen_linemap]   REFUSED: below the %.0f%% gate - the table would be blind"
+                      % (min_coverage * 100.0))
+                continue
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            with open(out, "wb") as f:
+                f.write(out_bytes)
+            print("[gen_linemap]   wrote %s (%d entries, %.1f MB)"
+                  % (os.path.relpath(out, root), len(entries), len(out_bytes) / 1048576.0))
+        except SystemExit as e:
+            failed = True
+            print("[gen_linemap]   FAILED: %s" % e)
+    if not found_any:
+        return 1
+    return 1 if failed else 0
+
+
 def main():
-    if len(sys.argv) != 3:
+    argv = sys.argv[1:]
+
+    if argv and argv[0] == "--android":
+        build = argv[1] if len(argv) > 1 else "release"
+        min_cov = MIN_COVERAGE
+        if "--min-coverage" in argv:
+            min_cov = float(argv[argv.index("--min-coverage") + 1])
+        only_abi = None
+        if "--abi" in argv:
+            only_abi = argv[argv.index("--abi") + 1]
+        return run_android(build, min_cov, only_abi)
+
+    if argv and argv[0] == "--find-so":
+        abi = argv[2] if len(argv) > 2 else "arm64-v8a"
+        build = argv[1] if len(argv) > 1 else "release"
+        for a, objdirs, deployname in ANDROID_ABIS:
+            if a == abi:
+                lib = find_unstripped(build, a, objdirs, deployname)
+                if lib is None:
+                    return 1
+                print(lib)
+                return 0
+        return 1
+
+    if argv and argv[0] == "--check-objdir":
+        if len(argv) != 2:
+            print(__doc__)
+            return 2
+        return check_objdir(argv[1])
+
+    min_coverage = MIN_COVERAGE
+    positional = []
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--min-coverage":
+            i += 1
+            if i >= len(argv):
+                sys.exit("ERROR: --min-coverage needs a value")
+            min_coverage = float(argv[i])
+        else:
+            positional.append(argv[i])
+        i += 1
+
+    if len(positional) != 2:
         print(__doc__)
         sys.exit(2)
-    lib_path, out_path = sys.argv[1], sys.argv[2]
+    lib_path, out_path = positional
     if not os.path.exists(lib_path):
         sys.exit("ERROR: input not found: %s" % lib_path)
 
     rows, file_strings = collect_rows(lib_path)
     out_bytes, entries = build_map(rows, file_strings)
+
+    resolved, total, ratio = coverage(entries, lib_path)
+    print("coverage: %d/%d function entries locatable (%.1f%%)"
+          % (resolved, total, ratio * 100.0))
+    if total and ratio < min_coverage:
+        sys.exit(
+            "ERROR: only %.1f%% of the functions in %s are locatable (need %.0f%%).\n"
+            "       Two causes, in order of likelihood:\n"
+            "       1. this is a STALE unstripped copy - check the path and mtime printed\n"
+            "          above; the fresh one is export/<mode>/android/obj/obj/<target>/\n"
+            "          libApplicationMain.so. gen_linemap.bat now picks the newest.\n"
+            "       2. the hxcpp object cache was built without -g and is being reused\n"
+            "          (hxcpp's cache key ignores the debug flags). Delete\n"
+            "          export/<mode>/android/obj/obj/<target> and rebuild, or run\n"
+            "          tools/build_android_symbols.ps1 - it purges the poisoned cache.\n"
+            "       Pass --min-coverage 0 only to force a blind table."
+            % (ratio * 100.0, lib_path, min_coverage * 100.0))
 
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     with open(out_path, "wb") as f:
@@ -243,4 +476,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
