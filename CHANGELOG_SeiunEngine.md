@@ -435,6 +435,23 @@
 
 ---
 
+### 2026年10月5日 — 回调/按键热路径：重复派发修复 + 排序默认走快路径
+（那我显然待会就是要改，谁给你追，AI太难用了）
+#### 脚本回调
+- 修复 `onStepHit` / `onBeatHit` / `onSectionHit` 对 hscript **重复派发**：原来基类派发一次、`PlayState.callOnScripts` 再派发一次，同一个脚本每个 step/beat 会收到两次同名回调（两次的 `curStep/curBeat` 还不一样）。现在 `MusicBeatState` 用 `handlesOwnBeatCallbacks` 关掉基类那一份，`PlayState` 用 `dispatchGlobalHscript()` 把全局脚本（root `hscripts/*.hx`）的那一次原样补回：次数、出现位置、参数都与旧实现一致。
+- 修复 `TitleState.beatHit` 重复派发 `onBeatHit`。
+- `RecalculateRating()` 每次命中的 7 遍全部脚本变量推送合并为 2 遍（`setOnScripts4` + `setOnScripts3`）。
+- `MusicBeatState` / `MusicBeatSubstate` 的节拍回调参数改用 `backend.Scripts` 复用槽，不再每次现造数组。
+- `backend.CompatEngine` 版本判定改为 O(1) 缓存（原先每次读取都要 `VALUES.contains` 线性扫描 4 项，`isModern()` 一次调用解析两遍），对外语义不变，另加 `refresh()`。
+
+#### 音符排序
+- `fastSort` 重命名为 `stockNoteSort` 并**反转默认**：默认只排 living+visible 的音符（即原来的 `fasterNoteSort`），只有在线对局才显式要求走原版全量排序。`notes.members` 是池化的，死音符槽位一直留在数组里，全量排序每帧都要对整个数组做 O(n log n) 且带一个 bound 闭包；离线基准在 500~8000 槽位下相差 7~26 倍（2000 槽位：0.607ms → 0.083ms 每帧），400 组随机对照里可见音符的绘制顺序 0 例差异。老的存档里存着的 `fastSort=false` 也因此自动升级到快路径。
+
+> 验证：全量类型检查 exit 0；离线等价性基准与源码静态回归检查都在引擎目录之外
+> （`_seiun-perf-work/callback-perf/`，结论见 `_seiun-perf-work/CALLBACK-PERF-REPORT-2026-10-05.md`）。实机帧率尚未测。
+
+---
+
 ### 鸣谢
 
 感谢所有参与测试的人员，你们的宝贵反馈是推动引擎不断完善的重要力量。
@@ -884,6 +901,37 @@ Bundled regression harness (temp/touch-fix-test/TouchFixTest.hx): replicates the
 
 - Every callback Psych 1.0.4 relaxed is now relaxed here too: `doTween*` / `noteTween*` `ease`,
   `mouseClicked/Pressed/Released` `button`, `getMouseX/Y` + `getScreenPositionX/Y` `camera`,
+
+---
+
+### October 5, 2026 — Script/key hot paths: duplicate dispatch removed, fast note sort by default
+
+#### Script callbacks
+- Fixed **double dispatch** of `onStepHit` / `onBeatHit` / `onSectionHit` to HScript: the base
+  `MusicBeatState` dispatched once and `PlayState.callOnScripts` dispatched again, so every script saw
+  the same callback twice per step/beat (with different `curStep`/`curBeat` values). `MusicBeatState`
+  now gates its own dispatch behind `handlesOwnBeatCallbacks` and `PlayState` re-adds exactly the
+  global-script call through `dispatchGlobalHscript()` — same count, same position, same arguments.
+- Fixed the same duplication of `onBeatHit` in `TitleState.beatHit`.
+- `RecalculateRating()` now pushes its seven per-hit script globals in two sweeps instead of seven.
+- The step/beat/section arguments in `MusicBeatState` / `MusicBeatSubstate` use the pooled
+  `backend.Scripts` slot instead of allocating an array per call.
+- `backend.CompatEngine` version resolution is cached: it used to run a linear `VALUES.contains` scan
+  and resolve twice per `isModern()` call, and it is read dozens of times per note event. Identical
+  semantics, plus an explicit `refresh()`.
+
+#### Note sorting
+- `fastSort` is renamed `stockNoteSort` and its default is inverted: the living+visible-only sort
+  (the old `fasterNoteSort`) is now the default path, and only an online match asks for the stock
+  full sort. `notes.members` is pooled, so dead note slots stay in the array forever and the stock
+  sort costs O(n log n) over the whole pool every frame (plus a bound closure). Offline benchmark:
+  7x-26x difference at 500-8000 slots (2000 slots: 0.607ms -> 0.083ms per frame), with zero
+  observable draw-order differences for visible notes over 400 randomized comparisons. Old saves that
+  stored `fastSort = false` are upgraded to the fast path as a side effect.
+
+> Verification: full type-check exits 0; the offline equivalence benchmark and the source-level
+> regression checks live outside the engine repo (`_seiun-perf-work/callback-perf/`, see
+> `_seiun-perf-work/CALLBACK-PERF-REPORT-2026-10-05.md`). In-game framerate was not measured.
   `keyJustPressed/Pressed/Released` `name`, `makeLuaText` (all four), `makeAnimatedLuaSprite` /
   `loadFrames` `spriteType`, `playMusic` / `playSound` `volume` (+ `playSound` `loop`),
   `precacheImage` `allowGPU`, `triggerEvent` `value1/value2`, `getObjectOrder` /

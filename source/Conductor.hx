@@ -56,20 +56,50 @@ class Conductor
 		return lastChange.stepCrochet*4;
 	}
 
-	public static function getBPMFromSeconds(time:Float){
-		var lastChange:BPMChangeEvent = {
-			stepTime: 0,
-			songTime: 0,
-			bpm: bpm,
-			stepCrochet: stepCrochet
-		}
-		for (i in 0...Conductor.bpmChangeMap.length)
+
+	static function lastBPMChangeAtOrBefore(time:Float):Int {
+		var map = bpmChangeMap;
+		var lo:Int = 0;
+		var hi:Int = map.length; // first index whose songTime is > time
+		while (lo < hi)
 		{
-			if (time >= Conductor.bpmChangeMap[i].songTime)
-				lastChange = Conductor.bpmChangeMap[i];
+			var mid:Int = (lo + hi) >> 1;
+			if (map[mid].songTime <= time)
+				lo = mid + 1;
+			else
+				hi = mid;
+		}
+		return lo - 1;
+	}
+
+	static var _bpmFallback:BPMChangeEvent;
+
+	public static function getBPMFromSeconds(time:Float){
+		var idx:Int = lastBPMChangeAtOrBefore(time);
+		if (idx >= 0)
+			return Conductor.bpmChangeMap[idx];
+
+		if (ClientPrefs.data.stockBpmStruct)
+		{
+			return {
+				stepTime: 0,
+				songTime: 0,
+				bpm: bpm,
+				stepCrochet: stepCrochet
+			}
 		}
 
-		return lastChange;
+		if (_bpmFallback == null || _bpmFallback.bpm != bpm || _bpmFallback.stepCrochet != stepCrochet)
+		{
+			_bpmFallback = {
+				stepTime: 0,
+				songTime: 0,
+				bpm: bpm,
+				stepCrochet: stepCrochet
+			}
+		}
+
+		return _bpmFallback;
 	}
 
 	public static function getBPMFromStep(step:Float){

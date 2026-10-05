@@ -49,6 +49,14 @@
 		"rpcTitleKey": "option.noteOptimization.rctitle"
 	},
 	{
+		"id": "script_optimization",
+		"nameKey": "option.script_optimization",
+		"defaultName": "Script Optimisation",
+		"type": "settings",
+		"optionsFile": "script_optimization",
+		"rpcTitleKey": "option.scriptOptimization.rctitle"
+	},
+	{
 		"id": "audio",
 		"nameKey": "option.audio",
 		"defaultName": "Audio",

@@ -15,6 +15,9 @@ import openfl.display.BlendMode;
 import shaders.RGBPalette;
 import shaders.RGBPalette.RGBShaderReference;
 import mohong.ObjectPool;
+#if sys
+import sys.FileSystem;
+#end
 
 using StringTools;
 
@@ -184,6 +187,104 @@ final defaultNoteTypes:Array<String> = [
 	'GF Sing',
 	'No Animation'
 ];
+
+// ── Note type 注册表 (数字下标 -> 类型名) ──────────────────────────────
+// 旧格式谱面 (0.1-0.3.2) 与个别外部工具把 note[3] 存成数字下标。下标 0-5 走
+// defaultNoteTypes；≥6 的下标沿用旧版 ChartingState 编辑器的编号规则：custom_notetypes/
+// 里按目录扫描顺序接在默认表之后（编辑器的 noteTypeIntMap 正是这张表）。
+// 运行时解析必须用同一张表：数字自定义类型一旦被抹成 ''，PlayState 就再也找不到
+// 对应的 custom_notetypes/<类型名> 脚本，模组的自定义 Note 功能整体失效。
+class NoteTypeRegistry
+{
+	static var customTypesCache:Array<String> = null;
+
+	/** 编辑器重新扫描后调用，强制下次读取重建缓存。 */
+	public static function refresh():Void
+	{
+		customTypesCache = null;
+	}
+
+	/**
+	 * custom_notetypes/ 下注册的自定义类型名，顺序即编号 6.. 的含义。
+	 * 目录顺序与旧版 ChartingState 的 noteTypeIntMap 一致：mods 根、当前模组、全局模组，
+	 * 预载资源目录排最后（编辑器只编号 mods 目录，保持其下标不受内置资源影响）。
+	 */
+	public static function customTypes():Array<String>
+	{
+		if (customTypesCache != null) return customTypesCache;
+		var found:Array<String> = [];
+		var seen:Map<String, Bool> = new Map<String, Bool>();
+		var exts:Array<String> = ['.txt'];
+		#if LUA_ALLOWED
+		exts.push('.lua');
+		#end
+		#if HSCRIPT_ALLOWED
+		exts.push('.hx');
+		#end
+	#if sys
+		var dirs:Array<String> = [];
+		#if MODS_ALLOWED
+		dirs.push(Paths.mods('custom_notetypes/'));
+		if (Paths.currentModDirectory != null && Paths.currentModDirectory.length > 0)
+			dirs.push(Paths.mods(Paths.currentModDirectory + '/custom_notetypes/'));
+		for (mod in Paths.getGlobalMods())
+			dirs.push(Paths.mods(mod + '/custom_notetypes/'));
+		#end
+		// 与运行时 custom_notetypes/<类型> 脚本加载同样的兜底：预载资源目录。
+		dirs.push(Paths.getPreloadPath('custom_notetypes/'));
+		for (dir in dirs)
+		{
+			if (dir == null || !FileSystem.exists(dir) || !FileSystem.isDirectory(dir)) continue;
+			// 不排序：保持 readDirectory 原序，与旧版编辑器发号时的顺序一致（Windows/NTFS 为字母序）。
+			for (file in FileSystem.readDirectory(dir))
+			{
+				if (file.startsWith('readme.')) continue;
+				var lower:String = file.toLowerCase();
+				var isTypeFile:Bool = false;
+				for (ext in exts)
+				{
+					if (lower.endsWith(ext))
+					{
+						isTypeFile = true;
+						break;
+					}
+				}
+				if (!isTypeFile) continue;
+				var name:String = file.substr(0, file.lastIndexOf('.'));
+				if (name.length < 1 || seen.exists(name)) continue;
+				seen.set(name, true);
+				found.push(name);
+			}
+		}
+		#end
+		customTypesCache = found;
+		return found;
+	}
+
+	/** 数字下标 -> 类型名。未知下标返回 ''，永不越界（旧实现直接读数组会越界）。 */
+	public static function fromIndex(idx:Int):String
+	{
+		if (idx >= 0)
+		{
+			if (idx < defaultNoteTypes.length) return defaultNoteTypes[idx];
+			var custom:Array<String> = customTypes();
+			var off:Int = idx - defaultNoteTypes.length;
+			if (off < custom.length) return custom[off];
+		}
+		return '';
+	}
+
+	/**
+	 * 谱面 note[3] 字段 -> 类型名。字符串原样返回；数字按下标解析；null/缺字段为 ''。
+	 * 这是"加载后 note[3] 一定是字符串"这一 PE 不变式的唯一入口。
+	 */
+	public static function resolveField(v:Dynamic):String
+	{
+		if (Std.isOfType(v, String)) return v;
+		if (v == null) return '';
+		return fromIndex(Std.int(v));
+	}
+}
 
 class Note extends FlxSprite implements NoteSplashOwner {
     // ============ 多k 静态数据 (转发到 EKData) ============

@@ -901,9 +901,6 @@ class TitleState extends MusicBeatState
 	override function beatHit()
 	{
 		super.beatHit();
-		#if HSCRIPT_ALLOWED
-		callOnHscript('onBeatHit', []);
-		#end
 
 		if(logoBl != null)
 			logoBl.animation.play('bump', true);

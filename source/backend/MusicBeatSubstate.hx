@@ -232,14 +232,16 @@ class MusicBeatSubstate extends FlxSubState
 	}
 
 	public function stepHit():Void {
-		#if LUA_ALLOWED callOnLuas('onStepHit', [curStep]); #end
-		#if HSCRIPT_ALLOWED callOnHscript('onStepHit', [curStep]); #end
+		var stepArgs:Array<Dynamic> = Scripts.fill1(Scripts.get(1), curStep);
+		#if LUA_ALLOWED callOnLuas('onStepHit', stepArgs); #end
+		#if HSCRIPT_ALLOWED callOnHscript('onStepHit', stepArgs); #end
 		if (curStep % 4 == 0) beatHit();
 	}
 
 	public function beatHit():Void {
-		#if LUA_ALLOWED callOnLuas('onBeatHit', [curBeat]); #end
-		#if HSCRIPT_ALLOWED callOnHscript('onBeatHit', [curBeat]); #end
+		var beatArgs:Array<Dynamic> = Scripts.fill1(Scripts.get(1), curBeat);
+		#if LUA_ALLOWED callOnLuas('onBeatHit', beatArgs); #end
+		#if HSCRIPT_ALLOWED callOnHscript('onBeatHit', beatArgs); #end
 	}
 
 	// ==================== PATH HELPERS ====================

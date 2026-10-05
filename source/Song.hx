@@ -663,9 +663,11 @@ class Song
 						songJson.format = 'psych_v1_convert';
 						convert(songJson);
 						isNewVersion = true; // data has been converted
-				}
+					}
 			}
 		}
+
+		normalizeNoteTypes(songJson);
 
 		if (songJson.mania == null)
 			songJson.mania = Note.defaultMania;
@@ -680,6 +682,52 @@ class Song
 		}
 
 		return songJson;
+	}
+
+	/**
+	 * Canonicalises numeric noteType fields to their registered type names, in place.
+	 *
+	 * Runs on every full parse (parseJSON), regardless of convertTo, so the "after load,
+	 * note[3] is a string" invariant holds for every consumer: the runtime type-script lookup
+	 * (custom_notetypes/<name>.lua|.hx), the editors' type dropdowns, and re-saves of the chart.
+	 * Numeric custom types (index >= defaultNoteTypes.length) resolve against the
+	 * custom_notetypes registry instead of being erased to ''.
+	 *
+	 * Legacy event notes (note[1] < 0, where note[3] is an event argument) are skipped, same
+	 * rule convert() uses. Idempotent: string types pass through untouched.
+	 */
+	public static function normalizeNoteTypes(songJson:Dynamic):Void
+	{
+		if (songJson == null) return;
+		var notes:Dynamic = Reflect.field(songJson, 'notes');
+		if (notes == null || !Std.isOfType(notes, Array)) return;
+		for (section in (cast notes : Array<Dynamic>))
+		{
+			if (section == null) continue;
+			var secNotes:Dynamic = Reflect.field(section, 'sectionNotes');
+			if (secNotes == null || !Std.isOfType(secNotes, Array)) continue;
+			for (note in (cast secNotes : Array<Dynamic>))
+			{
+				if (note == null || !Std.isOfType(note, Array)) continue;
+				var arr:Array<Dynamic> = cast note;
+				if (arr.length < 4 || arr[3] == null || Std.isOfType(arr[3], String)) continue;
+				if (Std.int(arr[1]) < 0) continue; // legacy event data
+				arr[3] = NoteTypeRegistry.fromIndex(Std.int(arr[3]));
+			}
+		}
+	}
+
+	/**
+	 * Strips engine-internal runtime fields (__seiunToken / __seiunStream) from a song object,
+	 * in place. Editors call this before serialising, so no internal bookkeeping ever leaks into
+	 * a saved chart file: PE 0.6.3/0.7.3/1.0.4 would ignore unknown fields, but the token is
+	 * per-load state and must not travel with the file.
+	 */
+	public static function stripRuntimeFields(songObj:Dynamic):Void
+	{
+		if (songObj == null) return;
+		for (field in ['__seiunToken', '__seiunStream'])
+			if (Reflect.hasField(songObj, field)) Reflect.deleteField(songObj, field);
 	}
 
 	public static function castVersion(songJson:SwagSong):SwagSong // Convert psych_v1 format to old format
@@ -769,14 +817,12 @@ class Song
 				var gottaHitNote:Bool = (rawData < ammo) ? section.mustHitSection : !section.mustHitSection;
 				note[1] = (rawData % ammo) + (gottaHitNote ? 0 : ammo);
 
-				// Old format (0.1 - 0.3.2) numeric noteType converted to a string
+				// Old format (0.1 - 0.3.2) numeric noteType converted to a string.
+				// Uses the full registry (defaults + custom_notetypes scripts): erasing an
+				// unknown numeric custom type to '' would stop its type script from ever loading.
 				if(note.length > 3 && !Std.isOfType(note[3], String) && note[3] != null)
 				{
-					var typeIdx:Int = Std.int(note[3]);
-					if(typeIdx >= 0 && typeIdx < Note.defaultNoteTypes.length)
-						note[3] = Note.defaultNoteTypes[typeIdx];
-					else
-						note[3] = '';
+					note[3] = NoteTypeRegistry.fromIndex(Std.int(note[3]));
 				}
 				else if(note.length <= 3)
 				{

@@ -124,8 +124,14 @@ import sys.io.Process;
 	public var turboMode:Bool = false;
 	/** Performance option: batch skip chart notes that are already past. */
 	public var bulkSkip:Bool = false;
-	/** Performance option: sort only the visible living notes. */
-	public var fastSort:Bool = false;
+
+	public var stockNoteSort:Bool = false;
+
+	public var stockEventDrain:Bool = false;
+
+	public var stockBpmStruct:Bool = false;
+
+	public var stockHudTextRewrite:Bool = false;
 	/** Performance option: maximum simultaneously materialised notes, 0 = unlimited (use with care). */
 	public var limitNotes:Int = 0;
 	/** Performance option: keep the note list of streamed (64 MB+) charts on disk and replay it on the next load. */

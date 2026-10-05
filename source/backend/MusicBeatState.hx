@@ -358,17 +358,35 @@ class MusicBeatState extends FlxUIState
 		return cast curState;
 	}
 
+
+	//正在派发一大堆棍母邮寄你家
+	public var handlesOwnBeatCallbacks:Bool = false;
+
+	public function dispatchGlobalHscript(event:String, args:Array<Dynamic> = null):Dynamic {
+		#if HSCRIPT_ALLOWED
+		return HScript.callOnGlobalScript(event, args);
+		#else
+		return FunkinLua.Function_Continue;
+		#end
+	}
+
 	public function stepHit():Void {
-		#if HSCRIPT_ALLOWED callOnHscript('onStepHit', [curStep]); #end
+		#if HSCRIPT_ALLOWED
+		if (!handlesOwnBeatCallbacks) callOnHscript('onStepHit', Scripts.fill1(Scripts.get(1), curStep));
+		#end
 		if (curStep % 4 == 0) beatHit();
 	}
 
 	public function beatHit():Void {
-		#if HSCRIPT_ALLOWED callOnHscript('onBeatHit', [curBeat]); #end
+		#if HSCRIPT_ALLOWED
+		if (!handlesOwnBeatCallbacks) callOnHscript('onBeatHit', Scripts.fill1(Scripts.get(1), curBeat));
+		#end
 	}
 
 	public function sectionHit():Void {
-		#if HSCRIPT_ALLOWED callOnHscript('onSectionHit', [curSection]); #end
+		#if HSCRIPT_ALLOWED
+		if (!handlesOwnBeatCallbacks) callOnHscript('onSectionHit', Scripts.fill1(Scripts.get(1), curSection));
+		#end
 	}
 
 	public function getBeatsOnSection():Float {

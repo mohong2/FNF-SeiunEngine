@@ -10,15 +10,6 @@
 		"onChange": "onChangeShowNoteOptimizationNotice"
 	},
 	{
-		"nameKey": "option.scriptArgReuse",
-		"defaultName": "Reuse Script Callback Arguments",
-		"descKey": "option.scriptArgReuse.desc",
-		"defaultDesc": "Reuses one argument array for script callbacks instead of allocating one per hit.\nStops the GC stutter on dense charts. Off = stock per-hit allocation.\nOnline disables it automatically.",
-		"variable": "scriptArgReuse",
-		"type": "bool",
-		"defaultValue": true
-	},
-	{
 		"nameKey": "option.perfMode",
 		"defaultName": "Performance Mode",
 		"descKey": "option.perfMode.desc",

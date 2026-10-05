@@ -6767,6 +6767,8 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 		var songCopy:Dynamic = {};
 		for (f in Reflect.fields(PlayState.SONG))
 			Reflect.setField(songCopy, f, Reflect.field(PlayState.SONG, f));
+		// 引擎内部字段不入谱面文件（PE 0.6.3/0.7.3/1.0.4 会忽略未知字段，但 token 是每次加载的临时状态）
+		Song.stripRuntimeFields(songCopy);
 		if (!includeManiaField) Reflect.deleteField(songCopy, 'mania');
 		if (!includeEvents) Reflect.setField(songCopy, 'events', []);
 		var chartData:String = PsychJsonPrinter.print(songCopy, ['sectionNotes', 'events']);
@@ -8146,6 +8148,8 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 			if (Reflect.hasField(oldSong, field))
 				Reflect.deleteField(oldSong, field);
 		}
+		// 引擎内部字段不入谱面文件
+		Song.stripRuntimeFields(oldSong);
 
 		// ── 将 psych_v1 格式的 note data 转换为旧格式 ──
 		// psych_v1: data 0~(K-1) = 玩家/当前活跃方，K~2K-1 = 对方
@@ -8172,19 +8176,16 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 					note[1] = noteData;
 				}
 
-				// 转换 noteType：字符串 → 数字索引（旧格式用数字）
-				if (note.length > 3 && Std.isOfType(note[3], String) && note[3] != null && note[3].length > 0)
-				{
-					var typeIndex:Int = Note.defaultNoteTypes.indexOf(note[3]);
-					note[3] = (typeIndex >= 0) ? typeIndex : 0;
-				}
+				// noteType：旧格式与 psych_v1 一样用字符串类型名。
+				// PE 0.6.3 运行时原生支持字符串 noteType，其编辑器保存的旧格式谱面全是字符串；
+				// 旧版引擎的数字索引只覆盖默认 6 项，脚本自定义类型（custom_notetypes）不在表里，
+				// 转成数字会丢失（indexOf 不到 -> 0），再加载时类型脚本就永远挂不上了。
+				// 数字残留（老谱面未经 convert 的直载）按注册表还原成名字。
+				if (note.length > 3 && note[3] != null && !Std.isOfType(note[3], String))
+					note[3] = NoteTypeRegistry.fromIndex(Std.int(note[3]));
 				else if (note.length <= 3)
 				{
-					note.push(0); // 补上默认 noteType
-				}
-				else
-				{
-					note[3] = 0;
+					note.push(''); // 补上默认 noteType
 				}
 			}
 		}

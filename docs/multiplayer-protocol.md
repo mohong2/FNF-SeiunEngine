@@ -120,7 +120,7 @@
 
 ## 7. 联机玩法约束（重要，改动前先读）/ Online gameplay constraints
 
-1. **联机禁用全部运行期 Note / 脚本优化**：`perfMode`、`bulkSkip`、`fastSort`、`scriptArgReuse` 等会绕过唯一两个命中上报点
+1. **联机禁用全部运行期 Note / 脚本优化**：`perfMode`、`bulkSkip`、`stockNoteSort`、`scriptArgReuse` 等会绕过唯一两个命中上报点
    （`goodNoteHit()` / `noteMiss()`），因此联机进歌时**只改本局内存值**全部关闭，退出歌曲按进歌快照恢复；用户设置文件不被改写。
    加载期优化（流式解析、分桶排序、巨谱缓存）保留。
 2. **联机只承诺单文件谱面**：`ChartParts` 分段谱面与 `ChartCache` 巨谱缓存不参与联机一致性校验；

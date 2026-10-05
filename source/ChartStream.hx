@@ -6,6 +6,7 @@ import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
 import mohong.TraceManager;
 import sys.io.File;
+import Note.NoteTypeRegistry;
 import sys.io.FileInput;
 
 /**
@@ -493,7 +494,6 @@ class ChartStream
 	{
 		if (notes == null) return;
 		if (ammo <= 0) ammo = 4;
-		var typeCount:Int = (noteTypes != null) ? noteTypes.length : 0;
 		for (note in notes)
 		{
 			if (note == null) continue;
@@ -504,11 +504,9 @@ class ChartStream
 
 			if (note.length > 3 && !Std.isOfType(note[3], String) && note[3] != null)
 			{
-				var typeIdx:Int = Std.int(note[3]);
-				if (typeIdx >= 0 && typeIdx < typeCount)
-					note[3] = noteTypes[typeIdx];
-				else
-					note[3] = '';
+				// Full registry (defaults + custom_notetypes): an unknown numeric custom type must
+				// keep its name, or its type script would never load.
+				note[3] = NoteTypeRegistry.fromIndex(Std.int(note[3]));
 			}
 			else if (note.length <= 3)
 			{

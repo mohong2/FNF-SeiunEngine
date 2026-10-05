@@ -26,37 +26,68 @@ class CompatEngine
 	/** 合法取值, 供设置项 / 校验使用。 */
 	public static final VALUES:Array<String> = [AUTO, PE_063, PE_073, PE_104];
 
+	static var _rawSel:String;
+	static var _rawMode:Bool = false;
+	static var _valid:Bool = false;
+	static var _resolved:String = PE_063;
+	static var _c063:Bool = true;
+	static var _c073:Bool = false;
+	static var _c104:Bool = false;
+	static var _cModern:Bool = false;
+
+	public static function refresh():Void
+	{
+		_valid = false;
+	}
+
+	inline static function sync():Void
+	{
+		var d:SaveVariables = ClientPrefs.data;
+		var sel:String = (d == null) ? null : d.compatEngine;
+		var mode:Bool = (d != null) && d.compatibility_mode;
+		if (_valid && sel == _rawSel && mode == _rawMode) return;
+
+		_rawSel = sel;
+		_rawMode = mode;
+		if (sel == null || sel.length == 0 || !VALUES.contains(sel))
+			sel = AUTO;
+		_resolved = (sel == AUTO) ? (mode ? PE_073 : PE_063) : sel;
+		_c063 = (_resolved == PE_063);
+		_c073 = (_resolved == PE_073);
+		_c104 = (_resolved == PE_104);
+		_cModern = _c073 || _c104;
+		_valid = true;
+	}
+
 	/**
 	 * 返回当前生效的引擎标识 ("Auto" 已被解析为具体版本)。
 	 * Auto 语义: 旧 `compatibility_mode` 开 = 0.7.3, 关 = 0.6.3。
 	 */
 	public static function current():String
 	{
-		var sel:String = ClientPrefs.data.compatEngine;
-		if (sel == null || sel.length == 0 || !VALUES.contains(sel))
-			sel = AUTO;
-
-		if (sel == AUTO)
-			return ClientPrefs.data.compatibility_mode ? PE_073 : PE_063;
-		return sel;
+		sync();
+		return _resolved;
 	}
 
 	/** 当前是否模拟 Psych Engine 0.6.3。 */
 	public static function is063():Bool
 	{
-		return current() == PE_063;
+		sync();
+		return _c063;
 	}
 
 	/** 当前是否模拟 Psych Engine 0.7.3。 */
 	public static function is073():Bool
 	{
-		return current() == PE_073;
+		sync();
+		return _c073;
 	}
 
 	/** 当前是否模拟 Psych Engine 1.0.4。 */
 	public static function is104():Bool
 	{
-		return current() == PE_104;
+		sync();
+		return _c104;
 	}
 
 	/**
@@ -68,7 +99,8 @@ class CompatEngine
 	 */
 	public static function isModern():Bool
 	{
-		return is073() || is104();
+		sync();
+		return _cModern;
 	}
 
 	/**
@@ -77,13 +109,15 @@ class CompatEngine
 	 */
 	public static function compatMode():Bool
 	{
-		return !is063();
+		sync();
+		return !_c063;
 	}
 
 	/** 1.0.4 专属: 命中回调的 Pre 阶段是否在返回 Function_Stop 时提前中止。 */
 	public static function stopOnPreHitStop():Bool
 	{
-		return is104();
+		sync();
+		return _c104;
 	}
 
 	// ======================================================================

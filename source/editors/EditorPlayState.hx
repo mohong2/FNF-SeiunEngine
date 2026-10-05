@@ -2,6 +2,7 @@ package editors;
 
 import Section.SwagSection;
 import Song.SwagSong;
+import Note.NoteTypeRegistry;
 import EKData.Keybinds;
  
 import flixel.addons.transition.FlxTransitionableState;
@@ -244,7 +245,7 @@ class EditorPlayState extends MusicBeatState
 						swagNote.mustPress = gottaHitNote;
 						swagNote.sustainLength = songNotes[2];
 						swagNote.noteType = songNotes[3];
-						if(!Std.isOfType(songNotes[3], String)) swagNote.noteType = editors.ChartingState.noteTypeList[songNotes[3]]; //Backward compatibility + compatibility with Week 7 charts
+						if(!Std.isOfType(songNotes[3], String)) swagNote.noteType = NoteTypeRegistry.fromIndex(Std.int(songNotes[3])); //Backward compatibility + compatibility with Week 7 charts
 						swagNote.scrollFactor.set();
 
 						var susLength:Float = swagNote.sustainLength;

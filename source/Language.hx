@@ -13,6 +13,8 @@ class Language
     private static var loadedFiles:Map<String, Bool> = new Map();
     private static var currentLang:String = null;
 
+    public static var generation:Int = 0;
+
     public static function load(?lang:String):Void
     {
         if(lang == null)
@@ -34,6 +36,7 @@ class Language
         // `.lang`，所以这里额外把 `.lang` 合并进同一张表，供 `getFileTranslation`
         // 与 `getTranslationPhrase` 使用。两条路径互不覆盖 JSON 里已有的键。
         loadLegacy104LangFiles(lang);
+        generation++;
     }
 
     // ==================================================================
@@ -264,5 +267,6 @@ class Language
         loadedFiles.clear();
         phrases104.clear();
         currentLang = null;
+        generation++;
     }
 }

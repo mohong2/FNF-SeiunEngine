@@ -123,7 +123,7 @@ powershell -NoProfile -File server/start.ps1 -Stop        # 停止
 
 1. **只承诺单文件谱面**：分段谱面（`<song>-0..N.json` / `.parts.json`）与巨谱缓存在联机下不参与一致性校验；
    联机房间选中这类谱面会被明确拒绝并提示，请改用单文件 `<song>.json`。
-2. **联机禁用全部运行期 Note / 脚本优化**（`perfMode`、`bulkSkip`、`fastSort`、`scriptArgReuse`、`limitNotes` 上限等，
+2. **联机禁用全部运行期 Note / 脚本优化**（`perfMode`、`bulkSkip`、`stockNoteSort`(强制原版全量排序)、`scriptArgReuse`、`limitNotes` 上限等，
    以及强制 botplay 的 Turbo）：它们会绕过命中上报点，导致远端看到你站着不动但连击在涨。只改本局内存，退出后恢复你的设置。
 3. **反作弊边界**：服务端不做对局模拟，判定在客户端本地完成后上报。局域网门槛低，不要把它当可信竞技环境。
 4. **录制**：联机时不要依赖录制功能（录制会把 `fixedTimestep` 与帧率钉死，是时间轴发散的来源）；这一点尚未自动拦截。

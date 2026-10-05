@@ -37,7 +37,7 @@ class ChartAnalyzer {
                  * 'Hurt Note'.
                  */
                 var noteType:String = note[3];
-			    if(!Std.isOfType(note[3], String)) noteType = ChartingState.noteTypeList[note[3]]; //Backward compatibility + compatibility with Week 7 charts
+			    if(!Std.isOfType(note[3], String)) noteType = NoteTypeRegistry.fromIndex(Std.int(note[3])); //Backward compatibility + compatibility with Week 7 charts
 
                 //TODO maybe later add bad notes
                 if (Note.chartNoteTypeCausesMiss(noteType)) {
