@@ -124,7 +124,9 @@ import sys.io.Process;
 	public var turboMode:Bool = false;
 	/** Performance option: batch skip chart notes that are already past. */
 	public var bulkSkip:Bool = false;
-
+	/** Performance option: sort only the visible living notes. */
+	public var fastSort:Bool = false;
+	//不不不，我个老牧师的怎么给他删了
 	public var stockNoteSort:Bool = false;
 
 	public var stockEventDrain:Bool = false;
