@@ -1460,10 +1460,12 @@ class HScript
 		// Error-loop protection: 只有每帧/每步回调参与计数（见 ScriptErrorGuard）。
 		// 达到上限后只是安静下来（不再打印 / 不再弹窗），脚本**继续运行** —— 1.0.4 并没有
 		// "因报错停掉整个脚本"这种行为，关掉会让它在别的回调里本该正常工作的功能一起失效。
+		// 上限默认 0 = 永不静默，无论报错多少每条都照常打印。
 		var silenced:Bool = false;
-		if (ClientPrefs.data != null && ClientPrefs.data.ignoreErrorLoopScripts && ScriptErrorGuard.isLoopCallback(callback)) {
+		var limit:Int = ClientPrefs.data != null ? ClientPrefs.data.scriptErrorLimit : 0;
+		if (ClientPrefs.data != null && ClientPrefs.data.ignoreErrorLoopScripts && limit > 0 && ScriptErrorGuard.isLoopCallback(callback)) {
 			errorLoopCount++;
-			if (errorLoopCount >= ClientPrefs.data.scriptErrorLimit) silenced = true;
+			if (errorLoopCount >= limit) silenced = true;
 		}
 
 		if (!silenced) {
@@ -1475,7 +1477,7 @@ class HScript
 		if (ClientPrefs.data == null) return;
 
 		if (ClientPrefs.data.ignoreErrorLoopScripts) {
-			if (silenced && (errorLoopCount == ClientPrefs.data.scriptErrorLimit || errorLoopCount % 600 == 0))
+			if (silenced && (errorLoopCount == limit || errorLoopCount % 600 == 0))
 				TraceManager.warn('trace.script.errorLoopSilenced', 'Repeated errors silenced ({} times, script still running): {} :: {}', [errorLoopCount, scriptName, callback]);
 			return;
 		}

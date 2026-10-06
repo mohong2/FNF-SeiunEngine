@@ -88,7 +88,7 @@
     "option.ignoreErrorLoopScripts": "Ignore Error-Loop Scripts",
     "option.ignoreErrorLoopScripts.desc": "If a Lua/HScript keeps throwing errors every frame, ignore that script once it reaches the error limit instead of spamming errors non-stop.",
     "option.scriptErrorLimit": "Script Error Limit",
-    "option.scriptErrorLimit.desc": "How many consecutive errors a script may throw before it is ignored.",
+    "option.scriptErrorLimit.desc": "How many consecutive errors before a script's repeated error reports are silenced (the script keeps running). 0 = never silence, every error is printed. (Only applies while the toggle above is on.)",
 
     "option.extrasettings.title": "Extra Settings",
     "option.extrasettings.rctitle": "Extra Settings Menu",

@@ -269,9 +269,10 @@ import sys.io.Process;
 	// turned back on from Android Settings.
 	public var showStorageRootWarning:Bool = true;
 
-	// Lua / HScript error loop protection: ignore a script file after too many consecutive errors.
+	// Lua / HScript error loop protection: silence a script's repeated error reports after too
+	// many consecutive errors (the script itself keeps running). 0 = never silence.
 	public var ignoreErrorLoopScripts:Bool = true;
-	public var scriptErrorLimit:Int = 50;
+	public var scriptErrorLimit:Int = 0;
 	#if ONLINE_ALLOWED
 	// ─── Online support: save fields the online code needs ──────────────────
 	// Field names, types and defaults required by the online code. Single-player code never reads these fields,

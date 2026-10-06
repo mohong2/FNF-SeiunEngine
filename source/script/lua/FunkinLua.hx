@@ -5544,25 +5544,28 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 	var lastCalledFunction:String = '';
 
 	/**
-	 * 记录一次脚本报错：连续报错达到 scriptErrorLimit 时静默忽略（closed）这个脚本，
+	 * 记录一次脚本报错：连续报错达到 scriptErrorLimit 后只静默重复的报告（脚本继续运行），
 	 * 防止在 update 循环里因同一个错误每帧刷屏、白白占用性能。
+	 * scriptErrorLimit <= 0 表示永不静默 —— 无论报错多少，每条都照常打印（默认值即 0）。
 	 * 只有每帧/每步回调参与计数（见 ScriptErrorGuard）：一次性回调（onEvent、onKeyPress…）
-	 * 报错照常打印，但不会把整个脚本关掉 —— 否则它在别的回调里本该正常工作的功能会一起失效。
+	 * 报错照常打印，且不会把整个脚本关掉 —— 否则它在别的回调里本该正常工作的功能会一起失效。
 	 * @param callback 触发报错的回调名，缺省取最近一次 call() 的函数名
 	 * @return true = 这次报错应当安静下来（不再打印 / 不再写日志），脚本**继续运行**
 	 */
 	function registerError(callback:String = null):Bool {
 		if (!ClientPrefs.data.ignoreErrorLoopScripts) return false;
+		var limit:Int = ClientPrefs.data.scriptErrorLimit;
+		if (limit <= 0) return false;
 		if (callback == null) callback = lastCalledFunction;
 		if (!ScriptErrorGuard.isLoopCallback(callback)) return false;
 		errorLoopCount++;
-		if (errorLoopCount >= ClientPrefs.data.scriptErrorLimit) {
+		if (errorLoopCount >= limit) {
 			// 1.0.4 不会因为脚本报错就停掉整个脚本: 一个每帧报错的回调本来就每次都中断在同一行,
 			// 而 onEndSong / onEvent / onTimerCompleted 这些回调必须照常工作。以前这里 closed = true
 			// 会把整个脚本封死 —— 实测 SonicTheFunkChinese 的 results.lua 在第一秒就被打死,
 			// onEndSong 永不执行, 结算界面永远不出现。现在只安静下来。
 			// 为了日志不被刷爆, 只在刚触发时和之后每 600 次留一条汇总。
-			if (errorLoopCount == ClientPrefs.data.scriptErrorLimit || errorLoopCount % 600 == 0)
+			if (errorLoopCount == limit || errorLoopCount % 600 == 0)
 				TraceManager.warn('trace.script.errorLoopSilenced', 'Repeated errors silenced ({} times, script still running): {} :: {}', [errorLoopCount, scriptName, callback]);
 			return true;
 		}

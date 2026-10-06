@@ -87,7 +87,7 @@
     "option.ignoreErrorLoopScripts": "忽略迴圈報錯腳本",
     "option.ignoreErrorLoopScripts.desc": "如果某個 Lua/HScript 每幀都反覆報錯，當它達到報錯上限後就直接忽略這一個腳本，而不是無休止地刷屏刷錯誤。",
     "option.scriptErrorLimit": "腳本報錯上限",
-    "option.scriptErrorLimit.desc": "一個腳本在連續報錯多少次後會被直接忽略。（僅當上面開關開啟時生效）",
+    "option.scriptErrorLimit.desc": "一個腳本連續報錯多少次後不再重複刷屏（腳本本身繼續運行）。0 = 永不靜默，每條報錯照常顯示。（僅當上面開關開啟時生效）",
 
     "option.extrasettings.title": "額外設定",
     "option.extrasettings.rctitle": "額外設定選單",

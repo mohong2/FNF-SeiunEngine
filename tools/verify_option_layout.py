@@ -35,13 +35,14 @@ LANGUAGES = ['English', 'ChineseSimplified', 'ChineseTraditional']
 # toggle, the "show the note-optimisation notice again" action row, the
 # bottom-right version watermark toggle, the multi-file chart mode
 # (ChartParts / ClientPrefs.segmentedCharts), the 1.0.4 judgement-name compat
-# toggle, the runtime part of the note-optimisation page (scriptArgReuse plus the
-# huge-chart cache switches) and the whole video-render page (backend.FFMpeg /
-# render.json).
+# toggle, the runtime part of the note-optimisation page (the huge-chart cache
+# switches), the script-optimisation page (scriptArgReuse plus the three stock-*
+# fallbacks) and the whole video-render page (backend.FFMpeg / render.json).
 EXPECTED_NEW_VARIABLES = {
     'showStorageRootWarning', 'showNoteOptimizationNotice', 'showWatermark', 'segmentedCharts',
     'judgementNameCompat',
-    'scriptArgReuse', 'chartCache', 'chartCacheCompress', 'clearChartCache',
+    'chartCache', 'chartCacheCompress', 'clearChartCache',
+    'scriptArgReuse', 'stockEventDrain', 'stockBpmStruct', 'stockHudTextRewrite',
     'renderOnSongStart', 'previewRender', 'renderFps', 'renderAudio', 'renderCodec',
     'renderMode', 'renderQuality', 'renderBitrate', 'renderBufferFrames',
 }
@@ -49,9 +50,15 @@ EXPECTED_NEW_VARIABLES = {
 # The switches that belong to the note-optimisation page (plus the action rows below).
 NOTE_OPTIMISATION_VARIABLES = {
     'perfMode', 'turboMode', 'limitNotes', 'fastSort', 'bulkSkip',
-    'scriptArgReuse', 'chartCache', 'chartCacheCompress',
+    'chartCache', 'chartCacheCompress',
 }
 NOTE_OPTIMISATION_ACTIONS = {'showNoteOptimizationNotice', 'clearChartCache'}
+
+# The script-optimisation page: the reusable-argument switch plus the three
+# stock-behaviour fallbacks for scripts that need the vanilla data structures.
+SCRIPT_OPTIMISATION_VARIABLES = {
+    'scriptArgReuse', 'stockEventDrain', 'stockBpmStruct', 'stockHudTextRewrite',
+}
 
 # The graphics page must keep exactly these performance/quality switches: they are
 # engine-wide rendering settings and must never be moved onto the note page.
@@ -92,7 +99,8 @@ BASELINE_VARIABLES = {
 }
 
 EXPECTED_CATEGORY_ORDER = [
-    'general', 'gameplay', 'visuals', 'graphics', 'render', 'note_optimization', 'audio',
+    'general', 'gameplay', 'visuals', 'graphics', 'render', 'note_optimization',
+    'script_optimization', 'audio',
     'controls', 'adjust', 'notecolor', 'notecolor_rgb', 'android_settings',
     'extra_settings', 'backup', 'touch_controls',
 ]
@@ -178,6 +186,17 @@ def main():
             if owner is not None and owner != 'note_optimization':
                 failures.append('%s must live on the note_optimization page, found in %s'
                                 % (variable, owner))
+
+    # The script-optimisation page keeps exactly its four switches: a switch that
+    # drifts back onto the note page (or a new one appearing here) must fail.
+    script_page = pages.get('script_optimization')
+    if script_page is None:
+        failures.append('script_optimization.json is missing')
+    else:
+        script_vars = {e['variable'] for e in script_page}
+        if script_vars != SCRIPT_OPTIMISATION_VARIABLES:
+            failures.append('script_optimization page holds %s, expected exactly %s'
+                            % (sorted(script_vars), sorted(SCRIPT_OPTIMISATION_VARIABLES)))
 
     # The graphics page keeps exactly its own switches: moving one of them onto
     # the note page (or adding a new engine-wide switch there) must fail.
