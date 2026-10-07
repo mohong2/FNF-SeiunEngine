@@ -1,7 +1,7 @@
 # SeiunEngine 更新日志 · Changelog
 
-> 完整记录 2026年6月19日 至 10月6日 的所有改进、修复与突破
-> A comprehensive record of every improvement, fix, and breakthrough from June 19 to October 6, 2026.
+> 完整记录 2026年6月19日 至 10月7日 的所有改进、修复与突破
+> A comprehensive record of every improvement, fix, and breakthrough from June 19 to October 7, 2026.
 
 ---
 
@@ -401,7 +401,7 @@
 
 ---
 
-### 2026年9月26日 – 10月6日（0.2.2 Pre-Online.2）
+### 2026年9月26日 – 10月7日（0.2.2 Pre-Online.2）
 
 > 本条目记录 0.2.2 Pre-Online.2 整个开发周期的最终成果；周期内被后续提交取代或撤销的中间状态不再单独记录。玩家向的完整公告见 `release-notes/0.2.2preonline2.md`。
 
@@ -423,6 +423,10 @@
 - **无 `events` 字段也可流式**：字节级特征判据，slide20（2,105,875,665 B / 153,955,328 notes）不再退回整份 DOM 解析（那正是 Freeplay 卡死的根因）。
 - **Note 列式存储**：数值字段逐字段成列、全谱恒定的字段提升为标量（不分配列）、首次出现分歧才回填——每条 Note 约 358 B 的占用压到几十 B；列按倍增扩容、边解析边写入，hxcpp 块池不再被撑到全谱体量；`unspawnNotes` 的脚本写入经列存储照常生效。
 - **计数器换 Int64**：谱面与命中计数超过二十亿不再溢出。
+- **Note 材质复用判断免分配**：原先池化复用时每条 Note 都要现拼一个材质 key 字符串再比较；改为逐字段比较，重载路径不再产生字符串垃圾。
+- **弹窗 / 溅射 / 物化 / 排水预算按时间计费**：这些预算原本是「60 fps 设计速率、按绘制帧重置」，帧率上限越高每秒实际预算越大（360 fps 上限下为设计值的 6 倍）；现在按 elapsed×60 累积、按整单位消耗、单帧封顶 —— 60 fps 及以下行为逐位不变，更高帧率每秒付出的速率与设计一致。
+- **评分弹窗免分配化**：贴图键（评分 / 数字 / COMBO）构建一次缓存复用，不再每次命中每个精灵现拼字符串；连击数字写入复用缓冲；淡出不再依赖 FlxTween 全局管理器，改为池化记录由 PlayState 逐帧推进（暂停时与移动一致冻结，联机双方各自的弹窗各自推进），稳态零分配。
+- **图形清理重构**：`purgeUnusedGraphics()` 由「每清一个 key 就重扫全部缓存」改为单遍收集 + 批量移除，长会话下原有的周期性主线程冻结消失；被清理图形注册的 Sparrow 图集帧缓存一并逐出，不再留下「僵尸图集」（此前模组动态生成的精灵会渲染成空白并陷入脚本报错循环）。
 
 #### 图形与渲染
 
@@ -433,6 +437,7 @@
 - **窗口模式统一**：新增 `backend.WindowMode`（windowed / fullscreen=真实 SDL 显示模式切换 / borderless=去装饰+贴满+顶置），启动路径与设置页共用同一实现。
 - **PsychUIDropDownMenu 重构**：滚轮 / 重新挂载下的定位等历史问题收敛到新实现；Dialog / NativeMem / TraceManager 配套调整。
 - **回放录制输入检测 O(1)**：inputTick 单调计数器取代每帧 186 次按键探针（实测每帧 1547 ns → 0.9 ns）。
+- **侧边 HUD 在 perfMode 下固定宽度 + 节流**：Botplay / Turbo 下计数每帧变化、按值跳过永不命中，比例字体的 autoSize 每次重排都会新分配一张位图与 GPU 纹理；现在侧边计数使用固定 fieldWidth（单行、永久复用同一位图），perfMode 开启且未强制原版重写时读数按 20 Hz 节流（perfMode 关闭或开启 `Stock HUD Text Rewrite` 时保持逐值精确刷新）。
 
 #### 视频：播放与录制
 
@@ -882,7 +887,7 @@ Bundled regression harness (temp/touch-fix-test/TouchFixTest.hx): replicates the
 
 ---
 
-### September 26 – October 6, 2026 (0.2.2 Pre-Online.2)
+### September 26 – October 7, 2026 (0.2.2 Pre-Online.2)
 
 > This entry records the final state of the whole Pre-Online.2 development cycle; intermediate states that later commits superseded or reverted are not listed separately. The player-facing announcement is `release-notes/0.2.2preonline2.md`.
 
@@ -904,6 +909,10 @@ Bundled regression harness (temp/touch-fix-test/TouchFixTest.hx): replicates the
 - **Charts without an `events` field can stream too**: a byte-level feature test, so slide20 (2,105,875,665 B / 153,955,328 notes) no longer falls back to a whole-file DOM parse — the reason Freeplay used to freeze on it.
 - **Note data moved to a column store**: one column per numeric field, chart-constant fields hoisted to a plain scalar (no column allocated) until the first divergence — the per-note footprint drops from about 358 B to a few tens of bytes; columns grow by doubling and can be filled while parsing, so hxcpp's block pool is no longer stretched to the chart's full size; script writes through `unspawnNotes` keep working on top of the column store.
 - **Counters are Int64 now**: chart and hit counts beyond two billion no longer overflow.
+- **Allocation-free note material reuse checks**: pooled note reloads used to build a material-key string per note just to compare it; the check is now field-by-field, so the reload path produces no string garbage at all.
+- **Popup / splash / materialisation / drain budgets are charged by time**: these budgets were 60 fps design rates reset per *rendered* frame, so the per-second rate scaled with the fps cap (6x the design rate under a 360 fps cap); they now accumulate as elapsed x 60, are spent in whole units and are capped per frame — behaviour at 60 fps and below is bit-identical, and higher frame rates pay the same per-second rate as designed.
+- **Allocation-free rating popups**: the image keys (rating / digits / COMBO) are built once and cached instead of concatenating strings for every sprite of every hit; combo digits go into a reused buffer; fades no longer depend on FlxTween's global manager — they are pooled records advanced by PlayState every frame (freezing on pause exactly like the movement does; online, each player's popup is ticked by its own instance), allocation-free in steady state.
+- **Graphics purge reworked**: `purgeUnusedGraphics()` no longer re-scans every cache once per purged key — dead candidates are collected in one pass and removed in batches, ending the periodic multi-second main-thread freezes on long sessions; the Sparrow atlas frame caches registered by a purged graphic are evicted with it, so no "zombie atlas" is left behind (mods that spawn sprites dynamically used to render nothing and fall into a Lua error loop).
 
 #### Graphics and rendering
 
@@ -914,6 +923,7 @@ Bundled regression harness (temp/touch-fix-test/TouchFixTest.hx): replicates the
 - **Window modes unified**: the new `backend.WindowMode` handles windowed / fullscreen (a real SDL display-mode switch) / borderless (decorations off + fill + topmost) through one path shared by the boot flow and the options page.
 - **PsychUIDropDownMenu reworked**: historical positioning problems (wheel / re-parenting) are folded into the new implementation; Dialog / NativeMem / TraceManager adjusted alongside.
 - **O(1) input detection for replay recording**: a monotonic inputTick counter replaces 186 key probes per frame (measured 1547 ns → 0.9 ns per frame).
+- **Side HUD: fixed field width + throttle under perfMode**: under Botplay / Turbo the counters change every frame, so the value-change skip never fires, and with a proportional font each autoSize re-layout allocated a brand-new bitmap + GPU texture into the bitmap cache; the side counters now use a fixed field width (single line, one bitmap reused forever), and with perfMode on (and Stock HUD Text Rewrite not forced) their readout is throttled to 20 Hz — exact per-value-change refresh stays when perfMode is off or `Stock HUD Text Rewrite` is on.
 
 #### Video: playback and recording
 
@@ -964,5 +974,5 @@ A huge thank you to all testers — your feedback has been invaluable in shaping
 
 ---
 
-*本日志覆盖 SeiunEngine 自 6.19 至 10.6 全部主要变动。*
-*This changelog covers all significant changes from June 19 to October 6, 2026.*
+*本日志覆盖 SeiunEngine 自 6.19 至 10.7 全部主要变动。*
+*This changelog covers all significant changes from June 19 to October 7, 2026.*
