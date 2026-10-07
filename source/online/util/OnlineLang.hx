@@ -26,6 +26,7 @@ class OnlineLang {
 			case "OPTIONS": L('menu.options', 'OPTIONS');
 			case "LEADERBOARD": L('menu.leaderboard', 'LEADERBOARD');
 			case "MOD DOWNLOADER": L('menu.downloader', 'MOD DOWNLOADER');
+			case "LAN HOST": L('menu.lanhost', 'LAN HOST');
 			default: item;
 		};
 	}

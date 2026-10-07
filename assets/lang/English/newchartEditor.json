@@ -16,7 +16,6 @@
   "newchartEditor_change_scroll_speed": "Value 1: Scroll Speed Multiplier (1 is default)\nValue 2: Time it takes to change fully in seconds.",
   "newchartEditor_set_property": "Value 1: Variable name\nValue 2: New value",
   "newchartEditor_play_sound": "Value 1: Sound file name\nValue 2: Volume (Default: 1), ranges from 0 to 1",
-  
   "newchartEditor_information": "Information",
   "newchartEditor_charting": "Charting",
   "newchartEditor_data": "Data",
@@ -27,11 +26,9 @@
   "newchartEditor_file": "File",
   "newchartEditor_edit": "Edit",
   "newchartEditor_view": "View",
-  
   "newchartEditor_press_f1_for_help": "Press F1 for Help",
   "newchartEditor_help_text_size": "24",
   "newchartEditor_help_text": "W/S/Mouse Wheel - Move Conductor's Time\nA/D - Change Sections\nQ/E - Decrease/Increase Note Sustain Length\nHold Shift/Alt to Increase/Decrease move by 4x\n\nF12 - Preview Chart\nEnter - Playtest Chart\nSpace - Stop/Resume song\nAlt + Click - Select Note(s)\nShift + Click - Select/Unselect Note(s)\nRight Click - Selection Box\nR - Reset Section\nShift + R - Go Back to the Start of the Song\nZ/X - Zoom in/out\nLeft/Right - Change Snap\nLeft Bracket / Right Bracket - Change Song Playback Rate\nALT + Left Bracket / Right Bracket - Reset Song Playback Rate\nCtrl + Z - Undo\nCtrl + Y - Redo\nCtrl + X - Cut Selected Notes\nCtrl + C - Copy Selected Notes\nCtrl + V - Paste Copied Notes\nCtrl + A - Select all in current Section\nCtrl + S - Quicksave",
-  
   "newchartEditor_time_song_length": "Time",
   "newchartEditor_section_info": "Section",
   "newchartEditor_beat": "Beat",
@@ -39,7 +36,6 @@
   "newchartEditor_beat_snap": "Beat Snap",
   "newchartEditor_selected": "Selected",
   "newchartEditor_zoom": "Zoom",
-  
   "newchartEditor_playback_rate": "Playback Rate",
   "newchartEditor_mouse_scroll_snap": "Mouse Scroll Snap",
   "newchartEditor_ignore_progress_warnings": "Ignore Progress Warnings",
@@ -50,7 +46,6 @@
   "newchartEditor_main_vocals": "Main Vocals:",
   "newchartEditor_opp_vocals": "Opp. Vocals:",
   "newchartEditor_mute": "Mute",
-  
   "newchartEditor_game_over_character": "Game Over Character",
   "newchartEditor_game_over_death_sound": "Game Over Death Sound (sounds/)",
   "newchartEditor_game_over_loop_music": "Game Over Loop Music (music/)",
@@ -58,16 +53,13 @@
   "newchartEditor_disable_note_rgb": "Disable Note RGB",
   "newchartEditor_note_texture": "Note Texture",
   "newchartEditor_note_splashes_texture": "Note Splashes Texture",
-  
   "newchartEditor_event": "Event",
   "newchartEditor_value_1": "Value 1",
   "newchartEditor_value_2": "Value 2",
   "newchartEditor_selected_event": "Selected Event",
-  
   "newchartEditor_sustain_length": "Sustain length",
   "newchartEditor_note_hit_time": "Note Hit time (ms)",
   "newchartEditor_note_type": "Note Type",
-  
   "newchartEditor_must_hit_sec": "Must Hit Sec.",
   "newchartEditor_gf_section": "GF Section",
   "newchartEditor_alt_anim": "Alt Anim",
@@ -82,7 +74,6 @@
   "newchartEditor_swap_section": "Swap Section",
   "newchartEditor_duet_section": "Duet Section",
   "newchartEditor_mirror_notes": "Mirror Notes",
-  
   "newchartEditor_song_name": "Song Name",
   "newchartEditor_allow_vocals": "Allow Vocals",
   "newchartEditor_reload_audio": "Reload Audio",
@@ -94,7 +85,6 @@
   "newchartEditor_player": "Player",
   "newchartEditor_opponent": "Opponent",
   "newchartEditor_girlfriend": "Girlfriend",
-  
   "newchartEditor_new": "  New",
   "newchartEditor_open_chart": "  Open Chart...",
   "newchartEditor_open_autosave": "  Open Autosave...",
@@ -108,7 +98,6 @@
   "newchartEditor_save_cne": "  Save (CNE)...",
   "newchartEditor_psych_to_vslice": "  Psych to V-Slice...",
   "newchartEditor_vslice_to_psych": "  V-Slice to Psych...",
-
   "newchartEditor_save_format_title": "Save Chart As...",
   "newchartEditor_format_psych_v1": "Psych Engine v1.0",
   "newchartEditor_format_psych_v0": "Psych Engine v0.x (Legacy)",
@@ -157,7 +146,6 @@
   "newchartEditor_preview": "  Preview (F12)",
   "newchartEditor_playtest": "  Playtest (Enter)",
   "newchartEditor_exit": "  Exit",
-  
   "newchartEditor_undo": "  Undo",
   "newchartEditor_redo": "  Redo",
   "newchartEditor_select_all": "  Select All",
@@ -166,7 +154,6 @@
   "newchartEditor_autosave_settings": "  Autosave Settings...",
   "newchartEditor_clear_all_notes": "  Clear All Notes",
   "newchartEditor_clear_all_events": "  Clear All Events",
-  
   "newchartEditor_hide_last_section": "  Hide Last Section",
   "newchartEditor_show_last_section": "  Show Last Section",
   "newchartEditor_hide_next_section": "  Hide Next Section",
@@ -179,20 +166,17 @@
   "newchartEditor_go_to": "  Go to...",
   "newchartEditor_theme": "  Theme...",
   "newchartEditor_reset_ui_boxes": "  Reset UI Boxes",
-
   "newchartEditor_waveform_settings": "Waveform Settings",
   "newchartEditor_enabled": "Enabled",
   "newchartEditor_color_hex": "Color (Hex)",
   "newchartEditor_instrumental": "Instrumental",
   "newchartEditor_main_vocals_label": "Main Vocals",
   "newchartEditor_opponent_vocals_label": "Opponent Vocals",
-  
   "newchartEditor_go_to_title": "Go to Time/Section",
   "newchartEditor_time_in_seconds": "Time (in seconds)",
   "newchartEditor_go_to_button": "Go To",
   "newchartEditor_cancel": "Cancel",
   "newchartEditor_play": "Play",
-  
   "newchartEditor_theme_title": "Chart Editor Theme",
   "newchartEditor_light": "Light",
   "newchartEditor_dark": "Dark",
@@ -202,22 +186,17 @@
   "newchartEditor_bg_color": "BG Color",
   "newchartEditor_grid_colors": "Grid Colors",
   "newchartEditor_next_grid_colors": "Next Grid Colors",
-  
   "newchartEditor_autosave_settings_title": "Autosave Settings",
   "newchartEditor_time_in_minutes": "Time (in minutes)",
   "newchartEditor_file_limit": "File Limit",
   "newchartEditor_autosave_enabled": "Enabled",
-  
   "newchartEditor_any_options_note": "Any options here won't actually affect gameplay!",
-  
   "newchartEditor_sure_to_start_over": "Are you sure you want to start over?",
   "newchartEditor_warning_unsaved_progress": "Warning: Any unsaved progress\nwill be lost.",
-
   "newchartEditor_unsaved_reload": "You have unsaved changes.\nReload anyway?",
   "newchartEditor_unsaved_exit": "There's unsaved progress,\nare you sure you want to exit?",
   "newchartEditor_unsaved_playtest": "You have unsaved changes.\nPlaytest anyway? (Changes won't be lost)",
   "newchartEditor_unsaved_preview": "You have unsaved changes.\nPreview anyway? (Changes won't be lost)",
-  
   "newchartEditor_choose_autosave": "Choose an Autosave",
   "newchartEditor_load": "Load",
   "newchartEditor_events_found": "Events Found! Choose an action.",
@@ -227,14 +206,12 @@
   "newchartEditor_artist_composer": "Artist/Composer",
   "newchartEditor_charter": "Charter",
   "newchartEditor_difficulties": "Difficulties",
-  
   "newchartEditor_nothing_to_copy": "Nothing to copy!",
   "newchartEditor_nothing_to_paste": "Nothing to paste!",
   "newchartEditor_notes_copied": "Notes Copied",
   "newchartEditor_events_copied": "Events Copied",
   "newchartEditor_notes_added": "Notes Added",
   "newchartEditor_events_added": "Events Added",
-
   "newchartEditor_error": "Error: %s",
   "newchartEditor_error_loading_song": "Error loading song",
   "newchartEditor_error_not_valid_chart": "Error: File loaded is not a valid chart.",
@@ -244,6 +221,7 @@
   "newchartEditor_error_events_empty": "Events file loaded is empty.",
   "newchartEditor_error_unknown_section": "Error: Unknown section??",
   "newchartEditor_error_save": "Error on saving chart!",
+  "newchartEditor_error_autosave_failed": "Autosave failed: %s",
   "newchartEditor_error_save_events": "Error on saving events!",
   "newchartEditor_error_load_valid_song": "Load a valid song to preview!",
   "newchartEditor_error_must_save_first": "You must save/load a Chart first to Reload it!",
@@ -263,7 +241,6 @@
   "newchartEditor_error_file_not_psych_chart": "Error: File loaded is not a Psych Engine/FNF 0.2.x.x chart.",
   "newchartEditor_error_events_file_not_psych": "Error: File loaded is not a Psych Engine chart/events file.",
   "newchartEditor_error_on_loading_autosave": "Error on loading autosave",
-  
   "newchartEditor_chart_opened": "Opened chart \"%s\" successfully!",
   "newchartEditor_autosave_opened": "Opened autosave \"%s\" successfully!",
   "newchartEditor_chart_saved": "Chart saved successfully to: %s",
@@ -277,14 +254,12 @@
   "newchartEditor_files_saved": "Files saved successfully to: %s!",
   "newchartEditor_notes_reloaded_to": "Reloaded notes to",
   "newchartEditor_notes_reloaded_default": "Reloaded notes to default texture",
-  
   "newchartEditor_undo_action": "Undo #%d",
   "newchartEditor_redo_action": "Redo #%d",
   "newchartEditor_add_note": "Add Note",
   "newchartEditor_delete_note": "Delete Note",
   "newchartEditor_move_note": "Move Note",
   "newchartEditor_select_note": "Select Note",
-  
   "newchartEditor_added_note_at_time": "Added note at time: %s",
   "newchartEditor_added_event_at_time": "Added event at time: %s",
   "newchartEditor_removed_note_at_time": "Removed %s at time: %s",
@@ -293,7 +268,6 @@
   "newchartEditor_delete_all_events": "Delete all Events in the song?",
   "newchartEditor_overwrite": "Overwrite",
   "newchartEditor_overwrite_confirm": "Overwrite: \"%s\"?",
-
   "newchartEditor_save_btn": "Save",
   "newchartEditor_song_bpm_label": "Song BPM:",
   "newchartEditor_song_offset_label": "Song Offset:",
@@ -309,26 +283,21 @@
   "newchartEditor_play_sound_dad": "Play Sound (Opponent notes)",
   "newchartEditor_metronome_enabled": "Metronome Enabled",
   "newchartEditor_disable_autoscroll": "Disable Autoscroll (Not Recommended)",
-
   "newchartEditor_load_autosave_btn": "Load Autosave",
   "newchartEditor_load_events_btn": "Load Events",
   "newchartEditor_save_events_btn": "Save Events",
   "newchartEditor_clear_events_btn": "Clear events",
   "newchartEditor_clear_notes_btn": "Clear notes",
   "newchartEditor_change_notes_btn": "Change Notes",
-
   "newchartEditor_offset_ms_label": "Offset (ms):",
   "newchartEditor_inst_volume_label": "Inst Volume",
   "newchartEditor_voices_volume_label": "Voices Volume",
   "newchartEditor_opponent_voices_volume_label": "Opponent Voices Volume",
-
   "newchartEditor_selected_event_none": "Selected Event: None",
   "newchartEditor_selected_event_format": "Selected Event: ",
-
+  "charting_warning_clear_progress": "This will clear the current progress.\n\nContinue?",
   "newchartEditor_select_difficulty": "Select difficulty to load:",
-  "newchartEditor_load_btn": "Load",
   "newchartEditor_cancel_btn": "Cancel",
-
   "newchartEditor_convert_sequential": "Sequential Mapping",
   "newchartEditor_convert_shuffle": "Auto Shuffle",
   "newchartEditor_convert_double": "Auto Double",

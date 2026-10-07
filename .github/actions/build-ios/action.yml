@@ -40,6 +40,13 @@ runs:
         haxelib setup "$GITHUB_WORKSPACE/.haxelib"
         haxe -cp ./setup -main Main --interp
 
+    # Resolve the active library directories once, so no step below hardcodes
+    # .haxelib/<lib>/git - renaming the version directory must not break the build.
+    - name: Resolve haxelib paths
+      uses: ./.github/actions/haxelib-path
+      with:
+        libs: hxcpp lime discord_rpc
+
     - name: Enable hxcpp compile cache
       shell: bash
       run: |
@@ -55,7 +62,7 @@ runs:
         CACHE_DIR="$GITHUB_WORKSPACE/.hxcpp-cache"
         CACHE_DIR="${CACHE_DIR//\\//}"
         mkdir -p "$CACHE_DIR"
-        EXAMPLE="$GITHUB_WORKSPACE/.haxelib/hxcpp/git/toolchain/example.hxcpp_config.xml"
+        EXAMPLE="$HAXELIB_HXCPP_PATH/toolchain/example.hxcpp_config.xml"
         EXAMPLE="${EXAMPLE//\\//}"
         # Keep the config OUT of the workspace root (see build-desktop/action.yml).
         CONFIG="$RUNNER_TEMP/.hxcpp-config.xml"
@@ -67,20 +74,20 @@ runs:
     - name: Patch hxcpp zlib for iOS 18 SDK
       shell: bash
       run: |
-        find "$GITHUB_WORKSPACE/.haxelib/hxcpp" -path '*/thirdparty/zlib-*/zutil.h' -exec sed -i.bak '/# *define fdopen(fd,mode) NULL/d' {} +
-        find "$GITHUB_WORKSPACE/.haxelib/hxcpp" -path '*/thirdparty/zlib-*/zutil.h.bak' -delete
-        ! grep -rq 'define fdopen(fd,mode) NULL' "$GITHUB_WORKSPACE/.haxelib/hxcpp"
+        find "$HAXELIB_HXCPP_PATH" -path '*/thirdparty/zlib-*/zutil.h' -exec sed -i.bak '/# *define fdopen(fd,mode) NULL/d' {} +
+        find "$HAXELIB_HXCPP_PATH" -path '*/thirdparty/zlib-*/zutil.h.bak' -delete
+        ! grep -rq 'define fdopen(fd,mode) NULL' "$HAXELIB_HXCPP_PATH"
 
     - name: Init discord_rpc submodules
       shell: bash
       run: |
-        cd "$GITHUB_WORKSPACE/.haxelib/discord_rpc/git"
+        cd "$HAXELIB_DISCORD_RPC_PATH"
         git submodule update --init --recursive
 
     - name: Apply iOS template patches
       shell: bash
       run: |
-        LT="$GITHUB_WORKSPACE/.haxelib/lime/git/templates/ios/template"
+        LT="$HAXELIB_LIME_PATH/templates/ios/template"
         cp "templates/ios/template/{{app.file}}/{{app.file}}-Info.plist" "$LT/{{app.file}}/{{app.file}}-Info.plist"
         PBX="$LT/{{app.file}}.xcodeproj/project.pbxproj"
         perl -0pi -e 's/("CODE_SIGN_IDENTITY\[sdk=iphoneos\*\]" = "::config\.ios\.identity::";)/$1\n\tCODE_SIGNING_ALLOWED = NO;\n\tCODE_SIGNING_REQUIRED = NO;/g' "$PBX"
@@ -112,7 +119,7 @@ runs:
 
     - name: Rebuild Lime iOS ndll
       shell: bash
-      run: haxelib run lime rebuild ios -arm64 -release
+      run: haxelib run lime rebuild ios -arm64 -release -Dhxcpp_api_level=430
 
     - name: Compile iOS (device, arm64)
       shell: bash

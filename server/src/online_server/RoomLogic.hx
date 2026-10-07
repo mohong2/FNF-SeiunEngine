@@ -21,6 +21,19 @@ class RoomLogic {
 	/** Default chat hue; the server has no account system, so every chat line uses it. */
 	public static inline var DEFAULT_HUE:Float = 250;
 
+	/**
+	 * Room pause policy (`Room.pauseMode`, the room settings' "Pause Policy"):
+	 *   0 = only the host may pause, and pausing freezes everyone else too;
+	 *   1 = anyone may pause, and pausing freezes everyone else too (default);
+	 *   2 = legacy -- a pause stays local to the player who pressed ESC (the old behaviour, which
+	 *       lets the other clients keep playing and desyncs the room).
+	 * The client gates its ESC key on the same three values (PlayState.ONLINE_PAUSE_*).
+	 */
+	public static inline var PAUSE_HOST_ONLY:Int = 0;
+	public static inline var PAUSE_EVERYONE:Int = 1;
+	public static inline var PAUSE_LEGACY:Int = 2;
+	public static inline var PAUSE_DEFAULT:Int = PAUSE_EVERYONE;
+
 	// ------------------------------------------------------------------
 	// Room initialization (called by GameRoom.onAck before the first encodeAll)
 	// ------------------------------------------------------------------
@@ -58,6 +71,9 @@ class RoomLogic {
 		// defaults false and the host flips it via `togglePrivate`, so write it only on first
 		// initialization, never on join.
 		state.isPrivate = true;
+		// Pause policy joins the other first-init defaults (never written on a join): the host may
+		// have cycled it with nextPauseMode, and a late joiner must not reset it.
+		state.pauseMode = PAUSE_DEFAULT;
 		if (state.diffList.length == 0) {
 			state.diffList.items.push("Easy");
 			state.diffList.items.push("Normal");
@@ -172,6 +188,9 @@ class RoomLogic {
 				// An explicit end (the pause menu's "Exit to lobby") also ends the round, setting
 				// songEnded so the next startGame goes through resetRound instead of staying on isStarted.
 				room.songEnded = true;
+				// A round that ends while the room is paused must release the pause, or the clients
+				// that were force-paused never see the results screen.
+				releasePause(room, "requestEndSong");
 				trace('[room ' + room.roomId + '] -> broadcast "endSong" (requestEndSong)');
 				room.broadcast(GameRoom.frameRoomData("endSong", null), null);
 
@@ -202,6 +221,15 @@ class RoomLogic {
 
 			case "nextWinCondition":
 				nextWinCondition(room, conn);
+
+			case "nextPauseMode":
+				nextPauseMode(room, conn);
+
+			case "pauseGame":
+				applyPause(room, conn);
+
+			case "resumeGame":
+				applyResume(room, conn);
 
 			case "togglePrivate":
 				toggleRoomBool(room, conn, "isPrivate");
@@ -319,7 +347,7 @@ class RoomLogic {
 
 	/** The `log` payload is a **JSON string**, not an object. */
 	static function formatLog(content:String, ?hue:Float, isPM:Bool = false):String {
-		return haxe.Json.stringify({
+		return ServerConfig.jsonEncode({
 			content: content,
 			hue: hue,
 			date: Date.now().getTime(),
@@ -344,7 +372,9 @@ class RoomLogic {
 		}
 		// Newlines become spaces; the server has no word filter, so that is the only sanitizing step.
 		var text:String = (message : String).split("\n").join(" ");
-		if (text.length >= 300) {
+		// 300 CHARACTERS (300 is rejected here, unlike the network room which allows exactly 300);
+		// String.length counts UTF-8 bytes, which capped Chinese chat at 100 characters.
+		if (ServerConfig.utf8Length(text) >= 300) {
 			sendLog(room, "The message is too long!", conn);
 			return;
 		}
@@ -468,6 +498,73 @@ class RoomLogic {
 			next = 0;
 		}
 		setRoomField(room, "winCondition", Math.max(0, next));
+	}
+
+	/** `nextPauseMode`: cycles 0 -> 1 -> 2 -> 0 (the room settings' "Pause Policy"). */
+	static function nextPauseMode(room:GameRoom, conn:ClientConn):Void {
+		if (!canChangeRoom(room, conn)) {
+			return;
+		}
+		var next:Float = num(room.state.pauseMode) + 1;
+		if (next > PAUSE_LEGACY) {
+			next = PAUSE_HOST_ONLY;
+		}
+		setRoomField(room, "pauseMode", Math.max(0, next));
+	}
+
+	/**
+	 * `pauseGame`: the room-wide pause. The server is the arbiter -- it checks the request against
+	 * the room's policy and echoes it to **everyone, sender included**. That echo is also how two
+	 * players pausing in the same tick settle who owns the pause: only the first request sets
+	 * pauseOwner, and the echo tells the other client to hand ownership over (PlayState's "pauseGame"
+	 * listener), so it can no longer resume the room on its own.
+	 */
+	static function applyPause(room:GameRoom, conn:ClientConn):Void {
+		var mode:Int = Std.int(num(room.state.pauseMode));
+		if (mode == PAUSE_LEGACY) {
+			return; // old behaviour: a pause never leaves the client that pressed ESC
+		}
+		// Only a running round can be paused, and only one pause owns the room at a time.
+		if (!room.state.isStarted || room.pauseOwner != "") {
+			return;
+		}
+		if (mode == PAUSE_HOST_ONLY && room.state.host != conn.sessionId) {
+			sendLog(room, str(conn.player == null ? null : conn.player.name) + ": only the host can pause the game!", conn);
+			return;
+		}
+		room.pauseOwner = conn.sessionId;
+		trace('[room ' + room.roomId + '] -> broadcast "pauseGame" by ' + conn.sessionId);
+		room.broadcast(GameRoom.frameRoomData("pauseGame", conn.sessionId), null);
+	}
+
+	/**
+	 * `resumeGame`: only the owner of the pause may resume it (in host-only rooms the host may as
+	 * well, matching the client's local gate). The owner may have dropped before the reconnect window
+	 * expired, so a missing owner never blocks the room.
+	 */
+	static function applyResume(room:GameRoom, conn:ClientConn):Void {
+		var mode:Int = Std.int(num(room.state.pauseMode));
+		if (mode == PAUSE_LEGACY || room.pauseOwner == "") {
+			return;
+		}
+		var isOwner:Bool = (room.pauseOwner == conn.sessionId);
+		var ownerGone:Bool = (room.connOf(room.pauseOwner) == null);
+		var allowed:Bool = ownerGone || isOwner || (mode == PAUSE_HOST_ONLY && room.state.host == conn.sessionId);
+		if (!allowed) {
+			sendLog(room, str(conn.player == null ? null : conn.player.name) + ": wait for the player who paused the game!", conn);
+			return;
+		}
+		releasePause(room, "resumeGame");
+	}
+
+	/** Clears a room-wide pause and tells everyone to continue. Idempotent. */
+	public static function releasePause(room:GameRoom, reason:String):Void {
+		if (room.pauseOwner == "") {
+			return;
+		}
+		room.pauseOwner = "";
+		trace('[room ' + room.roomId + '] -> broadcast "resumeGame" (' + reason + ')');
+		room.broadcast(GameRoom.frameRoomData("resumeGame", null), null);
 	}
 
 	/** `toggleSkins`: clearing skins resets everyone; enabling them asks everyone to report again. */
@@ -651,6 +748,9 @@ class RoomLogic {
 				setPlayerField(room, c.player, "hasEnded", false);
 			}
 		}
+
+		// A new round must never start behind a leftover pause.
+		releasePause(room, "new round");
 	}
 
 	/** Invalidates everyone's hasSong on a song change: the new chart must be verified again. */
@@ -807,7 +907,7 @@ class RoomLogic {
 		switch (typeName) {
 			case "verifyChart", "setSong", "setStage", "startGame", "playerReady", "playerEnded",
 				"requestEndSong", "setSkin", "updateNoteSkinData", "custom", "customTo", "chat", "command",
-				"notifyInstall", "nextWinCondition", "swapSides":
+				"notifyInstall", "nextWinCondition", "swapSides", "nextPauseMode", "pauseGame", "resumeGame":
 				return true;
 			default:
 				return false;

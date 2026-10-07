@@ -37,6 +37,8 @@ class ModSettingsSubState extends MusicBeatSubstate
 	var grpTexts:FlxTypedGroup<FlxTextAttached>;
 	var descBox:FlxSprite;
 	var descText:FlxText;
+	/** Description currently rendered into descText; identical ones are not re-rasterized. */
+	var descShown:String = null;
 	var titleText:FlxTextMenuItem;
 
 	var nextAccept:Int = 5;
@@ -467,9 +469,21 @@ class ModSettingsSubState extends MusicBeatSubstate
 		if (curSelected < 0) curSelected = optionsArray.length - 1;
 		if (curSelected >= optionsArray.length) curSelected = 0;
 
-		descText.text = optionsArray[curSelected].description;
-		descText.screenCenter(Y);
-		descText.y += 270;
+		// FlxText re-rasterizes (and re-uploads) its bitmap on every text change, so the
+		// description is only written when it actually differs - adjacent options often
+		// share one, and that is a whole text regeneration saved per cursor move.
+		var desc:String = optionsArray[curSelected].description;
+		if (desc != descShown)
+		{
+			descShown = desc;
+			descText.text = desc;
+			descText.screenCenter(Y);
+			descText.y += 270;
+
+			descBox.setPosition(descText.x - 10, descText.y - 10);
+			descBox.setGraphicSize(Std.int(descText.width + 20), Std.int(descText.height + 25));
+			descBox.updateHitbox();
+		}
 
 		var bullShit:Int = 0;
 		for (item in grpOptions.members)
@@ -484,10 +498,6 @@ class ModSettingsSubState extends MusicBeatSubstate
 			text.alpha = 0.6;
 			if (text.ID == curSelected) text.alpha = 1;
 		}
-
-		descBox.setPosition(descText.x - 10, descText.y - 10);
-		descBox.setGraphicSize(Std.int(descText.width + 20), Std.int(descText.height + 25));
-		descBox.updateHitbox();
 
 		curOption = optionsArray[curSelected];
 		FlxG.sound.play(Paths.sound('scrollMenu'));

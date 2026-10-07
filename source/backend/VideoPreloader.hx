@@ -15,7 +15,7 @@ import hxvlc.openfl.Video;
  * video object. On a cold start LibVLC may have to scan/reset its plugin cache,
  * which can stall the main thread for a noticeable amount of time (the "first
  * video freezes, later videos are fine" symptom). By starting that init during
- * boot and by deferring `startVideo` until `Handle.instance` is ready, the
+ * boot and by deferring `startVideo` until `Handle.sharedInstance` is ready, the
  * freeze is moved out of gameplay.
  */
 class VideoPreloader
@@ -34,7 +34,7 @@ class VideoPreloader
 	public static function warmup():Void
 	{
 		#if hxvlc
-		if (Handle.instance == null && !Handle.loading && !warmingUp && !warmupFailed)
+		if (Handle.sharedInstance == null && !Handle.loading && !warmingUp && !warmupFailed)
 		{
 			warmingUp = true;
 			warmupStartedAt = haxe.Timer.stamp();
@@ -73,7 +73,7 @@ class VideoPreloader
 	public static function isReady():Bool
 	{
 		#if hxvlc
-		return Handle.instance != null;
+		return Handle.sharedInstance != null;
 		#else
 		return true;
 		#end
@@ -97,23 +97,24 @@ class VideoPreloader
 	public static function prewarmMedia():Void
 	{
 		#if hxvlc
-		if (Handle.instance == null || mediaPrewarmed)
+		if (Handle.sharedInstance == null || mediaPrewarmed)
 			return;
 
 		mediaPrewarmed = true;
+
+		// hxvlc 2.3.x builds the libVLC media player, the vmem/vdummy outputs and
+		// the OpenAL source inside the `Video` constructor, so constructing one
+		// instance and disposing it right away *is* the pipeline pre-warm.
 		var dummy:Video = new Video();
+
 		try
 		{
-			// Use reflection so this also compiles against hxvlc builds that do not expose the
-			// `prewarm` helper.
-			if (Reflect.hasField(dummy, "prewarm"))
-				Reflect.callMethod(dummy, Reflect.field(dummy, "prewarm"), []);
+			dummy.dispose();
 		}
 		catch (e:Dynamic)
 		{
 			trace('VideoPreloader: media pipeline prewarm failed: $e');
 		}
-		dummy.dispose();
 		#end
 	}
 
@@ -124,7 +125,7 @@ class VideoPreloader
 	public static function whenReady(callback:Void->Void):Void
 	{
 		#if hxvlc
-		if (Handle.instance != null)
+		if (Handle.sharedInstance != null)
 		{
 			callback();
 			return;
@@ -175,7 +176,7 @@ class VideoPreloader
 	static function poll():Void
 	{
 		#if hxvlc
-		if (Handle.instance != null)
+		if (Handle.sharedInstance != null)
 		{
 			polling = false;
 			flushPending();

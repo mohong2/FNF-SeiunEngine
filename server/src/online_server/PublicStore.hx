@@ -1,6 +1,6 @@
 package online_server;
 
-import sys.FileSystem;
+import online_server.db.PublicRepo;
 
 /** A front-page message; player holds a name here (not an account id). */
 typedef FrontMessage = {
@@ -9,9 +9,9 @@ typedef FrontMessage = {
 }
 
 /**
- * Shared public data (local JSON): FRONT_MESSAGES, NEXT_WEEKLY_DATE (defaults to the current
- * time, not +7 days) and DAY_PLAYERS (one row per 10 minutes, max 300, lazily recorded).
- * Shares JsonStore's global Mutex.
+ * Shared public data stored in SQLite (db/PublicRepo.hx): FRONT_MESSAGES, NEXT_WEEKLY_DATE
+ * (defaults to the current time, not +7 days) and DAY_PLAYERS (one row per 10 minutes, max 300,
+ * lazily recorded). The caps and the timestamp helper are unchanged; only the storage moved.
  */
 class PublicStore {
 	static inline var DAY_INTERVAL_MS:Float = 10 * 60 * 1000;
@@ -19,27 +19,14 @@ class PublicStore {
 	static inline var FRONT_MAX:Int = 5;
 
 	static var path:String = null;
-	/** { frontMessages:Array<FrontMessage>, nextWeeklyDate:Float, dayPlayers:Array<Array<Dynamic>> } */
-	static var db:Dynamic = null;
 
+	/** Records the legacy storage path and makes sure the single public_state row exists. */
 	public static function init(file:String):Void {
 		path = file;
-		JsonStore.lock(function() {
-			var loaded:Dynamic = JsonStore.read(path, null);
-			if (loaded == null) loaded = {};
-			if (loaded.frontMessages == null) loaded.frontMessages = [];
-			if (loaded.nextWeeklyDate == null) loaded.nextWeeklyDate = nowMs();
-			if (loaded.dayPlayers == null) loaded.dayPlayers = [];
-			db = loaded;
-			if (!FileSystem.exists(path)) JsonStore.write(path, db);
-			return true;
-		});
+		PublicRepo.ensureState(nowMs());
 	}
 
 	public static function storagePath():String return path;
-
-	static inline function frontU():Array<FrontMessage> return cast db.frontMessages;
-	static inline function dayU():Array<Array<Dynamic>> return cast db.dayPlayers;
 
 	// ---- FRONT_MESSAGES ----
 
@@ -48,14 +35,7 @@ class PublicStore {
 	 * just posted (Api decides the 418 status).
 	 */
 	public static function addFrontMessage(player:String, message:String):Bool {
-		return JsonStore.lock(function() {
-			var list = frontU();
-			if (list.length > 0 && list[0].player == player) return false;
-			list.unshift({ player: player, message: message });
-			while (list.length > FRONT_MAX) list.pop();
-			JsonStore.write(path, db);
-			return true;
-		});
+		return PublicRepo.addFront(ServerConfig.repairUtf8(player), ServerConfig.repairUtf8(message), FRONT_MAX);
 	}
 
 	/**
@@ -64,21 +44,19 @@ class PublicStore {
 	 * unchanged.
 	 */
 	public static function latestFrontMessage():FrontMessage {
-		return JsonStore.lock(function() {
-			var list = frontU();
-			return list.length == 0 ? null : list[0];
-		});
+		var list = PublicRepo.frontMessages(1);
+		return list.length == 0 ? null : list[0];
 	}
 
 	/** Full table for /api/sezdetal, newest first. */
 	public static function frontMessages():Array<FrontMessage> {
-		return JsonStore.lock(function() return frontU().copy());
+		return PublicRepo.frontMessages(FRONT_MAX);
 	}
 
 	// ---- NEXT_WEEKLY_DATE ----
 
 	public static function nextWeeklyDate():Float {
-		return JsonStore.lock(function() return db.nextWeeklyDate);
+		return PublicRepo.nextWeeklyDate(nowMs());
 	}
 
 	// ---- DAY_PLAYERS ----
@@ -88,18 +66,7 @@ class PublicStore {
 	 * row is >= 10 minutes old, dropping the oldest past 300. Returns the current full table.
 	 */
 	public static function recordDayPlayers(count:Int):Array<Array<Dynamic>> {
-		return JsonStore.lock(function() {
-			var list = dayU();
-			var now = nowMs();
-			var last:Float = list.length == 0 ? -1 : numAt(list[list.length - 1], 1);
-			if (last < 0 || now - last >= DAY_INTERVAL_MS) {
-				var row:Array<Dynamic> = [count, now];
-				list.push(row);
-				while (list.length > DAY_MAX) list.shift();
-				JsonStore.write(path, db);
-			}
-			return list.copy();
-		});
+		return PublicRepo.recordDayPlayers(count, nowMs(), DAY_INTERVAL_MS, DAY_MAX);
 	}
 
 	static function numAt(row:Array<Dynamic>, index:Int):Float {

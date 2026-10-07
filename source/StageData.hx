@@ -91,7 +91,8 @@ class StageData {
 		{
 			return null;
 		}
-		return cast Json.parse(rawJson);
+		// Psych 1.0.4 用 tjson 解析 stage JSON（容忍尾随逗号与注释）。
+		return cast backend.JsonUtil.parseTolerant(rawJson);
 	}catch(e){
 		TraceManager.error('trace.error', 'Exception: {}', [e]);
 		return null;

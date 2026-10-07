@@ -32,12 +32,29 @@
 		"rpcTitleKey": "option.graphicsSettingsMenu.rctitle"
 	},
 	{
+		"id": "render",
+		"nameKey": "option.render",
+		"defaultName": "Render Video",
+		"type": "settings",
+		"optionsFile": "render",
+		"rpcTitleKey": "option.renderSettings.rctitle",
+		"platform": "desktop"
+	},
+	{
 		"id": "note_optimization",
 		"nameKey": "option.note_optimization",
 		"defaultName": "Note Optimisation",
 		"type": "settings",
 		"optionsFile": "note_optimization",
 		"rpcTitleKey": "option.noteOptimization.rctitle"
+	},
+	{
+		"id": "script_optimization",
+		"nameKey": "option.script_optimization",
+		"defaultName": "Script Optimisation",
+		"type": "settings",
+		"optionsFile": "script_optimization",
+		"rpcTitleKey": "option.scriptOptimization.rctitle"
 	},
 	{
 		"id": "audio",

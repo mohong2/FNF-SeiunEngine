@@ -110,6 +110,10 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 
 	var hitNames:Array<String> = ["Sick", "Good", "Bad", "Shit", "Miss"];
 
+	/** Rating icon box: every rank icon is drawn inside it (the FALSE fallback asset is 660x256). */
+	static inline var RATING_ICON_MAX_W:Float = 240;
+	static inline var RATING_ICON_MAX_H:Float = 90;
+
 	public function new()
 	{
 		super();
@@ -154,6 +158,9 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 		game.timeTxt.visible = false;
 		game.keyboardDisplay.visible = false;
 		game.strumLineNotes.visible = false;
+		// Side HUD + BOTPLAY/REPLAY/ms/judge labels live on camOther, which stays visible: hide them too
+		// or they are drawn over the results panels (see PlayState.hideTransientHud).
+		game.hideTransientHud();
 		// ratingIcon moved to end of constructor so it renders on top of all panels
 
 		noteMs = game.NoteMs;
@@ -814,6 +821,9 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 		var barMaxW:Int = Std.int(statsPanel.width - 175);
 		var barH:Int = (rowCount > 5) ? 14 : 18;
 		var barX:Float = statsPanel.x + 18;
+		// Legend column: whatever is left inside the panel, so a long row cannot spill over its edge.
+		var barTxtX:Float = barX + barMaxW + 10;
+		var barTxtW:Float = Math.max(90, statsPanel.x + statsPanel.width - 12 - barTxtX);
 		var startY:Float = statsPanel.y + 12;
 		var gap:Float = (rowCount > 5) ? 7 : 10;
 
@@ -834,11 +844,33 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 
 			var percent = Math.ceil(counts[i] / totalNotes * 10000) / 100;
 			var hitLabel = Language.get("ResultsScreen." + labels[i], labels[i].toUpperCase());
-			var barTxt = new FlxText(barX + barMaxW + 10, y - 1, 155, hitLabel + ": " + counts[i] + " (" + percent + "%)", 14);
+			// One line per row, always. fieldWidth 0 is the engine's idiom for "never wrap"
+			// (set_fieldWidth(<= 0) -> wordWrap = false, autoSize = true, exactly the side HUD's rule):
+			// with fieldWidth > 0 a long row wraps, paints its whole field as a black box and pushes its
+			// tail into the row below (Turbo runs reach 10-digit counts).
+			var rowText:String = hitLabel + ": " + counts[i] + " (" + percent + "%)";
+			var barTxt = new FlxText(barTxtX, y - 1, 0, rowText, 14);
 			barTxt.setFormat(Paths.languageFont(), 14, colors[i], LEFT);
+			// Shrink the row in steps that never re-enable wrapping: raw count -> compact count ->
+			// compact count without the percentage (the bar already shows how big the share is).
+			if (barTxt.textField.textWidth > barTxtW)
+				barTxt.text = hitLabel + ": " + compactCount(counts[i]) + " (" + percent + "%)";
+			if (barTxt.textField.textWidth > barTxtW)
+				barTxt.text = hitLabel + ": " + compactCount(counts[i]);
+			if (barTxt.textField.textWidth > barTxtW)
+				barTxt.text = compactCount(counts[i]);
 			barTxt.alpha = 0;
 			barTextGroup.add(barTxt);
 		}
+	}
+
+	/** 1.03B / 12.3M / 45.6K: keeps a legend row on one line when the raw count is too long. */
+	static function compactCount(v:Float):String
+	{
+		if (v >= 1e9) return CoolUtil.floorDecimal(v / 1e9, 2) + "B";
+		if (v >= 1e6) return CoolUtil.floorDecimal(v / 1e6, 1) + "M";
+		if (v >= 1e4) return CoolUtil.floorDecimal(v / 1e3, 1) + "K";
+		return Std.string(v);
 	}
 
 	function barTween(sprite:FlxSprite, index:Int)
@@ -862,9 +894,13 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 		}
 	}
 
-	function getRatingIconName(ratingPercent:Float, ratingFC:String, sicks:Int, goods:Int, bads:Int, shits:Int, misses:Int):String
+	function getRatingIconName(ratingPercent:Float, ratingFC:String, marvelouses:Int, sicks:Int, goods:Int, bads:Int, shits:Int, misses:Int):String
 	{
-		var totalNotes:Float = sicks + goods + bads + shits + misses;
+		// Marvelous is a first-class bucket when the preset enables it, so it has to be part of the note
+		// total: with it missing, an all-marvelous run (Turbo botplay on a dense chart judges every hit as
+		// ratingsData[0]) has sicks/goods/bads/shits/misses all 0 -> totalNotes 0 -> the icon was the
+		// big FALSE placeholder instead of the rank the accuracy earned.
+		var totalNotes:Float = marvelouses + sicks + goods + bads + shits + misses;
 		if (totalNotes <= 0) return "FALSE";
 		if (ratingPercent >= 1.0) return "phi";
 		if (ratingPercent >= 0.95 && misses == 0 && bads == 0 && shits == 0) return "fc v";
@@ -887,6 +923,7 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 		// [CRASH FIX] Guard against NaN ratingPercent; prefer original replay stats.
 		var safePercent:Float;
 		var ratingFC:String;
+		var marvelousCount:Int;
 		var sickCount:Int;
 		var goodCount:Int;
 		var badCount:Int;
@@ -896,6 +933,7 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 		{
 			safePercent = (Math.isNaN(replayEntry.ratingPercent) || replayEntry.ratingPercent < 0) ? 0 : replayEntry.ratingPercent;
 			ratingFC = replayEntry.ratingFC;
+			marvelousCount = (replayEntry.marvelouses != null) ? replayEntry.marvelouses : 0;
 			sickCount = replayEntry.sicks;
 			goodCount = replayEntry.goods;
 			badCount = replayEntry.bads;
@@ -906,18 +944,24 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 		{
 			safePercent = (Math.isNaN(game.ratingPercent) || game.ratingPercent < 0) ? 0 : game.ratingPercent;
 			ratingFC = game.ratingFC;
+			marvelousCount = game.marvelouses;
 			sickCount = game.sicks;
 			goodCount = game.goods;
 			badCount = game.bads;
 			shitCount = game.shits;
 			missCount = game.songMisses;
 		}
-		var iconName = getRatingIconName(safePercent, ratingFC, sickCount, goodCount, badCount, shitCount, missCount);
+		var iconName = getRatingIconName(safePercent, ratingFC, marvelousCount, sickCount, goodCount, badCount, shitCount, missCount);
 		if (Paths.fileExists("images/freeplayr/" + iconName + ".png", IMAGE))
 			ratingIcon.loadGraphic(Paths.image("freeplayr/" + iconName));
 		else
-			ratingIcon.loadGraphic(Paths.image("freeplayr/FALSE"));
-		ratingIcon.setGraphicSize(Std.int(ratingIcon.width * 0.6));
+			ratingIcon.loadGraphic(Paths.image("freeplayr/false")); // the file is lower-case
+		if (ratingIcon.width <= 0 || ratingIcon.height <= 0)
+			return;
+		// Fit the icon into a fixed box instead of a width-only scale: the rank icons are 150x150, but
+		// `false.png` is 660x256, so scaling by width alone made it dominate the whole card.
+		var iconScale:Float = Math.min(0.6, Math.min(RATING_ICON_MAX_H / ratingIcon.height, RATING_ICON_MAX_W / ratingIcon.width));
+		ratingIcon.setGraphicSize(Std.int(ratingIcon.width * iconScale), Std.int(ratingIcon.height * iconScale));
 		ratingIcon.updateHitbox();
 		ratingIcon.x = heroPanel.x + heroPanel.width - ratingIcon.width - 24;
 		ratingIcon.y = heroPanel.y + (heroPanel.height - ratingIcon.height) / 2;

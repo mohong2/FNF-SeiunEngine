@@ -99,6 +99,9 @@ class Main extends Sprite
 	{
 		// Install native crash hooks first, so even early startup faults leave a log with memory pointers.
 		NativeCrash.install();
+		// 脚本诊断日志（logs/script_log.txt）：记录每个被加载的脚本、被扫描的脚本目录、
+		// 每次脚本报错，以及 onCreate / onCreatePost 分发给了谁。排查"模组脚本没生效"必备。
+		backend.ScriptLog.begin();
 
 		#if mac
 		// macOS: .app 由 Finder 双击启动时，进程工作目录是根目录 "/"，
@@ -133,24 +136,15 @@ class Main extends Sprite
 		#end
 	}  
 		#if desktop
+		/**
+		 * Normalises the boot window. The *saved* mode cannot be applied from here: main()
+		 * runs before the save file is read, so ClientPrefs still holds its defaults (which is
+		 * why the saved mode used to be forgotten on every launch). TitleState applies the real
+		 * mode as soon as the preferences are in memory.
+		 */
 		private static function applyWindowMode():Void
 		{
-			var mode = ClientPrefs.data.windowedmode;
-			var window = Lib.application.window;
-			
-			switch(mode) {
-				case 'borderless':
-				{
-					window.fullscreen = true;
-				}
-
-				case 'fullscreen':
-					window.fullscreen = true;
-				default:
-					FlxG.fullscreen = false;
-					Lib.application.window.fullscreen = false;
-					Lib.application.window.borderless = false;
-			}
+			backend.WindowMode.apply(ClientPrefs.data.windowedmode);
 		}
 		#end
 
@@ -304,6 +298,11 @@ class Main extends Sprite
 		VideoPreloader.warmup();
 		#end
 
+		// REC badge used while a video render is running (desktop only).
+		#if desktop
+		backend.RenderIndicator.install();
+		#end
+
 		// 每次状态切换时，旧 state 已 destroy、FlxG.bitmap.clearCache() 已执行，
 		// 这里统一清掉上一状态残留的 Paths 图片缓存，避免反复进出关卡内存只增不减。
 		FlxG.signals.preStateCreate.add(function(_) {
@@ -337,9 +336,16 @@ class Main extends Sprite
 		// Heartbeat: last known state survives even a process killed below the Haxe layer.
 		SystemDiag.setupHeartbeat();
 
-		// Sync separateUpdateDraw (property setter handles timer + FlxG sync)
+		// Sync separateUpdateDraw (the property setter keeps FlxGame in sync).
+		// While the mode is on, an idle render tick - one that ran no logic step - re-presents the
+		// draw commands already recorded on the camera canvases instead of rebuilding them.
+		// The flag is mirrored from the mode that is actually in effect, not from the preference.
+		// See FlxG.separateDrawSkipIdleFrames and FlxGame.invalidateDrawCache().
 		if (FlxG.game != null)
+		{
 			FlxG.game.separateUpdateDraw = ClientPrefs.data.separateUpdateDraw;
+			FlxG.separateDrawSkipIdleFrames = FlxG.game.separateUpdateDraw;
+		}
 
 		// Ensure draw wrapper is null (threaded rendering removed)
 		if (FlxG.game != null)

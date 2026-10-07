@@ -197,9 +197,25 @@ class GfxPolicy
 		{
 			var g = findGraphicByKey(key);
 			if (g == null)
+			{
+				// The graphic is gone. Unless it is parked in the LRU (that case is finished by
+				// GfxLru.onContextRestored in the same callback, which drops the CPU-release
+				// record through forgetReleased), this registration is dangling: subtract its
+				// bytes and drop it here, exactly as pruneRegistry() would, so that
+				// releasedBytesLive cannot stay inflated forever.
+				if (!GfxLru.isParked(key))
+				{
+					releasedBytesLive -= entry.bytes;
+					consumedKeys.push(key);
+				}
 				continue;
+			}
 			if (g.bitmap != null && g.bitmap.readable)
 			{
+				// The CPU copy is back (something re-decoded the graphic), so this registration
+				// is meaningless. Subtract its bytes like pruneRegistry() does: removing the
+				// record without subtracting would leave releasedBytesLive permanently inflated.
+				releasedBytesLive -= entry.bytes;
 				consumedKeys.push(key);
 				continue;
 			}
@@ -322,7 +338,12 @@ class GfxPolicy
 		if (resolved == null) return false;
 
 		var bytes:Float = bmp.width * bmp.height * 4;
-		bmp.disposeImage();
+		// 释放失败就不要记账(否则 cpuReleased 会认为这张图已经释放, 之后不再补回来)。
+		try { bmp.disposeImage(); } catch (e:Dynamic) { return false; }
+		// 把"释放了哪张图的 CPU 副本"也写进引擎日志: 原生崩溃报告会带上最后 150 条,
+		// 这样"崩溃前最后动过的大图"是可查的。
+		TraceManager.info('trace.gfx.cpuReleased', 'GfxPolicy released CPU copy of {} ({}x{}, {} MB)',
+			[regKey, Std.string(bmp.width), Std.string(bmp.height), Std.string(Math.round(bytes / 1048576 * 10) / 10)]);
 
 		cpuReleased.set(regKey, {assetId: regKey, realPath: resolved, bytes: bytes});
 		releasedCountTotal++;
@@ -398,9 +419,6 @@ class GfxPolicy
 				+ '  session_total=${releasedCountTotal} (~${fl(releasedBytesTotal / 1048576)} MB)\n'
 				+ '  sweeps_this_song=${songSweeps} last_sweep_cost=${fl(lastSweepCostMs)} ms\n'
 				+ '  context_loss_restores=${restoredCountTotal}\n'
-				+ '  async_decode: batch=${AsyncGfxLoader.lastBatchOffThread}off/${AsyncGfxLoader.lastBatchCached}cached/${AsyncGfxLoader.lastBatchEnqueued}enq'
-				+ ' session=${AsyncGfxLoader.decodedOffThreadTotal} failed=${AsyncGfxLoader.failedOffThreadTotal}'
-				+ ' avg_ms=${fl(AsyncGfxLoader.decodedOffThreadTotal > 0 ? AsyncGfxLoader.decodeMsTotal / AsyncGfxLoader.decodedOffThreadTotal : 0)}\n'
 				+ '  lru: parked=${lruD.parked} (~${fl(lruD.bytes / 1048576)} MB vram)'
 				+ ' hit=${lruD.hits} saved≈${fl(lruD.saved)} ms (since last ledger)\n'
 				+ '  lru_live: entries=${GfxLru.liveEntries()} hot=${GfxLru.liveHotCount()} pinned=${GfxLru.livePinnedCount()}'

@@ -1,7 +1,6 @@
 package online.substates;
 
 import openfl.filters.BlurFilter;
-import flixel.FlxObject;
 import flixel.util.FlxSpriteUtil;
 import online.substates.RoomSettingsSubstate.Option;
 import online.util.OnlineLang;
@@ -25,6 +24,7 @@ class RequestSubstate extends MusicBeatSubstate {
 
 	var curSelected:Int = -1;
 	var hovered:Int = -1;
+	var nav = new NavRepeat();
 
 	var blurFilter:BlurFilter;
 	var coolCam:FlxCamera;
@@ -139,6 +139,9 @@ class RequestSubstate extends MusicBeatSubstate {
 		promptText.scrollFactor.set(0, 0);
 		promptText.screenCenter(X);
 		add(promptText);
+		// Measure now: the buttons are placed below the message, so both heights have to be the
+		// real ones instead of the 0 a freshly built FlxText reports before it regenerates.
+		promptText.updateHitbox();
 
 		urlText = new FlxText(bg.x, promptText.y + promptText.height + 20, bg.width - 50, url);
 		urlText.setFormat(OnlineLang.font(), 20, FlxColor.WHITE, CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
@@ -146,11 +149,14 @@ class RequestSubstate extends MusicBeatSubstate {
 		urlText.screenCenter(X);
 		urlText.alpha = 0.8;
 		add(urlText);
+		urlText.updateHitbox();
 
 		yes = new FlxText(0, 0, 0, OnlineLang.L('request.yes', 'Yes'));
 		yes.setFormat(OnlineLang.font(), 30, FlxColor.WHITE, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 		yes.x = FlxG.width / 2 - yes.width / 2 - 150;
-		yes.y = promptText.y + 200;
+		// Below whichever is lower. A message that wraps to three or four lines used to be drawn
+		// straight through the two buttons, which sat at a fixed offset under the prompt.
+		yes.y = Math.max(promptText.y + 200, urlText.y + urlText.height + 40);
 		yes.scrollFactor.set(0, 0);
 		yesBg = makeButtonBg(yes);
 		add(yesBg);
@@ -169,6 +175,9 @@ class RequestSubstate extends MusicBeatSubstate {
 			add(trust = new Option(OnlineLang.L('request.trust', 'Trust this source'), OnlineLang.L('request.trust.desc', 'If checked, you will no longer be asked\nto accept links from this domain.'), () -> {
 				trust.checked = !trust.checked;
 			}, null, 0, 500, isURLTrusted(url)));
+			// Created at y = 500, i.e. under the buttons; if a long message pushed them below that,
+			// the trust row follows instead of being covered by them.
+			trust.y = Math.max(500, yes.y + 90);
 			trust.scrollFactor.set(0, 0);
 			trust.screenCenter(X);
 			trust.alpha = 0.6;
@@ -181,6 +190,14 @@ class RequestSubstate extends MusicBeatSubstate {
 
 		if (onCreate != null)
 			onCreate(this);
+
+		// On-screen controls (Android always, desktop when "touch controls" is on): LEFT/RIGHT walk
+		// this popup's buttons, A confirms and B is wired to BACK, taking the same cancel path.
+		// LEFT_RIGHT (not UP_DOWN) is what actually binds the pad to UI_LEFT/UI_RIGHT here.
+		addVirtualPad(LEFT_RIGHT, A_B);
+		// Online pad layout: shrunk buttons tucked into the corners, clear of the UI.
+		OnlineNav.layoutRow(virtualPad);
+		addPadCamera();
 	}
 
 	override function destroy() {
@@ -203,12 +220,15 @@ class RequestSubstate extends MusicBeatSubstate {
 	}
 
 	var items:Int = 2;
-
 	override function update(elapsed) {
 		super.update(elapsed);
 
-		if (controls.UI_LEFT_P || controls.UI_RIGHT_P) {
-			curSelected++;
+		// LEFT steps back and RIGHT steps forward, with hold-to-repeat so either pad arrow can be
+		// held down. (Both directions used to advance, which made the two arrows identical.)
+		var steps = nav.poll(controls.UI_LEFT, controls.UI_RIGHT, elapsed);
+		while (steps != 0) {
+			var dir = steps > 0 ? 1 : -1;
+			curSelected += dir;
 
 			if (curSelected > items) {
 				curSelected = 0;
@@ -216,17 +236,26 @@ class RequestSubstate extends MusicBeatSubstate {
 			else if (curSelected < 0) {
 				curSelected = items;
 			}
+
+			steps -= dir;
 		}
 
-		// The pointer wins over the keyboard cursor whenever it sits on a button. This runs every
-		// frame (not only on mouse movement) so the highlight always matches the click target.
+		// A tap that lands on the on-screen pad belongs to the pad (d-pad/A/B), never to the
+		// button drawn behind it.
+		var padTap = OnlineNav.padBlocks(virtualPad);
+		var pointerClick = FlxG.mouse.justPressed && !padTap;
+
+		// The pointer only lights the button it sits on up, and never moves curSelected. This runs
+		// every frame so the highlight always matches the click target.
 		hovered = -1;
-		if (mouseHovers(yesBg))
-			hovered = 0;
-		else if (mouseHovers(noBg))
-			hovered = 1;
-		else if (!disableTrusting && trust != null && mouseHovers(trust))
-			hovered = 2;
+		if (!padTap) {
+			if (OnlineNav.pointerOver(yesBg, coolCam))
+				hovered = 0;
+			else if (OnlineNav.pointerOver(noBg, coolCam))
+				hovered = 1;
+			else if (!disableTrusting && trust != null && OnlineNav.pointerOver(trust, coolCam))
+				hovered = 2;
+		}
 
 		var active = hovered >= 0 ? hovered : curSelected;
 
@@ -245,12 +274,15 @@ class RequestSubstate extends MusicBeatSubstate {
 					trust.alpha = 1;
 		}
 
-		if (FlxG.mouse.justPressed && hovered >= 0)
+		// A follows the highlight the pointer/keys produce; with nothing highlighted yet it
+		// confirms the first action instead of being a dead button.
+		if (pointerClick && hovered >= 0)
 			activate(hovered);
-		else if (controls.ACCEPT && curSelected >= 0)
-			activate(curSelected);
+		else if (controls.ACCEPT)
+			activate(hovered >= 0 ? hovered : (curSelected >= 0 ? curSelected : 0));
 
-		if (FlxG.keys.justPressed.ESCAPE) {
+		// BACK is what the pad's B button drives; it takes the same cancel path ESCAPE used to.
+		if (controls.BACK) {
 			if (noCallback != null)
 				noCallback();
 			close();
@@ -291,29 +323,6 @@ class RequestSubstate extends MusicBeatSubstate {
 				if (!disableTrusting && trust != null)
 					trust.onClick();
 		}
-	}
-
-	/**
-	 * World-space hit test on this substate's own camera.
-	 *
-	 * FlxG.mouse.overlaps() cannot be used here: FlxPointer.overlaps() feeds the pointer's
-	 * position (which flixel keeps in the MAIN camera's world space) into
-	 * overlapsPoint(point, true, camera), which then subtracts the PASSED camera's scroll. The
-	 * buttons live on this substate's own camera with scrollFactor 0, so the comparison drifts by
-	 * the main camera's scroll -- and the main camera does scroll (the server screen follows the
-	 * selected row), which is why hovering a button did nothing.
-	 *
-	 * getWorldPosition(camera) + overlapsPoint(point, false) compares both sides in the same
-	 * space and works for any camera, scrolled or not.
-	 */
-	function mouseHovers(object:FlxObject):Bool {
-		if (object == null || camera == null)
-			return false;
-
-		var point = FlxG.mouse.getWorldPosition(camera);
-		var hit:Bool = object.overlapsPoint(point, false);
-		point.put();
-		return hit;
 	}
 
 	function isURLTrusted(url:String) {

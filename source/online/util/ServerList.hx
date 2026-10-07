@@ -46,6 +46,9 @@ class ServerList {
 	/** Kept here so the list can be created before GameClient is ever asked for an address. */
 	public static inline var DEFAULT_ADDRESS:String = 'ws://localhost:2567';
 
+	/** Plaintext (ws://) default port; see normalizeAddress(). Must match DEFAULT_ADDRESS. */
+	public static inline var DEFAULT_PORT:Int = 2567;
+
 	public static function load():Void {
 		if (data != null)
 			return;
@@ -275,8 +278,16 @@ class ServerList {
 	}
 
 	/**
-	 * Accept what players actually type (http://host, bare host, the historical double-prefixed
-	 * values) and return a ws(s):// URL, like the old OnlineOptionsState.prepareAddress().
+	 * Accept what players actually type (http://host, bare host, a bare LAN IP, the historical
+	 * double-prefixed values) and return a ws(s):// URL, like the old
+	 * OnlineOptionsState.prepareAddress().
+	 *
+	 * Port rule: an address that ends up on plaintext ws:// and carries no explicit port gets
+	 * DEFAULT_PORT appended exactly once. That is what makes a bare LAN IP such as 192.168.1.50
+	 * work -- without it the player's entry became ws://192.168.1.50 and the socket went to port
+	 * 80 instead of the server's 2567. Addresses that keep their TLS default port (wss:// / https://,
+	 * including the two hosted aliases below) are never given a port: they sit behind an HTTPS
+	 * reverse proxy on 443.
 	 */
 	public static function normalizeAddress(address:String):String {
 		if (address == null)
@@ -304,16 +315,52 @@ class ServerList {
 		if (address.length > 0 && !(address.startsWith('wss://') || address.startsWith('ws://')))
 			address = 'ws://' + address;
 
-		if (address == "ws://localhost")
-			address += ":2567";
-
+		// Hosted SeiunEngine servers. Mapped to TLS *before* the port rule below so they keep 443;
+		// these two lines are the only hosts where the scheme changes on their own.
 		if (address == "ws://funkin.sniro.boo")
 			address = "wss://funkin.sniro.boo";
 
 		if (address == "ws://gettinfreaky.onrender.com")
 			address = "wss://gettinfreaky.onrender.com";
 
+		// Exactly once, and only after the URL is otherwise final: on the finished ws:// URL the
+		// helper can tell "no port yet" from "already has one".
+		address = withDefaultPort(address);
+
 		return address == "" ? DEFAULT_ADDRESS : address;
+	}
+
+	/**
+	 * Adds the plaintext default port to a ws:// URL that has none. The authority ends at the first
+	 * '/' after the scheme, so a path stays a path: ws://host/room becomes ws://host:2567/room
+	 * instead of ws://host/room:2567. A URL that already names a port -- or the degenerate "ws://"
+	 * with no host at all -- is returned unchanged. Non-ws URLs (wss:// and everything else) are
+	 * never touched.
+	 */
+	static function withDefaultPort(wsUrl:String):String {
+		if (!wsUrl.startsWith('ws://'))
+			return wsUrl;
+
+		var rest = wsUrl.substr('ws://'.length);
+		var path = rest.indexOf('/');
+		var authority = path < 0 ? rest : rest.substr(0, path);
+		if (authority == '' || authorityHasPort(authority))
+			return wsUrl;
+
+		return 'ws://' + authority + ':' + DEFAULT_PORT + (path < 0 ? '' : rest.substr(path));
+	}
+
+	/**
+	 * True when an authority already names a port. Inside a bracketed IPv6 literal the colons belong
+	 * to the address, so only what follows the closing ']' counts as a port there.
+	 */
+	static function authorityHasPort(authority:String):Bool {
+		if (StringTools.startsWith(authority, '[')) {
+			var close = authority.indexOf(']');
+			return close >= 0 && authority.indexOf(':', close) >= 0;
+		}
+
+		return authority.indexOf(':') >= 0;
 	}
 
 	static function legacyAddress():String {
@@ -337,5 +384,30 @@ class ServerList {
 			save();
 		}
 		return entry;
+	}
+
+	// ------------------------------------------------------------------
+	// LAN helpers
+	// ------------------------------------------------------------------
+
+	/** ws:// URL of a LAN host, with the engine's default port (what the UI's "this PC" row uses). */
+	public static function lanAddress(ip:String):String {
+		return 'ws://' + ip + ':' + DEFAULT_PORT;
+	}
+
+	/**
+	 * Best-effort list of this machine's private (RFC 1918) IPv4 addresses.
+	 *
+	 * The implementation lives in online.util.LanDiscovery, which needs it for the "Open to LAN"
+	 * broadcast targets and is compiled into the standalone server as well (this class is not: it
+	 * pulls in ClientPrefs). Kept here because LanHost / the server-list UI ask for it by this name.
+	 */
+	public static function localLanAddresses():Array<String> {
+		return LanDiscovery.localAddresses();
+	}
+
+	/** Kept as the public name of the parser, which now lives in online.util.LanDiscovery. */
+	public static function parseLanAddresses(systemName:Null<String>, output:String):Array<String> {
+		return LanDiscovery.parsePrivateIPv4s(systemName, output);
 	}
 }

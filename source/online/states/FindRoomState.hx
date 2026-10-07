@@ -21,6 +21,12 @@ class FindRoomState extends MusicBeatState {
 
 	public var camFollow:FlxObject;
 
+	/** UP/DOWN hold-to-repeat, shared with the on-screen pad. */
+	var nav = new NavRepeat();
+
+	/** Set every frame by update(); rows read it so a pad tap never also picks a room. */
+	public var padTap:Bool = false;
+
     var refreshTimer:FlxTimer;
 
 	var tip:FlxText;
@@ -37,6 +43,13 @@ class FindRoomState extends MusicBeatState {
 		#end
 
 		camera.follow(camFollow = new FlxObject(FlxG.width / 2), TOPDOWN, 0.1);
+
+		// On-screen controls: UP/DOWN pick a room, A accepts, B backs out. Mounted by every online
+		// screen; a pad tap is ignored by the row hit tests below.
+		addVirtualPad(UP_DOWN, A_B);
+		// Online pad layout: shrunk buttons tucked into the corners, clear of the UI.
+		OnlineNav.layoutColumn(virtualPad);
+		addPadCamera();
 
 		var bg:FlxSprite = new FlxSprite().loadGraphic(Paths.image('menuDesat'));
 		bg.color = 0xff252844;
@@ -56,6 +69,8 @@ class FindRoomState extends MusicBeatState {
 		tip.setFormat(OnlineLang.font(), 18, FlxColor.WHITE, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 		tip.scrollFactor.set(0, 0);
 		tip.screenCenter(X);
+		// Centred along the bottom: that band is the free one, between the pad's left column and
+		// its action buttons.
 		tip.y = FlxG.height - tip.height - 40;
 		tip.alpha = 0.6;
 
@@ -74,10 +89,17 @@ class FindRoomState extends MusicBeatState {
     }
 
     override function update(elapsed) {
-		if (controls.UI_UP_P)
-            selected--;
-		else if (controls.UI_DOWN_P)
-			selected++;
+		// A tap that lands on the on-screen pad belongs to the pad, never to the room behind it.
+		padTap = OnlineNav.padBlocks(virtualPad);
+
+		// Wheel (1 = up) plus the pad/keyboard, with hold-to-repeat. The pointer no longer drags
+		// the selection along as it moves: a click is what selects a room.
+		var steps = nav.poll(controls.UI_UP, controls.UI_DOWN, elapsed) - FlxG.mouse.wheel;
+		while (steps != 0) {
+			var dir = steps > 0 ? 1 : -1;
+			selected += dir;
+			steps -= dir;
+		}
 
         if (FlxG.keys.justPressed.R) {
 			@:privateAccess refreshTimer._timeCounter = 0;
@@ -161,6 +183,9 @@ class RoomBox extends FlxSpriteGroup {
 
     public var hitbox:FlxObject;
 
+	/** Lit up by the pointer; only a click moves the selection onto this row. */
+    var hovered:Bool = false;
+
 	public function new(room:io.colyseus.Client.RoomAvailable) {
         super();
 
@@ -214,17 +239,28 @@ class RoomBox extends FlxSpriteGroup {
 		hitbox.x = x;
 		hitbox.y = y;
 
-		if (FlxG.mouse.overlaps(hitbox) && (FlxG.mouse.deltaX != 0 || FlxG.mouse.deltaY != 0 || FlxG.mouse.justPressed)) {
-			FindRoomState.instance.selected = ID;
-        }
+		var state = FindRoomState.instance;
+		if (state == null)
+			return;
 
-		if (ID == FindRoomState.instance.selected) {
+		// Hover only lights the row up. It used to assign `selected` on any pointer move, so a
+		// swipe or a drag towards the pad buttons threw the selection onto another room.
+		// A tap that lands on the on-screen pad belongs to the pad, so it must not light a row up
+		// either; the same guard covers the click below.
+		hovered = !state.padTap && OnlineNav.pointerOver(hitbox, state.camera);
+		var clicked = hovered && FlxG.mouse.justPressed && !state.padTap;
+
+		// A click selects the row it hit first; the branch below then runs it.
+		if (clicked)
+			state.selected = ID;
+
+		if (ID == state.selected) {
             alpha = 1.0;
 			detailsTxt.visible = true;
 			hitbox.height = detailsTxt.y - hitbox.y + detailsTxt.height;
-			FindRoomState.instance.camFollow.setPosition(hitbox.getMidpoint().x, hitbox.getMidpoint().y);
+			state.camFollow.setPosition(hitbox.getMidpoint().x, hitbox.getMidpoint().y);
 
-			if (FindRoomState.instance.controls.ACCEPT || (FlxG.mouse.justPressed && FlxG.mouse.overlaps(hitbox))) {
+			if (state.controls.ACCEPT || clicked) {
 				GameClient.joinRoom('$code;${FindRoomState.instance.getAddress()}', (err) -> {
 					if (err != null) {
 						return;
@@ -237,7 +273,7 @@ class RoomBox extends FlxSpriteGroup {
 			}
         }
         else {
-            alpha = 0.6;
+            alpha = hovered ? 0.85 : 0.6;
 			detailsTxt.visible = false;
 			hitbox.height = bg.height;
         }

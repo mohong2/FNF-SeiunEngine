@@ -28,21 +28,29 @@ export/*
 
 # Crash linemaps are generated per build (tools/build_*_symbols.ps1)
 assets/linemap/*.bin
+assets/linemap/*.objsig
+
+# Local crash-triage scratch (reports, probes, logs)
+debughunt/
 
 # SeiunEngine local-only artifacts (not for commit)
 server/build/
-# 服务端编译产物与运行日志（P6-2 起：server/bin、server/logs）
+# 我说这是AI瞎乱写的你信吗？现在是2026年，所以我要使用AI
 server/bin/*
 !server/bin/.gitkeep
 server/logs/*
 !server/logs/.gitkeep
-# P6-4：本地 JSON 存储（账号 / 排行榜 / 评论）是运行时数据，不进仓库
+
 server/data/
 temp/
 server_data/
 seiun_online_profile.json
-turbo_cache/
+# Sidecar cache of huge streamed charts (ChartCache): runtime data, regenerated on demand.
+chart_cache/
 
 # Python bytecode caches (tools/*.py)
 __pycache__/
 *.pyc
+
+# script diagnostics log written by backend.ScriptLog when the test harness runs
+/logs/

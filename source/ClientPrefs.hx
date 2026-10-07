@@ -126,14 +126,26 @@ import sys.io.Process;
 	public var bulkSkip:Bool = false;
 	/** Performance option: sort only the visible living notes. */
 	public var fastSort:Bool = false;
+	//不不不，我个老牧师的怎么给他删了
+	public var stockNoteSort:Bool = false;
+
+	public var stockEventDrain:Bool = false;
+
+	public var stockBpmStruct:Bool = false;
+
+	public var stockHudTextRewrite:Bool = false;
 	/** Performance option: maximum simultaneously materialised notes, 0 = unlimited (use with care). */
 	public var limitNotes:Int = 0;
+	/** Performance option: keep the note list of streamed (64 MB+) charts on disk and replay it on the next load. */
+	public var chartCache:Bool = true;
+	/** Performance option: deflate the cached note list (much smaller files, ~1s more on load). */
+	public var chartCacheCompress:Bool = true;
+	/** Placeholder state for the "clear chart cache" action button: the action never reads it. */
+	public var clearChartCache:Bool = false;
 	/** Performance option: disables the hxcpp GC during a song, trading memory for frame time (off by default, prevents leaks). */
 	public var disableGC:Bool = false;
 	/** Release CPU-side copies of large textures (>=2048px) only after confirming no live sprite/atlas/script references. */
 	public var gfxCpuRelease:Bool = true;
-	/** Decode character sheets on the controlled main-thread loading queue (no background BitmapData threads). */
-	public var asyncImageLoading:Bool = true;
 	/** Store uploaded graphics in LRU cache upon song exit, with strict cache/atlas synchronization and reference-safe eviction. */
 	public var gfxLruCache:Bool = true;
 	/** Placeholder state for the "clear image cache" action button: a button option must bind a field, but the action never reads it. */
@@ -142,6 +154,7 @@ import sys.io.Process;
 	public var showWatermark:Bool = true;
 	/** Placeholder state for the "show the note-optimisation notice again" action row: a button option must bind a field, but the action never reads it. */
 	public var showNoteOptimizationNotice:Bool = false;
+	public var scriptArgReuse:Bool = true;
 	/** Trim transparent borders and repack large sheets at runtime on the main thread, with XML/dimension validation. */
 	public var gfxRuntimeRepack:Bool = true;
 	public var splashAlpha:Float = 0.6;
@@ -168,6 +181,14 @@ import sys.io.Process;
 	public var judgementPreset:String = 'Leather Engine';
 	public var marvelousRatings:Bool = true;
 	public var marvelousWindow:Int = 25;
+	/**
+	 * Psych 的 0.6.3 / 0.7.3 / 1.0.4 都**没有** 'marvelous' 这一档判定, 模组按名字映射判定时
+	 * 超完美命中不落任何一档(准确率被拉低、连击计数不涨)。开启后模组脚本读到的判定名按 1.0.4
+	 * 的口径给出(≤25ms → 'sick'); 关闭后脚本读到原始判定名。
+	 * 引擎自身的 HUD / 结算 / 计分 / hitsound / 在线始终使用真实判定, 不受此开关影响;
+	 * 想拿原始判定名的脚本还可以读 `Note.ratingRaw` 或 PlayState 的 `marvelouses` 计数。
+	 */
+	public var judgementNameCompat:Bool = true;
 	/** osu! tail judgement: judge sustain tails on release instead of on hold (affects scores and replays). */
 	//public var osuTailJudgement:Bool = false;
 	/** osu! tail window multiplier relative to a normal judgement window (1.0 = same, default 2.0). */
@@ -185,6 +206,14 @@ import sys.io.Process;
 	public var autoExtractAssets:Bool = true;
 	// Chart editor auto-save (off by default — player opts in)
 	public var chartAutosave:Bool = false;
+	/**
+	 * How charts split across several files are loaded; the player picks this in Options > Advanced.
+	 * Auto   -- the engine finds <song>-0.json, -1, ... and plays them as one song;
+	 * Manifest -- only the parts listed in <song>.parts.json are merged;
+	 * Off    -- every chart file is its own chart, the stock behavior.
+	 * Kept as a String (not an enum) so an unknown value from an old/newer save degrades to Auto.
+	 */
+	public var segmentedCharts:String = 'Auto';
 
 	// Trace Console debug settings
 	public var traceConsoleEnabled:Bool = false;
@@ -195,6 +224,33 @@ import sys.io.Process;
 
 	// Separate Update/Draw mode
 	public var separateUpdateDraw:Bool = false;
+
+	// ─── Video rendering (FFmpeg pipe) ────────────────────────────────────
+	// Preview mode: everything runs exactly as during a real render (fixed
+	// timestep, per-frame capture) but no ffmpeg process is spawned and no
+	// file is written. Used to rehearse a render and by the codec test.
+	public var previewRender:Bool = false;
+	// Encoder id; must be a key of backend.FFMpeg.CODECS.
+	public var renderCodec:String = 'H.264 (x264)';
+	// Rate control: CRF/CQP | VBR | CBR
+	public var renderMode:String = 'CRF/CQP';
+	// Quality for CRF/CQP (lower = better).
+	public var renderQuality:Int = 18;
+	// Target bitrate in Mbit/s for VBR/CBR.
+	public var renderBitrate:Int = 12;
+	// How many captured frames may be in flight before frames are dropped.
+	// This is what bounds the recorder's memory:
+	//   renderBufferFrames * width * height * 4 bytes.
+	public var renderBufferFrames:Int = 60;
+	// Framerate the render is captured and encoded at. The loop is pinned to it
+	// while rendering and one captured frame is exactly 1/renderFps of song time,
+	// so the video always lasts as long as the song no matter how fast the PC is.
+	// Free choice: any rate from 15 to 480.
+	public var renderFps:Int = 60;
+	// Mix the song's Inst/Voices tracks into the rendered video.
+	public var renderAudio:Bool = true;
+	// Start recording automatically the moment a song starts, with no hotkey.
+	public var renderOnSongStart:Bool = false;
 
 	// Old pause menu style
 	public var oldPauseMenu:Bool = false;
@@ -213,9 +269,10 @@ import sys.io.Process;
 	// turned back on from Android Settings.
 	public var showStorageRootWarning:Bool = true;
 
-	// Lua / HScript error loop protection: ignore a script file after too many consecutive errors.
+	// Lua / HScript error loop protection: silence a script's repeated error reports after too
+	// many consecutive errors (the script itself keeps running). 0 = never silence.
 	public var ignoreErrorLoopScripts:Bool = true;
-	public var scriptErrorLimit:Int = 50;
+	public var scriptErrorLimit:Int = 0;
 	#if ONLINE_ALLOWED
 	// ─── Online support: save fields the online code needs ──────────────────
 	// Field names, types and defaults required by the online code. Single-player code never reads these fields,
@@ -240,7 +297,8 @@ import sys.io.Process;
 	public var disablePMs:Bool = false;
 	/** Disables room invite notifications. */
 	public var disableRoomInvites:Bool = false;
-	/** HTTPS certificate verification toggle; loadPrefs() writes it to sys.ssl. */
+	/** Persisted user choice for HTTPS certificate verification. NOT applied at startup
+		(see loadPrefs); the online options screen reads/writes sys.ssl.Socket.DEFAULT_VERIFY_CERT directly. */
 	public var verifySSL:Bool = false;
 	/** Player-entered network server address. */
 	public var networkServerAddress:String = null;
@@ -254,6 +312,19 @@ import sys.io.Process;
 	public var onlineScoreDetails:Bool = false;
 	/** Favourite skins, formatted 'charactername-originfolder'. */
 	public var favSkins:Array<String> = []; //format: 'charactername-originfolder'
+	/**
+	 * In-client LAN hosting (OnlineState -> LanHostState). The first HTTP port the host tries;
+	 * a busy port walks upward and the panel shows the ports really in use.
+	 */
+	public var lanHostPort:Int = 2567;
+	/** Max players of the hosted room (1..64, the same clamp ServerConfig applies). */
+	public var lanHostMaxClients:Int = 6;
+	/** True = the hosted room is listed in FIND on the host's own server. Default off = code only. */
+	public var lanHostPublic:Bool = false;
+	/** True = several sessions from one IP may join (local testing on one PC). */
+	public var lanHostAllowSamePc:Bool = false;
+	/** Empty = <applicationStorageDirectory>/lanhost (a writable local volume). */
+	public var lanHostDataDir:String = "";
 	#end
 }
 
@@ -348,6 +419,7 @@ class ClientPrefs {
 	public static var judgementPreset(get, never):String;
 	public static var marvelousRatings(get, never):Bool;
 	public static var marvelousWindow(get, never):Int;
+	public static var judgementNameCompat(get, never):Bool;
 	//public static var osuTailJudgement(get, never):Bool;
 	//public static var tailWindowMult(get, never):Float;
 	public static var touchSwipeEnabled(get, never):Bool;
@@ -355,6 +427,20 @@ class ClientPrefs {
 
 	public static var ignoreErrorLoopScripts(get, never):Bool;
 	public static var scriptErrorLimit(get, never):Int;
+
+	/**
+	 * The player's multi-file chart choice, read at chart-load time.
+	 * Returns one of "Auto" / "Manifest" / "Off" and never dereferences null: a few load paths
+	 * (and any tool that builds a Song outside the game) run before loadPrefs().
+	 * The strings are spelled out instead of referencing ChartParts.MODE_* on purpose -- ChartParts
+	 * is a sys-only module and ClientPrefs compiles for every target.
+	 */
+	public static function segmentedChartMode():String
+	{
+		if (data == null || data.segmentedCharts == null) return 'Auto';
+		return data.segmentedCharts;
+	}
+
 	static inline function get_arrowRGB() return data.arrowRGB;
 	static inline function get_arrowRGBPixel() return data.arrowRGBPixel;
 	static inline function get_noteSkin() return data.noteSkin;
@@ -453,6 +539,7 @@ class ClientPrefs {
 	static inline function get_judgementTimings() return data.judgementTimings;
 	static inline function get_judgementPreset() return data.judgementPreset;
 	static inline function get_marvelousRatings() return data.marvelousRatings;
+	static inline function get_judgementNameCompat() return data.judgementNameCompat;
 	static inline function get_marvelousWindow() return data.marvelousWindow;
 	//static inline function get_osuTailJudgement() return data.osuTailJudgement;
 	//static inline function get_tailWindowMult() return data.tailWindowMult;
@@ -827,6 +914,7 @@ class ClientPrefs {
 		if (data.modSettings == null)
 			data.modSettings = new Map<String, Map<String, Dynamic>>();
 
+		backend.Scripts.reuseEnabled = data.scriptArgReuse;//何意味
 		// Multi-key: old saves only have four arrowHSV entries; pad to nine (one per A~I lane)
 		// so the NotesSubState carousel and in-game colour lookups cannot go out of bounds.
 		if (data.arrowHSV == null || data.arrowHSV.length < 9)
@@ -935,9 +1023,15 @@ class ClientPrefs {
 			}
 		}
 
-		// Apply separate update/draw mode (property setter handles timer + FlxG sync)
+		// Apply separate update/draw mode (the property setter keeps FlxGame in sync).
+		// Idle render ticks in that mode reuse the recorded draw commands; mirror the mode that
+		// is actually in effect rather than the preference, so a direct change of
+		// FlxGame.separateUpdateDraw cannot leave the flag behind.
 		if (FlxG.game != null)
+		{
 			FlxG.game.separateUpdateDraw = data.separateUpdateDraw;
+			FlxG.separateDrawSkipIdleFrames = FlxG.game.separateUpdateDraw;
+		}
 
 		// Ensure draw wrapper is null (threaded rendering removed)
 		if (FlxG.game != null)
@@ -945,13 +1039,17 @@ class ClientPrefs {
 		#if ONLINE_ALLOWED
 		// The vanilla assignment
 		//   `sys.ssl.Socket.DEFAULT_VERIFY_CERT = data.verifySSL;`
-		// `data.verifySSL` defaults to **false** and `sys.ssl.Socket.DEFAULT_VERIFY_CERT` is a
-		// process-wide switch. Applying it would silently disable TLS certificate verification
-		// for *every* HTTPS connection this engine makes (update checks, GitHub / GameBanana /
-		// Drive downloads, ...), not just online traffic, because the switch is global.
-		// That is an engine-wide security and behaviour change, not a minimal change, so it
-		// needs an explicit decision before being enabled.
-		// Re-adding it is these 3 lines.
+		// is deliberately NOT done here. `data.verifySSL` defaults to **false** (and every existing
+		// save file already stores false), while `sys.ssl.Socket.DEFAULT_VERIFY_CERT` defaults to
+		// true and is a process-wide switch. Applying the saved pref at startup would therefore
+		// silently disable TLS certificate verification for *every* HTTPS connection this engine
+		// makes (update checks, GitHub / GameBanana / Drive downloads, ...) on the next launch, and
+		// would turn the currently-safe default into an insecure one. That is an engine-wide
+		// security decision, so it stays off until it is explicitly made.
+		// Contract this file guarantees and OnlineOptionsState relies on: `data.verifySSL` only
+		// records the user's explicit choice; the live switch is read/written directly by the online
+		// options screen and is never restored from the save file.
+		// Re-adding the restore is these 3 lines.
 		#end
 
 		// only tunes observation intensity; visuals stay with lowQuality.

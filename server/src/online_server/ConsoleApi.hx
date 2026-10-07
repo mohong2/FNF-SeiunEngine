@@ -23,7 +23,7 @@ import online_server.ClubStore.Club;
  */
 class ConsoleApi {
 	/** Mirrors Project.xml / installers; the console does not read the exe. */
-	public static inline var VERSION = "0.2.2preonline1";
+	public static inline var VERSION = "0.2.2preonline2";
 
 	public static function handle(request:HttpRequest, hub:ServerHub):Null<HttpResponse> {
 		var path = request.path;
@@ -102,7 +102,12 @@ class ConsoleApi {
 				dataDir: Api.storageDir(),
 				configPath: ServerConfig.storagePath,
 				logFile: logFile(),
-				webRoot: ConsoleWeb.root()
+				// webRoot keeps its original single-string shape (existing probes read it); the fields
+				// below are additive and say which source actually serves /console in this process.
+				webRoot: ConsoleWeb.root(),
+				webRootExists: ConsoleWeb.rootExists(),
+				webEmbedded: ConsoleWeb.hasEmbedded(),
+				webLastSource: ConsoleWeb.lastSource
 			},
 			rooms: { total: hub.roomCount(), players: hub.onlineCount(), network: networkCount(hub) },
 			stores: {
@@ -117,7 +122,10 @@ class ConsoleApi {
 			},
 			config: limitsView(),
 			me: { id: account.id, name: account.name, role: AccountStore.normalizeRole(account.role), access: account.access },
-			announcement: ServerConfig.limits.announcement,
+			// D-R3-5: true when this request was answered by the loopback read-only session instead
+			// of a real credential. The page uses it to show the read-only banner and drop the login form.
+			localReadOnly: Api.isLocalConsoleAccount(account),
+			announcement: ServerConfig.announcement(),
 			configWarnings: ServerConfig.warnings,
 			configFile: ServerConfig.fileExists
 		});
@@ -198,7 +206,7 @@ class ConsoleApi {
 				createdAt: c.createdAt, banner: c.banner != null && c.banner != ""
 			});
 		}
-		return ok({ total: ClubStore.count(), page: page, size: ClubStore.PAGE_SIZE, rows: rows });
+		return ok({ total: ClubStore.count(), page: page, size: ClubStore.PAGE_ROWS, rows: rows });
 	}
 
 	static function mods(request:HttpRequest):HttpResponse {
@@ -218,7 +226,7 @@ class ConsoleApi {
 				downloads: m.downloads == null ? 0 : m.downloads.length
 			});
 		}
-		return ok({ total: ModStore.count(), page: page, size: ModStore.PAGE_SIZE, rows: rows });
+		return ok({ total: ModStore.count(), page: page, size: ModStore.PAGE_ROWS, rows: rows });
 	}
 
 	static function comments(request:HttpRequest):HttpResponse {
@@ -240,10 +248,15 @@ class ConsoleApi {
 			var tail = readTail(path, lines);
 			return ok({ source: source, path: path, encoding: tail.encoding, lines: tail.lines });
 		}
+		// AdminStore.logs() is already newest-first and the documented contract for this source is a
+		// tail of the newest N lines (the old slice(all.length - lines) returned the OLDEST ones).
 		var all = AdminStore.logs();
-		var out = all.length > lines ? all.slice(all.length - lines) : all;
-		out.reverse();
-		return ok({ source: "actions", path: AdminStore.storagePath(), lines: out });
+		var out = all.length > lines ? all.slice(0, lines) : all;
+		// Action-log lines embed request URLs/bodies; repair on read so a byte sequence stored by an
+		// older build cannot make Json.stringify throw here.
+		var safe:Array<String> = [];
+		for (line in out) safe.push(ServerConfig.repairUtf8(Std.string(line)));
+		return ok({ source: "actions", path: AdminStore.storagePath(), lines: safe });
 	}
 
 	static function config(request:HttpRequest):HttpResponse {
@@ -252,6 +265,9 @@ class ConsoleApi {
 			if (ServerConfig.storagePath != null && FileSystem.exists(ServerConfig.storagePath))
 				raw = File.getContent(ServerConfig.storagePath);
 		} catch (e:Dynamic) raw = "";
+		// 2-D1: the raw file text is echoed through Json.stringify, so a pre-existing damaged
+		// config.toml (orphan 0x80, FF FE, overlong forms) used to 500 this endpoint. Repair it.
+		raw = ServerConfig.repairUtf8(raw);
 		if (raw == "") raw = ServerConfig.toToml();
 		return ok({
 			path: ServerConfig.storagePath,
@@ -304,8 +320,13 @@ class ConsoleApi {
 		if (body == null) return fail(400, "Invalid JSON body");
 		var text = Std.string(Reflect.field(body, "text") == null ? "" : Reflect.field(body, "text"));
 		var broadcast = Reflect.field(body, "broadcast") != false;
-		ServerConfig.limits.announcement = StringTools.trim(text).substr(0, 500);
-		ServerConfig.save();
+		// sanitizeAnnouncement() caps at 500 CHARACTERS (codepoints) plus a 2048-byte ceiling, never
+		// splitting a codepoint. String.substr counts bytes on neko/hxcpp, so the old cap made the
+		// field a ~166-character wall for CJK and could cut a character in half (invalid UTF-8 that
+		// made the JSON response throw std@utf8_length while the damaged text was already broadcast).
+		ServerConfig.limits.announcement = ServerConfig.sanitizeAnnouncement(StringTools.trim(text));
+		var saved = ServerConfig.save();
+		if (!saved.ok) return fail(500, "cannot write " + ServerConfig.storagePath + ": " + saved.error);
 		var sent = broadcast && ServerConfig.limits.announcement != "" ? hub.broadcastNotification(ServerConfig.limits.announcement) : 0;
 		return ok({ announcement: ServerConfig.limits.announcement, sent: sent });
 	}
@@ -395,7 +416,7 @@ class ConsoleApi {
 		return {
 			ipLock: l.ipLock, ipLockLimit: l.ipLockLimit,
 			reconnectGuard: l.reconnectGuard, reconnectLimit: l.reconnectLimit,
-			maxClients: l.maxClients, announcement: l.announcement
+			maxClients: l.maxClients, announcement: ServerConfig.announcement()
 		};
 	}
 
@@ -523,78 +544,18 @@ class ConsoleApi {
 				}
 			}
 			if (code == 0) continue;
-			appendUtf8(out, code);
+			ServerConfig.appendCodepoint(out, code);
 		}
 		return out.getBytes().toString();
 	}
 
-	/** Validating UTF-8 decode: invalid bytes become U+FFFD so JSON can never choke on them. */
+	/**
+	 * Server-log decoder. It delegates to the SAME strict decoder the config/announce path uses
+	 * (ServerConfig.decodeUtf8Replacing), so the two paths can never disagree; invalid bytes become
+	 * U+FFFD instead of being copied through.
+	 */
 	static function decodeUtf8(bytes:Bytes, start:Int):String {
-		var out = new BytesBuffer();
-		var i = start;
-		var n = bytes.length;
-		while (i < n) {
-			var b = bytes.get(i);
-			if (b < 0x80) {
-				if (b != 0) out.addByte(b);
-				i++;
-				continue;
-			}
-			var need = 0;
-			var code = 0;
-			if (b >= 0xC2 && b <= 0xDF) {
-				need = 1;
-				code = b & 0x1F;
-			} else if (b >= 0xE0 && b <= 0xEF) {
-				need = 2;
-				code = b & 0x0F;
-			} else if (b >= 0xF0 && b <= 0xF4) {
-				need = 3;
-				code = b & 0x07;
-			}
-			if (need == 0 || i + need >= n) {
-				appendUtf8(out, 0xFFFD);
-				i++;
-				continue;
-			}
-			var ok = true;
-			for (k in 1...(need + 1)) {
-				var c = bytes.get(i + k);
-				if (c < 0x80 || c > 0xBF) {
-					ok = false;
-					break;
-				}
-				code = (code << 6) | (c & 0x3F);
-			}
-			if (!ok || code > 0x10FFFF || (code >= 0xD800 && code <= 0xDFFF)) {
-				appendUtf8(out, 0xFFFD);
-				i++;
-				continue;
-			}
-			// Valid sequence: copy the original bytes through.
-			for (k in 0...(need + 1)) out.addByte(bytes.get(i + k));
-			i += need + 1;
-		}
-		return out.getBytes().toString();
-	}
-
-	/** UTF-8 encode one code point into the buffer (neko strings are byte strings). */
-	static function appendUtf8(out:BytesBuffer, cp:Int):Void {
-		if (cp < 0x80) {
-			out.addByte(cp);
-		} else if (cp < 0x800) {
-			out.addByte(0xC0 | (cp >> 6));
-			out.addByte(0x80 | (cp & 0x3F));
-		} else if (cp < 0x10000) {
-			out.addByte(0xE0 | (cp >> 12));
-			out.addByte(0x80 | ((cp >> 6) & 0x3F));
-			out.addByte(0x80 | (cp & 0x3F));
-		} else {
-			out.addByte(0xF0 | (cp >> 18));
-			out.addByte(0x80 | ((cp >> 12) & 0x3F));
-			out.addByte(0x80 | ((cp >> 6) & 0x3F));
-			out.addByte(0x80 | (cp & 0x3F));
-		}
+		return ServerConfig.decodeUtf8Replacing(bytes, start);
 	}
 
 	static function slice(rows:Array<Dynamic>, page:Int, size:Int):Array<Dynamic> {
@@ -649,6 +610,7 @@ class ConsoleApi {
 	static function fail(status:Int, message:String):HttpResponse return json(status, { error: message });
 
 	static function json(status:Int, data:Dynamic):HttpResponse {
-		return { status: status, contentType: "application/json", body: Json.stringify(data) };
+		// Same response-boundary guarantee as Api.json (see ServerConfig.jsonEncode).
+		return { status: status, contentType: "application/json", body: ServerConfig.jsonEncode(data) };
 	}
 }

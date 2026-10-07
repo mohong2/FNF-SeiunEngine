@@ -13,6 +13,7 @@ import haxe.io.Bytes;
 import Conductor.BPMChangeEvent;
 import Section.SwagSection;
 import Song.SwagSong;
+import Note.NoteTypeRegistry;
 import flixel.FlxObject;
 import backend.ui.*;
 import flixel.addons.display.FlxGridOverlay;
@@ -574,7 +575,7 @@ class ChartingState extends MusicBeatState implements PsychUIEventHandler.PsychU
 
 		markUnsaved();
 		updateGrid();
-		TraceManager.info('trace.editor.dumbChart', '一键写大粪完成(匹配人声), 新增 {} 个 Note', [totalAdd]);
+		TraceManager.info('trace.editor.dumbChartDone', '一键写大粪完成(匹配人声), 新增 {} 个 Note', [totalAdd]);
 	}
 
 	/** 多k: 分析人声轨能量, 每 25ms 一个能量桶。 */
@@ -705,7 +706,7 @@ class ChartingState extends MusicBeatState implements PsychUIEventHandler.PsychU
 
 		markUnsaved();
 		updateGrid();
-		TraceManager.info('trace.editor.dumbChart', '密度增强完成(阈值 {}), 新增 {} 个 Note', [threshold, totalAdd]);
+		TraceManager.info('trace.editor.dumbChartDensity', '密度增强完成(阈值 {}), 新增 {} 个 Note', [threshold, totalAdd]);
 	}
 	var CAM_OFFSET:Int = 360;
 
@@ -3671,7 +3672,8 @@ function setupNoteData(i:Array<Dynamic>, isNextSection:Bool):Note
 		if(daSus != null) { //Common note
 			if(!Std.isOfType(i[3], String)) //Convert old note type to new note type format
 			{
-				i[3] = noteTypeIntMap.get(i[3]);
+				var resolvedType:Dynamic = noteTypeIntMap.get(i[3]);
+				i[3] = (resolvedType != null) ? resolvedType : NoteTypeRegistry.fromIndex(Std.int(i[3]));
 			}
 			if(i.length > 3 && (i[3] == null || i[3].length < 1))
 			{
@@ -4368,6 +4370,8 @@ function setupNoteData(i:Array<Dynamic>, isNextSection:Bool):Note
 		var songCopy:Dynamic = {};
 		for (f in Reflect.fields(_song))
 			Reflect.setField(songCopy, f, Reflect.field(_song, f));
+		// 引擎内部字段不入谱面文件
+		Song.stripRuntimeFields(songCopy);
 		if (!includeManiaField) Reflect.deleteField(songCopy, 'mania');
 
 		// 深拷贝，避免 castVersion（旧格式转换）原地修改编辑器 _song 数据。

@@ -454,11 +454,11 @@ class AlphaCharacter extends FlxSprite
 
 	public function updateLetterOffset()
 	{
+		// A letter without an animation has no offsets to apply. This used to
+		// run a debug trace() here, which fired once per un-animated letter - all of a
+		// long Freeplay song list - and turned building a menu into a logging burst.
 		if (animation.curAnim == null)
-		{
-			trace(character);
 			return;
-		}
 
 		var add:Float = 110;
 		if(animation.curAnim.name.endsWith('bold'))

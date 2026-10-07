@@ -14,6 +14,12 @@ class Waiter extends FlxBasic {
     var _queueCall:Void->Void;
     var _queueCallPos:haxe.PosInfos;
 
+	/**
+	 * 刻意保留 Mutex(T4 线程原语现代化):
+	 * 它保护的是 stateQueue / persistQueue 两个 Array 的复合不变量 —— push/shift 是读-改-写,
+	 * clearStateQueue 还会整体替换数组引用, 没有等价的原子原语可用; 这里也没有"工作线程置位 /
+	 * 主线程等待"的轮询握手, 因此不需要 Semaphore/Condition。改动仅限本注释。
+	 */
 	static var queueMutex:Mutex = new Mutex();
 
 	public static function put(func:Void->Void, ?pos:haxe.PosInfos) {

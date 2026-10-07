@@ -26,7 +26,8 @@ class SystemDiag
 {
 	public static var LOG_TAIL:Int = 400;
 	public static var EXTENSIONS_CAP:Int = 1500;
-	public static var NATIVE_LOG_CAP:Int = 3000;
+	/** How many earlier crash files the index lists (they are never reproduced). */
+	public static var NATIVE_LOG_INDEX:Int = 8;
 
 	static var nextHeartbeatAt:Float = 0;
 	static var lastHeartbeatContent:String = '';
@@ -76,7 +77,7 @@ class SystemDiag
 		out.push(GlErrorWatchdog.snapshot());
 
 		out.push('');
-		out.push('--- Crash logs (crash/native_crash_*.txt, crash/SeiunEngine_*.txt) ---');
+		out.push('--- Other crash files ---');
 		nativeCrashLines(out);
 
 		out.push('');
@@ -91,6 +92,7 @@ class SystemDiag
 	{
 		var out:Array<String> = [];
 		out.push('=== SeiunEngine Crash Report ===');
+		out.push('Kind: Haxe uncaught exception');
 		out.push('Date: ' + safeDate());
 		out.push('Crash Count: ' + crashCount);
 		out.push('');
@@ -98,7 +100,21 @@ class SystemDiag
 		out.push(errorMsg == null ? '(null)' : errorMsg);
 		out.push('');
 		out.push('Stack Trace:');
-		out.push(stackText == null ? '(null)' : stackText);
+		var stack = stackText == null ? '' : StringTools.trim(stackText);
+		if (stack == '')
+		{
+			// Release builds deliberately run without HXCPP_STACK_TRACE (it costs
+			// time on every generated call and keeps large string tables alive), so
+			// this section is expected to be empty. Saying so beats a blank line
+			// that reads like a bug in the crash handler.
+			out.push('(empty - Haxe stacks are not recorded in this build)');
+			out.push('Use the engine log tail below (every entry carries source/File.hx:line)');
+			out.push('and the linemap annotations on any native backtrace.');
+		}
+		else
+		{
+			out.push(stack);
+		}
 		out.push('');
 		out.push(buildReport());
 		return out.join('\n');
@@ -308,7 +324,49 @@ class SystemDiag
 	// Native crash logs & heartbeat
 	// ============================================================
 
-	/** Paste the newest crash dumps from crash/ (native + Haxe layer, memory pointers included). */
+	/**
+	 * One readable line identifying a crash file: its Error/Exception/kind, which
+	 * is all a reader needs to tell two reports apart.
+	 */
+	static function crashHeadline(content:String):String
+	{
+		var lines = content.split('\n');
+		var kind = '';
+		var err = '';
+		for (i in 0...lines.length)
+		{
+			var t = StringTools.trim(lines[i]);
+			if (t == '') continue;
+			if (kind == '')
+			{
+				if (StringTools.startsWith(t, 'Kind:')) kind = StringTools.trim(t.substr(5));
+				else if (StringTools.startsWith(t, 'Exception code:')) kind = t;
+			}
+			if (err == '' && StringTools.startsWith(t, 'Error:'))
+			{
+				var rest = StringTools.trim(t.substr(6));
+				if (rest == '' && i + 1 < lines.length) rest = StringTools.trim(lines[i + 1]);
+				err = rest;
+			}
+			if (kind != '' && err != '') break;
+		}
+		var head = err != '' ? err : kind;
+		if (head == '') head = StringTools.trim(lines[0]);
+		if (head == '') head = '(no summary line)';
+		if (head.length > 110) head = head.substr(0, 107) + '...';
+		return head;
+	}
+
+	/**
+	 * Index of the other crash files already in crash/ - name, size, headline.
+	 *
+	 * This used to paste the newest five files verbatim (up to 3000 characters
+	 * each), so every new report carried a copy of the previous ones: 20+ KB of
+	 * nested reports that were genuinely painful to read, and crash_triage.py
+	 * could trip over an embedded old report and misclassify the file it sat in.
+	 * This report already describes THIS crash completely; the older files are
+	 * listed, not reproduced.
+	 */
 	static function nativeCrashLines(out:Array<String>):Void
 	{
 		#if sys
@@ -334,13 +392,26 @@ class SystemDiag
 				return;
 			}
 
-			for (f in files.slice(-5))
+			out.push('(name - size - headline; the files themselves are NOT reproduced here)');
+			var shown = files.slice(-NATIVE_LOG_INDEX);
+			for (f in shown)
 			{
-				out.push('---- ' + f + ' ----');
-				var content = File.getContent('./crash/' + f);
-				if (content.length > NATIVE_LOG_CAP) content = content.substr(0, NATIVE_LOG_CAP) + '\n... (truncated)';
-				out.push(content);
+				var size = '? KB';
+				var head = '(unreadable)';
+				try
+				{
+					size = Std.string(Std.int(FileSystem.stat('./crash/' + f).size / 1024)) + ' KB';
+				}
+				catch (e:Dynamic) {}
+				try
+				{
+					head = crashHeadline(File.getContent('./crash/' + f));
+				}
+				catch (e:Dynamic) {}
+				out.push(StringTools.rpad(f, ' ', 44) + ' ' + StringTools.lpad(size, ' ', 7) + '  ' + head);
 			}
+			if (files.length > shown.length)
+				out.push('(+' + (files.length - shown.length) + ' older file(s) not listed)');
 		}
 		catch (e:Dynamic)
 		{
@@ -389,7 +460,12 @@ class SystemDiag
 			var song:String = 'null';
 			try { if (PlayState.SONG != null) song = Std.string(PlayState.SONG.song); } catch (e:Dynamic) {}
 
-			NativeCrash.setRuntimeContext('state=' + stateName + ' | song=' + song + ' | glErr=' + GlErrorWatchdog.snapshot());
+			var gfxFlags:String = '';
+			try {
+				gfxFlags = ' | cpuRelease=' + Std.string(ClientPrefs.data.gfxCpuRelease)
+					+ ' lowQuality=' + Std.string(ClientPrefs.data.lowQuality);
+			} catch (e:Dynamic) {}
+			NativeCrash.setRuntimeContext('state=' + stateName + ' | song=' + song + ' | glErr=' + GlErrorWatchdog.snapshot() + gfxFlags);
 			NativeCrash.setRecentLogs(TraceManager.getRecentCrashText());
 		}
 		catch (e:Dynamic) {}

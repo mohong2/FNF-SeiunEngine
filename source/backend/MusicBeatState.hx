@@ -275,6 +275,12 @@ class MusicBeatState extends FlxUIState
 		}
 
 		if (FlxG.save.data != null) FlxG.save.data.fullscreen = FlxG.fullscreen;
+
+		// 组容器成员守卫: 已死掉的成员会让 FlxTypedGroup.update 里的 Dynamic->FlxBasic
+		// 转换读到空 vtable, 主线程直接 ACCESS_VIOLATION。这里在最外层 update 之前
+		// 把它摘掉 —— 详见 backend.GroupGuard。
+		GroupGuard.tick(this);
+
 		super.update(elapsed);
 	}
 
@@ -352,17 +358,35 @@ class MusicBeatState extends FlxUIState
 		return cast curState;
 	}
 
+
+	//正在派发一大堆棍母邮寄你家
+	public var handlesOwnBeatCallbacks:Bool = false;
+
+	public function dispatchGlobalHscript(event:String, args:Array<Dynamic> = null):Dynamic {
+		#if HSCRIPT_ALLOWED
+		return HScript.callOnGlobalScript(event, args);
+		#else
+		return FunkinLua.Function_Continue;
+		#end
+	}
+
 	public function stepHit():Void {
-		#if HSCRIPT_ALLOWED callOnHscript('onStepHit', [curStep]); #end
+		#if HSCRIPT_ALLOWED
+		if (!handlesOwnBeatCallbacks) callOnHscript('onStepHit', Scripts.fill1(Scripts.get(1), curStep));
+		#end
 		if (curStep % 4 == 0) beatHit();
 	}
 
 	public function beatHit():Void {
-		#if HSCRIPT_ALLOWED callOnHscript('onBeatHit', [curBeat]); #end
+		#if HSCRIPT_ALLOWED
+		if (!handlesOwnBeatCallbacks) callOnHscript('onBeatHit', Scripts.fill1(Scripts.get(1), curBeat));
+		#end
 	}
 
 	public function sectionHit():Void {
-		#if HSCRIPT_ALLOWED callOnHscript('onSectionHit', [curSection]); #end
+		#if HSCRIPT_ALLOWED
+		if (!handlesOwnBeatCallbacks) callOnHscript('onSectionHit', Scripts.fill1(Scripts.get(1), curSection));
+		#end
 	}
 
 	public function getBeatsOnSection():Float {
@@ -486,6 +510,10 @@ class MusicBeatState extends FlxUIState
 			if (script.closed) continue;
 			if (exclusions.contains(script.scriptName)) continue;
 			if (excludeValues.contains(script)) continue;
+
+			// 只记录一次性的创建回调，便于确认某个脚本到底有没有收到 onCreate/onCreatePost。
+			if (funcToCall == 'onCreate' || funcToCall == 'onCreatePost')
+				backend.ScriptLog.write('callback', funcToCall + ' -> ' + script.scriptName);
 
 			var ret = script.call(funcToCall, args);
 			if (ret == FunkinLua.Function_StopLua && !ignoreStops) { returnVal = ret; break; }

@@ -1,0 +1,50 @@
+name: Resolve haxelib paths
+description: >-
+  Resolve the installed directory of one or more haxelib libraries through
+  'haxelib libpath <lib>' and export each one as HAXELIB_<LIB>_PATH for the
+  following steps. Replaces hardcoded .haxelib/<lib>/git paths, which silently
+  break whenever the active version directory is renamed (for example the hxcpp
+  fork moving from a 'git' directory to a '4.3.x' one).
+
+inputs:
+  libs:
+    description: 'Space-separated haxelib library names to resolve, e.g. "hxcpp lime discord_rpc"'
+    required: true
+  required:
+    description: 'Fail the step when a library cannot be resolved ("true"/"false")'
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    # NOTE: 'haxelib path <lib>' is NOT usable for this - it prints an hxml fragment
+    # (class paths, --macro lines and a trailing "-D <lib>=<ver>"), not the library
+    # directory. 'haxelib libpath <lib>' is the documented "returns the root path of a
+    # library" command: exactly one line, and exit 1 when the library is missing.
+    - name: Resolve haxelib library directories
+      shell: bash
+      env:
+        SEIUN_RESOLVE_LIBS: ${{ inputs.libs }}
+        SEIUN_RESOLVE_REQUIRED: ${{ inputs.required }}
+      run: |
+        set -euo pipefail
+        for lib in $SEIUN_RESOLVE_LIBS; do
+          dir="$(haxelib libpath "$lib" 2>/dev/null | head -n1 | tr -d '\r')" || true
+          # haxelib prints a Windows path as 'D:\a\repo\.haxelib\hxcpp/git/': mixed
+          # separators and a trailing slash. Normalize so callers can append /toolchain/...
+          dir="${dir//\\//}"
+          dir="${dir%/}"
+          if [ -z "$dir" ] || [ ! -d "$dir" ]; then
+            if [ "$SEIUN_RESOLVE_REQUIRED" = "true" ]; then
+              echo "::error::haxelib libpath $lib did not resolve to a directory (got '${dir:-<empty>}')"
+              exit 1
+            fi
+            echo "::warning::haxelib libpath $lib did not resolve to a directory; skipping"
+            continue
+          fi
+          # hxcpp -> HAXELIB_HXCPP_PATH, discord_rpc -> HAXELIB_DISCORD_RPC_PATH
+          var="HAXELIB_$(printf '%s' "$lib" | tr 'a-z' 'A-Z' | tr '-' '_')_PATH"
+          echo "$var=$dir" >> "$GITHUB_ENV"
+          echo "$var=$dir"
+        done

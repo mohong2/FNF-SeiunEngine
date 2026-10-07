@@ -593,16 +593,40 @@ class FlxSound extends FlxBasic
 		{
 			_channel.soundTransform = _transform;
 
-			@:privateAccess
-			if(_channel.__source != null)
+			var source:lime.media.AudioSource = getAudioSource(_channel);
+
+			if (source != null)
 			{
 				#if cpp
 				@:privateAccess
-				this._channel.__source.__backend.setPitch(_pitch);
+				source.__backend.setPitch(_pitch);
 				// trace('changing $name pitch new $_pitch');
 				#end
 			}
 		}
+	}
+
+	/**
+	 * Resolves the `lime.media.AudioSource` behind a `flash.media.SoundChannel`.
+	 *
+	 * openfl 9.5.2 renamed the private `SoundChannel` field `__source` to `__audioSource`
+	 * (the bundled 9.2.1 fork still uses `__source`). Keeping the version switch and the
+	 * `@:privateAccess` in this single accessor lets every call site stay version-agnostic.
+	 *
+	 * @param	channel	The channel to inspect, may be null.
+	 * @return	The audio source, or null when the channel has none.
+	 */
+	public static function getAudioSource(channel:SoundChannel):lime.media.AudioSource
+	{
+		if (channel == null)
+			return null;
+
+		var source:lime.media.AudioSource = null;
+
+		@:privateAccess
+		source = #if (openfl >= version("9.5.0")) channel.__audioSource #else channel.__source #end;
+
+		return source;
 	}
 
 	/**

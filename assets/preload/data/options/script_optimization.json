@@ -1,0 +1,38 @@
+[
+	{
+		"nameKey": "option.scriptArgReuse",
+		"defaultName": "Reuse Script Callback Arguments",
+		"descKey": "option.scriptArgReuse.desc",
+		"defaultDesc": "Reuses one argument array for script callbacks instead of allocating one per hit.\nStops the GC stutter on dense charts. Off = stock per-hit allocation.\nOnline disables it automatically.",
+		"variable": "scriptArgReuse",
+		"type": "bool",
+		"defaultValue": true
+	},
+	{
+		"nameKey": "option.stockEventDrain",
+		"defaultName": "Stock Event Drain",
+		"descKey": "option.stockEventDrain.desc",
+		"defaultDesc": "OFF (default): fired chart events stay in eventNotes and a cursor walks past them;\ndraining a whole song costs O(N) instead of O(N^2).\nON = stock Array.shift(): every fired event leaves the array, so a script that reads\nor edits eventNotes sees exactly the old contents.",
+		"variable": "stockEventDrain",
+		"type": "bool",
+		"defaultValue": false
+	},
+	{
+		"nameKey": "option.stockBpmStruct",
+		"defaultName": "Stock BPM Lookup Objects",
+		"descKey": "option.stockBpmStruct.desc",
+		"defaultDesc": "OFF (default): Conductor.getBPMFromSeconds() returns one reused object when no BPM\nchange is in effect (no per-call allocation).\nON = stock behaviour: a fresh object every call, so an HScript that holds two results\nkeeps them independent. The binary search itself stays on in both modes.",
+		"variable": "stockBpmStruct",
+		"type": "bool",
+		"defaultValue": false
+	},
+	{
+		"nameKey": "option.stockHudTextRewrite",
+		"defaultName": "Stock HUD Text Rewrite",
+		"descKey": "option.stockHudTextRewrite.desc",
+		"defaultDesc": "OFF (default): the side HUD labels and the time text are only rewritten when their\nvalue or second changed (saves 9 strings per frame; the visible result is identical).\nON = stock behaviour: rewrite every frame, so text a script writes there is overwritten\nagain on the very next frame.",
+		"variable": "stockHudTextRewrite",
+		"type": "bool",
+		"defaultValue": false
+	}
+]

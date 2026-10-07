@@ -28,5 +28,7 @@
     "CrashCatcher.dialog.title": "Game Crashed!",
     "CrashCatcher.dialog.message": "The game has encountered an error and needs to recover.\n\nError: {error}\n\nCrash dump saved to: {path}\n\nPlease report this on GitHub:\n{url}\n\nClick OK to enter recovery screen.",
     "CrashCatcher.dialog.fallbackTitle": "Fatal Error",
-    "CrashCatcher.dialog.fallbackMessage": "Could not enter recovery mode.\nThe game will now close."
+    "CrashCatcher.dialog.fallbackMessage": "Could not enter recovery mode.\nThe game will now close.",
+    "CrashCatcher.onlineSent": "Crashed during an online match; the host was notified",
+    "CrashCatcher.onlinePending": "Could not send the notice; it will be retried on the next launch"
 }

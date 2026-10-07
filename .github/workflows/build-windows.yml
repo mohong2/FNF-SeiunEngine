@@ -8,6 +8,13 @@ permissions:
   contents: read
   actions: write
 
+# Supported toolchain: Haxe 4.3.7 (minimum 4.3.0). During the migration the same
+# tree still type-checks under the 4.2.5 baseline as well; if 4.3.7 has to be
+# backed out before the hxcpp fork lands, set this to "4.2.5" (one line, every
+# job consumes it).
+env:
+  HAXE_VERSION: "4.3.7"
+
 jobs:
   windows:
     name: Windows x64
@@ -18,7 +25,7 @@ jobs:
 
       - uses: krdlab/setup-haxe@d93667502be3b4f31a94a3308a74388f2e178a8d # v2.1.0
         with:
-          haxe-version: 4.2.5
+          haxe-version: ${{ env.HAXE_VERSION }}
 
       - name: Resolve hxcpp revision
         shell: pwsh
@@ -30,14 +37,14 @@ jobs:
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: .hxcpp-cache
-          key: seiu-hxcpp-windows-v1-${{ hashFiles('hxcpp-head.txt', 'source/**/*.hx', 'assets/**/*', 'art/**/*', 'templates/**/*', 'Project.xml', 'hmm.json') }}
+          key: seiu-hxcpp-windows-v2-${{ hashFiles('hxcpp-head.txt', 'source/**/*.hx', 'assets/**/*', 'art/**/*', 'templates/**/*', 'Project.xml', 'hmm.json') }}
           restore-keys: |
-            seiu-hxcpp-windows-v1-
+            seiu-hxcpp-windows-v2-
 
       - uses: ./.github/actions/build-desktop
         with:
           target: windows
-          rebuild: haxelib run lime rebuild windows -64 -release -Dlime-sdl3
+          rebuild: haxelib run lime rebuild windows -64 -release -Dlime-sdl3 -Dhxcpp_api_level=430
           build: |
             pwsh -NoProfile -ExecutionPolicy Bypass -File tools/build_windows_symbols.ps1 -AppVersion "$APP_VERSION-$GITHUB_RUN_ID"
           artifact: SeiunEngine-windows-x64
@@ -57,12 +64,27 @@ jobs:
         id: symbols
         shell: bash
         run: |
-          if [ -d export/release/windows/symbols ] && [ -n "$(ls -A export/release/windows/symbols)" ]; then
-            echo "present=1" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=0" >> "$GITHUB_OUTPUT"
-            echo "::warning::crash symbols missing - release debugging will not be possible"
+          # The bundle is the only thing that can turn a user's `Fault offset` into a
+          # function name, so it is a hard requirement, not a warning: a release
+          # without it is a release nobody can debug. The map/exe pair was already
+          # verified in the build step (tools/build_windows_symbols.ps1); this only
+          # confirms the three files actually made it into the artifact directory.
+          DIR=export/release/windows/symbols
+          missing=0
+          for f in ApplicationMain.map windows-x64.bin build-info.txt; do
+            if [ -s "$DIR/$f" ]; then
+              echo "ok: $f ($(stat -c%s "$DIR/$f" 2>/dev/null || wc -c < "$DIR/$f") bytes)"
+            else
+              echo "::error::missing crash symbol file: $DIR/$f"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::crash symbols incomplete - refusing to publish a build that cannot be debugged"
+            exit 1
           fi
+          echo "present=1" >> "$GITHUB_OUTPUT"
+          cat "$DIR/build-info.txt"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: steps.symbols.outputs.present == '1'

@@ -29,9 +29,11 @@ class WarpShader extends FlxShader {
     // Contact the author for other licensing options
 
     #pragma header
-    vec2 uv = openfl_TextureCoordv.xy;
-    vec2 fragCoord = openfl_TextureCoordv*openfl_TextureSize;
-    vec2 iResolution = openfl_TextureSize;
+    // GLES (Android) only accepts constant expressions as global initializers, so these are
+    // declared uninitialized here and filled in at the top of mainImage() below. The old
+    // global `vec2 uv` was dead code anyway - mainImage() declares its own local `uv`.
+    vec2 fragCoord;
+    vec2 iResolution;
     uniform float iTime;
     #define iChannel0 bitmap
     #define texture flixel_texture2D
@@ -154,6 +156,9 @@ class WarpShader extends FlxShader {
 
     void mainImage()
     {
+        fragCoord = openfl_TextureCoordv*openfl_TextureSize;
+        iResolution = openfl_TextureSize;
+
         float t = -iTime*0.03;
         vec2 uv = fragCoord.xy / iResolution.xy-0.5;
         uv.x *= iResolution.x/iResolution.y;

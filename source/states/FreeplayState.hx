@@ -68,6 +68,8 @@ class FreeplayState extends SeiunMenuState
 	public var scoreBG:FlxSprite;
 	public var scoreText:FlxText;
 	public var diffText:FlxText;
+	/** Multi-file (segmented) chart state of the selected song; see ChartParts. */
+	public var multiFileText:FlxText;
 	public var lerpScore:Int = 0;
 	public var lerpRating:Float = 0;
 	public var intendedScore:Int = 0;
@@ -75,6 +77,26 @@ class FreeplayState extends SeiunMenuState
 	
 	public var grpSongs:FlxTypedGroup<Alphabet>;
 	public var iconArray:Array<HealthIcon> = [];
+
+	/**
+	 * Row the selection look was last applied to (-1 = a freshly built list needs a
+	 * full re-seat). It is what lets changeSelection() touch only the two rows that
+	 * actually changed instead of re-tweening the whole song list on every key press.
+	 */
+	var syncedSelection:Int = -1;
+
+	/**
+	 * Rows further than this from the selection are parked: they keep their target
+	 * position so they stay laid out, but stop updating their letters and stop
+	 * drawing. Only about 2*ROW_WINDOW rows are ever on screen, so a list of several
+	 * hundred songs no longer updates thousands of sprites every frame.
+	 */
+	static inline var ROW_WINDOW:Int = 8;
+
+	/** Last values written into the HUD string; see the score update in update(). */
+	var shownScore:Int = 0;
+	var shownRating:Float = 0;
+	var shownScoreInitialised:Bool = false;
 
 	public var bg:FlxSprite;
 	public var intendedColor:Int;
@@ -318,6 +340,16 @@ class FreeplayState extends SeiunMenuState
 		diffText.font = Paths.font("vcr.ttf"); 
 		add(diffText);
 
+		// Which multi-file mode this song will load with, toggled in place with M (PC) / the
+		// on-screen D button (Android). Screen-wide and right aligned, so neither a long localised
+		// label nor the key hint can leave the screen; see updateMultiFileText().
+		// Paths.languageFont(), not vcr.ttf: the label is localised, and vcrcn (the Chinese font the
+		// language files select through their "ttf" key) is what carries the CJK glyphs.
+		multiFileText = new FlxText(6, diffText.y + 28, FlxG.width - 12, "", 18);
+		multiFileText.setFormat(Paths.languageFont(), 18, FlxColor.WHITE, RIGHT);
+		multiFileText.alpha = 0.75;
+		add(multiFileText);
+
 		add(scoreText);
 
 		missingTextBG = new FlxSprite().makeGraphic(FlxG.width, FlxG.height, FlxColor.BLACK);
@@ -358,9 +390,19 @@ class FreeplayState extends SeiunMenuState
 		}
 		for (i in 0...grpSongs.length)
 		{
-			var it = grpSongs.members[i];
-			var icon = iconArray[i];
+			var it:Alphabet = grpSongs.members[i];
+			var icon:HealthIcon = (i < iconArray.length) ? iconArray[i] : null;
 			var targetAlpha:Float = (i == curSelected) ? 1 : 0.6;
+
+			// Parked rows are neither visible nor updated: animating them in would
+			// allocate a tween per song just to fade in something nobody can see.
+			if (it == null || !it.active)
+			{
+				if (it != null) it.alpha = targetAlpha;
+				if (icon != null) icon.alpha = targetAlpha;
+				continue;
+			}
+
 			// Stagger by distance from the selected song so the song the player
 			// last chose (even at the bottom of the list) appears immediately.
 			var delay:Float = Math.min(Math.abs(i - curSelected) * 0.035, 0.4);
@@ -426,7 +468,7 @@ class FreeplayState extends SeiunMenuState
 		text.scrollFactor.set();
 		add(text);
 		#if (TOUCH_CONTROLS || desktop)
-		addVirtualPad(LEFT_FULL, A_B_C_V_X_Y);
+		addVirtualPad(LEFT_FULL, A_B_C_V_X_Y_D);
 		#end
 		super.create();
 
@@ -449,7 +491,7 @@ class FreeplayState extends SeiunMenuState
 		canInput = true;
 		#if (TOUCH_CONTROLS || desktop)
 		removeVirtualPad();
-		addVirtualPad(LEFT_FULL, A_B_C_V_X_Y);
+		addVirtualPad(LEFT_FULL, A_B_C_V_X_Y_D);
 		#end
 		super.closeSubState();
 	}
@@ -624,6 +666,7 @@ class FreeplayState extends SeiunMenuState
 		}
 		iconArray = [];
 		mouseOverlapIndex = -1; // Reset mouse tracking to prevent stale index crash
+		syncedSelection = -1;   // the new rows need a full selection re-seat
 
 		// Build filtered indices
 		var currentModFolder:String = modList[curSelectedMod];
@@ -788,16 +831,26 @@ class FreeplayState extends SeiunMenuState
 		if (Math.abs(lerpRating - intendedRating) <= 0.01)
 			lerpRating = intendedRating;
 
-		var ratingSplit:Array<String> = Std.string(Highscore.floorDecimal(lerpRating * 100, 2)).split('.');
-		if(ratingSplit.length < 2) { //No decimals, add an empty space
-			ratingSplit.push('');
+		// The HUD string is only rebuilt when a displayed value actually changed.
+		// Doing it unconditionally concatenated (and re-assigned) a fresh string every
+		// single frame, which is pure garbage-collector pressure while scrolling.
+		if (!shownScoreInitialised || lerpScore != shownScore || lerpRating != shownRating)
+		{
+			shownScoreInitialised = true;
+			shownScore = lerpScore;
+			shownRating = lerpRating;
+
+			var ratingSplit:Array<String> = Std.string(Highscore.floorDecimal(lerpRating * 100, 2)).split('.');
+			if(ratingSplit.length < 2) { //No decimals, add an empty space
+				ratingSplit.push('');
+			}
+
+			while(ratingSplit[1].length < 2) { //Less than 2 decimals in it, add decimals then
+				ratingSplit[1] += '0';
+			}
+			scoreText.text = Language.get("FreeplayState.scoreText", "PERSONAL BEST:") + lerpScore + ' (' + ratingSplit.join('.') + '%)';
+			positionHighscore();
 		}
-		
-		while(ratingSplit[1].length < 2) { //Less than 2 decimals in it, add decimals then
-			ratingSplit[1] += '0';
-		}
-		scoreText.text = Language.get("FreeplayState.scoreText", "PERSONAL BEST:") + lerpScore + ' (' + ratingSplit.join('.') + '%)';
-		positionHighscore();
 
 		var upP = controls.UI_UP_P;
 		var downP = controls.UI_DOWN_P;
@@ -805,6 +858,8 @@ class FreeplayState extends SeiunMenuState
 		var space = #if (TOUCH_CONTROLS || desktop) (virtualPad != null && virtualPad.buttonX.justPressed)  || #end	FlxG.keys.justPressed.SPACE;
 		var ctrl = #if (TOUCH_CONTROLS || desktop) (virtualPad != null && virtualPad.buttonC.justPressed)   || #end FlxG.keys.justPressed.CONTROL;
 		var history = #if (TOUCH_CONTROLS || desktop) (virtualPad != null && virtualPad.buttonV.justPressed) || #end FlxG.keys.justPressed.H;
+		// Multi-file chart toggle: M (PC) / the on-screen D button (Android, addVirtualPad above).
+		var multiFileToggle = #if (TOUCH_CONTROLS || desktop) (virtualPad != null && virtualPad.buttonD.justPressed) || #end FlxG.keys.justPressed.M;
 		// === Mod folder switching: TAB (PC) / G button (Android) to open selection overlay ===
 		if (!playingMusic)
 		{
@@ -820,11 +875,15 @@ class FreeplayState extends SeiunMenuState
 		var overControls:Bool = (virtualPad != null && virtualPad.isMouseOverAnyButton());
 		if (!overControls)
 		{
+		// Only the rows inside the parked window are on screen, so the hover scan
+		// walks that window instead of the entire song list every single frame.
+		var hoverFirst:Int = Std.int(Math.max(0, curSelected - ROW_WINDOW));
+		var hoverLast:Int = Std.int(Math.min(grpSongs.length, curSelected + ROW_WINDOW + 1));
 		var newMouseOverlapIndex = -1;
-		for (i in 0...grpSongs.length) {
+		for (i in hoverFirst...hoverLast) {
 			var song = grpSongs.members[i];
-			var icon = iconArray[i];
-			if (FlxG.mouse.overlaps(song) || FlxG.mouse.overlaps(icon)) {
+			var icon = (i < iconArray.length) ? iconArray[i] : null;
+			if (song != null && (FlxG.mouse.overlaps(song) || (icon != null && FlxG.mouse.overlaps(icon)))) {
 				newMouseOverlapIndex = i;
 				break;
 			}
@@ -941,8 +1000,21 @@ class FreeplayState extends SeiunMenuState
 			for (i in 0...grpSongs.length)
 			{
 				var it:Alphabet = grpSongs.members[i];
-				var icon:HealthIcon = iconArray[i];
-				var delay:Float = (grpSongs.length - 1 - i) * 0.025;
+				var icon:HealthIcon = (i < iconArray.length) ? iconArray[i] : null;
+
+				// Parked rows are off-screen and the state is gone in 0.42s: fading
+				// them out would allocate a tween per song for nothing.
+				if (it == null || !it.active)
+				{
+					if (it != null) it.alpha = 0;
+					if (icon != null) icon.alpha = 0;
+					continue;
+				}
+
+				// Stagger by distance to the selection: the old formula counted from
+				// the end of the list, so with a few hundred songs the visible rows near
+				// the top were delayed by seconds and never animated at all.
+				var delay:Float = Math.abs(i - curSelected) * 0.025;
 				FlxTween.tween(it, {alpha: 0, x: it.x - 260}, 0.28, {startDelay: delay, ease: FlxEase.quadIn});
 				FlxTween.tween(icon, {alpha: 0}, 0.28, {startDelay: delay, ease: FlxEase.quadIn});
 			}
@@ -1056,6 +1128,17 @@ class FreeplayState extends SeiunMenuState
 			persistentUpdate = false;
     		openSubState(new ScoreHistorySubstate(getCurrentSong().songName, curDifficulty));
 		}
+		else if(multiFileToggle && canInput)
+		{
+			// Per-song, on the spot: the next chart load of this song uses the new mode.
+			var multiFileSong:String = currentMultiFileSongKey();
+			if (multiFileSong != null)
+			{
+				ChartParts.cycleSongOverride(multiFileSong, ClientPrefs.segmentedChartMode());
+				updateMultiFileText();
+				FlxG.sound.play(Paths.sound('scrollMenu'), 0.6);
+			}
+		}
 		else if(space && canInput)
 		{
 			var realIdx = getRealSelectedIndex();
@@ -1070,18 +1153,33 @@ class FreeplayState extends SeiunMenuState
 				var prevModDir:String = Paths.currentModDirectory;
 				Paths.currentModDirectory = getCurrentSong().folder;
 				var poop:String = Highscore.formatSong(getCurrentSong().songName.toLowerCase(), curDifficulty);
-				PlayState.SONG = Song.loadFromJson(poop, getCurrentSong().songName.toLowerCase());
-				if (PlayState.SONG.needsVoices)
-					vocals = new FlxSound().loadEmbedded(Paths.voices(PlayState.SONG.song));
-				else
-					vocals = new FlxSound();
+				// A streaming-sized chart is not parsed just to preview the song: this block runs on
+				// every selection (PRELOAD_ALL) and loadFromJson() scans the whole chart file, which is
+				// seconds for a 2 GB chart and minutes for a segmented 8 GB one. The preview only needs
+				// the song name and needsVoices, so the parse is skipped and the selection still counts
+				// as handled (instPlaying is advanced below).
+				var previewSongName:String = getCurrentSong().songName.toLowerCase();
+				if (!chartFileIsLarge(previewSongName, poop))
+				{
+					PlayState.SONG = Song.loadFromJson(poop, previewSongName);
+					if (PlayState.SONG.needsVoices)
+						vocals = new FlxSound().loadEmbedded(Paths.voices(PlayState.SONG.song));
+					else
+						vocals = new FlxSound();
 
-				FlxG.sound.list.add(vocals);
-				FlxG.sound.playMusic(Paths.inst(PlayState.SONG.song), 0.7);
-				vocals.play();
-				vocals.persist = true;
-				vocals.looped = true;
-				vocals.volume = 0.7;
+					FlxG.sound.list.add(vocals);
+					FlxG.sound.playMusic(Paths.inst(PlayState.SONG.song), 0.7);
+					vocals.play();
+					vocals.persist = true;
+					vocals.looped = true;
+					vocals.volume = 0.7;
+				}
+				else
+				{
+					TraceManager.info('trace.freeplay.previewSkip',
+						'preview chart parse skipped, chart file is streaming-sized: {} / {}',
+						[previewSongName, poop]);
+				}
 				Paths.currentModDirectory = prevModDir;
 				instPlaying = realIdx;
 				#end
@@ -1188,9 +1286,17 @@ class FreeplayState extends SeiunMenuState
 				for (i in 0...grpSongs.length)
 				{
 					if (i == curSelected) continue;
-					FlxTween.tween(grpSongs.members[i], {alpha: 0, x: grpSongs.members[i].x + 220}, 0.3, {ease: FlxEase.quadIn});
-					if (i < iconArray.length)
-						FlxTween.tween(iconArray[i], {alpha: 0}, 0.3, {ease: FlxEase.quadIn});
+					var row:Alphabet = grpSongs.members[i];
+					var rowIcon:HealthIcon = (i < iconArray.length) ? iconArray[i] : null;
+					if (row == null || !row.active)
+					{
+						if (row != null) row.alpha = 0;
+						if (rowIcon != null) rowIcon.alpha = 0;
+						continue;
+					}
+					FlxTween.tween(row, {alpha: 0, x: row.x + 220}, 0.3, {ease: FlxEase.quadIn});
+					if (rowIcon != null)
+						FlxTween.tween(rowIcon, {alpha: 0}, 0.3, {ease: FlxEase.quadIn});
 				}
 				stopAutoMusic();
 				destroyFreeplayVocals();
@@ -1251,6 +1357,7 @@ class FreeplayState extends SeiunMenuState
 		diffText.text = '< ' + CoolUtil.difficultyString() + ' >';
 
 		positionHighscore();
+		updateMultiFileText();
 		missingText.visible = false;
 		missingTextBG.visible = false;
 		isShowingError = false;
@@ -1292,31 +1399,24 @@ class FreeplayState extends SeiunMenuState
 		missingTextBG.visible = false;
 		isShowingError = false;
 		
-		for (i in 0...grpSongs.length) {
-			var item = grpSongs.members[i];
-			var icon = iconArray[i];
-			FlxTween.cancelTweensOf(item.scale);
-			FlxTween.cancelTweensOf(icon.scale);
-			if (i == curSelected)
-			{
-				FlxTween.tween(item.scale, {x: 1.2, y: 1.2}, 0.25, {ease: FlxEase.backOut});
-				FlxTween.tween(icon.scale, {x: 1.2, y: 1.2}, 0.25, {ease: FlxEase.backOut});
-			}
-			else
-			{
-				FlxTween.tween(item.scale, {x: 0.85, y: 0.85}, 0.25, {ease: FlxEase.quadOut});
-				FlxTween.tween(icon.scale, {x: 0.85, y: 0.85}, 0.25, {ease: FlxEase.quadOut});
-			}
+		// ── Selection look: only the rows that actually changed ──
+		// The previous version cancelled and re-created two tweens for *every* song
+		// on every cursor move (plus a cancelTweensOf sweep over all of them), so a
+		// long list allocated hundreds of tween objects per key press. That is the
+		// frame drop that showed up once there were many songs.
+		var previous:Int = syncedSelection;
+		if (previous < 0 || previous >= grpSongs.length)
+		{
+			// Fresh list (create / mod filter switch): seat every row in one pass.
+			for (i in 0...grpSongs.length)
+				applyRowLook(i, i == curSelected, false);
 		}
-
-		// Icon highlight + losing/winning face (health icons with 3 frames)
-		for (i in 0...iconArray.length) {
-			var isSel:Bool = (i == curSelected);
-			iconArray[i].alpha = isSel ? 1 : 0.6;
-			if (iconArray[i].frameCount == 3) {
-				iconArray[i].animation.curAnim.curFrame = isSel ? 2 : 0;
-			}
+		else if (previous != curSelected)
+		{
+			applyRowLook(previous, false, true);
+			applyRowLook(curSelected, true, true);
 		}
+		syncedSelection = curSelected;
 
 		// selector.y = (70 * curSelected) + 30;
 
@@ -1334,6 +1434,10 @@ class FreeplayState extends SeiunMenuState
 			bullShit++;
 			item.alpha = (item.targetY == 0) ? 1 : 0.6;
 		}
+
+		// Every row now knows where it should sit, so park the ones that are too far
+		// away to be seen (and wake up whichever rows just scrolled into view).
+		applyRowWindow();
 
 		// NOTE: Do NOT set Paths.currentModDirectory here!
 		// The globally active mod (selected via ModSelectSubstate / MainMenuState)
@@ -1403,6 +1507,82 @@ class FreeplayState extends SeiunMenuState
 		#else
 		autoPreviewNext = false;
 		#end
+	}
+
+	/**
+	 * Applies the selected/unselected look (row scale + health icon face) to a single
+	 * song row. `animate` is false during a full re-seat, where every row is placed
+	 * in one pass and nothing should be tweened.
+	 */
+	function applyRowLook(index:Int, selected:Bool, animate:Bool):Void
+	{
+		if (index < 0) return;
+
+		var item:Alphabet = (index < grpSongs.length) ? grpSongs.members[index] : null;
+		if (item != null)
+		{
+			var target:Float = selected ? 1.2 : 0.85;
+			FlxTween.cancelTweensOf(item.scale);
+			if (animate)
+				FlxTween.tween(item.scale, {x: target, y: target}, 0.25, {ease: selected ? FlxEase.backOut : FlxEase.quadOut});
+			else
+				item.scale.set(target, target);
+		}
+
+		var icon:HealthIcon = (index < iconArray.length) ? iconArray[index] : null;
+		if (icon == null) return;
+
+		FlxTween.cancelTweensOf(icon.scale);
+		if (animate)
+			FlxTween.tween(icon.scale, {x: selected ? 1.2 : 0.85, y: selected ? 1.2 : 0.85}, 0.25,
+				{ease: selected ? FlxEase.backOut : FlxEase.quadOut});
+		else
+			icon.scale.set(selected ? 1.2 : 0.85, selected ? 1.2 : 0.85);
+
+		icon.alpha = selected ? 1 : 0.6;
+		// Icon highlight + losing/winning face (health icons with 3 frames)
+		if (icon.frameCount == 3 && icon.animation != null && icon.animation.curAnim != null)
+			icon.animation.curAnim.curFrame = selected ? 2 : 0;
+	}
+
+	/**
+	 * Parks every song row outside the on-screen window.
+	 *
+	 * A parked row keeps its target position (so it is still laid out correctly) but
+	 * stops updating its letters and stops drawing. Waking one up snaps it into place
+	 * first, because its lerp was frozen while the selection moved on - without that
+	 * it would visibly slide in from wherever it was parked.
+	 */
+	function applyRowWindow():Void
+	{
+		var first:Int = Std.int(Math.max(0, curSelected - ROW_WINDOW));
+		var last:Int = Std.int(Math.min(grpSongs.length, curSelected + ROW_WINDOW + 1));
+
+		for (i in 0...grpSongs.length)
+		{
+			var item:Alphabet = grpSongs.members[i];
+			var icon:HealthIcon = (i < iconArray.length) ? iconArray[i] : null;
+			var onScreen:Bool = (i >= first && i < last);
+
+			if (icon != null) icon.visible = onScreen;
+
+			if (item == null) continue;
+			if (onScreen)
+			{
+				if (item.active) continue;
+				item.snapToPosition();
+				item.alpha = (i == curSelected) ? 1 : 0.6;
+				item.visible = true;
+				item.active = true;
+			}
+			else
+			{
+				if (!item.active) continue;
+				item.snapToPosition();
+				item.active = false;
+				item.visible = false;
+			}
+		}
 	}
 
 	public function positionHighscore() {
@@ -1696,6 +1876,139 @@ class FreeplayState extends SeiunMenuState
 		updatePreviewTexts();
 	}
 
+	/**
+	 * Song key for the per-song multi-file choice: the same value Song.loadFromJson() receives as its
+	 * folder, so a choice made here is picked up by the next chart load of this song.
+	 */
+	function currentMultiFileSongKey():String
+	{
+		var song = getCurrentSong();
+		return (song == null) ? null : Paths.formatToSongPath(song.songName);
+	}
+
+	/**
+	 * Labels the selected song's multi-file state: whether it is a segmented chart at all, which mode
+	 * it will load with, and the key that switches it. Non-segmented songs are labelled too, so the
+	 * two kinds can be told apart at a glance -- but dimmed, and without a key hint that would do
+	 * nothing there.
+	 */
+	function updateMultiFileText():Void
+	{
+		if (multiFileText == null) return;
+
+		var key:String = currentMultiFileSongKey();
+		var segmented:Bool = songHasSegmentedChart(key);
+		var label:String;
+		if (!segmented)
+		{
+			label = Language.get('FreeplayState.multiFileNone', 'MULTI-FILE: NONE');
+		}
+		else
+		{
+			var mode:String = ChartParts.effectiveSongMode(key, ClientPrefs.segmentedChartMode());
+			if (mode == ChartParts.MODE_OFF)
+				label = Language.get('FreeplayState.multiFileSegments', 'MULTI-FILE: SEGMENTS ONLY');
+			else if (mode == ChartParts.MODE_MANIFEST)
+				label = Language.get('FreeplayState.multiFileManifest', 'MULTI-FILE: MANIFEST ONLY');
+			else
+				label = Language.get('FreeplayState.multiFileMerged', 'MULTI-FILE: MERGED');
+
+			// "*" marks a choice made for this song rather than the saved option.
+			if (ChartParts.songOverride(key) != null) label += ' *';
+			// The key that switches it, shown next to the state it switches (touch UI uses its button).
+			label += '  ' + (ClientPrefs.touchUIEnabled()
+				? Language.get('FreeplayState.multiFileKeyHint.android', '[D]')
+				: Language.get('FreeplayState.multiFileKeyHint', '[M]'));
+		}
+
+		multiFileText.text = label;
+		multiFileText.y = diffText.y + 28;
+		// Dim the "nothing to merge here" case so segmented songs stay the ones that stand out.
+		multiFileText.alpha = segmented ? 0.75 : 0.4;
+		multiFileText.visible = true;
+	}
+
+	/**
+	 * Whether the chart a preview would load is large enough that parsing it would stall the menu.
+	 *
+	 * Mirrors Song.loadFromJson()'s lookup order (mod file, then the plain path) and falls back to
+	 * the segmented-chart part list, because a segmented chart has no one-file chart at all. The
+	 * threshold is ChartStream's own streaming threshold, so preview and loader agree on "large".
+	 */
+	static function chartFileIsLarge(songLowercase:String, chartKey:String):Bool
+	{
+		#if sys
+		var oneFile:Array<String> = [];
+		#if MODS_ALLOWED
+		oneFile.push(Paths.modsJson(songLowercase + '/' + chartKey));
+		#end
+		oneFile.push(Paths.json(songLowercase + '/' + chartKey));
+		for (c in oneFile)
+		{
+			if (c == null || !FileSystem.exists(c)) continue;
+			if (ChartStream.isLargeChart(c)) return true;
+		}
+
+		// Segmented chart: every part counts, and there is no <song>.json to find.
+		var dirs:Array<String> = [];
+		#if MODS_ALLOWED
+		if (Paths.currentModDirectory != null && Paths.currentModDirectory.length > 0)
+			dirs.push(Paths.mods(Paths.currentModDirectory + '/data/' + songLowercase));
+		dirs.push(Paths.mods('data/' + songLowercase));
+		#end
+		dirs.push(Paths.getPreloadPath('data/' + songLowercase));
+		for (dir in dirs)
+		{
+			var parts:Array<String> = ChartParts.resolveForChart(dir, songLowercase, chartKey, ChartParts.MODE_AUTO);
+			if (parts == null) continue;
+			var total:Float = 0;
+			for (part in parts)
+			{
+				var st = FileSystem.stat(part);
+				if (st != null) total += st.size;
+			}
+			if (total >= ChartStream.MIN_STREAM_BYTES) return true;
+		}
+		#end
+		return false;
+	}
+
+	/** Per-session cache of "does this song's chart folder hold a segmented chart". */
+	static var segmentedSongCache:Map<String, Bool> = new Map<String, Bool>();
+
+	/**
+	 * Whether the selected song's chart folder holds a segmented chart (see ChartParts), so the state
+	 * line and its key hint appear exactly when they are useful instead of on every song.
+	 */
+	function songHasSegmentedChart(songKey:String):Bool
+	{
+		if (songKey == null || songKey.length == 0) return false;
+		if (segmentedSongCache.exists(songKey)) return segmentedSongCache.get(songKey);
+
+		var song:Dynamic = getCurrentSong();
+		var dirs:Array<String> = [];
+		#if MODS_ALLOWED
+		if (song != null && song.folder != null && song.folder.length > 0)
+			dirs.push(Paths.mods(song.folder + '/data/' + songKey));
+		dirs.push(Paths.mods('data/' + songKey));
+		#end
+		dirs.push(Paths.getPreloadPath('data/' + songKey));
+
+		// MODE_AUTO on purpose: the question is "does this song have parts at all", independent of
+		// the mode in use (MODE_OFF would hide the parts and mislabel the song as not segmented).
+		var found:Bool = false;
+		for (dir in dirs)
+		{
+			if (ChartParts.resolveForChart(dir, songKey, songKey, ChartParts.MODE_AUTO) != null)
+			{
+				found = true;
+				break;
+			}
+		}
+		segmentedSongCache.set(songKey, found);
+		return found;
+	}
+
 	public function updatePreviewTexts()
 	{
 		if (!playingMusic) return;
@@ -1750,10 +2063,12 @@ class FreeplayState extends SeiunMenuState
 		wasVisible.set(scoreBG, scoreBG.visible);
 		wasVisible.set(scoreText, scoreText.visible);
 		wasVisible.set(diffText, diffText.visible);
+		wasVisible.set(multiFileText, multiFileText.visible);
 		
 		scoreBG.visible = false;
 		scoreText.visible = false;
 		diffText.visible = false;
+		multiFileText.visible = false;
 	}
 
 	public function restoreNonPreviewElements()
@@ -1772,6 +2087,7 @@ class FreeplayState extends SeiunMenuState
 		if (wasVisible.exists(scoreBG)) scoreBG.visible = wasVisible.get(scoreBG);
 		if (wasVisible.exists(scoreText)) scoreText.visible = wasVisible.get(scoreText);
 		if (wasVisible.exists(diffText)) diffText.visible = wasVisible.get(diffText);
+		if (wasVisible.exists(multiFileText)) multiFileText.visible = wasVisible.get(multiFileText);
 	}
 
 	override function onMenuBeat(beat:Int):Void
@@ -1829,6 +2145,16 @@ class FreeplayState extends SeiunMenuState
 
 		var modUrl:String = online.mods.OnlineMods.getModURL(modDir);
 
+		// Online only promises one-file charts: a segmented (ChartParts) chart has no single file
+		// for `Song.hashRawSong`, and without a hash the server can never set `hasSong`, so the
+		// room would wait forever. Refuse the selection here, with a clear message, instead of
+		// sending `setSong` with the empty md5 a failed hash would leave behind.
+		if (GameClient.chartIsSegmented(poop, songLowercase, modDir)) {
+			GameClient.refuseSegmentedChart();
+			return;
+		}
+
+		var chartMd5:String = null;
 		try {
 			// The chart hash is built after switching `Mods.currentModDirectory` to the song's mod.
 			// Without it
@@ -1839,29 +2165,37 @@ class FreeplayState extends SeiunMenuState
 			// later `currentModDirectory` is unchanged). `songData.folder` is the song's mod:
 			// `WeekData.setDirectoryFromWeek()` (`WeekData.hx:263-268`) sets it to
 			// `leWeek.folder` before `addSong()`, and `SongMetadata.folder` records that value.
-			var chartMd5:String = "";
 			online.util.ShitUtil.tempSwitchMod(modDir, function () {
 				chartMd5 = Song.hashRawSong(poop, songLowercase);
 			});
-
-			var data:Array<Dynamic> = [
-				songLowercase,
-				poop,
-				curDifficulty,
-				chartMd5,
-				modDir,
-				modUrl,
-				backend.Difficulty.list
-			];
-			trace(data);
-			GameClient.send("setSong", data);
-			online.gui.Alert.alert("Room song set to:\n" + songLowercase + " (" + poop + ")"
-				+ (modDir != "" ? "\nMod: " + modDir + (modUrl == null || modUrl == "" ? "\n(WARNING: this mod has no URL, others can't download it)" : "") : ""));
 		}
 		catch (e:Dynamic) {
 			trace('ERROR! $e');
-			online.gui.Alert.alert("Couldn't set the room song!", Std.string(e));
+			// No hash means no `verifyChart` from anyone: the room cannot start. Say so instead of
+			// sending `setSong` and leaving the room stuck.
+			GameClient.refuseUnhashableChart(e);
+			return;
 		}
+
+		// A "" hash would look like a successful selection while the server can never verify it.
+		if (chartMd5 == null || chartMd5.length == 0) {
+			GameClient.refuseUnhashableChart('empty chart hash for ' + poop + ' (' + songLowercase + ')');
+			return;
+		}
+
+		var data:Array<Dynamic> = [
+			songLowercase,
+			poop,
+			curDifficulty,
+			chartMd5,
+			modDir,
+			modUrl,
+			backend.Difficulty.list
+		];
+		trace(data);
+		GameClient.send("setSong", data);
+		online.gui.Alert.alert("Room song set to:\n" + songLowercase + " (" + poop + ")"
+			+ (modDir != "" ? "\nMod: " + modDir + (modUrl == null || modUrl == "" ? "\n(WARNING: this mod has no URL, others can't download it)" : "") : ""));
 	}
 	#end
 }

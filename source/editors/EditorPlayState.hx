@@ -2,6 +2,7 @@ package editors;
 
 import Section.SwagSection;
 import Song.SwagSong;
+import Note.NoteTypeRegistry;
 import EKData.Keybinds;
  
 import flixel.addons.transition.FlxTransitionableState;
@@ -244,7 +245,7 @@ class EditorPlayState extends MusicBeatState
 						swagNote.mustPress = gottaHitNote;
 						swagNote.sustainLength = songNotes[2];
 						swagNote.noteType = songNotes[3];
-						if(!Std.isOfType(songNotes[3], String)) swagNote.noteType = editors.ChartingState.noteTypeList[songNotes[3]]; //Backward compatibility + compatibility with Week 7 charts
+						if(!Std.isOfType(songNotes[3], String)) swagNote.noteType = NoteTypeRegistry.fromIndex(Std.int(songNotes[3])); //Backward compatibility + compatibility with Week 7 charts
 						swagNote.scrollFactor.set();
 
 						var susLength:Float = swagNote.sustainLength;
@@ -451,13 +452,15 @@ class EditorPlayState extends MusicBeatState
 								if (isEnd)
 									anchor += stepPx - daNote.height;
 								// 自定义材质（trimmed atlas frame）内容偏移归一化。
+								// 同 PlayState: 必须是 + frame.offset.y*scale.y —— 内容在翻转帧里的上沿是
+								// frameHeight - frame.offset.y - 可见高，减号会把尾帽往下拽进长条里。
 								var contentOffsetY:Float = (daNote.frame != null) ? daNote.frame.offset.y * daNote.scale.y : 0.0;
-								daNote.y += anchor - contentOffsetY;
+								daNote.y += anchor + contentOffsetY;
 							}
 							if(daNote.mustPress || !daNote.ignoreNote)
 							{
 								var drawnTop:Float = daNote.y - daNote.offset.y + daNote.origin.y * (1 - daNote.scale.y)
-									+ daNote.frame.offset.y * daNote.scale.y;
+									+ daNote.contentTopInFrame() * daNote.scale.y;
 								var drawnBottom:Float = drawnTop + daNote.height;
 								if(drawnBottom >= center
 									&& (!daNote.mustPress || (daNote.wasGoodHit || (daNote.prevNote != null && daNote.prevNote.wasGoodHit && !daNote.canBeHit))))
@@ -481,12 +484,12 @@ class EditorPlayState extends MusicBeatState
 						{
 							if (daNote.isSustainNote
 								&& daNote.y - daNote.offset.y + daNote.origin.y * (1 - daNote.scale.y)
-									+ daNote.frame.offset.y * daNote.scale.y <= center
+									+ daNote.contentTopInFrame() * daNote.scale.y <= center
 								&& (!daNote.mustPress || (daNote.wasGoodHit || (daNote.prevNote != null && daNote.prevNote.wasGoodHit && !daNote.canBeHit))))
 							{
 								var swagRect = new FlxRect(0, 0, daNote.width / daNote.scale.x, daNote.height / daNote.scale.y);
 								swagRect.y = (center - (daNote.y - daNote.offset.y + daNote.origin.y * (1 - daNote.scale.y)
-									+ daNote.frame.offset.y * daNote.scale.y)) / daNote.scale.y;
+									+ daNote.contentTopInFrame() * daNote.scale.y)) / daNote.scale.y;
 								swagRect.height -= swagRect.y;
 
 								daNote.clipRect = swagRect;
@@ -1108,7 +1111,9 @@ class EditorPlayState extends MusicBeatState
 		var sat:Float = delta[1] + hsv[1] / 100;
 		var brt:Float = delta[2] + hsv[2] / 100;
 		if(note != null) {
-			skin = note.noteSplashTexture;
+			// 与 PlayState.spawnNoteSplash 同口径: 材质为空时不要顶掉谱面的 splashSkin
+			if (note.noteSplashTexture != null && note.noteSplashTexture.length > 0)
+				skin = note.noteSplashTexture;
 			hue = note.noteSplashHue;
 			sat = note.noteSplashSat;
 			brt = note.noteSplashBrt;

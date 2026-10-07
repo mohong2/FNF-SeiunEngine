@@ -33,7 +33,15 @@ class Encoder {
 
 			case TClass(c):
 				switch (Type.getClassName(c)) {
-					case "haxe._Int64.___Int64" : writeInt64(d);
+					// "haxe._Int64.___Int64" is the JS/eval backing class of haxe.Int64.
+					// On hxcpp the boxed Int64 Dynamic reports the native class hxcpp registers in
+					// Dynamic::__boot() as "cpp::Int64" (.haxelib/hxcpp/git/src/Dynamic.cpp:634); on cpp
+					// haxe.Int64 IS cpp.Int64 (std/cpp/_std/haxe/Int64.hx:130) and Type.typeof() maps
+					// vtInt64 to TClass(that class), whose mName Type.getClassName() returns verbatim
+					// (std/cpp/_std/Type.hx:61-65 <- .haxelib/hxcpp/git/src/hx/Class.cpp:73).
+					// Matching only the JS name made this branch dead on cpp, so every Int64 payload
+					// threw "Error: cpp::Int64 not supported".
+					case "haxe._Int64.___Int64" | "cpp::Int64" : writeInt64(d);
 					case "haxe.io.Bytes" : writeBinary(d);
 					case "String" : writeString(d);
 					case "Array"  : writeArray (d);

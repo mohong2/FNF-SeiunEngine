@@ -72,7 +72,8 @@ class Leaderboard {
 		var response = FunkinNetwork.requestAPI({
 			path: "/api/score/report",
 			headers: ["content-type" => "application/json"],
-			body: Json.stringify({content: 'Score #${scoreID}\nReason: ' + desc}),
+			// JsonSafe: a report reason may contain an emoji, which haxe.Json.stringify mangles on cpp.
+			body: JsonSafe.stringify({content: 'Score #${scoreID}\nReason: ' + desc}),
 			post: true
 		});
 
@@ -86,7 +87,7 @@ class Leaderboard {
 		var response = FunkinNetwork.requestAPI({
 			path: "/api/admin/song/submit",
 			headers: ["content-type" => "application/json"],
-			body: Json.stringify(data),
+			body: JsonSafe.stringify(data),
 			post: true
 		});
 

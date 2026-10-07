@@ -31,13 +31,35 @@ class OnlineState extends MusicBeatState {
         "FIND",
 		"OPTIONS",
 		"LEADERBOARD",
-		"MOD DOWNLOADER"
+		"MOD DOWNLOADER",
+		// Appended last: the switches below match on the string, and every existing index keeps
+		// its meaning (itms index == row ID, see create()).
+		"LAN HOST"
     ];
 
 	var presenceInfo:FlxText;
 	// var networkBg:FlxSprite;
 	var itemDesc:FlxText;
 	var playersOnline:FlxText;
+
+	/**
+	 * Reserved band for the persisted server announcement (/api/front.announcement): top-left,
+	 * above the menu rows. Layout numbers, chosen against the existing screen:
+	 *   label  x=ANNOUNCE_X  y=ANNOUNCE_Y                        font 16, yellow, left-aligned
+	 *   body   x=ANNOUNCE_X  y=label.y + label.height + 2         fieldWidth=ANNOUNCE_WIDTH, font 16,
+	 *                                                             white at alpha 0.8, FlxText wordWrap
+	 *   input is clamped to ANNOUNCE_MAX_CHARS codepoints, so the worst case (CJK) is ~5 lines
+	 *   (~95 px): the block never leaves y <= 150, and the menu rows start at y=155.
+	 *   Every other header is centred (playersOnline y=100, availableRooms y=130, credit at the
+	 *   bottom) or right-aligned (frontMessage), so x <= ANNOUNCE_X + ANNOUNCE_WIDTH never collides.
+	 */
+	static inline var ANNOUNCE_X:Float = 20;
+	static inline var ANNOUNCE_Y:Float = 26;
+	static inline var ANNOUNCE_WIDTH:Int = 340;
+	static inline var ANNOUNCE_MAX_CHARS:Int = 100;
+
+	var announceLabel:FlxText;
+	var announcementText:FlxText;
 	var itemHeight:Float = 40;
 	static inline var MENU_ROW_GAP:Float = 4;
 
@@ -70,6 +92,12 @@ class OnlineState extends MusicBeatState {
 	var descBox:FlxSprite;
 	
 	var github:FlxSprite;
+
+	/** UP/DOWN hold-to-repeat; the on-screen pad and the keyboard share this state. */
+	var nav = new NavRepeat();
+
+	/** Row index under the pointer, or -1. Hover only highlights; a click is what selects. */
+	var hoverIndex:Int = -1;
 
     function onRoomJoin(err:Dynamic) {
 		trace(err);
@@ -117,6 +145,13 @@ class OnlineState extends MusicBeatState {
 		}
 
 		OnlineMods.checkMods();
+
+		// On-screen controls (Android always, desktop when "touch controls" is on): UP/DOWN pick a
+		// row, A accepts, B backs out. Every screen in the online UI mounts the same pad.
+		addVirtualPad(UP_DOWN, A_B);
+		// Online pad layout: shrunk buttons tucked into the corners, clear of the UI.
+		OnlineNav.layoutColumn(virtualPad);
+		addPadCamera();
 
 		#if DISCORD_ALLOWED
 		DiscordClient.resetClientID();
@@ -181,7 +216,9 @@ class OnlineState extends MusicBeatState {
 		github.animation.addByPrefix('active', "active", 24);
 		github.animation.play('idle');
 		github.updateHitbox();
-		github.x = 30;
+		// The on-screen UP/DOWN column owns the left edge on touch builds, so the icon moves past
+		// it; its height stays anchored to the bottom of the screen.
+		github.x = OnlineNav.avoidLeftPad(virtualPad, 30);
 		github.y = FlxG.height - github.height - 28;
 		github.alpha = 0.8;
 		// Previously inside an unofficial-build gate that hid every bottom-left icon on real
@@ -205,6 +242,21 @@ class OnlineState extends MusicBeatState {
 		availableRooms.alpha = 0.6;
 		availableRooms.screenCenter(X);
 		add(availableRooms);
+
+		// Server announcement (see ANNOUNCE_*): hidden until /api/front answers, so an empty
+		// announcement costs nothing on screen.
+		// The label is created WITH its text: an empty FlxText is only VERTICAL_GUTTER (~4 px) tall,
+		// so measuring it before the localized title is set would put the body on top of the label.
+		announceLabel = new FlxText(ANNOUNCE_X, ANNOUNCE_Y, 0, OnlineLang.L('front.announcement', 'ANNOUNCEMENT'));
+		announceLabel.setFormat(OnlineLang.font(), 16, FlxColor.YELLOW, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
+		announceLabel.visible = false;
+		add(announceLabel);
+
+		announcementText = new FlxText(ANNOUNCE_X, announceLabel.y + announceLabel.height + 2, ANNOUNCE_WIDTH, '');
+		announcementText.setFormat(OnlineLang.font(), 16, FlxColor.WHITE, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
+		announcementText.alpha = 0.8;
+		announcementText.visible = false;
+		add(announcementText);
 
 		var credit = new FlxText(0, 0, 0, 'SeiunEngine Online by mo_hong\nUI reference: Funkin-Psych-Online (Snirozu)');
 		credit.setFormat(OnlineLang.font(), 16, FlxColor.WHITE, CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
@@ -272,6 +324,11 @@ class OnlineState extends MusicBeatState {
 					availableRooms.text = OnlineLang.L('rooms.available', 'Available Rooms: ') + data.rooms;
 					frontMessage.text = data.sez;
 					frontMessage.y = FlxG.height - frontMessage.height - 20;
+
+					// Additive field (task-1). Reflect keeps this working against an older server that
+					// does not send it yet: missing -> hidden.
+					var rawAnnouncement:Dynamic = Reflect.hasField(data, 'announcement') ? Reflect.field(data, 'announcement') : null;
+					applyAnnouncement(rawAnnouncement == null ? null : Std.string(rawAnnouncement));
 				}
 
 				playersOnline.screenCenter(X);
@@ -297,19 +354,32 @@ class OnlineState extends MusicBeatState {
 
         if (disableInput) return;
 
+		// A dialog on top (the leaderboard) owns the pointer and the keys. Without this the pad's A
+		// would also be read here, and one tap could switch this screen's state behind the dialog.
+		if (subState != null) return;
+
 		for (item in items) {
 			item.text = getItemName(itms[item.ID]);
-			item.alpha = inputWait ? 0.5 : 0.8;
-			if (item.ID == curSelected) {
+			var isSelected = item.ID == curSelected && !inputWait;
+			// Hover lights the row up exactly like the selection does, but without the "> <"
+			// markers, so the player can tell what a click would do from what is already chosen.
+			item.alpha = isSelected || item.ID == hoverIndex ? 1 : (inputWait ? 0.5 : 0.8);
+			if (isSelected) {
 				item.text = "> " + item.text + " <";
-				item.alpha = 1;
 			}
 			item.screenCenter(X);
 		}
 
-		var mouseInItems = FlxG.mouse.y > items.y && FlxG.mouse.y < items.y + items.members.length * itemHeight;
+		// A tap that lands on the on-screen pad belongs to the pad (UP/DOWN/A/B), never to the
+		// row drawn behind it.
+		var padTap = OnlineNav.padBlocks(virtualPad);
+		var pointerClick = FlxG.mouse.justPressed && !padTap;
 
-		if (FlxG.mouse.justPressed && inputWait) {
+		// Hover is recomputed every frame, so the highlight always matches what a click would
+		// hit. Moving the pointer no longer changes curSelected: that was the touch-hostile part.
+		hoverIndex = inputWait || padTap ? -1 : rowUnderPointer();
+
+		if (pointerClick && inputWait) {
 			if (!FlxG.mouse.overlaps(items.members[curSelected])) {
 				inputWait = false;
 				return;
@@ -322,18 +392,21 @@ class OnlineState extends MusicBeatState {
 			inputString += Clipboard.text;
 		}
 
-		if (FlxG.mouse.justMoved && !inputWait && mouseInItems) {
-			curSelected = Std.int((FlxG.mouse.y - (items.y)) / itemHeight);
-			changeSelection(0);
-		}
-
 		if (!inputWait) {
-			if (controls.UI_UP_P)
-				changeSelection(-1);
-			else if (controls.UI_DOWN_P)
-				changeSelection(1);
+			// Wheel (1 = up) plus the pad/keyboard, with hold-to-repeat so a long menu can be
+			// walked without tapping the direction once per row.
+			var steps = nav.poll(controls.UI_UP, controls.UI_DOWN, elapsed) - FlxG.mouse.wheel;
+			while (steps != 0) {
+				var dir = steps > 0 ? 1 : -1;
+				changeSelection(dir);
+				steps -= dir;
+			}
 
-			if (controls.ACCEPT || (FlxG.mouse.justPressed && mouseInItems)) {
+			var clickedRow = pointerClick && hoverIndex >= 0;
+			if (controls.ACCEPT || clickedRow) {
+				// A click first moves the selection onto the row it hit, then runs it.
+				if (clickedRow)
+					changeSelection(hoverIndex - curSelected);
 				switch (itms[curSelected].toLowerCase()) {
 					case "join":
 						inputWait = true;
@@ -352,6 +425,9 @@ class OnlineState extends MusicBeatState {
 					case "mod downloader":
 						disableInput = true;
 						FlxG.switchState(new DownloaderState());
+					case "lan host":
+						disableInput = true;
+						FlxG.switchState(new LanHostState());
 				}
 			}
 
@@ -370,23 +446,23 @@ class OnlineState extends MusicBeatState {
 				GameClient.joinRoom(Clipboard.text, onRoomJoin);
 			}
 
-			if (FlxG.mouse.justPressed || FlxG.mouse.justMoved) {
-				if (FlxG.mouse.overlaps(github)) {
-					github.alpha = 1;
-					github.animation.play("active");
+			// Hover only lights the icon up; the link opens on click, and only once.
+			if (!padTap && OnlineNav.pointerOver(github, camera)) {
+				github.alpha = 1;
+				github.animation.play("active");
 
-					itemDesc.text = OnlineLang.L('desc.docs', 'Documentation, FAQ and the Source Code!');
-					itemDesc.screenCenter(X);
+				itemDesc.text = OnlineLang.L('desc.docs', 'Documentation, FAQ and the Source Code!');
+				itemDesc.screenCenter(X);
 
-					if (FlxG.mouse.justPressed) {
-						RequestSubstate.requestURL('https://github.com/mohong2/FNF-SeiunEngine', true);
-					}
+				if (pointerClick) {
+					RequestSubstate.requestURL('https://github.com/mohong2/FNF-SeiunEngine', true);
 				}
-				else {
-					github.alpha = 0.8;
-					github.animation.play("idle");
-				}
-
+			}
+			else {
+				github.alpha = 0.8;
+				github.animation.play("idle");
+				// Leaving the icon must hand the description back to the selected row.
+				refreshDesc();
 			}
 		}
     }
@@ -439,16 +515,34 @@ class OnlineState extends MusicBeatState {
 
 
 
-	function changeSelection(diffe:Int) {
-		curSelected += diffe;
-
-		if (curSelected >= items.length) {
-			curSelected = 0;
+	/**
+	 * Show the persisted server announcement, or hide the block when there is none.
+	 *
+	 * The text is clamped by CODEPOINTS first (ShitUtil.truncateCodepoints; String.substr counts
+	 * bytes on cpp and would split a CJK character), then FlxText wraps it at ANNOUNCE_WIDTH, so
+	 * even a huge announcement cannot reach the menu rows below.
+	 */
+	function applyAnnouncement(raw:String):Void {
+		var text = raw == null ? '' : raw.trim();
+		if (text == '') {
+			announceLabel.visible = false;
+			announcementText.visible = false;
+			return;
 		}
-		else if (curSelected < 0) {
-			curSelected = items.length - 1;
-		}
 
+		announceLabel.text = OnlineLang.L('front.announcement', 'ANNOUNCEMENT');
+		announcementText.text = ShitUtil.truncateCodepoints(text, ANNOUNCE_MAX_CHARS);
+		announceLabel.visible = true;
+		announcementText.visible = true;
+	}
+
+	/**
+	 * The description line and its box for the current selection.
+	 *
+	 * Split out of changeSelection() because the hover path needs it too: leaving the github icon
+	 * must hand the text back to the selected row, and that is not a selection change.
+	 */
+	function refreshDesc() {
 		switch (curSelected) {
 			case 0:
 				itemDesc.text = OnlineLang.L('desc.join', 'Join a room using a room code');
@@ -462,6 +556,8 @@ class OnlineState extends MusicBeatState {
 				itemDesc.text = OnlineLang.L('desc.leaderboard', 'The Funkin Points Leaderboard!');
 			case 5:
 				itemDesc.text = OnlineLang.L('desc.downloader', 'Download mods from Gamebanana here!');
+			case 6:
+				itemDesc.text = OnlineLang.L('desc.lanhost', 'Host the server on this PC and let LAN friends join with a room code');
 		}
 		itemDesc.screenCenter(X);
 
@@ -471,7 +567,37 @@ class OnlineState extends MusicBeatState {
 		descBox.scale.set(FlxG.width - 500, itemDesc.height + 20);
 		descBox.x = (FlxG.width - descBox.scale.x) / 2;
 		descBox.y = itemDesc.y - 10;
-		
+	}
+
+	/**
+	 * Row under the pointer, or -1. The rows are full-width bands (the same bands the old click
+	 * test used), so a click anywhere on the row's line reaches it; hovering only reports it.
+	 */
+	function rowUnderPointer():Int {
+		if (items == null || items.members.length == 0 || itemHeight <= 0)
+			return -1;
+
+		var point = FlxG.mouse.getWorldPosition(camera);
+		var rel = point.y - items.y;
+		point.put();
+
+		if (rel < 0 || rel >= items.members.length * itemHeight)
+			return -1;
+		return Std.int(rel / itemHeight);
+	}
+
+	function changeSelection(diffe:Int) {
+		curSelected += diffe;
+
+		if (curSelected >= items.length) {
+			curSelected = 0;
+		}
+		else if (curSelected < 0) {
+			curSelected = items.length - 1;
+		}
+
+		refreshDesc();
+
 		selectLine.y = (items.y + itemHeight / 2) + (curSelected) * itemHeight;
 		selectLine.scale.set(FlxG.width, itemHeight);
 		selectLine.screenCenter(X);
@@ -537,6 +663,11 @@ class OnlineState extends MusicBeatState {
 
 		if (inputString.length >= 0) {
 			switch (itms[curSelected].toLowerCase()) {
+				// Checked when LAN HOST was appended: enterInput() only runs while the JOIN row's
+				// input has focus, so this row never consumes a typed room code. The explicit case
+				// keeps the new row documented instead of silently falling through.
+				case "lan host":
+					disableInput = false;
 				case "join":
 					disableInput = true;
 					if (daCoomCode.toLowerCase() == "adachi") {

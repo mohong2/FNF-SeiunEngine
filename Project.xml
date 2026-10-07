@@ -2,7 +2,7 @@
 <project>
 	<!-- _________________________ Application Settings _________________________ -->
 
-	<app title="SeiunEngine" file="SeiunEngine" packageName="com.mohong.Seiunengine" package="com.mohong.Seiunengine" main="Main" version="0.2.2preonline1" company="mo_hong" company-url="https://github.com/mohong2/FNF-SeiunEngine"/>
+	<app title="SeiunEngine" file="SeiunEngine" packageName="com.mohong.Seiunengine" package="com.mohong.Seiunengine" main="Main" version="0.2.2preonline2" company="mo_hong" company-url="https://github.com/mohong2/FNF-SeiunEngine"/>
 
 	<!--Switch Export with Unique ApplicationID and Icon-->
 	<set name="APP_ID" value="0x0100f6c013bbc000" />
@@ -30,11 +30,6 @@
 	<window if="desktop" orientation="landscape" fullscreen="false" resizable="true" vsync="false" allow-high-dpi="true"/>
 
 	<!--Mobile-specific-->
-	<!--allow-high-dpi="false": render at 1280x720 and let the compositor scale, instead of
-	    rasterizing at the device's native resolution (2-4x fill-rate savings on phones).
-	    depth/stencil="false": flixel's 2D renderer never uses depth/stencil buffers, dropping
-	    the extra attachments saves VRAM and bandwidth per frame. Remove them only if a mod
-	    relies on DisplayObject masks (openfl implements those with stencil).-->
 	<window if="mobile" orientation="landscape" fullscreen="true" resizable="false" allow-shaders="true" require-shaders="true" allow-high-dpi="true" depth="false" stencil="false"/>
 
 	<!--Switch-specific-->
@@ -58,17 +53,39 @@
 	<define name="lime-sdl3" if="desktop || android" />
 	<define name="TOUCH_CONTROLS" if="android || ios" />
 	<define name="MODS_ALLOWED" if="desktop || mobile" />
-	<define name="ONLINE_ALLOWED"/>
+	<define name="ONLINE_ALLOWED" unless="SEIUN_NO_ONLINE"/>
+	<!-- In-client LAN hosting (design temp/lan-host-recon/design.md, variant A): compile the
+	     embedded server into the client. Wrapped in a section so the macro-off product keeps a
+	     byte-identical command line (source/Main.hx:82-83 records that guarantee) and server/src
+	     is never even resolved without ONLINE_ALLOWED. -->
+	<section if="ONLINE_ALLOWED">
+		<classpath name="server/src" />
+	</section>
 
 	<define name="LUA_ALLOWED" if="desktop || mobile" />
 	<define name="HSCRIPT_ALLOWED" if="desktop || mobile" />
 	<define name="ACHIEVEMENTS_ALLOWED" />
-	<define name="CHECK_FOR_UPDATES" if="desktop || mobile" />
+	<!-- The launch-time update check is a network request, so the offline build must not have it. -->
+	<define name="CHECK_FOR_UPDATES" if="desktop || mobile" unless="SEIUN_NO_ONLINE" />
 
 	<define name="VIDEOS_ALLOWED" if="web || windows || linux || mac || android || ios" unless="32bits"/>
 	<define name="PSYCH_WATERMARKS"/>
 	<define name="DARKMODE" if="desktop" />
 	<define name="CRASH_HANDLER"/>
+
+	<!-- 检查开关(默认常开, 本地/CI/发布都是): 空指针/非法指针直接抛 Haxe 异常, logcat 里带
+	     .hx 文件+行号(tag: Exception/HXCPP)。-D hxcpp_nosafe 关掉; -D hxcpp_gc_check 加 GC 指针校验。
+	     符号开关(默认关, 省步骤): -D hxcpp_symbols 才做嵌入行号表/未剥离 .so/postbuild 刷新;
+	     tools/build_*_symbols.ps1 与 CI 的符号构建自动带它(检查仍然开着)。
+	     ⚠ 两个开关都必须小写 hxcpp_ 开头: hxcpp 的 obj 缓存只认含小写 hxcpp 的选项行,
+	       大写 HXCPP_* 改了它不重编 -> 会链出半新半旧的二进制。 -->
+	<define name="hxcpp_safe" unless="hxcpp_nosafe" />
+	<section if="hxcpp_safe">
+		<haxedef name="HXCPP_CHECK_POINTER" />
+		<haxedef name="HXCPP_STACK_TRACE" />
+		<haxedef name="HXCPP_STACK_LINE" />
+	</section>
+	<haxedef name="HXCPP_GC_CHECK_POINTER" if="hxcpp_gc_check" />
 
 	<assets path="assets/preload" rename="assets" exclude="*.ogg" if="web"/>
 	<assets path="assets/preload" rename="assets" exclude="*.mp3"  unless="web"/>
@@ -139,13 +156,16 @@
 	-->
 	<assets path="assets/fonts"/>
 	<assets path="assets/lang"/>
-	<!-- 崩溃行号映射(常驻): assets/linemap/*.bin 由 tools\build_*_symbols.ps1 生成并嵌进产物,
-	     崩溃报告的每一帧就直接带 [source/文件:行] —— 排查成本远低于省下的那点包体.
-	     ⚠ 表是 embed="true", 表本身会改变二进制地址 => 表必须与"同一次构建"的二进制配套.
-	     因此任何 release 构建都要走 tools\build_android_symbols.ps1 / tools\build_windows_symbols.ps1
-	     (它们重新生成表并用 tools\linemap_compare.py 校验); 直接 lime build 会把上一次的表编进去,
-	     给出**错误的行号**, 比没有行号更糟. 目录为空时只是没有行号, 不影响启动. -->
-	<assets path="assets/linemap" rename="assets/linemap" include="*.bin" embed="true"/>
+	<!-- 崩溃行号表(仅 -D hxcpp_symbols 时嵌入): 表会改变二进制地址, 必须与"同一次构建"配套 -->
+	<section if="hxcpp_symbols">
+		<assets path="assets/linemap" rename="assets/linemap" include="*.bin" embed="true"/>
+	</section>
+
+	<!-- 只有符号构建才跑 postbuild(它要解析 DWARF 再 adb push, 很慢) -->
+	<section if="hxcpp_symbols">
+		<postbuild haxe="tools.SymbolsAfterBuild" />
+	</section>
+
 	<!-- _______________________________ Libraries ______________________________ -->
 
 	<haxelib name="flixel"/>
@@ -215,28 +235,15 @@
 	<!--Make's-the-Game-use-less-ram-->
 	<haxedef name="HXCPP_GC_BIG_BLOCKS" />
 
-	<!--Crash-symbol support for release builds.
-	HXCPP_MAP_FILE emits a plain-text .map symbol table (exe is unchanged, no
-	size cost). It is the ONLY switch left on here on purpose: it keeps every
-	crash report resolvable to a real function name + file:line offline.
-	HXCPP_DEBUG_LINK is deliberately OFF because it passes /DEBUG to the linker,
-	which makes MSVC write debug directory data into the image - the release exe
-	grows from ~29.6 MB to ~47.1 MB. Keep it OFF for official builds.
-	When HXCPP_DEBUG_LINK is off the exe has no CodeView (RSDS) record, so
-	dbghelp CANNOT auto-pair it with a PDB - the report's "Symbols:" line will say
-	SymNone and its inline "<name>+0x..." frames must be ignored. Resolve the
-	report's "Fault offset" against ApplicationMain.map instead (see
-	docs/CRASH_ROOTCAUSE_20260912.md). Turn HXCPP_DEBUG_LINK back on only for a
-	dedicated debugging build where exe size does not matter.-->
 	<haxedef name="HXCPP_MAP_FILE" value="ApplicationMain.map" />
 	<haxedef name="HXCPP_CPP11" if="cpp" />
 	<haxedef name="HXCPP_GC_GENERATIONAL" if="cpp" />
-	<haxedef name="HXCPP_ALIGN_ALLOC" if="cpp" /> 
+	<haxedef name="HXCPP_ALIGN_ALLOC" if="cpp" />
 	<haxedef name="HXCPP_NO_ARCH_LEVEL" />
-
-	<!--Debug-only defines were previously forced into release builds here.
-		hxcpp enables pointer checks / stack-line info automatically in debug builds,
-		so release binaries get the clean fast path again.-->
+	<!-- 符号构建才保留未剥离 .so 供行号表生成 -->
+	<section if="android" unless="debug">
+		<haxedef name="HXCPP_DEBUG_LINK_AND_STRIP" if="hxcpp_symbols" />
+	</section>
 
 	<haxedef name="loop_unroll_max_cost" value="25"/>
 

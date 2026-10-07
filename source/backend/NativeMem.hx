@@ -3,8 +3,30 @@ package backend;
 import lime.system.System as LimeSystem;
 
 #if windows
-@:headerCode('#include <windows.h>
-#include <psapi.h>')
+// Same reasoning as mohong/Windows.hx: a header-level windows.h would leak its
+// macros (OUT, TRANSPARENT, WAIT_FAILED, COLOR_*) into every translation unit that
+// includes this class' header through __boot__.cpp. The declarations are only
+// needed by this class' own .cpp.
+@:cppFileCode('
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <psapi.h>
+#undef ERROR
+#undef FALSE
+#undef TRUE
+#undef NO_ERROR
+#undef DELETE
+#undef OUT
+#undef IN
+#undef TRANSPARENT
+#undef WAIT_FAILED
+#undef COLOR_HIGHLIGHT
+')
 #end
 
 

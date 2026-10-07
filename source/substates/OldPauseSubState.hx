@@ -39,6 +39,9 @@ class OldPauseSubState extends MusicBeatSubstate
 
 	public static var songName:String = '';
 
+	/** One-shot guard for the close path: a local click and the network "resumeGame" can race. */
+	var closing:Bool = false;
+
 	public function new(x:Float, y:Float)
 	{
 		super();
@@ -232,6 +235,13 @@ class OldPauseSubState extends MusicBeatSubstate
 			switch (daSelected)
 			{
 				case "Resume":
+					// See PauseSubState: a room-wide pause owned by someone else may not be resumed
+					// by this client alone, and the server rejects the request as well.
+					if (PlayState.instance != null && !PlayState.instance.onlineResumeAllowed()) {
+						FlxG.sound.play(Paths.sound('cancelMenu'));
+						PlayState.instance.onlineResumeNotice();
+						return;
+					}
 					close();
 				case 'Change Difficulty':
 					if (PlayState.replayMode)
@@ -303,6 +313,15 @@ class OldPauseSubState extends MusicBeatSubstate
 		}
 		skipTimeText = null;
 		skipTimeTracker = null;
+	}
+
+	/** Online: the room was resumed by whoever owned the pause; leave this forced pause. */
+	public function onlineResume():Void
+	{
+		if (closing)
+			return;
+		closing = true;
+		close();
 	}
 
 	public static function restartSong(noTrans:Bool = false)

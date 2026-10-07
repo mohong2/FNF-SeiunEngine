@@ -31,7 +31,8 @@ typedef SmtpConfig = {
  * upgrade a plaintext socket).
  */
 class ServerMail {
-	static var codes:Map<String, { code:String, expires:Float }> = new Map();
+	/** Verification codes are held as HMAC-SHA256 hashes, never as plaintext. */
+	static var codes:Map<String, { hash:String, expires:Float }> = new Map();
 	static var smtp:SmtpConfig = null;
 	static var outboxPath:String = null;
 	static var outboxLock:sys.thread.Mutex = null;
@@ -51,35 +52,38 @@ class ServerMail {
 		return JsonStore.randomHex(6).toUpperCase();
 	}
 
-	/** Stores a code for 10 minutes with lazy expiry (no timer). */
+	/** Stores the hash of a code for 10 minutes with lazy expiry (no timer). */
 	public static function tempSetCode(email:String, code:String):Void {
 		if (email == null) return;
-		codes.set(email.toLowerCase(), { code: code, expires: haxe.Timer.stamp() + 600 });
+		codes.set(email.toLowerCase(), { hash: Crypto.hashToken(code), expires: haxe.Timer.stamp() + 600 });
 	}
 
-	/** Current valid code; an expired one is removed on lookup. */
+	/**
+	 * Verification codes are no longer recoverable from memory: only their keyed hash is kept, so
+	 * there is nothing to return. Kept because it is part of the public surface.
+	 */
 	public static function codeOf(email:String):String {
 		if (email == null) return null;
 		var key = email.toLowerCase();
 		var e = codes.get(key);
 		if (e == null) return null;
-		if (haxe.Timer.stamp() > e.expires) {
-			codes.remove(key);
-			return null;
-		}
-		return e.code;
+		if (haxe.Timer.stamp() > e.expires) codes.remove(key);
+		return null;
 	}
 
 	public static function clearCode(email:String):Void {
 		if (email != null) codes.remove(email.toLowerCase());
 	}
 
-	/** Compares the code and consumes it in one step. */
+	/** Hashes the presented code, compares it in constant time and consumes it in one step. */
 	public static function verifyAndConsume(email:String, code:String):Bool {
-		var want = codeOf(email);
+		if (email == null) return false;
+		var key = email.toLowerCase();
+		var e = codes.get(key);
 		clearCode(email);
-		if (want == null || code == null) return false;
-		return want == code;
+		if (e == null || code == null) return false;
+		if (haxe.Timer.stamp() > e.expires) return false;
+		return Crypto.equals(e.hash, Crypto.hashToken(code));
 	}
 
 	/**

@@ -140,6 +140,15 @@
 		"onChange": "onChangeMarvelousRatings"
 	},
 	{
+		"nameKey": "option.judgementNameCompat",
+		"defaultName": "1.0.4 Judgement Names for Mods",
+		"descKey": "option.judgementNameCompat.desc",
+		"defaultDesc": "Psych 0.6.3/0.7.3/1.0.4 have no 'Marvelous' judgement, so mods that map judgements by name\n(e.g. rating == 'sick') drop every Marvelous hit: accuracy drops and combo stops rising.\nIf checked, scripts read the 1.0.4 name (Marvelous -> Sick) while the engine's own HUD, results,\nscoring and hitsounds still use the real judgement. Scripts can still read Note.ratingRaw\n(or PlayState.marvelouses) for the raw name. Only affects 1.0.4 compat mode.",
+		"variable": "judgementNameCompat",
+		"type": "bool",
+		"defaultValue": true
+	},
+	{
 		"nameKey": "option.judgementPreset",
 		"defaultName": "Judgement Preset",
 		"descKey": "option.judgementPreset.desc",

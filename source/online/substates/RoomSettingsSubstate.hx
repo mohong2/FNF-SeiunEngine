@@ -3,7 +3,6 @@ package online.substates;
 import openfl.filters.BlurFilter;
 import substates.GameplayChangersSubstate;
 import options.OptionsState;
-import flixel.FlxObject;
 import flixel.util.FlxSpriteUtil;
 import states.ModsMenuState;
 import online.util.OnlineLang;
@@ -13,6 +12,9 @@ class RoomSettingsSubstate extends MusicBeatSubstate {
 	var prevMouseVisibility:Bool = false;
 	var items:FlxTypedSpriteGroup<Option>;
 	var curSelectedID:Int = 0;
+	var nav = new NavRepeat();
+	/** Hovered row, or -1. Hover only lights the row up; it never selects it. */
+	var hoverIndex:Int = -1;
 
 	var blurFilter:BlurFilter;
 	var coolCam:FlxCamera;
@@ -34,9 +36,20 @@ class RoomSettingsSubstate extends MusicBeatSubstate {
 	var teamMode:Option;
 	var royalMode:Option;
 	var royalModeDadSide:Option;
+	var pausePolicy:Option;
 
 	override function create() {
 		super.create();
+
+		// On-screen controls (Android always, desktop when "touch controls" is on): UP/DOWN pick a
+		// row and A accepts. B is wired to BACK, which closes this substate.
+		//
+		// Mounted before the rows are built, because the list has to start to the right of the
+		// pad's direction column instead of underneath it. The camera is added at the end, once
+		// coolCam exists, so the pad still draws on top.
+		addVirtualPad(UP_DOWN, A_B);
+		// Online pad layout: shrunk buttons tucked into the corners, clear of the UI.
+		OnlineNav.layoutColumn(virtualPad);
 
 		blurFilter = new BlurFilter();
 		for (cam in FlxG.cameras.list) {
@@ -61,7 +74,9 @@ class RoomSettingsSubstate extends MusicBeatSubstate {
 		bg.scrollFactor.set(0, 0);
 		add(bg);
 
-		items = new FlxTypedSpriteGroup<Option>(40, 40);
+		// The pad's UP/DOWN column covers x 0..128, so on touch builds the rows (checkbox, title
+		// and description) start to the right of it. Without a pad the list keeps its old x.
+		items = new FlxTypedSpriteGroup<Option>(virtualPad != null ? 120 : 40, 40);
 
 		items.add(publicRoom = new Option(OnlineLang.L('settings.publicRoom', 'Public Room'), OnlineLang.L('settings.publicRoom.desc', 'If enabled, this room will be publicly listed in the FIND tab.'), () -> {
 			GameClient.send("togglePrivate");
@@ -169,6 +184,31 @@ class RoomSettingsSubstate extends MusicBeatSubstate {
 			prevCond = GameClient.room.state.winCondition;
 		}, 0, 0, false, true));
 
+		var prevPausePolicy:Int = -1;
+		items.add(pausePolicy = new Option(OnlineLang.L('settings.pausePolicy', 'Pause Policy'), '...', () -> {
+			GameClient.send("nextPauseMode");
+		}, (elapsed) -> {
+			pausePolicy.alpha = GameClient.hasPerms() ? 1 : 0.8;
+
+			var policy:Int = Std.int(GameClient.room.state.pauseMode);
+			if (policy != prevPausePolicy) {
+				switch (policy) {
+					case 0:
+						pausePolicy.descText.text = OnlineLang.L('settings.pause.hostOnly', 'Only the host can pause; everyone else is paused too.');
+					case 1:
+						pausePolicy.descText.text = OnlineLang.L('settings.pause.everyone', 'When anyone pauses, everyone is paused.');
+					case 2:
+						pausePolicy.descText.text = OnlineLang.L('settings.pause.legacy', 'Pauses stay local to each player (old behaviour).');
+					default:
+						pausePolicy.descText.text = '...';
+				}
+				pausePolicy.descText.text += OnlineLang.L('settings.pause.clickToChange', ' (Click to Change)');
+				pausePolicy.box.makeGraphic(Std.int(pausePolicy.descText.x - pausePolicy.x + pausePolicy.descText.width) + 10, Std.int(pausePolicy.height), 0x81000000);
+			}
+
+			prevPausePolicy = policy;
+		}, 0, 0, false, true));
+
 		items.add(modifers = new Option(OnlineLang.L('settings.modifiers', 'Game Modifiers'), OnlineLang.L('settings.modifiers.desc', 'Set your Gameplay Modifiers here!'), () -> {
 			close();
 			FlxG.state.openSubState(new GameplayChangersSubstate());
@@ -207,6 +247,9 @@ class RoomSettingsSubstate extends MusicBeatSubstate {
 
 		add(items);
 
+		// Added last: the pad camera must be registered after coolCam so it draws over the list.
+		addPadCamera();
+
 		GameClient.send("status", "In the Room Settings");
 	}
 
@@ -232,6 +275,7 @@ class RoomSettingsSubstate extends MusicBeatSubstate {
 		nextItem(hideGF);
 		nextItem(disableSkins);
 		nextItem(winCondition);
+		nextItem(pausePolicy);
 		nextItem(modifers);
 		nextItem(stageSelect);
 		nextItem(skinSelect);
@@ -259,24 +303,18 @@ class RoomSettingsSubstate extends MusicBeatSubstate {
 		FlxG.cameras.remove(coolCam);
 	}
 
-	var mouseSelectTime = 0.0;
-
 	/**
-	 * FlxG.mouse.overlaps() builds the pointer from the *main* camera but the object from the camera
-	 * passed in, so every hit is off by the scroll difference between the two. This list scrolls with
-	 * coolCam.follow(), so the offset grows as you navigate -- compare both sides in coolCam's world.
+	 * Index of the row under the pointer, or -1. The list scrolls with coolCam.follow(), so the hit
+	 * test runs in coolCam's world; OnlineNav handles groups and the camera scroll.
 	 */
-	function mouseHovers(object:FlxObject):Bool {
-		if (object == null || camera == null)
-			return false;
-
-		var point = FlxG.mouse.getWorldPosition(camera);
-		var hit:Bool = object.overlapsPoint(point, false);
-		point.put();
-		return hit;
+	function optionIndexUnderPointer():Int {
+		for (option in items) {
+			if (option != null && option.visible && OnlineNav.pointerOver(option, coolCam))
+				return option.ID;
+		}
+		return -1;
 	}
-
-    override function update(elapsed) {
+	override function update(elapsed) {
         if (controls.BACK #if android || FlxG.android.justReleased.BACK #end) {
             close();
 			FlxG.mouse.visible = prevMouseVisibility;
@@ -288,51 +326,60 @@ class RoomSettingsSubstate extends MusicBeatSubstate {
 
 		super.update(elapsed);
 
-		if (mouseSelectTime > 0.0)
-			mouseSelectTime -= elapsed;
-
-		if (FlxG.mouse.justPressed || FlxG.mouse.deltaX != 0 || FlxG.mouse.deltaY != 0)
-			mouseSelectTime = 0.5;
-
-		if (controls.UI_UP_P || FlxG.mouse.wheel == 1)
-			curSelectedID--;
-		else if (controls.UI_DOWN_P || FlxG.mouse.wheel == -1)
-			curSelectedID++;
-
-		if (curSelectedID >= items.length) {
-			curSelectedID = 0;
-		}
-		else if (curSelectedID < 0) {
-			curSelectedID = items.length - 1;
+		// UP/DOWN and the wheel move the selection with hold-to-repeat, so the pad/keyboard can be
+		// held down instead of tapped once per row.
+		var steps = nav.poll(controls.UI_UP, controls.UI_DOWN, elapsed) - FlxG.mouse.wheel;
+		while (steps != 0) {
+			var dir = steps > 0 ? 1 : -1;
+			changeSelection(dir);
+			steps -= dir;
 		}
 
-        items.forEach((option) -> {
-			if (GameClient.room == null)
+		// A tap that lands on the on-screen pad belongs to the pad (UP/DOWN/A/B), never to the row
+		// drawn behind it.
+		var padTap = OnlineNav.padBlocks(virtualPad);
+		var pointerClick = FlxG.mouse.justPressed && !padTap;
+
+		// Hover is recomputed every frame so the highlight matches what a click would hit; moving
+		// the pointer never changes curSelectedID (that was the touch-hostile part).
+		hoverIndex = padTap ? -1 : optionIndexUnderPointer();
+
+		items.forEach((option) -> {
+			if (GameClient.room == null || !option.visible)
 				return;
 
-			var hovered:Bool = mouseHovers(option);
+			var isSelected = option.ID == curSelectedID;
 
-			if (mouseSelectTime > 0 && hovered) {
-				curSelectedID = option.ID;
-            }
-
-			if (hovered && FlxG.mouse.justPressed) {
-				option.onClick();
-			}
-
-			if (option.ID == curSelectedID) {
+			if (isSelected) {
 				coolCam.follow(option, TOPDOWN, 0.1);
 				option.text.alpha = 1;
+			}
+			else {
+				// A hovered row is brightened just enough to show what a click would hit; only the
+				// selected row keeps full opacity, so the two states stay tellable apart.
+				option.text.alpha = option.ID == hoverIndex ? 0.9 : 0.7;
+			}
 
-                if (controls.ACCEPT) {
-                    option.onClick();
-                }
-            }
-            else {
-				option.text.alpha = 0.7;
-            }
-        });
+			if (pointerClick && option.ID == hoverIndex) {
+				// A click first moves the selection onto the row it hit, then runs it.
+				changeSelection(option.ID - curSelectedID);
+				option.onClick();
+			}
+			else if (isSelected && controls.ACCEPT) {
+				option.onClick();
+			}
+		});
     }
+
+	function changeSelection(diff:Int) {
+		var count = items.length;
+		if (count <= 0)
+			return;
+
+		// A modulo keeps the original wrap-around for the +/-1 keyboard steps and also lands on the
+		// right row when a click jumps several entries at once.
+		curSelectedID = (curSelectedID + diff % count + count) % count;
+	}
 }
 
 class Option extends FlxSpriteGroup {

@@ -1,9 +1,12 @@
 package;
 
+import haxe.Int64;
 import haxe.Json;
 import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
+import mohong.TraceManager;
 import sys.io.File;
+import Note.NoteTypeRegistry;
 import sys.io.FileInput;
 
 /**
@@ -27,6 +30,8 @@ typedef ChartSectionRange = {
 	var start:Float;
 	/** Byte length of that value. */
 	var len:Int;
+	/** Index into the chart's part list; 0 for an ordinary one-file chart. */
+	var part:Int;
 }
 
 typedef ChartScanResult = {
@@ -34,6 +39,26 @@ typedef ChartScanResult = {
 	var chart:Dynamic;
 	/** One range per chart.notes (or chart.song.notes) entry. */
 	var ranges:Array<ChartSectionRange>;
+	/**
+	 * Note entries counted while scanning; see Cursor.noteCount. Feeds PlayState's load budget.
+	 *
+	 * Int64, not Int: scanParts() adds every chart part's count into this one, so it is a running
+	 * total across files and an Int would wrap silently once the sum passed 2^31. Nothing indexes
+	 * with it -- no row, section or byte offset is ever derived from it -- so the row layout stays
+	 * Int (Array and haxe.io.Bytes lengths are Int32).
+	 *
+	 * It is not a Float either: read it through ChartStream.i64ToFloat() before it reaches a Dynamic
+	 * boundary such as chart.__seiunStream.noteCount, which PlayState compares against a Float. Both
+	 * a scan and a skeleton-cache load yield an Int64 here.
+	 */
+	var noteCount:Int64;
+	/**
+	 * Whether any note entry contained a negative number. Only a legacy chart (<= 0.3.2) writes
+	 * those: it stores events as negative-data notes, which Song.convert() / onLoadJson() turn back
+	 * into events -- and that needs a materialised sectionNotes array, which a scan never builds.
+	 * See Cursor.sawNegativeNote and maySynthesizeEvents().
+	 */
+	var sawNegativeNote:Bool;
 }
 
 /** One raw entry of a sectionNotes array, produced by ChartSectionReader.readNotes(). */
@@ -76,24 +101,162 @@ class ChartStream
 		#end
 	}
 
-	/** Scans the skeleton and records each section's sectionNotes byte range. */
+	/** Scans the skeleton of a one-file chart and records each section's sectionNotes byte range. */
 	public static function scan(path:String):ChartScanResult
+	{
+		return scanPart(path, 0);
+	}
+
+	/** scan() for part `part` of a segmented chart: every recorded range carries that index. */
+	static function scanPart(path:String, part:Int):ChartScanResult
 	{
 		var cur = new Cursor(path);
 		var ranges:Array<ChartSectionRange> = [];
 		try
 		{
 			cur.skipWs();
-			var root:Dynamic = scanObject(cur, ranges, true);
+			var root:Dynamic = scanObject(cur, ranges, true, part);
 			cur.skipWs();
+			var counted:Int64 = cur.noteCount;
 			cur.close();
-			return { chart: root, ranges: ranges };
+			// One part file can hold more note entries than an Int32 can count; passing that point is
+			// what reportCountCrossing() traces.
+			reportCountCrossing('chart scan of "' + path + '"', Int64.ofInt(0), counted);
+			return { chart: root, ranges: ranges, noteCount: counted, sawNegativeNote: cur.sawNegativeNote };
 		}
 		catch (e:Dynamic)
 		{
 			cur.close();
 			throw e;
 		}
+	}
+
+	/**
+	 * Scans several part files and merges them into ONE logical chart skeleton:
+	 *
+	 *   - notes[] is the concatenation of every part's notes[] in the given order;
+	 *   - every range keeps the index of the file it came from (range.part), so
+	 *     ChartSectionReader can seek in the right file;
+	 *   - top-level metadata comes from the first part, because it describes the whole song;
+	 *   - chart-level events from all parts are merged with exact duplicates dropped, so a real
+	 *     time-split keeps its later events while a chart that was copied verbatim into every
+	 *     part does not fire each event once per part.
+	 *
+	 * The caller unwraps the merged chart exactly once (see Song.tryLoadStreamingInner), so all
+	 * parts have to use the same JSON shape -- psych 1.0 `{"song":{...}}` or flat.
+	 */
+	public static function scanParts(paths:Array<String>):ChartScanResult
+	{
+		if (paths == null || paths.length == 0)
+			throw new haxe.Exception('ChartStream: no chart part to scan');
+		var base:ChartScanResult = scanPart(paths[0], 0);
+		if (paths.length < 2) return base;
+
+		var sections:Array<Dynamic> = sectionArray(base.chart);
+		if (sections == null)
+			throw new haxe.Exception('ChartStream: chart part 0 has no notes[]');
+		var ranges:Array<ChartSectionRange> = base.ranges;
+
+		var eventsOwner:Dynamic = eventsSubObject(base.chart);
+		var events:Array<Dynamic> = (eventsOwner != null) ? fieldArray(eventsOwner, 'events') : null;
+		// The field is written back only when some part actually had one. Inventing an empty array
+		// would make Song.convert() see a non-null events field and skip its extraction of events
+		// that a legacy chart encodes as negative-data notes.
+		var hadEvents:Bool = (events != null);
+		if (events == null) events = [];
+		var seen:Map<String, Bool> = new Map<String, Bool>();
+		for (event in events) seen.set(Json.stringify(event), true);
+
+		for (i in 1...paths.length)
+		{
+			var part:ChartScanResult = scanPart(paths[i], i);
+			// The cross-file accumulation: one segmented chart's total is the sum of its part files,
+			// so this is where the counter can pass 2^31.
+			var before:Int64 = base.noteCount;
+			base.noteCount = before + part.noteCount;
+			reportCountCrossing('segmented chart note count (' + paths.length + ' parts)', before, base.noteCount);
+			if (part.sawNegativeNote) base.sawNegativeNote = true;
+			var partSections:Array<Dynamic> = sectionArray(part.chart);
+			if (partSections == null)
+				throw new haxe.Exception('ChartStream: chart part ' + i + ' has no notes[]');
+			for (section in partSections) sections.push(section);
+			for (range in part.ranges) ranges.push(range);
+
+			var partEvents:Array<Dynamic> = (eventsOwner != null) ? fieldArray(eventsSubObject(part.chart), 'events') : null;
+			if (partEvents != null)
+			{
+				hadEvents = true;
+				for (event in partEvents)
+				{
+					var key:String = Json.stringify(event);
+					if (seen.exists(key)) continue;
+					seen.set(key, true);
+					events.push(event);
+				}
+			}
+			// The part's own skeleton is dropped from here on: only its section objects and byte
+			// ranges survive, which is what keeps a 29-part chart's skeleton at tens of MB.
+		}
+
+		if (eventsOwner != null && hadEvents) Reflect.setField(eventsOwner, 'events', events);
+		return base;
+	}
+
+	/**
+	 * Whether a missing (or non-array) `events` field may be replaced with an empty array, i.e.
+	 * whether the chart can still be streamed.
+	 *
+	 * `events` is optional in every Psych format and Song.onLoadJson() fills it in, so its absence is
+	 * ordinary -- but it used to be the reason the streaming route was refused for a one-file chart,
+	 * and a refused route means a full Json.parse of the file (for a 2 GB chart that is minutes and
+	 * tens of GB: it is what froze song select on a chart without an events field).
+	 *
+	 * The one thing a skeleton cannot rebuild is a legacy chart (<= 0.3.2) that hides its events
+	 * inside sectionNotes as negative-data notes: convert() / onLoadJson() move those into `events`,
+	 * and sectionNotes are never materialised at scan time. The scan does see every byte of them, so
+	 * it reports whether a note element was ever negative (sawNegativeNote) and only then is a full
+	 * parse still required.
+	 *
+	 * `scanningParts`: a segmented chart has no one-file fallback at all, so refusing to stream it
+	 * would not load it any other way either -- parts are scanned together and synthesising events
+	 * has always been the accepted behaviour there, so the negative-note rule does not apply.
+	 */
+	public static function maySynthesizeEvents(scan:ChartScanResult, scanningParts:Bool):Bool
+	{
+		if (scan == null) return false;
+		return scanningParts || !scan.sawNegativeNote;
+	}
+
+	/**
+	 * The section array of a scanned chart: `song.notes` for psych 1.0 charts, `notes` otherwise.
+	 * Mirrors the unwrap Song.tryLoadStreamingInner() performs on the very same object.
+	 */
+	static function sectionArray(chart:Dynamic):Array<Dynamic>
+	{
+		if (chart == null) return null;
+		var sub:Dynamic = Reflect.field(chart, 'song');
+		if (sub != null && Type.typeof(sub) == TObject)
+		{
+			var subNotes:Array<Dynamic> = fieldArray(sub, 'notes');
+			if (subNotes != null) return subNotes;
+		}
+		return fieldArray(chart, 'notes');
+	}
+
+	/** The object that owns `events` in a scanned chart (the `song` sub-object when present). */
+	static function eventsSubObject(chart:Dynamic):Dynamic
+	{
+		if (chart == null) return null;
+		var sub:Dynamic = Reflect.field(chart, 'song');
+		if (sub != null && Type.typeof(sub) == TObject) return sub;
+		return chart;
+	}
+
+	static function fieldArray(obj:Dynamic, name:String):Array<Dynamic>
+	{
+		if (obj == null) return null;
+		var value:Dynamic = Reflect.field(obj, name);
+		return Std.isOfType(value, Array) ? cast value : null;
 	}
 
 	// ── byte-level note parsing ─────────────────────────────────────────────
@@ -183,16 +346,99 @@ class ChartStream
 		return p;
 	}
 
+	/**
+	 * Byte-level JSON number parser for note fields.
+	 *
+	 * Sign, integer digits and fraction digits are collected into one integer mantissa plus a
+	 * fraction-digit count, then divided by an exact power of ten: for <= 15 significant digits
+	 * (what chart numbers are) the mantissa and 10^frac are both exactly representable, so the
+	 * single IEEE division is correctly rounded and matches Std.parseFloat() bit for bit -- without
+	 * the per-number substring String that Std.parseFloat() would allocate for every note field.
+	 *
+	 * Exponents and > 15-digit mantissas are rare in charts and fall back to Std.parseFloat().
+	 */
 	static inline function noteNumber(b:Bytes, p:Int, end:Int):{v:Float, p:Int}
 	{
 		var s:Int = p;
+		var neg:Bool = false;
+		if (p < end && b.get(p) == 45)
+		{
+			neg = true;
+			p++;
+		}
+		else if (p < end && b.get(p) == 43) p++;
+
+		var mant:Float = 0;
+		var digits:Int = 0;
 		while (p < end)
 		{
 			var c:Int = b.get(p);
-			if ((c >= 48 && c <= 57) || c == 45 || c == 43 || c == 46 || c == 101 || c == 69) p++;
+			if (c >= 48 && c <= 57)
+			{
+				mant = mant * 10 + (c - 48);
+				digits++;
+				p++;
+			}
 			else break;
 		}
-		return { v: Std.parseFloat(b.getString(s, p - s)), p: p };
+
+		var frac:Int = 0;
+		if (p < end && b.get(p) == 46)
+		{
+			p++;
+			while (p < end)
+			{
+				var c:Int = b.get(p);
+				if (c >= 48 && c <= 57)
+				{
+					mant = mant * 10 + (c - 48);
+					frac++;
+					digits++;
+					p++;
+				}
+				else break;
+			}
+		}
+
+		if (digits == 0 || digits > 15 || (p < end && (b.get(p) == 101 || b.get(p) == 69)))
+		{
+			var stop:Int = p;
+			while (stop < end)
+			{
+				var c:Int = b.get(stop);
+				if ((c >= 48 && c <= 57) || c == 45 || c == 43 || c == 46 || c == 101 || c == 69) stop++;
+				else break;
+			}
+			return { v: Std.parseFloat(b.getString(s, stop - s)), p: stop };
+		}
+
+		var v:Float = (frac > 0) ? mant / pow10(frac) : mant;
+		return { v: neg ? -v : v, p: p };
+	}
+
+	/** 10^n, exact as a double for n <= 22; anything else falls back to Math.pow. */
+	static inline function pow10(n:Int):Float
+	{
+		return switch (n)
+		{
+			case 0: 1.0;
+			case 1: 10.0;
+			case 2: 100.0;
+			case 3: 1000.0;
+			case 4: 10000.0;
+			case 5: 100000.0;
+			case 6: 1000000.0;
+			case 7: 10000000.0;
+			case 8: 100000000.0;
+			case 9: 1000000000.0;
+			case 10: 10000000000.0;
+			case 11: 100000000000.0;
+			case 12: 1000000000000.0;
+			case 13: 10000000000000.0;
+			case 14: 100000000000000.0;
+			case 15: 1000000000000000.0;
+			default: Math.pow(10, n);
+		}
 	}
 
 	static function noteString(b:Bytes, p:Int, end:Int):{s:String, p:Int}
@@ -248,7 +494,6 @@ class ChartStream
 	{
 		if (notes == null) return;
 		if (ammo <= 0) ammo = 4;
-		var typeCount:Int = (noteTypes != null) ? noteTypes.length : 0;
 		for (note in notes)
 		{
 			if (note == null) continue;
@@ -259,11 +504,9 @@ class ChartStream
 
 			if (note.length > 3 && !Std.isOfType(note[3], String) && note[3] != null)
 			{
-				var typeIdx:Int = Std.int(note[3]);
-				if (typeIdx >= 0 && typeIdx < typeCount)
-					note[3] = noteTypes[typeIdx];
-				else
-					note[3] = '';
+				// Full registry (defaults + custom_notetypes): an unknown numeric custom type must
+				// keep its name, or its type script would never load.
+				note[3] = NoteTypeRegistry.fromIndex(Std.int(note[3]));
 			}
 			else if (note.length <= 3)
 			{
@@ -274,7 +517,7 @@ class ChartStream
 
 	// ── skeleton scan ───────────────────────────────────────────────────────
 
-	static function scanObject(cur:Cursor, ranges:Array<ChartSectionRange>, allowNotes:Bool):Dynamic
+	static function scanObject(cur:Cursor, ranges:Array<ChartSectionRange>, allowNotes:Bool, part:Int):Dynamic
 	{
 		cur.expect(123); // {
 		var obj:Dynamic = {};
@@ -292,9 +535,9 @@ class ChartStream
 			cur.expect(58); // :
 			cur.skipWs();
 			if (allowNotes && key == 'notes' && cur.peek() == 91)
-				Reflect.setField(obj, key, scanNotes(cur, ranges));
+				Reflect.setField(obj, key, scanNotes(cur, ranges, part));
 			else if (cur.peek() == 123)
-				Reflect.setField(obj, key, scanObject(cur, ranges, key == 'song'));
+				Reflect.setField(obj, key, scanObject(cur, ranges, key == 'song', part));
 			else
 				Reflect.setField(obj, key, cur.captureValue());
 
@@ -306,7 +549,7 @@ class ChartStream
 		return obj;
 	}
 
-	static function scanNotes(cur:Cursor, ranges:Array<ChartSectionRange>):Array<Dynamic>
+	static function scanNotes(cur:Cursor, ranges:Array<ChartSectionRange>, part:Int):Array<Dynamic>
 	{
 		cur.expect(91); // [
 		var arr:Array<Dynamic> = [];
@@ -322,12 +565,12 @@ class ChartStream
 			if (cur.peek() == 123)
 			{
 				var sec:Dynamic = {};
-				ranges.push(scanSection(cur, sec, ranges));
+				ranges.push(scanSection(cur, sec, ranges, part));
 				arr.push(sec);
 			}
 			else
 			{
-				ranges.push({ start: 0, len: 0 });
+				ranges.push({ start: 0, len: 0, part: part });
 				arr.push(cur.captureValue());
 			}
 			cur.skipWs();
@@ -338,10 +581,10 @@ class ChartStream
 		return arr;
 	}
 
-	static function scanSection(cur:Cursor, sec:Dynamic, ranges:Array<ChartSectionRange>):ChartSectionRange
+	static function scanSection(cur:Cursor, sec:Dynamic, ranges:Array<ChartSectionRange>, part:Int):ChartSectionRange
 	{
 		cur.expect(123); // {
-		var range:ChartSectionRange = { start: 0, len: 0 };
+		var range:ChartSectionRange = { start: 0, len: 0, part: part };
 		cur.skipWs();
 		if (cur.peek() == 125)
 		{
@@ -361,14 +604,14 @@ class ChartStream
 				// full read for GB-sized sectionNotes.
 				var startPos:Float = cur.pos;
 				cur.skipValueFast();
-				range = { start: startPos, len: Std.int(cur.pos - startPos) };
+				range = { start: startPos, len: Std.int(cur.pos - startPos), part: part };
 				// The field must be an empty array, not missing: tryLoadStreaming() runs
 				// Song.convert() on this skeleton and convert() iterates sectionNotes, so a null
 				// field crashes hxcpp with an ACCESS_VIOLATION that Haxe cannot catch.
 				Reflect.setField(sec, 'sectionNotes', []);
 			}
 			else if (cur.peek() == 123)
-				Reflect.setField(sec, key, scanObject(cur, ranges, false));
+				Reflect.setField(sec, key, scanObject(cur, ranges, false, part));
 			else
 				Reflect.setField(sec, key, cur.captureValue());
 
@@ -382,25 +625,124 @@ class ChartStream
 		if (Reflect.field(sec, 'sectionNotes') == null) Reflect.setField(sec, 'sectionNotes', []);
 		return range;
 	}
+
+	// ── counters ────────────────────────────────────────────────────────────
+
+	/** 2^31 - 1: the largest value a 32 bit Int counter can hold. */
+	static inline final INT32_LIMIT:Int = 0x7FFFFFFF;
+
+	/**
+	 * Int64 -> Float, exact for every integer a Float can hold (|v| <= 2^53).
+	 *
+	 * haxe.Int64 has no toDouble, so the value is rebuilt from its two 32 bit words. The low word
+	 * must be made unsigned by hand: on cpp `low >>> 0` stays signed, so a value whose low word has
+	 * bit 31 set comes out negative (cpp: 2147483648 -> -2147483648, 3000000000 -> -1294967296).
+	 *
+	 * Use this for any counter that reaches a Dynamic boundary (chart.__seiunStream.noteCount is
+	 * compared against a Float): an Int64 left inside a Dynamic would make that comparison depend on
+	 * whether the chart came from a scan or from the skeleton cache.
+	 */
+	public static inline function i64ToFloat(v:Int64):Float
+	{
+		var low:Float = v.low;
+		if (low < 0) low += 4294967296.0;
+		return v.high * 4294967296.0 + low;
+	}
+
+	/**
+	 * Dynamic-taking wrapper around i64ToFloat() for values whose shape is only known at runtime --
+	 * a boxed Int64, a Float and an Int all reach these paths. Each shape is read as the number it is
+	 * rather than reinterpreted as another type, and nothing is truncated: an unknown shape reads as
+	 * 0, which callers already understand as "no estimate".
+	 */
+	public static function noteCountToFloat(v:Dynamic):Float
+	{
+		if (v == null) return 0;
+		if (Int64.isInt64(v)) return i64ToFloat(cast v);
+		if (Std.isOfType(v, Float)) return cast v;
+		if (Std.isOfType(v, Int)) return cast v;
+		return 0;
+	}
+
+	/**
+	 * Overflow guard for the counters: traces the update that takes one past 2^31-1, the largest
+	 * value an Int can hold, so the trace shows a counter carrying a value an Int32 could not. It
+	 * fires once per crossing and changes no behaviour. Its callers are the scan functions only --
+	 * once per chart part, never per note -- so no cost lands on the note loop.
+	 */
+	static function reportCountCrossing(label:String, previous:Int64, current:Int64):Void
+	{
+		if (previous <= INT32_LIMIT && current > INT32_LIMIT)
+			TraceManager.debug('trace.chart.countCrossing', '{} passed the 32-bit counter limit ({} -> {})',
+				[label, Int64.toStr(previous), Int64.toStr(current)]);
+	}
 }
 
 /**
- * Per-section reader: opens the file once and seeks + parses on demand.
- * The seek state is shared, so it is only safe to use sequentially on one thread.
+ * Per-section reader: keeps one chart file open and seeks + parses on demand.
+ *
+ * A chart may be split across several files (see ChartParts): `paths` lists them in the order
+ * the ranges were recorded and every range names the part it lives in. Only one file is open at
+ * a time -- sections are read in order, so the file changes at most once per part -- and the
+ * seek state is shared, so it is only safe to use sequentially on one thread.
  */
 class ChartSectionReader
 {
 	static inline final MAX_RANGE_BYTES:Int = 64 * 1024 * 1024;
 
-	var input:FileInput;
+	/** One file per chart part, indexed by ChartSectionRange.part. */
+	var paths:Array<String>;
 	var ranges:Array<ChartSectionRange>;
+	var input:FileInput;
+	/** Part whose file `input` holds; -1 while closed. */
+	var openPart:Int = -1;
 	/** Last failure reason (for the caller to trace); null on success. */
 	public var lastError:String = null;
 
-	public function new(path:String, ranges:Array<ChartSectionRange>)
+	/**
+	 * `paths` describes the whole chart: a one-file chart just passes a single-element array.
+	 * Nothing is opened here, so a part that cannot be read is reported by the first read that
+	 * needs it rather than by the constructor.
+	 */
+	public function new(paths:Array<String>, ranges:Array<ChartSectionRange>)
 	{
-		input = File.read(path, true);
+		this.paths = paths;
 		this.ranges = ranges;
+	}
+
+	/** How many sections this reader can serve (one range per section). */
+	public function sectionCount():Int
+		return (ranges == null) ? 0 : ranges.length;
+
+	/** File that holds section `index`, or null when the index is out of range. */
+	public function pathOf(index:Int):String
+	{
+		if (ranges == null || index < 0 || index >= ranges.length) return null;
+		var r:ChartSectionRange = ranges[index];
+		if (r == null || paths == null || r.part < 0 || r.part >= paths.length) return null;
+		return paths[r.part];
+	}
+
+	/** Opens the part file `part` belongs to, closing whatever was open before. */
+	function handle(part:Int):FileInput
+	{
+		if (input != null && part == openPart) return input;
+		closeInput();
+		if (paths == null || part < 0 || part >= paths.length)
+			throw new haxe.Exception('ChartStream: no file for chart part ' + part);
+		input = File.read(paths[part], true);
+		openPart = part;
+		return input;
+	}
+
+	function closeInput():Void
+	{
+		if (input != null)
+		{
+			input.close();
+			input = null;
+		}
+		openPart = -1;
 	}
 
 	/** Raw note array of section `index`; empty array when the range is missing or empty, null on read failure. */
@@ -412,9 +754,10 @@ class ChartSectionReader
 		if (r.len > MAX_RANGE_BYTES) return null;
 		try
 		{
-			input.seek(Std.int(r.start), sys.io.FileSeek.SeekBegin);
+			var source:FileInput = handle(r.part);
+			source.seek(Std.int(r.start), sys.io.FileSeek.SeekBegin);
 			var b:Bytes = Bytes.alloc(r.len);
-			input.readFullBytes(b, 0, r.len);
+			source.readFullBytes(b, 0, r.len);
 			lastError = null;
 			return cast Json.parse(b.toString());
 		}
@@ -438,9 +781,10 @@ class ChartSectionReader
 		if (r.len > MAX_RANGE_BYTES) return null;
 		try
 		{
-			input.seek(Std.int(r.start), sys.io.FileSeek.SeekBegin);
+			var source:FileInput = handle(r.part);
+			source.seek(Std.int(r.start), sys.io.FileSeek.SeekBegin);
 			var b:Bytes = Bytes.alloc(r.len);
-			input.readFullBytes(b, 0, r.len);
+			source.readFullBytes(b, 0, r.len);
 			lastError = null;
 			return ChartStream.parseSectionNotes(b, 0, r.len);
 		}
@@ -453,11 +797,7 @@ class ChartSectionReader
 
 	public function close():Void
 	{
-		if (input != null)
-		{
-			input.close();
-			input = null;
-		}
+		closeInput();
 	}
 }
 
@@ -473,6 +813,10 @@ private class Cursor
 	var bufLen:Int = 0;
 	var atEof:Bool = false;
 	var collect:BytesBuffer = null;
+	/** Note entries seen by skipValueFast(); see ChartScanResult.noteCount (Int64 for the same reason). */
+	public var noteCount:Int64 = 0;
+	/** Negative note elements seen by skipValueFast(); see ChartScanResult.sawNegativeNote. */
+	public var sawNegativeNote:Bool = false;
 	/** Bytes consumed == absolute offset of the next byte to read. */
 	public var pos:Float = 0;
 
@@ -618,7 +962,16 @@ private class Cursor
 					else if (c == 34) inStr = false;
 				}
 				else if (c == 34) inStr = true;
-				else if (c == 123 || c == 91) depth++;
+				// '-' at note-element depth. A note element is never negative in a current chart, so
+				// this is the legacy "event stored as a note" marker; only a leading sign counts, so an
+				// exponent (1e-5) is not mistaken for one.
+				else if (c == 45 && depth == 2 && numberSign(b, p - 2, chunkStart)) sawNegativeNote = true;
+				else if (c == 123 || c == 91)
+				{
+					// A '[' at depth 1 is one note entry of the sectionNotes array being skipped.
+					if (c == 91 && depth == 1) noteCount = noteCount + 1;
+					depth++;
+				}
 				else if (c == 125 || c == 93)
 				{
 					depth--;
@@ -705,6 +1058,19 @@ private class Cursor
 			if (c != StringTools.fastCodeAt(word, i))
 				throw new haxe.Exception('ChartStream: bad literal at byte ' + pos);
 		}
+	}
+
+	/**
+	 * Whether the byte at `idx` ends a value boundary, i.e. a '-' after it starts a new number
+	 * rather than continuing one ("1e-5"). `chunkStart` is the first index of the current buffer
+	 * chunk: a sign there has no readable byte before it, and counting it as a sign errs towards the
+	 * safe answer (a fallback to the full parse).
+	 */
+	static function numberSign(b:Bytes, idx:Int, chunkStart:Int):Bool
+	{
+		if (idx < chunkStart) return true;
+		var c:Int = b.get(idx);
+		return c == 91 || c == 44 || c == 32 || c == 9 || c == 10 || c == 13; // '[' ',' or whitespace
 	}
 
 	function skipNumber():Void

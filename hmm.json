@@ -42,12 +42,11 @@
       "name": "hxcpp",
       "type": "git",
       "url": "https://github.com/mohong2/hxcpp.git",
-      "ref": "main"
+      "ref": "haxe-4.3"
     },
     {
       "name": "hscript-seiun",
       "type": "git",
-      "version": "1.1.0",
       "url": "https://github.com/mohong2/hscript-seiun.git",
       "ref": "master"
     },
@@ -88,7 +87,7 @@
       "name": "discord_rpc",
       "type": "git",
       "ref": "master",
-      "url": "https://github.com/Aidan63/linc_discord-rpc"
+      "url": "https://github.com/Aidan63/linc_discord-rpc.git"
     }
   ]
 }

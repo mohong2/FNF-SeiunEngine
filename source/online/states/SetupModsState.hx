@@ -27,8 +27,21 @@ class SetupModsState extends MusicBeatState {
 	
 	var fromOptions:Bool = false;
 
+	/** UP/DOWN hold-to-repeat, shared with the on-screen pad. */
+	var nav = new NavRepeat();
+
+	/** Row under the pointer, or -1. Hover only lights it up; a click is what selects it. */
+	var hoverIndex:Int = -1;
+
     override function create() {
         super.create();
+
+		// On-screen controls: UP/DOWN pick a row, A accepts, B backs out. Mounted by every online
+		// screen; a pad tap is ignored by the row hit tests below.
+		addVirtualPad(UP_DOWN, A_B);
+		// Online pad layout: shrunk buttons tucked into the corners, clear of the UI.
+		OnlineNav.layoutColumn(virtualPad);
+		addPadCamera();
 
 		#if DISCORD_ALLOWED
 		DiscordClient.changePresence("In the Menus", "Mods URL Setup");
@@ -103,18 +116,36 @@ class SetupModsState extends MusicBeatState {
 
         if (disableInput) return;
 
+		// A tap that lands on the on-screen pad belongs to the pad, never to a row behind it.
+		var padTap = OnlineNav.padBlocks(virtualPad);
+		var pointerClick = FlxG.mouse.justPressed && !padTap;
+
+		// Hover is recomputed every frame: it only lights a row up, it never selects one.
+		var newHover = padTap ? -1 : rowUnderPointer();
+		if (newHover != hoverIndex) {
+			hoverIndex = newHover;
+			changeSelection(0);
+		}
+
 		if (!inInput) {
-			if (controls.ACCEPT || FlxG.mouse.justPressed) {
+			// A click selects the row it hit and starts editing it; ACCEPT edits the current one.
+			if (controls.ACCEPT || (pointerClick && hoverIndex >= 0)) {
+				if (pointerClick)
+					changeSelection(hoverIndex - curSelected);
 				inInput = true;
 				changeSelection(0);
 			}
-            
-			if (controls.UI_UP_P || FlxG.mouse.wheel == 1)
-				changeSelection(-1);
-			else if (controls.UI_DOWN_P || FlxG.mouse.wheel == -1)
-				changeSelection(1);
 
-			if (controls.BACK #if android || FlxG.android.justReleased.BACK #end || FlxG.mouse.justPressedRight) {
+			// Wheel (1 = up) plus the pad/keyboard, with hold-to-repeat. The pointer no longer
+			// moves the selection on its own.
+			var steps = nav.poll(controls.UI_UP, controls.UI_DOWN, elapsed) - FlxG.mouse.wheel;
+			while (steps != 0) {
+				var dir = steps > 0 ? 1 : -1;
+				changeSelection(dir);
+				steps -= dir;
+			}
+
+			if (controls.BACK #if android || FlxG.android.justReleased.BACK #end || (FlxG.mouse.justPressedRight && !padTap)) {
 				if (!FlxG.keys.pressed.SHIFT) {
 					var i = 0;
 					for (mod in swagMods) {
@@ -131,13 +162,25 @@ class SetupModsState extends MusicBeatState {
 			}
         }
 		else {
-			if (FlxG.mouse.justPressedRight) {
+			// While a link is being edited, BACK (the pad's B, ESC, or the Android back gesture)
+			// leaves the edit exactly like a right click does. It used to be ignored here, so B
+			// did nothing at all until the edit was closed with the mouse.
+			if (controls.BACK #if android || FlxG.android.justReleased.BACK #end || (FlxG.mouse.justPressedRight && !padTap)) {
 				tempDisableInput();
 				inInput = false;
 				changeSelection(0);
 			}
 		}
     }
+
+	/** Row under the pointer, or -1. The list scrolls with the camera, hence the camera-aware test. */
+	function rowUnderPointer():Int {
+		for (item in items) {
+			if (item != null && OnlineNav.pointerOver(item, camera))
+				return item.ID;
+		}
+		return -1;
+	}
 
     function changeSelection(difference:Int) {
 		curSelected += difference;
@@ -155,11 +198,12 @@ class SetupModsState extends MusicBeatState {
 
 		for (item in items) {
 			item.text = getItemName(item.ID);
-			item.alpha = inInput ? 0.5 : 0.7;
-			if (item.ID == curSelected) {
+			var selected = item.ID == curSelected;
+			// Hover lights the row up; only the selected row gets the "> <" markers.
+			item.alpha = selected ? 1 : (inInput ? 0.5 : (item.ID == hoverIndex ? 0.85 : 0.7));
+			if (selected) {
 				FlxG.camera.follow(item);
 				item.text = "> " + item.text + " <";
-				item.alpha = 1;
 			}
 
 			if (OnlineMods.checkInvalidURL(modsInput[item.ID]))

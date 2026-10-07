@@ -71,9 +71,16 @@ class PauseSubState extends MusicBeatSubstate
 	public static var songName:String = '';
 	
 
+	/** 暂停界面会打开引擎鼠标光标；退出暂停时恢复进暂停前的状态（见 destroy()）。 */
+	var __prevMouseVisible:Bool = false;
+
+	/** 关闭动画只允许启动一次：本地点击和联机的 "resumeGame" 都可能同时请求关闭。 */
+	var closing:Bool = false;
+
 	public function new(x:Float, y:Float)
 	{
 		super();
+		__prevMouseVisible = FlxG.mouse.visible;
 		FlxG.mouse.visible = true;
 		Language.load();
 
@@ -485,6 +492,14 @@ class PauseSubState extends MusicBeatSubstate
 				online.GameClient.send("requestEndSong");
 			#end
 			case "Resume", "Resume Online":
+				// A room-wide pause owned by someone else: resuming alone would put this client (and
+				// every note hit still coming in) ahead of the frozen room. The server enforces the
+				// same rule; this gate is what keeps the player from being desynced by a click.
+				if (PlayState.instance != null && !PlayState.instance.onlineResumeAllowed()) {
+					FlxG.sound.play(Paths.sound('cancelMenu'));
+					PlayState.instance.onlineResumeNotice();
+					return;
+				}
 				closeWithSlideAnimation();
 			case 'Change Difficulty':
 				if (PlayState.replayMode)
@@ -710,6 +725,10 @@ class PauseSubState extends MusicBeatSubstate
 
 	function closeWithSlideAnimation()
 	{
+		if (closing)
+			return;
+		closing = true;
+
 		cantUnpause = 0.1;
 		FlxTween.tween(slideGroup, {y: FlxG.height}, 0.4, {ease: FlxEase.quartIn, onComplete: function(_) {
 			restoreBackdrop();
@@ -729,6 +748,14 @@ class PauseSubState extends MusicBeatSubstate
 		}
 		skipTimeText = null;
 		skipTimeTracker = null;
+	}
+
+	/** Online: the room was resumed by whoever owned the pause; leave this forced pause. */
+	public function onlineResume():Void
+	{
+		if (closing)
+			return;
+		closeWithSlideAnimation();
 	}
 
 	public static function restartSong(noTrans:Bool = false)
@@ -758,6 +785,8 @@ class PauseSubState extends MusicBeatSubstate
 
 	override function destroy()
 	{
+		// 恢复进入暂停前的鼠标可见性，否则退出暂停后引擎光标会一直留在屏幕上。
+		FlxG.mouse.visible = __prevMouseVisible;
 		restoreBackdrop();
 		if (substateCam != null)
 		{

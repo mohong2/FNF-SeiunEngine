@@ -1,0 +1,120 @@
+[
+	{
+		"nameKey": "option.renderOnSongStart",
+		"defaultName": "Render on Song Start",
+		"descKey": "option.renderOnSongStart.desc",
+		"defaultDesc": "When on, recording starts automatically the moment a song starts - no hotkey.\nIt stops by itself when the song ends or you leave the song.\nOutput goes to the render_video folder next to the game.",
+		"variable": "renderOnSongStart",
+		"type": "bool",
+		"defaultValue": false,
+		"platform": "desktop"
+	},
+	{
+		"nameKey": "option.previewRender",
+		"defaultName": "Preview Render",
+		"descKey": "option.previewRender.desc",
+		"defaultDesc": "Runs everything a real render does (fixed timestep, per-frame capture)\nbut writes no file. Use it to check timing before encoding.",
+		"variable": "previewRender",
+		"type": "bool",
+		"defaultValue": false,
+		"platform": "desktop"
+	},
+	{
+		"nameKey": "option.renderFps",
+		"defaultName": "Render Framerate",
+		"descKey": "option.renderFps.desc",
+		"defaultDesc": "Frames per second the video is captured and encoded at.\nFree choice, 15 to 480.\nWhile rendering, the game is pinned to this rate and every captured frame stands\nfor exactly 1/fps of song time, so the video is always as long as the song even\nif your PC cannot hold the rate.\nSet it to a rate your PC can actually draw at for smooth footage.",
+		"variable": "renderFps",
+		"type": "int",
+		"defaultValue": 60,
+		"platform": "desktop",
+		"minValue": 15,
+		"maxValue": 480,
+		"changeValue": 1,
+		"displayFormat": "%v fps"
+	},
+	{
+		"nameKey": "option.renderAudio",
+		"defaultName": "Render Audio",
+		"descKey": "option.renderAudio.desc",
+		"defaultDesc": "Mixes the song's Inst / Voices tracks into the rendered video.\nWhen no audio file can be found (an embedded-only song, for example) the video\nwill have no sound.",
+		"variable": "renderAudio",
+		"type": "bool",
+		"defaultValue": true,
+		"platform": "desktop"
+	},
+	{
+		"nameKey": "option.renderCodec",
+		"defaultName": "Render Codec",
+		"descKey": "option.renderCodec.desc",
+		"defaultDesc": "Encoder used when rendering a video (F9 in a song).\nGPU encoders (NVENC/AMF/QSV) need a supported GPU and ffmpeg build.\nVP8/VP9 write .webm, everything else .mp4.",
+		"variable": "renderCodec",
+		"type": "string",
+		"defaultValue": "H.264 (x264)",
+		"options": [
+			"H.264 (x264)",
+			"H.264 (NVENC)",
+			"H.264 (AMF)",
+			"H.264 (QSV)",
+			"HEVC (x265)",
+			"HEVC (NVENC)",
+			"VP9 (libvpx)",
+			"VP8 (libvpx)"
+		],
+		"platform": "desktop"
+	},
+	{
+		"nameKey": "option.renderMode",
+		"defaultName": "Rate Control",
+		"descKey": "option.renderMode.desc",
+		"defaultDesc": "CRF/CQP: constant quality (use Render Quality below).\nVBR: target bitrate. CBR: fixed bitrate, predictable file size.",
+		"variable": "renderMode",
+		"type": "string",
+		"defaultValue": "CRF/CQP",
+		"options": [
+			"CRF/CQP",
+			"VBR",
+			"CBR"
+		],
+		"platform": "desktop"
+	},
+	{
+		"nameKey": "option.renderQuality",
+		"defaultName": "Render Quality",
+		"descKey": "option.renderQuality.desc",
+		"defaultDesc": "Quality for CRF/CQP. Lower = better quality and bigger file.\n18 is visually near-lossless; 0 is lossless.",
+		"variable": "renderQuality",
+		"type": "int",
+		"defaultValue": 18,
+		"minValue": 0,
+		"maxValue": 51,
+		"displayFormat": "%v",
+		"platform": "desktop"
+	},
+	{
+		"nameKey": "option.renderBitrate",
+		"defaultName": "Render Bitrate",
+		"descKey": "option.renderBitrate.desc",
+		"defaultDesc": "Target bitrate in Mbit/s, used by the VBR and CBR rate modes.\n12 is good for 1080p60; raise it for 1440p/4K.",
+		"variable": "renderBitrate",
+		"type": "int",
+		"defaultValue": 12,
+		"minValue": 1,
+		"maxValue": 200,
+		"displayFormat": "%v Mbps",
+		"platform": "desktop"
+	},
+	{
+		"nameKey": "option.renderBufferFrames",
+		"defaultName": "Render Buffer",
+		"descKey": "option.renderBufferFrames.desc",
+		"defaultDesc": "How many frames may wait for the encoder before frames are dropped.\nThis is what caps render memory (frames x width x height x 4 bytes).\nRaise it if frames drop on a slow encoder; lower it to use less RAM.",
+		"variable": "renderBufferFrames",
+		"type": "int",
+		"defaultValue": 60,
+		"minValue": 2,
+		"maxValue": 600,
+		"displayFormat": "%v frames",
+		"platform": "desktop"
+	}
+]

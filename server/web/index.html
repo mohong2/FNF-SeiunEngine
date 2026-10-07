@@ -44,6 +44,9 @@
 </div>
 
 <div id="app" class="app hidden">
+  <!-- D-R3-5: this strip replaces the login form when GET /api/console/status answers 200 without
+       a credential, i.e. the in-game LAN host's loopback read-only console. -->
+  <div id="local-ro" class="local-ro hidden">本机只读模式 Local read-only mode — 只能查看，写操作会被拒绝 (view only; write actions are refused)</div>
   <header class="topbar">
     <div class="brand" data-route="overview"><span class="logo">◎</span><b>SeiunEngine Server</b></div>
     <nav class="topnav">
@@ -57,7 +60,7 @@
     </nav>
     <div class="topright">
       <div class="search"><input id="global-search" placeholder="搜索当前列表… Search this list…"><kbd>Ctrl K</kbd></div>
-      <button id="btn-bell" class="icon-btn" title="通知">🔔<span id="bell-count" class="badge hidden">0</span></button>
+      <button id="btn-bell" class="icon-btn" title="通知">&#128276;<span id="bell-count" class="badge hidden">0</span></button>
       <div class="me" id="me-chip"><span class="avatar" id="me-avatar">?</span><span id="me-name">-</span></div>
     </div>
   </header>

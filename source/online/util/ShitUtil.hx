@@ -99,31 +99,27 @@ class ShitUtil {
 		);
 	}
 
+	/**
+	 * Wrap `string` so each line holds at most `lineLength` CODEPOINTS.
+	 *
+	 * String.length / String.charAt count UTF-8 BYTES on neko and hxcpp (the targets this engine
+	 * ships), so the old `semmiSentence.length + word.length > lineLength` treated every 3-byte CJK
+	 * character as three: a Chinese announcement wrapped at roughly a third of the requested width
+	 * while English was unaffected. The pure implementation lives in online.util.TextWrap so a
+	 * standalone probe can compile it without the engine; this keeps the API every caller uses.
+	 */
 	static function wordWrapText(string:String, lineLength:Int) {
-		var lines = [];
-		var semmiSentence = '';
-		var word = '';
-		var char = '';
-		for (i in 0...string.length) {
-			char = string.charAt(i);
+		return TextWrap.wrap(string, lineLength);
+	}
 
-			if (char == ' ' || char == '\n' || i == string.length - 1) {
-				if (char == '\n' || semmiSentence.length + word.length > lineLength) {
-					lines.push(semmiSentence);
-					semmiSentence = '';
-				}
-				if (i == string.length - 1)
-					word += char;
-				semmiSentence += (semmiSentence.length > 0 ? ' ' : '') + word;
-				word = '';
-				continue;
-			}
+	/** UTF-8 codepoint count. Never use String.length for a visible width on neko/hxcpp. */
+	static function codepointCount(string:String):Int {
+		return TextWrap.length(string);
+	}
 
-			word += char;
-		}
-		if (semmiSentence.length > 0)
-			lines.push(semmiSentence);
-		return lines.join('\n');
+	/** Codepoint-safe clamp for text about to be rendered (a byte-count substr can split a CJK char). */
+	static function truncateCodepoints(string:String, maxCodepoints:Int):String {
+		return TextWrap.truncate(string, maxCodepoints);
 	}
 
 	static function getMonthName(date:Date) {

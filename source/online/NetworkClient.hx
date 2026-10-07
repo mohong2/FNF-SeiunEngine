@@ -107,7 +107,9 @@ class NetworkClient {
 
 		room.onMessage("notification", function(message) {
 			Waiter.putPersist(() -> {
-				Alert.alert(message);
+				// Title + body: Alert.alert(message) alone made the announcement the TITLE of an empty
+				// dialog, which reads like an untitled error and loses the author/context line.
+				Alert.alert(OnlineLang.L('net.notification', 'NOTIFICATION'), message);
 			});
 		});
 

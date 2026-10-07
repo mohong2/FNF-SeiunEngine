@@ -7,6 +7,7 @@ import flixel.system.FlxAssets.FlxShader;
 import haxe.Json;
 import shaders.RGBPalette;
 import backend.CompatEngine;
+import Note.NoteSplashData;
 
 using StringTools;
 
@@ -22,7 +23,7 @@ typedef NoteSplashAnimDef = {
 
 /**
  * 溅射图集配置 —— 0.7.3 txt 与 1.0.4 json 的公共子集
- * (着色器相关字段 allowRGB/rgb 等本引擎暂不接入, 见 NoteSplash 类注释)。
+ * (allowRGB / allowPixel 已接入; 1.0.4 的 rgb 覆写表与 scale 仍未接入)。
  */
 typedef NoteSplashConfig = {
 	/** txt: 动画前缀, 如 "note splash"。 */
@@ -32,7 +33,16 @@ typedef NoteSplashConfig = {
 	/** txt: 按 animID (direction + (animNum-1)*4) 排列的偏移。 */
 	?offsets:Array<Array<Float>>,
 	/** json: 动画名 → 定义。 */
-	?anims:Map<String, NoteSplashAnimDef>
+	?anims:Map<String, NoteSplashAnimDef>,
+	/**
+	 * 1.0.4 json: 图集是否需要 RGB 染色。
+	 * false = 图集自带颜色(不要染色); true = 白底图集, 按色板染色。
+	 * 未声明 (null) 时沿用本引擎原有的路径判断 (noteSplashes/* = 白底现代材质),
+	 * 所以既有模组的观感不变。
+	 */
+	?allowRGB:Null<Bool>,
+	/** 1.0.4 json: 像素舞台是否按块取样 (false = 始终 1:1)。 */
+	?allowPixel:Null<Bool>
 }
 
 /**
@@ -55,6 +65,14 @@ typedef NoteSplashConfig = {
  *  - configs 静态缓存按谱面清理, 防止跨 mod 串配置。
  *
  * 0.6.3 模式保持原生行为 (flat noteSplashes 图集 + 无额外偏移)。
+ *
+ * noteSplashData / allowRGB:
+ *  - `note.noteSplashData` (0.7.3/1.0.4) 见 Note.hx 的 NoteSplashData; 本类读取它的
+ *    a / antialiasing / useRGBShader / useGlobalShader / r / g / b。
+ *  - json 配置里的 allowRGB 显式决定"要不要染色"(false = 图集自带颜色), 未声明时
+ *    沿用 noteSplashes/* 的路径判断; allowPixel 决定像素舞台的块取样。
+ *  - 所有默认值都跟随本引擎的设置 (splashAlpha / globalAntialiasing / noteRGBMode /
+ *    像素舞台), 所以不带这些字段的模组观感与改动前一致。
  */
 class NoteSplash extends FlxSprite
 {
@@ -83,6 +101,11 @@ class NoteSplash extends FlxSprite
 	private var _slotPrefix:Map<Int, String> = null;
 	private var _slotOffsets:Map<Int, Array<Float>> = null;
 	private var _slotFps:Map<Int, Array<Int>> = null;
+	/** 当前图集配置声明的 allowRGB / allowPixel (null = 没声明)。 */
+	private var _allowRGB:Null<Bool> = null;
+	private var _allowPixel:Null<Bool> = null;
+	/** r/g/b 覆盖用的临时色板: 只在脚本真的覆盖颜色时才创建。 */
+	private var _tintScratch:RGBPalette = null;
 
 	/** 损坏溅射的强制回收时间 (0.7.3 同款保护)。 */
 	static var buggedKillTime:Float = 0.5;
@@ -178,21 +201,22 @@ class NoteSplash extends FlxSprite
 			textureLoaded = loadAnims(texture);
 		}
 
-		// 0.7.3 兼容: 白底溅射 (noteSplashes/*) 走 RGB 色板染色, 颜色与 Note 一致;
-		// flat 图集继续用 ColorSwap (arrowHSV)。
+		// 0.7.3/1.0.4: 白底溅射 (noteSplashes/*) 走 RGB 色板染色, 颜色与 Note 一致。
+		// 1.0.4 的图集配置可以显式声明 allowRGB —— false 表示图集自带颜色、不要染色
+		// (SonicTheFunkChinese 的 noteSplashes-sonic.json 就是这种), true 表示白底图集。
+		// 配置没声明时保留本引擎原有的路径判断, 既有模组的观感不变。
+		var nsData:NoteSplashData = (noteObj != null) ? noteObj.noteSplashData : null;
 		var isModernSplash:Bool = (textureLoaded != null && textureLoaded.startsWith('noteSplashes/'));
-		if (isModernSplash)
+		var useRGBPath:Bool = isModernSplash || (_allowRGB != null);
+		// 像素舞台按块取样; 配置 allowPixel:false 时强制 1:1。
+		var pixelBlocks:Bool = PlayState.isPixelStage && (_allowPixel != false);
+
+		if (useRGBPath)
 		{
-			var tempShader:RGBPalette = null;
-			if (!ClientPrefs.noteRGBDisabled(PlayState.SONG != null && PlayState.SONG.disableNoteRGB))
-			{
-				if (noteObj != null)
-					tempShader = (noteObj.rgbShader != null) ? noteObj.rgbShader.parent : null;
-				else
-					tempShader = Note.initializeGlobalRGBShader(Std.int(Math.abs(note)));
-			}
-			rgbShader.copyValues(tempShader);
-			rgbShader.setPixelSize(PlayState.isPixelStage ? PlayState.daPixelZoom : 1);
+			// allowRGB:false 时传 null -> mult=0, 图集原样输出 (与 1.0.4 一致)。
+			var palette:RGBPalette = (_allowRGB == false) ? null : buildTintPalette(nsData, noteObj, note);
+			rgbShader.copyValues(palette);
+			rgbShader.setPixelSize(pixelBlocks ? PlayState.daPixelZoom : 1);
 			shader = rgbShader.shader;
 		}
 		else
@@ -202,6 +226,14 @@ class NoteSplash extends FlxSprite
 			colorSwap.brightness = brtColor;
 			shader = colorSwap.shader;
 		}
+
+		// 0.7.3/1.0.4: noteSplashData.a / .antialiasing 覆盖。它们的默认值就等于本引擎
+		// 的设置 (splashAlpha / globalAntialiasing), 所以脚本不写时行为完全不变。
+		alpha = ClientPrefs.data.splashAlpha;
+		if (nsData != null) alpha = nsData.a;
+		antialiasing = ClientPrefs.data.globalAntialiasing;
+		if (nsData != null) antialiasing = nsData.antialiasing;
+		// 引擎设置优先: 用户在设置里关掉抗锯齿、或当前是像素舞台时, 脚本不能强行打开。
 		if (PlayState.isPixelStage || !ClientPrefs.data.globalAntialiasing)
 			antialiasing = false;
 
@@ -259,6 +291,44 @@ class NoteSplash extends FlxSprite
 	 * 4K 下 sizeScale == posScale, 保持原版行为; 每帧 trim/尺寸不同,
 	 * 动画推进后要重新计算。
 	 */
+	/**
+	 * 决定这块溅射要不要染色、染成什么色 (null = 不染色, 图集原样输出)。
+	 * 与 0.7.3/1.0.4 同口径, 但 r/g/b 覆盖使用一块复用的临时色板, 不去改 Note 自己的
+	 * 色板 (上游 0.7.3 直接写 note.rgbShader, 会连带把 Note 本身的颜色一起改掉)。
+	 * @param data 当前 Note 的 noteSplashData (null = 没有 Note, 例如预载实例)
+	 */
+	function buildTintPalette(data:NoteSplashData, noteObj:Note, direction:Int):RGBPalette
+	{
+		if (data != null)
+		{
+			// 引擎设置/脚本关掉了染色 (useRGBShader 默认来自 noteRGBMode)
+			if (!data.useRGBShader) return null;
+		}
+		else if (ClientPrefs.noteRGBDisabled(PlayState.SONG != null && PlayState.SONG.disableNoteRGB))
+			return null;
+
+		var pal:RGBPalette = null;
+		if (data != null && !data.useGlobalShader && noteObj != null && noteObj.rgbShader != null)
+			pal = noteObj.rgbShader.parent;
+		else
+			pal = Note.initializeGlobalRGBShader(Std.int(Math.abs(direction)));
+
+		if (data != null && pal != null && (data.r != -1 || data.g != -1 || data.b != -1))
+		{
+			var scratch:RGBPalette = _tintScratch;
+			if (scratch == null) scratch = _tintScratch = new RGBPalette();
+			scratch.r = pal.r;
+			scratch.g = pal.g;
+			scratch.b = pal.b;
+			scratch.mult = pal.mult;
+			if (data.r != -1) scratch.r = data.r;
+			if (data.g != -1) scratch.g = data.g;
+			if (data.b != -1) scratch.b = data.b;
+			pal = scratch;
+		}
+		return pal;
+	}
+
 	function applyManiaOffsetCompensation():Void
 	{
 		if (_sizeScale == _posScale) return;
@@ -280,6 +350,9 @@ class NoteSplash extends FlxSprite
 	function loadAnims(skin:String):String
 	{
 		var actual:String = skin;
+		// 换图集时先清掉上一张的渲染声明, 免得图集缺失时沿用旧值。
+		_allowRGB = null;
+		_allowPixel = null;
 		frames = Paths.getSparrowAtlas(actual);
 
 		if (frames == null && CompatEngine.isModern())
@@ -351,6 +424,10 @@ class NoteSplash extends FlxSprite
 
 		var cfg:NoteSplashConfig = precacheConfig(skin);
 		if (cfg == null) return;
+
+		// 1.0.4 json 的渲染开关 (0.7.3 的 txt 没有这两个字段, 保持 null = 沿用路径判断)
+		_allowRGB = cfg.allowRGB;
+		_allowPixel = cfg.allowPixel;
 
 		var anims:Map<String, NoteSplashAnimDef> = cfg.anims;
 		if (anims != null && anims.keys().hasNext())
@@ -443,6 +520,17 @@ class NoteSplash extends FlxSprite
 		return true;
 	}
 
+	/** json 里的开关可能是 bool / "true" / 1, 统一读成 Null<Bool> (null = 没写)。 */
+	static function readBool(obj:Dynamic, field:String):Null<Bool>
+	{
+		var v:Dynamic = Reflect.field(obj, field);
+		if (v == null) return null;
+		if (Std.isOfType(v, Bool)) return cast v;
+		if (Std.isOfType(v, String)) return (cast v : String).toLowerCase() == 'true';
+		if (Std.isOfType(v, Float) || Std.isOfType(v, Int)) return (cast v : Float) != 0;
+		return null;
+	}
+
 	/**
 	 * 解析并缓存溅射配置 (txt 为 0.7.3 格式, json 为 1.0.4 格式; json 优先)。
 	 * 文件在 create 阶段就随 splash 预加载, 避免第一次击键时卡顿。
@@ -463,6 +551,8 @@ class NoteSplash extends FlxSprite
 			try { parsed = Json.parse(jsonText.replace("\uFEFF", "")); } catch (e:Dynamic) {}
 			if (parsed != null)
 			{
+				var allowRGB:Null<Bool> = readBool(parsed, 'allowRGB');
+				var allowPixel:Null<Bool> = readBool(parsed, 'allowPixel');
 				var animsField:Dynamic = Reflect.field(parsed, 'animations');
 				if (animsField != null)
 				{
@@ -498,8 +588,10 @@ class NoteSplash extends FlxSprite
 						}
 						anims.set(field, def);
 					}
-					cfg = { anims: anims };
+					cfg = { anims: anims, allowRGB: allowRGB, allowPixel: allowPixel };
 				}
+				else if (allowRGB != null || allowPixel != null)
+					cfg = { allowRGB: allowRGB, allowPixel: allowPixel };
 			}
 		}
 

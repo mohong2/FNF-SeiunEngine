@@ -15,6 +15,32 @@ import sys.io.Process;
 
 import flixel.FlxG;
 
+#if (cpp && windows)
+// showYesNoWindows() below is a raw Win32 snippet, and it used to get <windows.h>
+// for free from mohong/Windows.h. That header no longer drags windows.h into every
+// translation unit that includes it (see the comment in mohong/Windows.hx), so the
+// declarations are provided here instead - scoped to this class' own .cpp.
+@:cppFileCode('
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#undef ERROR
+#undef FALSE
+#undef TRUE
+#undef NO_ERROR
+#undef DELETE
+#undef OUT
+#undef IN
+#undef TRANSPARENT
+#undef WAIT_FAILED
+#undef COLOR_HIGHLIGHT
+')
+#end
+
 #if !(cpp && windows)
 enum abstract DialogType(Int) {
 	var Info = 0;

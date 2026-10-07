@@ -20,6 +20,12 @@ class OnlineOptionsState extends MusicBeatState {
 	var camFollow:FlxObject;
 
 	var scrollToRegister:Bool = false;
+
+	/** UP/DOWN hold-to-repeat, shared with the on-screen pad. */
+	var nav = new NavRepeat();
+
+	/** Hovered row, or null. Hover only lights the row up; it never selects it. */
+	var hoveredOption:InputOption = null;
 	
 	public function new(?scrollToRegister:Bool = false) {
 		super();
@@ -31,6 +37,13 @@ class OnlineOptionsState extends MusicBeatState {
         super.create();
 
 		camera.follow(camFollow = new FlxObject(), TOPDOWN_TIGHT, 0.1);
+
+		// On-screen controls: UP/DOWN move the selection, A accepts, B backs out. Mounted by every
+		// online screen; a pad tap is ignored by the pointer hit tests below.
+		addVirtualPad(UP_DOWN, A_B);
+		// Online pad layout: shrunk buttons tucked into the corners, clear of the UI.
+		OnlineNav.layoutColumn(virtualPad);
+		addPadCamera();
 
 		#if DISCORD_ALLOWED
 		DiscordClient.changePresence("In the Menus", "Online Options");
@@ -114,24 +127,33 @@ class OnlineOptionsState extends MusicBeatState {
 		var lastOption:InputOption;
 		var recentOption:InputOption;
 		items.add(recentOption = new InputOption(OnlineLang.L('options.sslVerify', 'Enable SSL Verification'), OnlineLang.L('options.sslVerify.desc', "If checked, the game will check for valid SSL Certifications, which can lead to safer connections with downloads or rooms.\n(But It's not recommended because of Haxe's flawed sockets implementation.)"), 
-		ClientPrefs.data.verifySSL,
-		() -> {
+		// The checkbox must show the EFFECTIVE process state. `ClientPrefs.data.verifySSL`
+		// defaults to false and is deliberately NOT applied at startup (see ClientPrefs.loadPrefs),
+		// while `sys.ssl.Socket.DEFAULT_VERIFY_CERT` defaults to true. Binding the box to the pref
+		// displayed "off" while verification was really on, so a single click - the user thinking
+		// they were turning verification back on - was silently what disabled it process-wide.
+		// Reading the live switch keeps display == reality without changing any default.
+		sys.ssl.Socket.DEFAULT_VERIFY_CERT == true));
+		recentOption.onClick = () -> {
 			recentOption.checked = !recentOption.checked;
 			ClientPrefs.data.verifySSL = recentOption.checked;
 			ClientPrefs.saveSettings();
-			sys.ssl.Socket.DEFAULT_VERIFY_CERT = ClientPrefs.data.verifySSL;
-		}));
+			// Explicit, single and reversible: unchecking turns verification off for this
+			// process only, re-checking turns it back on. Never applied at startup.
+			sys.ssl.Socket.DEFAULT_VERIFY_CERT = recentOption.checked;
+		};
 		recentOption.y = trustedOption.y + trustedOption.height + 50;
 		recentOption.screenCenter(X);
 		recentOption.ID = i++;
 		// Online score HUD form. Unchecked (default) keeps the compact one-liner; checked
 		// restores the multi-line block.
 		var scoreHudOption:InputOption;
-		items.add(scoreHudOption = new InputOption(OnlineLang.L('options.scoreDetails', 'Detailed Score HUD'), OnlineLang.L('options.scoreDetails.desc', 'If checked, online score texts show every value on its own line.\nUnchecked keeps them on one compact line.'), ClientPrefs.data.onlineScoreDetails, () -> {
+		items.add(scoreHudOption = new InputOption(OnlineLang.L('options.scoreDetails', 'Detailed Score HUD'), OnlineLang.L('options.scoreDetails.desc', 'If checked, online score texts show every value on its own line.\nUnchecked keeps them on one compact line.'), ClientPrefs.data.onlineScoreDetails));
+		scoreHudOption.onClick = () -> {
 			scoreHudOption.checked = !scoreHudOption.checked;
 			ClientPrefs.data.onlineScoreDetails = scoreHudOption.checked;
 			ClientPrefs.saveSettings();
-		}));
+		};
 		scoreHudOption.y = recentOption.y + recentOption.height + 50;
 		scoreHudOption.screenCenter(X);
 		scoreHudOption.ID = i++;
@@ -143,7 +165,8 @@ class OnlineOptionsState extends MusicBeatState {
 
 			var registerOption:InputOption;
 			items.add(registerOption = new InputOption(OnlineLang.L('options.register', 'Register to the Network'),
-			OnlineLang.L('options.register.desc', 'Join the SeiunEngine Online Network and submit your song replays\nto the leaderboards!'), [OnlineLang.L('options.placeholder.username', 'Username'), OnlineLang.L('options.placeholder.email', 'Email')], (text, input) -> {
+			OnlineLang.L('options.register.desc', 'Join the SeiunEngine Online Network and submit your song replays\nto the leaderboards!'), [OnlineLang.L('options.placeholder.username', 'Username'), OnlineLang.L('options.placeholder.email', 'Email')]));
+			registerOption.onEnter = (text, input) -> {
 				try {
 					if (input == 0) {
 						registerOption.inputs[0].hasFocus = false;
@@ -179,7 +202,7 @@ class OnlineOptionsState extends MusicBeatState {
 				catch (exc) {
 					Alert.alert(OnlineLang.L('options.registerFailed', "Couldn't register!"), ShitUtil.prettyError(exc));
 				}
-			}));
+			};
 			registerOption.y = section.y + 70;
 			registerOption.screenCenter(X);
 			registerOption.ID = i++;
@@ -213,12 +236,12 @@ class OnlineOptionsState extends MusicBeatState {
 			var recentOption:InputOption;
 			items.add(recentOption = new InputOption(OnlineLang.L('options.chatNotify', 'Network Chat Notifications'), 
 			OnlineLang.L('options.chatNotify.desc', 'If checked, all messages from the Network Chat will be notified to you.\nCan be toggled with "/notify" Network command.'), 
-			ClientPrefs.data.notifyOnChatMsg,
-			() -> {
+			ClientPrefs.data.notifyOnChatMsg));
+			recentOption.onClick = () -> {
 				recentOption.checked = !recentOption.checked;
 				ClientPrefs.data.notifyOnChatMsg = recentOption.checked;
 				ClientPrefs.saveSettings();
-			}));
+			};
 			recentOption.y = lastOption.y + lastOption.height + 50;
 			recentOption.screenCenter(X);
 			recentOption.ID = i++;
@@ -227,11 +250,12 @@ class OnlineOptionsState extends MusicBeatState {
 			var recentOption:InputOption;
 			items.add(recentOption = new InputOption(OnlineLang.L('options.mutePM', 'Mute PM Notifications'),
 				OnlineLang.L('options.mutePM.desc', 'If checked, PM notifications are muted.\nCan be toggled with "/notify pm" Network command.'),
-				ClientPrefs.data.disablePMs, () -> {
+				ClientPrefs.data.disablePMs));
+				recentOption.onClick = () -> {
 					recentOption.checked = !recentOption.checked;
 					ClientPrefs.data.disablePMs = recentOption.checked;
 					ClientPrefs.saveSettings();
-				}));
+				};
 			recentOption.y = lastOption.y + lastOption.height + 50;
 			recentOption.screenCenter(X);
 			recentOption.ID = i++;
@@ -240,11 +264,12 @@ class OnlineOptionsState extends MusicBeatState {
 			var recentOption:InputOption;
 			items.add(recentOption = new InputOption(OnlineLang.L('options.muteInvites', 'Mute Room Invites'),
 				OnlineLang.L('options.muteInvites.desc', 'If checked, room invites are muted.\nCan be toggled with "/notify roominvite" Network command.'),
-				ClientPrefs.data.disableRoomInvites, () -> {
+				ClientPrefs.data.disableRoomInvites));
+				recentOption.onClick = () -> {
 					recentOption.checked = !recentOption.checked;
 					ClientPrefs.data.disableRoomInvites = recentOption.checked;
 					ClientPrefs.saveSettings();
-				}));
+				};
 			recentOption.y = lastOption.y + lastOption.height + 50;
 			recentOption.screenCenter(X);
 			recentOption.ID = i++;
@@ -253,11 +278,12 @@ class OnlineOptionsState extends MusicBeatState {
 			var recentOption:InputOption;
 			items.add(recentOption = new InputOption(OnlineLang.L('options.friendOnline', 'Notify when Friend is Online'),
 				OnlineLang.L('options.friendOnline.desc', "If checked, you'll receive a notification when your friend goes online.\nCan be toggled with \"/notify friend\" Network command."),
-				ClientPrefs.data.friendOnlineNotification, () -> {
+				ClientPrefs.data.friendOnlineNotification));
+				recentOption.onClick = () -> {
 					recentOption.checked = !recentOption.checked;
 					ClientPrefs.data.friendOnlineNotification = recentOption.checked;
 					ClientPrefs.saveSettings();
-				}));
+				};
 			recentOption.y = lastOption.y + lastOption.height + 50;
 			recentOption.screenCenter(X);
 			recentOption.ID = i++;
@@ -345,15 +371,23 @@ class OnlineOptionsState extends MusicBeatState {
         changeSelection(0);
     }
 
-	var mouseMoveTimeout = 0.0;
-
     override function update(elapsed:Float) {
+		// A dialog on top (a confirm or a URL prompt) owns the pointer and the keys. Without this
+		// the pad's A would also run the row underneath it.
+		if (subState != null) {
+			super.update(elapsed);
+			return;
+		}
+
 		if (curOption != null) {
 			camFollow.setPosition(curOption.getMidpoint().x, curOption.getMidpoint().y);
 		}
 
-		if (mouseMoveTimeout > 0)
-			mouseMoveTimeout -= elapsed;
+		// A tap that lands on the on-screen pad belongs to the pad (UP/DOWN/A/B), never to the
+		// row drawn behind it.
+		var padTap = OnlineNav.padBlocks(virtualPad);
+		var pointerClick = FlxG.mouse.justPressed && !padTap;
+		var pointerRow = (!inputWait && !padTap) ? optionIndexUnderPointer() : -1;
 
 		if (!inputWait) {
 			if (controls.BACK #if android || FlxG.android.justReleased.BACK #end) {
@@ -364,28 +398,25 @@ class OnlineOptionsState extends MusicBeatState {
 				FlxG.sound.play(Paths.sound('cancelMenu'));
 			}
 
-			if (controls.UI_UP_P || FlxG.mouse.wheel == 1) {
-				mouseMoveTimeout = 0.6;
-				changeSelection(-1);
+			// Wheel (1 = up) and the pad/keyboard walk the list, with hold-to-repeat. The pointer
+			// no longer drags the selection along as it moves: a click is what selects a row.
+			var steps = nav.poll(controls.UI_UP, controls.UI_DOWN, elapsed) - FlxG.mouse.wheel;
+			while (steps != 0) {
+				var dir = steps > 0 ? 1 : -1;
+				changeSelection(dir);
+				steps -= dir;
 			}
-			else if (controls.UI_DOWN_P || FlxG.mouse.wheel == -1) {
-				mouseMoveTimeout = 0.6;
-				changeSelection(1);
-			}
-			else if ((mouseMoveTimeout <= 0 && (FlxG.mouse.deltaX != 0 || FlxG.mouse.deltaY != 0)) || FlxG.mouse.justPressed) {
-				if (FlxG.mouse.justPressed)
-                	curSelected = -1;
-                var i = 0;
-                 for (item in items) {
-                    if (FlxG.mouse.overlaps(item, camera)) {
-                        curSelected = i;
-                        break;
-                    }
-                    i++;
-                }
-                updateOptions();
-            }
-        }
+
+			if (pointerClick && pointerRow >= 0)
+				changeSelection(pointerRow - curSelected);
+		}
+
+		// Hover is recomputed every frame so the highlight matches what a click would hit.
+		var newHover:InputOption = pointerRow >= 0 ? items.members[pointerRow] : null;
+		if (newHover != hoveredOption) {
+			hoveredOption = newHover;
+			updateOptions();
+		}
 
 		super.update(elapsed);
 
@@ -393,7 +424,7 @@ class OnlineOptionsState extends MusicBeatState {
 		// `mouseOverlapping()`: that uses FlxText's own height, and an empty input is only 4px
 		// (FlxText.VERTICAL_GUTTER), so the middle of the visible field never hits. With one input
 		// focused the `!inputWait` block is skipped, so switching boxes relied on this broken test.
-		if (FlxG.mouse.justPressed && curOption != null && curOption.isInput) {
+		if (pointerClick && curOption != null && curOption.isInput) {
 			var targetIndex:Int = -1;
 			for (i => input in curOption.inputs)
 				if (mouseOverInputBg(curOption.inputBgs[i]))
@@ -403,9 +434,9 @@ class OnlineOptionsState extends MusicBeatState {
 		}
 
 		if (!inputWait) {
-			if ((controls.ACCEPT || FlxG.mouse.justPressed) && curOption != null) {
+			if ((controls.ACCEPT || pointerClick) && curOption != null) {
 				if (curOption.isInput) {
-					if (!FlxG.mouse.justPressed)
+					if (!pointerClick)
 						setInputFocus(curOption, 0);
 				}
 				else if (curOption.onClick != null) {
@@ -508,6 +539,20 @@ class OnlineOptionsState extends MusicBeatState {
 		return hit;
 	}
 
+    /**
+	 * Index of the row under the pointer, or -1. Uses the row group's own world box, so it stays
+	 * correct while the camera follows the selection.
+	 */
+    function optionIndexUnderPointer():Int {
+		var index = 0;
+		for (item in items) {
+			if (item != null && OnlineNav.pointerOver(item, camera))
+				return index;
+			index++;
+		}
+		return -1;
+	}
+
     function changeSelection(diffe:Int) {
 		curSelected += diffe;
 
@@ -527,15 +572,16 @@ class OnlineOptionsState extends MusicBeatState {
         else
             curOption = items.members[curSelected];
 
-        for (item in items) {
+		for (item in items) {
+			// Only the selected row gets the border and full opacity; the hovered row is brightened
+			// just enough to show what a click would hit.
 			item.borderline.visible = item == curOption;
-			item.alpha = inputWait ? 0.5 : 0.6;
+			item.alpha = inputWait ? 0.5 : (item == curOption ? 1 : (item == hoveredOption ? 0.9 : 0.6));
 			if (item.isInput)
 				for (input in item.inputs)
 					input.alpha = 0.5;
-        }
-        if (curOption != null) {
-			curOption.alpha = 1;
+		}
+		if (curOption != null) {
 			if (curOption.isInput)
 				for (input in curOption.inputs)
 					input.alpha = inputWait ? 1 : 0.7;
@@ -682,6 +728,55 @@ class InputOption extends FlxSpriteGroup {
 		borderline.visible = false;
 		add(borderline);
     }
+
+	/**
+	 * Re-measures the row content and re-fits the background box plus the selection border to it,
+	 * then returns the new row height.
+	 *
+	 * The constructor sizes box and borderline from the height the row happens to have when it is
+	 * built, so a description assigned later (status text, LAN address, room code, probe result)
+	 * grows past a box that stays one line tall and out of a border that no longer encloses it.
+	 * Callers that rewrite descText after construction can call this and re-stack their rows from
+	 * the returned height. Purely additive: existing rows are untouched unless a caller asks.
+	 */
+	public function refreshLayout():Float {
+		// Measure in row-local space: FlxSpriteGroup.preAdd() pushed the group offset into every
+		// child, so the group y has to come back out of each member y.
+		var base:Float = y;
+		var contentBottom:Float = 0;
+
+		if (text != null)
+			contentBottom = Math.max(contentBottom, text.y - base + text.height);
+		if (descText != null)
+			// FlxText.get_height() runs regenGraphic() first, so this is the height of the text
+			// assigned last, not the height the constructor measured.
+			contentBottom = Math.max(contentBottom, descText.y - base + descText.height);
+		if (checkbox != null)
+			contentBottom = Math.max(contentBottom, checkbox.y - base + checkbox.height);
+		if (check != null)
+			contentBottom = Math.max(contentBottom, check.y - base + check.height);
+		for (inputBg in inputBgs)
+			if (inputBg != null)
+				contentBottom = Math.max(contentBottom, inputBg.y - base + inputBg.height);
+		for (inputField in inputs)
+			if (inputField != null)
+				contentBottom = Math.max(contentBottom, inputField.y - base + inputField.height);
+
+		// The constructor used Std.int(height) + 20 with box.y = -10, i.e. 10 px of padding above
+		// the content and 20 px below it; keep that so an unchanged row keeps its size.
+		box.scale.set(box.scale.x, Math.max(1, contentBottom + 30));
+		box.updateHitbox();
+
+		if (borderline != null && Std.int(borderline.height) != Std.int(box.height)) {
+			borderline.makeGraphic(Std.int(box.width), Std.int(box.height), FlxColor.TRANSPARENT);
+			FlxSpriteUtil.drawRect(borderline, 0, 0, borderline.width, borderline.height, FlxColor.TRANSPARENT,
+				{thickness: 6, color: 0x34FFFFFF});
+		}
+
+		// The box is the tallest member, so the group height equals the box height now; callers
+		// stack rows the same way the constructor does (row.y + row.height + gap).
+		return height;
+	}
 
 	//var targetScale:Float = 1;
 	override function update(elapsed) {

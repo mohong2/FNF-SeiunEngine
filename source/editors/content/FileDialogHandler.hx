@@ -68,8 +68,23 @@ class FileDialogHandler extends FlxBasic
 
     public function save(?fileName:String = '', ?dataToSave:String = '', ?onComplete:Void->Void, ?onCancel:Void->Void, ?onError:Void->Void)
     {
+        // 上一次对话框操作尚未结束时，这里曾经直接 throw——调用方（saveChart 等）
+        // 都跑在 lime 主循环里，没有 try/catch 能接住它，结果就是整进程崩溃。
+        // 改为按“出错”走完回调流程：复位状态、记日志、触发 onError。
         if(!completed)
-            throw new Exception('You must finish previous operation before starting a new one.');
+        {
+            // 上一次对话框操作尚未结束时，这里曾经直接 throw——调用方（saveChart 等）
+            // 都跑在 lime 主循环里，没有 try/catch 能接住它，结果就是整进程崩溃。
+            // 改为就地消化：复位 completed 解除卡死，并回调本次请求的 onError
+            // （形参在此处遮蔽同名字段）告知“请求被拒”，绝不向主循环抛异常。
+            TraceManager.error('trace.editor.fileDialogBusy', 'New dialog requested while a previous one is still pending.');
+            completed = true;
+            var cb:Void->Void = onError;
+            _startUp(null, null, null);
+            completed = true;
+            if(cb != null) cb();
+            return;
+        }
 
         this._dialogMode = SAVE;
         _startUp(onComplete, onCancel, onError);
@@ -128,8 +143,23 @@ class FileDialogHandler extends FlxBasic
 
     public function open(?defaultName:String = null, ?title:String = null, ?filter:Array<FileFilter> = null, ?onComplete:Void->Void, ?onCancel:Void->Void, ?onError:Void->Void)
     {
+        // 上一次对话框操作尚未结束时，这里曾经直接 throw——调用方（saveChart 等）
+        // 都跑在 lime 主循环里，没有 try/catch 能接住它，结果就是整进程崩溃。
+        // 改为按“出错”走完回调流程：复位状态、记日志、触发 onError。
         if(!completed)
-            throw new Exception('You must finish previous operation before starting a new one.');
+        {
+            // 上一次对话框操作尚未结束时，这里曾经直接 throw——调用方（saveChart 等）
+            // 都跑在 lime 主循环里，没有 try/catch 能接住它，结果就是整进程崩溃。
+            // 改为就地消化：复位 completed 解除卡死，并回调本次请求的 onError
+            // （形参在此处遮蔽同名字段）告知“请求被拒”，绝不向主循环抛异常。
+            TraceManager.error('trace.editor.fileDialogBusy', 'New dialog requested while a previous one is still pending.');
+            completed = true;
+            var cb:Void->Void = onError;
+            _startUp(null, null, null);
+            completed = true;
+            if(cb != null) cb();
+            return;
+        }
 
         this._dialogMode = OPEN;
         _startUp(onComplete, onCancel, onError);
@@ -271,8 +301,23 @@ class FileDialogHandler extends FlxBasic
 
     public function openDirectory(?title:String = null, ?onComplete:Void->Void, ?onCancel:Void->Void, ?onError:Void->Void)
     {
+        // 上一次对话框操作尚未结束时，这里曾经直接 throw——调用方（saveChart 等）
+        // 都跑在 lime 主循环里，没有 try/catch 能接住它，结果就是整进程崩溃。
+        // 改为按“出错”走完回调流程：复位状态、记日志、触发 onError。
         if(!completed)
-            throw new Exception('You must finish previous operation before starting a new one.');
+        {
+            // 上一次对话框操作尚未结束时，这里曾经直接 throw——调用方（saveChart 等）
+            // 都跑在 lime 主循环里，没有 try/catch 能接住它，结果就是整进程崩溃。
+            // 改为就地消化：复位 completed 解除卡死，并回调本次请求的 onError
+            // （形参在此处遮蔽同名字段）告知“请求被拒”，绝不向主循环抛异常。
+            TraceManager.error('trace.editor.fileDialogBusy', 'New dialog requested while a previous one is still pending.');
+            completed = true;
+            var cb:Void->Void = onError;
+            _startUp(null, null, null);
+            completed = true;
+            if(cb != null) cb();
+            return;
+        }
 
         this._dialogMode = OPEN_DIRECTORY;
         _startUp(onComplete, onCancel, onError);
@@ -422,7 +467,20 @@ class FileDialogHandler extends FlxBasic
         @:privateAccess
         this.path = _fileRef.__path;
         #if sys
-        this.data = File.getContent(this.path);
+        // 读取失败的异常会从 lime 的事件分发里穿出去直接崩溃进程（没有上层
+        // try/catch），所以在这里就地捕获并转成 onError 回调。
+        try
+        {
+            this.data = File.getContent(this.path);
+        }
+        catch(e:Dynamic)
+        {
+            this.completed = true;
+            TraceManager.error('trace.editor.fileLoadError', 'Failed to read file from {}: {}', [path, Std.string(e)]);
+            removeEvents();
+            if(onError != null) onError();
+            return;
+        }
         #end
         this.completed = true;
         TraceManager.info('trace.editor.fileLoaded', 'Loaded file from: {}', [path]);

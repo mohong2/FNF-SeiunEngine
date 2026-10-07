@@ -12,6 +12,7 @@ import sys.io.FileSeek;
 #end
 
 /**
+ * 哦，不不不，我错了还不行吗？
  * NativeCrash - C++-level crash hooks (implementation in native_crash.inc).
  *
  * Haxe's try/catch and UncaughtErrorEvent only see Haxe exceptions; driver
@@ -202,6 +203,9 @@ class NativeCrash
 	 */
 	public static function loadLinemap(storageDir:String, libName:String = 'libApplicationMain'):Void
 	{
+		#if !hxcpp_symbols
+		return;
+		#else
 		#if (cpp && sys)
 		if (linemapBytes != null) return; // already loaded
 		var abi:String = getCpuAbi();
@@ -216,7 +220,7 @@ class NativeCrash
 			{
 				var bytes:Bytes = File.getBytes(diskPath);
 				applyLinemap(bytes, libName);
-				TraceManager.info('trace.crash.linemapDisk', 'Crash linemap loaded from disk ({0} KB).', [Std.int(bytes.length / 1024)]);
+				TraceManager.info('trace.crash.linemapDisk', 'Crash linemap loaded from disk ({} KB).', [Std.int(bytes.length / 1024)]);
 				return;
 			}
 		}
@@ -231,10 +235,11 @@ class NativeCrash
 			{
 				var bytes:Bytes = Assets.getBytes(assetPath);
 				applyLinemap(bytes, libName);
-				TraceManager.info('trace.crash.linemapAsset', 'Crash linemap loaded from embedded assets ({0} KB).', [Std.int(bytes.length / 1024)]);
+				TraceManager.info('trace.crash.linemapAsset', 'Crash linemap loaded from embedded assets ({} KB).', [Std.int(bytes.length / 1024)]);
 			}
 		}
 		catch (e:Dynamic) {}
+		#end
 		#end
 	}
 

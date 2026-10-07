@@ -76,6 +76,9 @@ class Song
 
 	static public var isNewVersion:Bool = false;
 
+	/** Identity of a cached chart skeleton: the chart bytes are covered by the source signature. */
+	static inline final SKELETON_CACHE_CONFIG:String = 'chartstream-scan-v1';
+
 	private static function onLoadJson(songJson:Dynamic) // Convert old charts to newest format
 	{
 		if (songJson.mania == null)
@@ -237,6 +240,68 @@ class Song
 	}
 	#end
 
+	#if sys
+	/**
+	 * Part files of a segmented chart, or null for an ordinary one-file chart (ChartParts).
+	 *
+	 * `chartFile` is the one-file chart that resolved, when one did: its directory is
+	 * authoritative, so parts are only looked for next to it. ChartParts.detect() itself refuses
+	 * to auto-detect while `<song>.json` exists, which is what keeps the numeric difficulties of
+	 * a normal song from being merged into one chart.
+	 *
+	 * When no chart file exists at all -- the shape every segmented chart has -- the engine's
+	 * normal lookup order is walked instead, because there is no file to derive the directory
+	 * from.
+	 *
+	 * Parts are named after the SONG folder, not after the difficulty-suffixed chart key: Freeplay
+	 * asks for "miragist-0" inside "miragist", and the parts are miragist-0.json .. miragist-28.json.
+	 */
+	static function resolveChartParts(formattedFolder:String, formattedSong:String, chartFile:String):Array<String>
+	{
+		// The player decides how much to trust the layout (Options > Advanced, see ChartParts.MODE_*).
+		// MODE_OFF short-circuits to the stock one-chart-per-file behavior before anything is probed,
+		// so a player who wants the old per-difficulty layout pays nothing for this feature.
+		// A choice made at song select (the multi-file hotkey in Freeplay) wins over the saved option.
+		var mode:String = ChartParts.effectiveSongMode(formattedFolder, ClientPrefs.segmentedChartMode());
+		if (ChartParts.normalizeMode(mode) == ChartParts.MODE_OFF) return null;
+
+		// formattedFolder is the song and formattedSong is the requested chart key ("miragist" vs
+		// "miragist-0"); ChartParts.resolveForChart() tries both, song first.
+		if (chartFile != null)
+			return ChartParts.resolveForChart(dirOf(chartFile), formattedFolder, formattedSong, mode);
+
+		for (dir in splitChartDirs(formattedFolder))
+		{
+			var parts:Array<String> = ChartParts.resolveForChart(dir, formattedFolder, formattedSong, mode);
+			if (parts != null && parts.length > 0) return parts;
+		}
+		return null;
+	}
+
+	/** Directories a chart could live in, in the order Paths resolves them, for the file-less case above. */
+	static function splitChartDirs(formattedFolder:String):Array<String>
+	{
+		var dirs:Array<String> = [];
+		#if MODS_ALLOWED
+		if (Paths.currentModDirectory != null && Paths.currentModDirectory.length > 0)
+			dirs.push(Paths.mods(Paths.currentModDirectory + '/data/' + formattedFolder));
+		dirs.push(Paths.mods('data/' + formattedFolder));
+		#end
+		dirs.push(Paths.getPreloadPath('data/' + formattedFolder));
+		return dirs;
+	}
+
+	/** Directory part of a path, separator included; null when `path` is null. */
+	static function dirOf(path:String):String
+	{
+		if (path == null) return null;
+		var cut:Int = path.lastIndexOf('/');
+		var backslash:Int = path.lastIndexOf('\\');
+		if (backslash > cut) cut = backslash;
+		return cut < 0 ? '' : path.substr(0, cut + 1);
+	}
+	#end
+
 	/**
 	 * Byte-streaming load for large charts (ChartStream).
 	 *
@@ -246,6 +311,9 @@ class Song
 	 *   - convertTo is psych_v1;
 	 *   - the events array is readable from the top level;
 	 *   - not CNE format.
+	 *
+	 * A segmented chart (several part files, no `<song>.json`) is loaded through the same route
+	 * whatever the part sizes are, because merging it needs the byte ranges only a scan produces.
 	 *
 	 * The returned SwagSong has empty notes[].sectionNotes: the real notes are read per section
 	 * in PlayState.generateSong from the byte ranges recorded in __seiunStream, then dropped.
@@ -274,40 +342,77 @@ class Song
 	static function tryLoadStreamingInner(jsonInput:String, ?folder:String, convertTo:String):SwagSong
 	{
 		#if sys
+		// Scan/convert timers: generateSong's trace only starts once PlayState builds the note list,
+		// so everything before it (scan + convert + events) is measured here.
+		var __tSong0:Float = haxe.Timer.stamp();
+		var __tScan:Float = __tSong0;
+		var __tConvert:Float = __tSong0;
 		if (jsonInput == 'events') return null;
 		if (convertTo != null && convertTo.length > 0 && convertTo != 'psych_v1') return null;
 
 		var formattedFolder:String = Paths.formatToSongPath(folder);
 		var formattedSong:String = Paths.formatToSongPath(jsonInput);
-		var path:String = null;
 
+		// One-file chart, if the song has one. Kept separate from the size test below because a
+		// segmented chart has no such file at all and this is what tells the two apart.
+		var chartFile:String = null;
 
 		#if MODS_ALLOWED
 		var moddyFile:String = Paths.modsJson(formattedFolder + '/' + formattedSong);
-		if (FileSystem.exists(moddyFile) && ChartStream.isLargeChart(moddyFile))
-			path = moddyFile;
+		if (FileSystem.exists(moddyFile))
+			chartFile = moddyFile;
 		#end
 
-
-		if (path == null)
+		if (chartFile == null)
 		{
 			var plainFile:String = Paths.json(formattedFolder + '/' + formattedSong);
-			if (FileSystem.exists(plainFile) && ChartStream.isLargeChart(plainFile))
-				path = plainFile;
+			if (FileSystem.exists(plainFile))
+				chartFile = plainFile;
 		}
-		if (path == null) return null;
 
+		var path:String = (chartFile != null && ChartStream.isLargeChart(chartFile)) ? chartFile : null;
 
-		var scan:ChartStream.ChartScanResult = null;
-		try
-		{
-			scan = ChartStream.scan(path);
-		}
-		catch (e:Dynamic)
-		{
+		// ── Segmented chart ──
+		// A chart whose sections live in several files (see ChartParts) is ONE chart, not one
+		// chart per file: the whole set is scanned into a single skeleton and PlayState reads
+		// every section from the part that owns it. This is also the only route for such a song,
+		// since it has no <song>.json for the resolution above to find.
+		var parts:Array<String> = resolveChartParts(formattedFolder, formattedSong, chartFile);
+		var scanningParts:Bool = (parts != null && parts.length > 0);
+		if (scanningParts)
+			path = parts[0];
+		else if (path == null)
 			return null;
+		else
+			parts = [path];
+
+
+		// Skeleton cache (ChartCache): a scan reads every byte of the chart, so an unchanged chart
+		// reuses its skeleton, section ranges and note count instead of scanning again. Only the
+		// scanned value is stored, so everything below runs exactly as it does after a fresh scan.
+		var cacheEnabled:Bool = ClientPrefs.data.chartCache;
+		var scanFromCache:Bool = false;
+		var scan:ChartStream.ChartScanResult = null;
+		if (cacheEnabled)
+		{
+			scan = cast ChartCache.loadSkeleton(parts, SKELETON_CACHE_CONFIG);
+			scanFromCache = (scan != null);
 		}
-		if (scan == null || scan.chart == null) return null;
+		if (scan == null)
+		{
+			try
+			{
+				scan = scanningParts ? ChartStream.scanParts(parts) : ChartStream.scan(path);
+			}
+			catch (e:Dynamic)
+			{
+				return null;
+			}
+			if (scan == null || scan.chart == null) return null;
+			if (cacheEnabled) ChartCache.saveSkeleton(parts, SKELETON_CACHE_CONFIG, scan);
+		}
+		if (scan.chart == null) return null;
+		__tScan = haxe.Timer.stamp();
 
 
 		var chart:Dynamic = scan.chart;
@@ -328,7 +433,22 @@ class Song
 
 
 		var ev:Dynamic = Reflect.field(chart, 'events');
-		if (ev == null || !Std.isOfType(ev, Array)) return null;
+		if (ev == null || !Std.isOfType(ev, Array))
+		{
+			// An absent events field is normal data, not a reason to give up on streaming -- onLoadJson()
+			// fills it in anyway. Refusing here sent a multi-GB chart through the full Json.parse below,
+			// which is what froze song select on charts that simply omit the field.
+			// ChartStream.maySynthesizeEvents() names the one case that still needs the materialised
+			// chart: a legacy chart whose events are negative-data notes inside sectionNotes.
+			if (!ChartStream.maySynthesizeEvents(scan, scanningParts))
+			{
+				trace('Chart ' + jsonInput + ': has negative note data (legacy events) and no events array;'
+					+ ' not streaming, falling back to a full parse');
+				return null;
+			}
+			ev = [];
+			Reflect.setField(chart, 'events', ev);
+		}
 
 
 		// Format normalisation: run the same convert() on the skeleton. Its sectionNotes are
@@ -353,6 +473,9 @@ class Song
 		}
 
 
+		if (scanningParts)
+			trace('Segmented chart: ' + parts.length + ' part file(s) -> ' + scan.ranges.length + ' sections');
+
 		if (jsonInput != 'events') StageData.loadDirectory(chart);
 		onLoadJson(chart);
 
@@ -374,10 +497,24 @@ class Song
 
 		Reflect.setField(chart, '__seiunStream', {
 			path: path,
+			paths: parts,
 			ranges: scan.ranges,
+			// Note entries counted while scanning; PlayState uses it as its materialisation budget.
+			// noteCount crosses a Dynamic boundary and is read back through Reflect, so it is stored
+			// as a Float: an Int64 field would come back as a boxed cpp.Int64. scan.noteCount is a
+			// real Int64 on both paths (a fresh scan and a skeleton-cache hit, see
+			// ChartStream.loadSkeleton), and i64ToFloat converts it exactly up to 2^53.
+			noteCount: ChartStream.i64ToFloat(scan.noteCount),
 			ammo: ammo,
 			rewrite: needRewrite
 		});
+		__tConvert = haxe.Timer.stamp();
+		trace('Chart load phases (Song): scan=' + Std.int((__tScan - __tSong0) * 1000) + 'ms'
+			+ ' convert+events=' + Std.int((__tConvert - __tScan) * 1000) + 'ms'
+			+ ' total=' + Std.int((__tConvert - __tSong0) * 1000) + 'ms'
+			+ ' parts=' + ((parts != null) ? parts.length : 1)
+			+ ' sections=' + scan.ranges.length + ' notes=' + haxe.Int64.toStr(scan.noteCount)
+			+ ' cache=' + (scanFromCache ? 'hit' : (cacheEnabled ? 'miss' : 'off')));
 		return cast chart;
 		#else
 		return null;
@@ -526,9 +663,11 @@ class Song
 						songJson.format = 'psych_v1_convert';
 						convert(songJson);
 						isNewVersion = true; // data has been converted
-				}
+					}
 			}
 		}
+
+		normalizeNoteTypes(songJson);
 
 		if (songJson.mania == null)
 			songJson.mania = Note.defaultMania;
@@ -543,6 +682,52 @@ class Song
 		}
 
 		return songJson;
+	}
+
+	/**
+	 * Canonicalises numeric noteType fields to their registered type names, in place.
+	 *
+	 * Runs on every full parse (parseJSON), regardless of convertTo, so the "after load,
+	 * note[3] is a string" invariant holds for every consumer: the runtime type-script lookup
+	 * (custom_notetypes/<name>.lua|.hx), the editors' type dropdowns, and re-saves of the chart.
+	 * Numeric custom types (index >= defaultNoteTypes.length) resolve against the
+	 * custom_notetypes registry instead of being erased to ''.
+	 *
+	 * Legacy event notes (note[1] < 0, where note[3] is an event argument) are skipped, same
+	 * rule convert() uses. Idempotent: string types pass through untouched.
+	 */
+	public static function normalizeNoteTypes(songJson:Dynamic):Void
+	{
+		if (songJson == null) return;
+		var notes:Dynamic = Reflect.field(songJson, 'notes');
+		if (notes == null || !Std.isOfType(notes, Array)) return;
+		for (section in (cast notes : Array<Dynamic>))
+		{
+			if (section == null) continue;
+			var secNotes:Dynamic = Reflect.field(section, 'sectionNotes');
+			if (secNotes == null || !Std.isOfType(secNotes, Array)) continue;
+			for (note in (cast secNotes : Array<Dynamic>))
+			{
+				if (note == null || !Std.isOfType(note, Array)) continue;
+				var arr:Array<Dynamic> = cast note;
+				if (arr.length < 4 || arr[3] == null || Std.isOfType(arr[3], String)) continue;
+				if (Std.int(arr[1]) < 0) continue; // legacy event data
+				arr[3] = NoteTypeRegistry.fromIndex(Std.int(arr[3]));
+			}
+		}
+	}
+
+	/**
+	 * Strips engine-internal runtime fields (__seiunToken / __seiunStream) from a song object,
+	 * in place. Editors call this before serialising, so no internal bookkeeping ever leaks into
+	 * a saved chart file: PE 0.6.3/0.7.3/1.0.4 would ignore unknown fields, but the token is
+	 * per-load state and must not travel with the file.
+	 */
+	public static function stripRuntimeFields(songObj:Dynamic):Void
+	{
+		if (songObj == null) return;
+		for (field in ['__seiunToken', '__seiunStream'])
+			if (Reflect.hasField(songObj, field)) Reflect.deleteField(songObj, field);
 	}
 
 	public static function castVersion(songJson:SwagSong):SwagSong // Convert psych_v1 format to old format
@@ -632,14 +817,12 @@ class Song
 				var gottaHitNote:Bool = (rawData < ammo) ? section.mustHitSection : !section.mustHitSection;
 				note[1] = (rawData % ammo) + (gottaHitNote ? 0 : ammo);
 
-				// Old format (0.1 - 0.3.2) numeric noteType converted to a string
+				// Old format (0.1 - 0.3.2) numeric noteType converted to a string.
+				// Uses the full registry (defaults + custom_notetypes scripts): erasing an
+				// unknown numeric custom type to '' would stop its type script from ever loading.
 				if(note.length > 3 && !Std.isOfType(note[3], String) && note[3] != null)
 				{
-					var typeIdx:Int = Std.int(note[3]);
-					if(typeIdx >= 0 && typeIdx < Note.defaultNoteTypes.length)
-						note[3] = Note.defaultNoteTypes[typeIdx];
-					else
-						note[3] = '';
+					note[3] = NoteTypeRegistry.fromIndex(Std.int(note[3]));
 				}
 				else if(note.length <= 3)
 				{

@@ -1,18 +1,22 @@
 #!/bin/bash
-# One-time WSL toolchain setup: Haxe 4.2.5 + Neko 2.3.0 (official tarballs in ~)
-# Run after extracting haxe_20220306074705_e5eec31 and neko-2.3.0-linux64 in your home dir:
+# One-time WSL toolchain setup: Haxe 4.3.7 (minimum 4.3.0) + Neko 2.3.0 (official tarballs in ~)
+# Run after extracting the haxe linux64 tarball (haxe_<timestamp>_<hash>) and neko-2.3.0-linux64
+# in your home dir:
 #   wsl cp /mnt/o/.../setup/wsl-toolchain-setup.sh ~/wsl-toolchain-setup.sh
 #   wsl bash ~/wsl-toolchain-setup.sh
 set -e
 cd "$HOME"
 
-if [ -d haxe_20220306074705_e5eec31 ]; then
+# The haxe tarball directory name changes with every release (haxe_20220306074705_e5eec31 was
+# the 4.2.5 one), so accept any haxe_* directory instead of pinning a single release.
+for d in haxe_*; do
+	[ -d "$d" ] || continue
 	if [ ! -e haxe ]; then
-		mv haxe_20220306074705_e5eec31 haxe
+		mv "$d" haxe
 	else
-		rm -rf haxe_20220306074705_e5eec31
+		rm -rf "$d"
 	fi
-fi
+done
 if [ -d neko-2.3.0-linux64 ]; then
 	if [ ! -e neko ]; then
 		mv neko-2.3.0-linux64 neko

@@ -1,12 +1,14 @@
 # SeiunEngine Online Server
 
-A Colyseus-compatible game server written in **Haxe** and compiled to **neko**. It serves
-SeiunEngine's online mode: rooms, song selection, per-player state sync, scoring and the session
-lifecycle (reconnect, ping, IP lock).
+A Colyseus-compatible game server written in **Haxe** and compiled either to **neko** (default) or
+to a standalone native **hxcpp** executable. It serves SeiunEngine's online mode: rooms, song
+selection, per-player state sync, scoring and the session lifecycle (reconnect, ping, IP lock).
 
 It has no Node.js / TypeScript / `colyseus-server` dependency. HTTP, WebSocket, the Colyseus frame
-format and schema PATCH encoding are all implemented in this repository; the only requirements are
-**Haxe 4.2.5 + neko**.
+format and schema PATCH encoding are all implemented in this repository; persistence is **SQLite**,
+reached through Haxe's `sys.db.Sqlite` (neko ships `sqlite.ndll`, hxcpp links its bundled
+sqlite). The requirements are **Haxe 4.3.7** (4.3.0 minimum), **neko** and, for the native target,
+**hxcpp + a C++ toolchain**.
 
 Ports: HTTP **2567** (matchmaking + REST), WebSocket **2568** (room connections).
 
@@ -16,6 +18,11 @@ Ports: HTTP **2567** (matchmaking + REST), WebSocket **2568** (room connections)
 # 1) Build. The script locates the repository root itself.
 #    Output: server/bin/server.n and server/bin/server.exe
 powershell -NoProfile -File server/build.ps1
+
+#    Native hxcpp target:  powershell -NoProfile -File server/build.ps1 -Target cpp
+#                          -> server/bin/SeiunServer.exe (standalone, no neko needed)
+#    Both targets:         powershell -NoProfile -File server/build.ps1 -Target both
+#    Types only:           powershell -NoProfile -File server/build.ps1 -TypeCheck
 
 # 2) Run. Default is foreground: live logs, Ctrl+C stops.
 powershell -NoProfile -File server/start.ps1
@@ -30,15 +37,19 @@ powershell -NoProfile -File server/start.ps1 -Stop
 
 ### Build output
 
-* `server/bin/server.n` - the main artifact.
+* `server/bin/server.n` - the neko artifact (default target).
 * `server/bin/server.exe` - optional launcher produced by `build.ps1` via `nekotools boot`, wrapping
   the `.n` inside a `neko.exe` shell. It can be started by double-click or with `start.ps1 -Exe`,
   but it is **not self-contained**: the machine still needs the Haxe/neko toolchain (in particular
-  `neko` on `PATH`), otherwise it exits immediately. A genuinely standalone native executable
-  requires the Haxe -> C++ target instead. Skip the exe with `server/build.ps1 -NoBoot`.
+  `neko` on `PATH`), otherwise it exits immediately. Skip it with `server/build.ps1 -NoBoot`.
+* `server/bin/SeiunServer.exe` - **standalone native executable** built by the hxcpp target
+  (`server/server-cpp.hxml`, `build.ps1 -Target cpp`). It needs no Haxe/neko runtime on the target
+  machine, only the OS. The hxcpp build compiles the C++ runtime the first time, so expect a few
+  minutes for the first build and seconds afterwards; run only one hxcpp/lime build per machine at a
+  time. Intermediate C++ lives in `server/bin/cpp/` (gitignored).
 
 Artifacts, pid and logs all live under `server/`: `server/bin/server.n`, `server/bin/server.exe`,
-`server/logs/p5_server.pid`, `server/logs/p5_server.out.log`, `server/logs/p5_server.err.log`.
+`server/logs/p5_server.pid`, `server/logs/p5_server.out.log`, `server/logs/p5_server.err.log`, and
 `server/bin`, `server/logs` and `server/data` are gitignored.
 
 ### Manual equivalents
@@ -49,7 +60,23 @@ haxe server/server.hxml                                          # -> server/bin
 & 'C:\HaxeToolkit\neko\nekotools.exe' boot server/bin/server.n   # optional -> server/bin/server.exe
 server\bin\server.exe                                            # run the exe (foreground; Ctrl+C stops)
 & 'C:\HaxeToolkit\neko\neko.exe' server/bin/server.n             # run the .n (foreground; Ctrl+C stops)
+
+haxe server/server-cpp.hxml                                      # -> server/bin/SeiunServer.exe
+server\bin\SeiunServer.exe                                       # native run (foreground; Ctrl+C stops)
+haxe server/server.hxml --no-output; haxe server/server-cpp.hxml --no-output   # typecheck only
 ```
+
+### build.ps1 parameters
+
+| Parameter | Meaning |
+|---|---|
+| _(none)_ | neko target: `server/server.hxml` -> `server/bin/server.n` (+ `server.exe`). |
+| `-Target neko\|cpp\|both` | Which target(s) to build. Default `neko`, so existing invocations are unchanged. |
+| `-TypeCheck` | `--no-output` type check of the selected target(s); nothing is written. |
+| `-NoBoot` | neko only: skip `nekotools boot` (no `server.exe`). |
+
+For `-Target cpp` the script reports the produced `server/bin/SeiunServer.exe` and its size; a
+missing C++ toolchain makes haxe fail, and the script prints the raw exit code.
 
 ### start.ps1 parameters
 
@@ -60,7 +87,7 @@ server\bin\server.exe                                            # run the exe (
 | `-HttpPort <n>` / `-WsPort <n>` | Override the default ports. |
 | `-NoBuild` | Skip compilation and run the existing `server.n` (or `server.exe` with `-Exe`). |
 | `-Exe` | Run `server/bin/server.exe` instead of `neko server/bin/server.n`; flags, ports, logs and pid are identical. Prints a hint to run `build.ps1` if the exe is missing. |
-| `-Background` | `Start-Process` with pid file and separate `out.log` / `err.log`; suitable for scripts and the DSH harness. |
+| `-Background` | `Start-Process` with pid file and separate `out.log` / `err.log`; suitable for scripts and CI. |
 | `-AdminEmail <email>` | Forwarded as `--admin-email`: that account becomes a console administrator. |
 | `-DataDir <dir>` | Forwarded as `--data-dir`: replace the runtime data directory. |
 | `-Status` | Print `pid=... http=... ws=... onlinecount=...`. |
@@ -82,55 +109,117 @@ neko raise a raw bind error or overwriting a log that is still being written.
 | `--ip-lock-limit <n>` | `4` | Session cap per IP. |
 | `--disable-reconnect-guard` | off | Disable the reconnect-storm guard (more than 12 attaches from one session within 5 s is rejected and the session is removed). |
 | `--reconnect-limit <n>` | `12` | Attach cap for the storm guard (fixed 5 s window). |
-| `--data-dir <dir>` | `server/data` | Local JSON store directory (accounts, leaderboard, comments, ...). |
+| `--data-dir <dir>` | `server/data` | Data directory: holds `seiun.sqlite3`, `config.toml`, `images/` and `mail.log`. |
 | `--admin-email <email>` | none | The account with this e-mail automatically gets `["*"]` access (`/api/admin/*`, `/api/console/*`). |
-| `--fixture-dir <dir>` | none | Only needed to run the protocol probe with deterministic state bytes. |
+| `--console-local-readonly` | off | Serve `GET /api/console/*` to **loopback peers only** without a credential (the embedded LAN host uses this; it has no admin account). Writes and non-loopback peers still go through the normal four-step `requireAccess` check. |
+| `--fixture-dir <dir>` | none | Dump every outbound frame's hex here (wire-format regression fixtures). |
 | `--smtp-host <host>` | none | SMTP host. Mail is only sent when this and `--smtp-mail` are both set; otherwise verification codes are appended to `<data-dir>/mail.log`. |
-| `--smtp-port <n>` | `25` | SMTP port. Only implicit TLS (465) is usable; 587 STARTTLS is not available in the Haxe 4.2.5 standard library. |
+| `--smtp-port <n>` | `25` | SMTP port. Only implicit TLS (465) is usable; 587 STARTTLS is not available in the Haxe standard library. |
 | `--smtp-user <user>` | none | SMTP user (may be empty for anonymous relay). |
 | `--smtp-pass <pass>` | none | SMTP password. |
 | `--smtp-mail <from>` | none | Envelope sender. Required together with `--smtp-host`. |
 | `--auth-ttl-minutes <n>` | `[auth]` then `43200` | Credential lifetime in minutes. `0` means never expires. When given on the command line the value is also pinned (`ttl_locked`). |
 | `--ng-app-id <id>` | none | Newgrounds gateway app id. Without it `/api/account/link/newgrounds` returns 400. |
 | `--discord-webhook <url>` | none | Outbound mirror for network-room chat. Without it the mirror is a no-op. |
+| `--log-dir <dir>` | `server/logs` | Directory for the structured JSON Lines log (`server-YYYYMMDD.jsonl`). |
+| `--log-level <level>` | `info` | `debug` \| `info` \| `warn` \| `error`; filters the structured log only. |
+| `--import-legacy-json` | off | Re-run the JSON -> SQLite import from scratch (see "Legacy JSON import"). Refuses to run when the database holds data this importer did not create. |
 
 ## Directory layout
 
 ```
 server/
 +-- README.md            this file
-+-- server.hxml          canonical compilation entry (-cp server/src + source + source/_online_libs)
-+-- build.ps1            one-shot build (-TypeCheck for types only; -NoBoot to skip the exe)
++-- server.hxml          canonical neko compilation entry (-cp server/src + source + source/_online_libs)
++-- server-cpp.hxml      hxcpp compilation entry -> server/bin/SeiunServer.exe
++-- build.ps1            one-shot build (-Target neko|cpp|both; -TypeCheck; -NoBoot)
 +-- start.ps1            run (foreground by default; -Exe runs the booted exe) / health check / stop
 +-- start.cmd            double-click launcher
 +-- bin/                 build output (gitignored)
-+-- logs/                pid + logs (gitignored)
-+-- data/                runtime data (gitignored)
++-- logs/                pid + logs + structured server-YYYYMMDD.jsonl (gitignored)
++-- data/                runtime data: seiun.sqlite3 + config.toml + images/ + mail.log (gitignored)
 +-- web/                 web console front end (index.html, style.css, app.js)
 +-- src/online_server/   server sources
++-- src/online_server/db/  storage layer: Sqlite.hx, Db.hx, Migrations.hx, *Repo.hx, LegacyImport.hx
 ```
 
 The compilation closure is this directory plus `source/online/backend/schema/**` (the Colyseus
 schema classes shared with the client) and `source/_online_libs/**` (`io.colyseus.*`,
 `org.msgpack.*`). The client build does not compile the server: `-main online_server.Main` appears
-only in `server/server.hxml` and in the probe's `server.hxml`.
+only in `server/server.hxml` and `server/server-cpp.hxml`.
 
-## Runtime data (`--data-dir`, default `server/data`)
+## Storage (`--data-dir`, default `server/data`)
 
-All persistence is local JSON/plain files; no database is required.
+Accounts, leaderboard, clubs, mods, admin data and the public counters live in **SQLite**
+(`sys.db.Sqlite`, available on both neko and hxcpp). There is no whole-document JSON rewrite
+anymore: each mutation is a single-row `UPDATE`/`INSERT`/`DELETE` inside one transaction, and the
+connection runs with `journal_mode=WAL`, `busy_timeout=5000` and `synchronous=NORMAL`.
 
 | Path | Purpose |
 |---|---|
-| `config.toml` | Console-managed runtime configuration (see below). |
-| `accounts.json` | Accounts: id, name, e-mail, token, points, average accuracy, role, profile colours, country, club, notifications. |
-| `leaderboard.json` | Scores, replays, song comments and reports. |
-| `public.json` | Front-page messages, the next weekly-reset timestamp and day-player samples. |
-| `admin.json` | Moderator warnings and the moderator action log. |
-| `clubs.json` | Clubs: members, pending join requests, leaders, points and base64 banner images. |
-| `mods.json` | Mod repository entries and their download items. |
-| `images/` | One file per avatar / background, kept out of the fully rewritten account JSON. |
+| `seiun.sqlite3` (+ `-wal`, `-shm`) | The database. Schema version is tracked with SQLite's `user_version` (`db/Migrations.hx`); `/api/health` reports it. |
+| `config.toml` | Console-managed runtime configuration (see below). Still TOML, not SQLite. |
+| `images/` | One binary file per avatar / background (`ImageStore`), unchanged by the migration. |
 | `mail.log` | Outbox for verification codes and outbound mail, appended to on every send attempt. |
+| `*.json.imported-<epoch-ms>` | Legacy JSON files, kept after import (see below). Never deleted. |
 | `backups/` | Config snapshots (`config-<epoch-ms>.toml`) written before each save. |
+
+### Tables
+
+`meta` (key/value: schema-independent settings, counters, the credential HMAC key, the import
+marker), `accounts`, `sessions`, `scores`, `comments`, `reports`, `clubs`, `mods`, `warns`,
+`admin_logs`, `front_messages`, `day_players`, `public_state`.
+
+Scalars are typed columns so SQLite can index, order and compare them (`idx_accounts_email`,
+`idx_scores_player`, `idx_clubs_tag`, ...). List-valued fields that are never queried
+element-wise -- `access`, `notifications`, `friends`, `friend_requests`, `ips`, club
+`members`/`pending`/`leaders`, mod `keywords`/`images`/`favorited`/`downloads` -- are stored as
+JSON arrays in TEXT columns, which keeps the exact legacy shape without a join per read.
+
+### Credentials and sessions
+
+* A credential is a **session**: login/register/refresh inserts a row into `sessions` and deletes
+  the account's previous rows, so the old token stops working immediately. `accounts.current_session_id`
+  points at the active one and gives the account projection its `tokenIssuedAt` / `tokenExpiresAt` /
+  `tokenTtlMinutes` values.
+* Only `HMAC-SHA256(installation key, token)` and an 8-character lookup prefix are stored. The
+  plaintext token exists in memory only for the response that issued it.
+* Comparison is constant-time (`Crypto.equals`). The installation key lives in `meta`
+  (`auth.secret`), generated on first start.
+* Verification codes are hashed with the same key; the plaintext copy only ever goes to
+  `mail.log` / SMTP, which is the delivery channel.
+* Honest boundary: the key sits in the same database, so this protects against a leaked row or a
+  log dump, not against an attacker who already has the whole file. It is a self-hosted,
+  single-process server, and the trade-off is stated rather than implied.
+
+### Randomness
+
+Tokens and ids come from `Crypto` (`server/src/online_server/Crypto.hx`). It prefers
+`/dev/urandom`; where that device does not exist (Windows) Haxe offers no OS CSPRNG binding for
+neko/cpp, so it falls back to an **HMAC-SHA256 DRBG** seeded from a mixed entropy pool
+(high-resolution clock, process/thread data, working directory, environment, a monotonic counter
+and earlier output). That fallback is not a hardware CSPRNG and `/api/health` reports it as
+`entropy: "hmac-sha256-drbg"` (versus `"os-urandom"`).
+
+### Legacy JSON import
+
+On first start, when every legacy table is still empty and at least one of `accounts.json`,
+`leaderboard.json`, `admin.json`, `clubs.json`, `mods.json`, `public.json` exists in the data
+directory, the server imports it automatically:
+
+1. everything runs in one transaction; a failure rolls back, aborts startup and leaves the JSON
+   files untouched (no silent data loss);
+2. `seq` counters are taken from the legacy documents (`accounts.seq`, `leaderboard.seq`,
+   `admin.seq`, `clubs.seq`), so newly generated `uN`/`sN`/`cN`/`wN`/`rN` ids cannot collide;
+3. plaintext account tokens are hashed and stored as each account's first session, so existing
+   logins keep working after the migration;
+4. after COMMIT each source file is renamed to `<name>.imported-<epoch-ms>` -- user data is never
+   deleted;
+5. a summary (per-file byte sizes, row counts, timestamps) is written to `meta.legacy.source`.
+
+`--import-legacy-json` re-runs the import from scratch: it clears the rows a previous import
+created and imports again. If the database holds data this importer did not create, it refuses to
+run and tells the operator to move the database aside first.
 
 ## Configuration file (`<data-dir>/config.toml`)
 
@@ -179,13 +268,14 @@ banned = [  ]
 |---|---|
 | Matchmaking | `/matchmake/create`, `/matchmake/joinOrCreate`, `/matchmake/joinById`, `/matchmake/reconnect/<roomId>` |
 | Rooms | `/rooms/room` (room list with full metadata), `/api/onlinecount`, `/api/config` |
+| Health | `GET /api/health` -- read-only: `status`, `uptime`, `rooms`, `version`, `dbSchemaVersion`, `dbPath` (plus `publicRooms`, `online`, `protocol`, `engine`, `dbJournalMode`, `dbCounts`, `entropy`, `logPath`). Added endpoint; no existing response shape changed. |
 | Auth | `/api/auth/register`, `/api/auth/login`, `/api/auth/refresh`, `/api/auth/cookie`, `/api/auth/logout` |
 | Account | `/api/account/me`, `/rename`, `/email/set`, `/delete`, `/friends`, `/notifications`, `/info`, `/profile/set`, `/resetsecret`, `/club`, `/avatar`, `/background`, `/removeimages`, `/link/newgrounds`, `/unlink/newgrounds` |
 | Clubs | `/api/club/details`, `/pending`, `/create`, `/join`, `/accept`, `/reject`, `/kick`, `/promote`, `/demote`, `/leave`, `/edit`, `/banner` |
 | Users | `/api/user/info`, `/friends/request`, `/friends/remove`, `/details`, `/scores` |
 | Mods | `/api/mod/dl/submit`, `/dl/edit`, `/dl/delete`, `/fav`, `/submit`, `/edit`, `/delete` |
 | Search | `/api/search/mods`, `/songs`, `/users` |
-| Public data | `/api/sezdetal`, `/api/online`, `/api/nextweekreset`, `/api/front`, `/api/sez`, `/api/song/comment`, `/api/song/comments` |
+| Public data | `/api/sezdetal`, `/api/online`, `/api/nextweekreset`, `/api/front` (also returns the current `announcement`), `/api/sez`, `/api/song/comment`, `/api/song/comments` |
 | Scores / tops | `/api/score/submit`, `/report`, `/replay`, `/delete`, `/set/modurl`, `/api/top/song`, `/api/top/players`, `/api/top/clubs` |
 | Stats | `/api/stats/day_players`, `/api/stats/country_players` |
 | Admin | `/api/admin/*` (songs, users, clubs, players, reports, logs, cooldown, weekly reset); requires `["*"]` |
@@ -196,6 +286,42 @@ reservation (body `{reconnectionToken}`). Sessions that were kicked, left volunt
 get 400. `/api/config` is a read-only snapshot of the effective constants: `maxClients`,
 `ipLock`, `maxSessionsPerIp`, `reconnectWindow`, `pingInterval`, `reconnectGuard`,
 `reconnectLimit`, `reconnectStormWindow`, `networkRoomId`, `networkProtocol` and `auth`.
+`GET /api/health` is the operational counterpart: it needs no authentication, never writes, and
+reports the database file, schema version, journal mode, per-table row counts and which entropy
+source the process is using.
+
+### Announcements
+
+`POST /api/console/announce` (console, needs write access) stores the text as
+`[server] announcement = "..."` in `<data-dir>/config.toml`, pushes it to every acked connection of
+the network room as a `notification` frame (the response reports how many received it as `sent`), and
+the stored value is also returned by `GET /api/front` as `announcement`, so a player who was not
+connected when it was published still sees the current announcement in the online menu. Unset -> `""`.
+The push and the stored value are independent: a restart does not re-broadcast.
+
+Announcement and message caps count UTF-8 **codepoints**, never bytes: a CJK or emoji payload can no
+longer be cut mid-character (which used to write invalid UTF-8 into `config.toml`, broadcast a broken
+frame and make `/api/console/status` fail until the config was re-saved). A value damaged by an older
+build is repaired when the config is loaded, and a failed `config.toml` write now returns an error
+instead of a false `200`.
+
+### Text encoding guarantee
+
+Every user-supplied text field (account name/bio/email, club name and content, mod title/description,
+song comments, warn reasons, notifications, front messages) is normalised **when it is written** and
+repaired again **when it is read**, so a row damaged by an older build (or written directly into
+SQLite by an external tool) is still served as valid UTF-8. The validation is strict: overlong
+encodings (`C0 80`, `E0 80 80`, `F0 80 80 80`), UTF-8-encoded surrogates (`ED A0 .. ED BF`), code
+points above U+10FFFF, orphan/truncated continuations and NUL are all rejected, while a CESU-8
+surrogate pair (what some JSON encoders emit for an emoji) is folded back into the real codepoint.
+Both JSON funnels (`Api.json`, `ConsoleApi.json`) pass every response through the same repair, so no
+endpoint can return a body that is not valid UTF-8.
+
+On the hxcpp build (`SeiunServer.exe`) `haxe.Json.stringify` renders astral characters as U+FFFD, so
+the JSON encoder there substitutes a JSON surrogate-pair escape and the real emoji comes back to the
+client. Note that hxcpp may decode a **raw** (non-escaped) invalid request body leniently before the
+server code sees it; JSON-escaped client bodies, which is what real clients send, are handled exactly,
+and the on-disk / echoed-body guarantee holds either way.
 
 ## Room protocol
 
@@ -209,6 +335,11 @@ to a generic forward.
 * Room switches: `togglePrivate`, `toggleNetworkOnly`, `anarchyMode`, `togglePlayersCanChoose`,
   `toggleGF`, `toggleSkins`, `swapSides`, `teamMode`, `royalMode`, `royalModeDadSide`
 * Win condition: `nextWinCondition` (cycles 0..4; host or `anarchyMode`)
+* Pause policy: `nextPauseMode` (cycles 0..2; host or `anarchyMode`) + `pauseGame` / `resumeGame`.
+  `Room.pauseMode`: 0 = host only (pausing freezes everyone else too), 1 = anyone (default),
+  2 = legacy local pauses. The server arbitrates: it echoes `pauseGame` to everyone including the
+  sender (so two simultaneous requests settle), only the pause owner (or the host in mode 0) may
+  `resumeGame`, and the pause is released automatically when its owner leaves or a round resets.
 * Chat / skins / targeting: `chat` (broadcasts `log`), `command` (`/roll`, `/help`, `/kick`),
   `notifyInstall`, `setSkin`, `updateNoteSkinData`, `custom`, `customTo`
 
@@ -250,7 +381,7 @@ and never swept, and it does not appear in `/rooms/room`. Identity comes from th
 
 Two deliberate design decisions: `removePlayer` does **not** restart the game itself, because
 starting a round is driven by the client's `startGame` message; and the business `ping` broadcast
-only targets game rooms, so protocol-probe rooms are left alone.
+only targets game rooms, so rooms opened by a client that sends no engine handshake are left alone.
 
 ## Web console
 
@@ -283,12 +414,36 @@ http://<host>:2567/console
   detects BOM / NUL bytes and returns the detected `encoding` field, so both read correctly.
 * **Front end**: `server/web/{index.html,style.css,app.js}` - plain HTML/CSS/JS, no CDN, no external
   fonts, no npm. Editing it only needs a page refresh; the server does not have to be rebuilt.
+* **Built in as well**: the same three files are compiled into the server
+  (`server/src/online_server/ConsoleWebAssets.hx`, generated by `server/tools/gen_console_assets.ps1`), so
+  `/console` works even when no `server/web/` directory exists. That is what makes the in-client LAN
+  host's *Open Local Web Console* button work, because a game export never ships that directory. A disk
+  copy still wins, so live editing is unchanged - just re-run the generator after editing the page. Each
+  asset is emitted as 4000-character chunks joined with `+` (runtime concatenation): MSVC refuses a single
+  string literal above ~16 KB with `C2026`, which is exactly what broke the first version of this feature.
+* **Local read-only mode**: with `localConsoleReadOnly` (the embedded host sets it) or
+  `--console-local-readonly`, a `GET` from a loopback peer (`127.0.0.0/8`, `::1`, `::ffff:127.0.0.1`)
+  needs no credential and receives a synthetic `local-console` account, so the page skips its login form
+  and shows a local-read-only banner. Every write and every non-loopback peer still goes through
+  `requireAccess` and gets 401, and `/api/admin/*` is never affected.
 * **Startup helpers**: `start.ps1 -AdminEmail <email>` makes that account the console administrator;
   `start.ps1 -DataDir <dir>` switches the runtime data directory (`config.toml`, `mail.log`,
   `accounts.json` and the rest move with it). Example:
   `powershell -NoProfile -File server/start.ps1 -AdminEmail me@example.com`.
 
 ## LAN play
+
+The same server code can also run **inside the game client** (the online menu's `LAN HOST` row):
+the client build puts `server/src` on its classpath inside the `ONLINE_ALLOWED` section of
+`project.xml`, calls `online_server.ServerBoot.start()` in its own process and serves on
+`0.0.0.0:2567/2568`, auto-creating a room and showing a room code that carries the host LAN IP.
+It is account-free, writes its data to `<applicationStorageDirectory>/lanhost/`, applies panel
+settings through that directory's `config.toml` (same parser as here), never exposes an admin
+account (its `/console` is loopback-only and read-only, see the web console section), and supports Host -> Stop -> Host again in one process. An offline
+build (`-D SEIUN_NO_ONLINE`) does not put `server/src` on the classpath at all. See
+`docs/multiplayer-protocol.md` section 8.1 for the protocol-level description.
+
+For a dedicated machine, use the standalone server as before:
 
 ```powershell
 powershell -NoProfile -File server/start.ps1 -Lan          # bind 0.0.0.0
@@ -317,50 +472,21 @@ ipconfig | Select-String 'IPv4'                            # find this machine's
    `E@colyseus/schema 2.0.35`, so edit it carefully. `SchemaEncoder.hx` is a hand-written PATCH
    encoder - new fields or indices must be kept in sync with it.
 3. **Add an HTTP endpoint**: `Api.handle` (and `Main.handleHttp` for server-level routes).
-4. **Coordinate protocol semantics changes before implementing them.**
-5. **Two concurrency pitfalls in room lifecycle code**:
+   `GET /api/health` is the read-only example to copy.
+4. **Add storage**: put the DDL in a new `Migrations.stepN` (never edit a shipped step -- bump
+   `SCHEMA_VERSION`), add the statements to a `db/*Repo.hx`, and expose them through the matching
+   `*Store` facade. Only `Db.lock` / `Db.lockTx` may be used, a callback must never re-enter
+   `Db.lock`, and a result row must be projected into a fresh struct before it leaves the lock.
+   Never concatenate a value or an identifier: use `Sqlite.text/int/real/bool/jsonText` and code
+   constants.
+5. **Coordinate protocol semantics changes before implementing them.**
+6. **Two concurrency pitfalls in room lifecycle code**:
    * the `ws.close()` callback can re-enter `disconnect` - make it idempotent with
      `ClientConn.closed`;
    * when a reconnect replaces an old connection, the old `onclose` can wrongly mark the session as
      disconnected, so `SessionRecord.conn` must be bound to the current connection, and the new
      connection must be bound *before* the old one is displaced.
-6. **IP lock counts reservations per session.** Adjust it with `--ip-lock-limit` /
+7. **IP lock counts reservations per session.** Adjust it with `--ip-lock-limit` /
    `--disable-ip-lock`; automated tests should clean up temporary sessions (for example with
    `leave(true)`) so they do not block later connections.
 
-## Probes
-
-The online probe toolchain lives outside this repository, in the engine-sibling directory
-`../FNF-SeiunEngine-online-tools/online_probe/` (not tracked by git). It must be invoked from the
-engine root, because the `.hxml` files resolve relative paths from the current directory.
-`../FNF-SeiunEngine-online-tools/online_probe/server.hxml` is the equivalent compilation entry for
-probes and CI.
-
-Rebuild a probe with `haxe ../FNF-SeiunEngine-online-tools/online_probe/<name>.hxml` (from the
-engine root); its output lands in `export/online_probe/<name>.n`. The server artifact is
-`server/bin/server.n`.
-
-| Probe | Expected | Notes |
-|---|---|---|
-| `probe.n` | 17/17 | Protocol level. |
-| `biz_probe.n` | 73/73 | Business level; the IP lock must stay enabled. |
-| `net_probe.n` | 23/23 | Network room. |
-| `http_probe.n` | 464/464 | Needs the server started with `--admin-email admin@probe.local` for the console assertions, and the same `--data-dir` as the probe. |
-| `persist_probe.n` | 130/130 | Client side; no server required. Compiles `source/online/**` and exercises the local JSON files. |
-| `layout_probe.n` | 100/100 | Client side; no server required. Pins the coordinate clamping of the field-row submit buttons. |
-
-## Verifying inside a DSH session
-
-Verification is usually run through the DSH `pwsh` tool, which cleans up child processes when a call
-ends. A server started by `server/start.ps1` therefore does not survive that call (a `-Status` in
-the same call can still read `onlinecount=0`; the next call gets `Failed to connect`). To keep a
-server alive across calls, start it as a managed background job:
-
-```powershell
-cmd /c "C:\HaxeToolkit\neko\neko.exe server\bin\server.n > server\logs\p5_server.out.log 2>&1"
-# run as a background job; probes can connect across calls
-# server/start.ps1 -Background has the same child-cleanup limitation
-```
-
-Running `server/start.ps1` in your own terminal is unaffected: the process stays alive until
-`-Stop`.

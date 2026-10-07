@@ -15,6 +15,9 @@ import openfl.display.BlendMode;
 import shaders.RGBPalette;
 import shaders.RGBPalette.RGBShaderReference;
 import mohong.ObjectPool;
+#if sys
+import sys.FileSystem;
+#end
 
 using StringTools;
 
@@ -25,8 +28,87 @@ typedef EventNote = {
     value2:String
 }
 
+/**
+ * noteSplashData 的宿主。
+ * noteSplashTexture / noteSplashDisabled 是本引擎 0.6.3 时代就有的扁平字段，引擎内部
+ * （出谱、溅射生成、编辑器试玩）直接读写它们；noteSplashData 只是代理这两个字段，
+ * 保证两边永远是同一个值，不会出现两份状态。
+ */
+interface NoteSplashOwner
+{
+    public var noteSplashTexture:String;
+    public var noteSplashDisabled:Bool;
+}
 
-@:structInit class PreloadedChartNote {
+/**
+ * Psych 0.7.3 / 1.0.4 的 `note.noteSplashData`（Lua 可直接读写）。
+ *
+ * 上游是 anon typedef；本引擎做成持有宿主引用的对象：texture / disabled 代理宿主既有
+ * 字段，其余 7 个 0.7.3/1.0.4 专属字段存在本对象里。
+ *
+ * 默认值一律跟随"本引擎的设置"，所以脚本一个字段都不写时渲染结果与改动前一致：
+ *  - a            ← ClientPrefs.data.splashAlpha
+ *  - antialiasing ← ClientPrefs.data.globalAntialiasing && !像素舞台
+ *  - useRGBShader ← ClientPrefs.noteRGBDisabled(SONG.disableNoteRGB) 取反
+ *                   （即设置里的 noteRGBMode: Chart 跟随谱面 / On 强制开 / Off 强制关）
+ *  - r/g/b        = -1（不覆盖，沿用轨道色板）
+ */
+class NoteSplashData
+{
+    public var owner(default, null):NoteSplashOwner;
+
+    public var a:Float = 1;
+    public var antialiasing:Bool = true;
+    public var useRGBShader:Bool = true;
+    public var useGlobalShader:Bool = false;
+    /** -1 = 不覆盖，沿用轨道色板。 */
+    public var r:Int = -1;
+    public var g:Int = -1;
+    public var b:Int = -1;
+
+    public function new(owner:NoteSplashOwner)
+    {
+        this.owner = owner;
+        reset();
+    }
+
+    /** 新 Note / 池化复用 / DTO 首次创建时，恢复"跟随引擎设置"的默认值。 */
+    public function reset():Void
+    {
+        a = ClientPrefs.data.splashAlpha;
+        antialiasing = ClientPrefs.data.globalAntialiasing && !PlayState.isPixelStage;
+        useRGBShader = !ClientPrefs.noteRGBDisabled(PlayState.SONG != null && PlayState.SONG.disableNoteRGB);
+        useGlobalShader = false;
+        r = -1;
+        g = -1;
+        b = -1;
+    }
+
+    /** 0.6.3 命名，代理宿主字段（两边同一个值）。 */
+    public var texture(get, set):String;
+    inline function get_texture():String return owner.noteSplashTexture;
+    inline function set_texture(v:String):String return owner.noteSplashTexture = v;
+
+    public var disabled(get, set):Bool;
+    inline function get_disabled():Bool return owner.noteSplashDisabled;
+    inline function set_disabled(v:Bool):Bool return owner.noteSplashDisabled = v;
+
+    /** DTO → Note：把脚本写在 unspawnNotes 上的值搬到真正出谱的 Note 上。 */
+    public function copyFrom(src:NoteSplashData):Void
+    {
+        if (src == null) return;
+        a = src.a;
+        antialiasing = src.antialiasing;
+        useRGBShader = src.useRGBShader;
+        useGlobalShader = src.useGlobalShader;
+        r = src.r;
+        g = src.g;
+        b = src.b;
+    }
+}
+
+
+@:structInit class PreloadedChartNote implements NoteSplashOwner {
     public var strumTime:Float = 0;
     public var sustainLength:Float = 0;
     public var parentST:Float = 0;
@@ -54,6 +136,22 @@ typedef EventNote = {
     /** 0.6.3 自定义 Note 兼容: 溅射皮肤/颜色在 PreloadedChartNote 上也可由 Lua 设置。
      * 注意：只有 Lua 显式写过才覆盖（null 表示未设置），避免把普通 Note 的轨道色溅射覆盖成全零。 */
     public var noteSplashTexture:String = null;
+
+    /**
+     * 0.7.3 / 1.0.4 Lua: setPropertyFromGroup('unspawnNotes', i, 'noteSplashData.a', 0.8)。
+     * 懒创建: 谱面可达千万级 Note，脚本没碰过时不留对象；引擎内部用 splashDataOrNull
+     * 判断"脚本写过没有"，不会因为读取而分配。
+     */
+    var _splashData:NoteSplashData = null;
+    public var noteSplashData(get, never):NoteSplashData;
+    inline function get_noteSplashData():NoteSplashData
+    {
+        if (_splashData == null) _splashData = new NoteSplashData(this);
+        return _splashData;
+    }
+    /** 引擎内部用: null = 脚本没写过。 */
+    public var splashDataOrNull(get, never):NoteSplashData;
+    inline function get_splashDataOrNull():NoteSplashData return _splashData;
 
     // ── Int ──
     public var noteData:Int = 0;
@@ -90,7 +188,105 @@ final defaultNoteTypes:Array<String> = [
 	'No Animation'
 ];
 
-class Note extends FlxSprite {
+// ── Note type 注册表 (数字下标 -> 类型名) ──────────────────────────────
+// 旧格式谱面 (0.1-0.3.2) 与个别外部工具把 note[3] 存成数字下标。下标 0-5 走
+// defaultNoteTypes；≥6 的下标沿用旧版 ChartingState 编辑器的编号规则：custom_notetypes/
+// 里按目录扫描顺序接在默认表之后（编辑器的 noteTypeIntMap 正是这张表）。
+// 运行时解析必须用同一张表：数字自定义类型一旦被抹成 ''，PlayState 就再也找不到
+// 对应的 custom_notetypes/<类型名> 脚本，模组的自定义 Note 功能整体失效。
+class NoteTypeRegistry
+{
+	static var customTypesCache:Array<String> = null;
+
+	/** 编辑器重新扫描后调用，强制下次读取重建缓存。 */
+	public static function refresh():Void
+	{
+		customTypesCache = null;
+	}
+
+	/**
+	 * custom_notetypes/ 下注册的自定义类型名，顺序即编号 6.. 的含义。
+	 * 目录顺序与旧版 ChartingState 的 noteTypeIntMap 一致：mods 根、当前模组、全局模组，
+	 * 预载资源目录排最后（编辑器只编号 mods 目录，保持其下标不受内置资源影响）。
+	 */
+	public static function customTypes():Array<String>
+	{
+		if (customTypesCache != null) return customTypesCache;
+		var found:Array<String> = [];
+		var seen:Map<String, Bool> = new Map<String, Bool>();
+		var exts:Array<String> = ['.txt'];
+		#if LUA_ALLOWED
+		exts.push('.lua');
+		#end
+		#if HSCRIPT_ALLOWED
+		exts.push('.hx');
+		#end
+	#if sys
+		var dirs:Array<String> = [];
+		#if MODS_ALLOWED
+		dirs.push(Paths.mods('custom_notetypes/'));
+		if (Paths.currentModDirectory != null && Paths.currentModDirectory.length > 0)
+			dirs.push(Paths.mods(Paths.currentModDirectory + '/custom_notetypes/'));
+		for (mod in Paths.getGlobalMods())
+			dirs.push(Paths.mods(mod + '/custom_notetypes/'));
+		#end
+		// 与运行时 custom_notetypes/<类型> 脚本加载同样的兜底：预载资源目录。
+		dirs.push(Paths.getPreloadPath('custom_notetypes/'));
+		for (dir in dirs)
+		{
+			if (dir == null || !FileSystem.exists(dir) || !FileSystem.isDirectory(dir)) continue;
+			// 不排序：保持 readDirectory 原序，与旧版编辑器发号时的顺序一致（Windows/NTFS 为字母序）。
+			for (file in FileSystem.readDirectory(dir))
+			{
+				if (file.startsWith('readme.')) continue;
+				var lower:String = file.toLowerCase();
+				var isTypeFile:Bool = false;
+				for (ext in exts)
+				{
+					if (lower.endsWith(ext))
+					{
+						isTypeFile = true;
+						break;
+					}
+				}
+				if (!isTypeFile) continue;
+				var name:String = file.substr(0, file.lastIndexOf('.'));
+				if (name.length < 1 || seen.exists(name)) continue;
+				seen.set(name, true);
+				found.push(name);
+			}
+		}
+		#end
+		customTypesCache = found;
+		return found;
+	}
+
+	/** 数字下标 -> 类型名。未知下标返回 ''，永不越界（旧实现直接读数组会越界）。 */
+	public static function fromIndex(idx:Int):String
+	{
+		if (idx >= 0)
+		{
+			if (idx < defaultNoteTypes.length) return defaultNoteTypes[idx];
+			var custom:Array<String> = customTypes();
+			var off:Int = idx - defaultNoteTypes.length;
+			if (off < custom.length) return custom[off];
+		}
+		return '';
+	}
+
+	/**
+	 * 谱面 note[3] 字段 -> 类型名。字符串原样返回；数字按下标解析；null/缺字段为 ''。
+	 * 这是"加载后 note[3] 一定是字符串"这一 PE 不变式的唯一入口。
+	 */
+	public static function resolveField(v:Dynamic):String
+	{
+		if (Std.isOfType(v, String)) return v;
+		if (v == null) return '';
+		return fromIndex(Std.int(v));
+	}
+}
+
+class Note extends FlxSprite implements NoteSplashOwner {
     // ============ 多k 静态数据 (转发到 EKData) ============
     public static var minMania:Int = 0;
     public static var maxMania:Int = 17;
@@ -240,6 +436,15 @@ class Note extends FlxSprite {
     public var noteSplashSat:Float = 0;
     public var noteSplashBrt:Float = 0;
 
+    /** 0.7.3 / 1.0.4 Lua: note.noteSplashData.*（懒创建，见 NoteSplashData）。 */
+    var _splashData:NoteSplashData = null;
+    public var noteSplashData(get, never):NoteSplashData;
+    inline function get_noteSplashData():NoteSplashData
+    {
+        if (_splashData == null) _splashData = new NoteSplashData(this);
+        return _splashData;
+    }
+
     public var offsetX:Float = 0;
     public var offsetY:Float = 0;
     public var offsetAngle:Float = 0;
@@ -256,6 +461,12 @@ class Note extends FlxSprite {
     public var hitHealth:Float = 0.023;
     public var missHealth:Float = 0.0475;
     public var rating:String = 'unknown';
+    /**
+     * 原始判定名(引擎内部真实判定, 例如 'marvelous')。
+     * `rating` 会按 ClientPrefs.judgementNameCompat 的 1.0.4 口径改写后给脚本读,
+     * 这个字段永远是引擎当时判出来的名字, 模组需要超完美档时读它。
+     */
+    public var ratingRaw:String = 'unknown';
     public var ratingMod:Float = 0;
     public var ratingDisabled:Bool = false;
 
@@ -344,6 +555,51 @@ class Note extends FlxSprite {
     }
 
     /**
+     * 当前帧"真正画出来的"高度 —— Sparrow 图集里的可见区域高度 (SubTexture 的 width/height),
+     * 而不是逻辑帧高 frameHeight (SubTexture 的 frameWidth/frameHeight)。
+     *
+     * 为什么长条高度必须用这个值归一化 (模组材质兼容):
+     * 图集允许裁剪帧。模组把 hold piece 导出成
+     *   <SubTexture width="50" height="44" frameX="55" frameY="-10" frameWidth="52" frameHeight="64"/>
+     * 时, 44px 才是屏幕上那截长条的像素高, 64px 只是 flixel 用来定位的逻辑方框。
+     * 长条段之间是靠"可见高度 × scale.y >= step 间距"才连成一整条;
+     * 若按 frameHeight 归一化 (44/64), 一段只剩 33px 可见高、间距却是 45px,
+     * 长条就会断成一节一节 —— 这正是自定义 arrowSkin 尾部错位/断裂的根因。
+     *
+     * 默认皮肤 (内容 44 = 帧 44)、New 皮肤 (50x44)、chip (114x77)、future (146x77)
+     * 取到的值都与旧代码的 frameHeight 完全一致 (chip 依然是 44/77), 所以行为不变;
+     * 只有"帧框比内容大"的裁剪图集会被修正。
+     */
+    /**
+     * 当前帧的内容在 flixel "帧坐标系"（原点 = 帧框左上角）里的上沿。
+     * 屏幕上的可见内容上沿 = sprite.y + contentTopInFrame() * scale.y
+     * （updateHitbox 写入的 offset 与 centerOrigin 的 origin 在这一项上正好相消）。
+     *
+     *   - 未翻转 (flipY = false): 内容上沿 = frame.offset.y
+     *   - 翻转   (flipY = true) : 内容上沿 = frameHeight - frame.offset.y - 可见高
+     *
+     * 未裁剪帧 (offset 0 且 可见高 == frameHeight) 两个分支都得 0，与旧表达式完全一致。
+     */
+    public function contentTopInFrame():Float
+    {
+        var f:FlxFrame = frame;
+        if (f == null) return 0;
+        return flipY ? (frameHeight - f.offset.y - sustainContentHeight()) : f.offset.y;
+    }
+
+    public function sustainContentHeight():Float
+    {
+        var f:FlxFrame = frame;
+        if (f != null && f.frame != null)
+        {
+            // 旋转帧在 flixel 里把宽高对调, 可见高度要从 region 宽度取。
+            var h:Float = (f.angle == FlxFrameAngle.ANGLE_0) ? f.frame.height : f.frame.width;
+            if (h > 0) return h;
+        }
+        return frameHeight;
+    }
+
+    /**
      * 多k: 中途切换 k 值时, 实时重置该 Note 的缩放大小以匹配新的 k 值布局。
      * 保留该 Note 生成时的 mania 快照 (判定/轨道不变), 仅重算视觉缩放,
      * 避免 >9K 时已生成 Note 与新的 strum 大小不一致。
@@ -376,6 +632,14 @@ class Note extends FlxSprite {
                     scale.y *= 1.19;
                     scale.y *= (6 / frameHeight);
                     scale.y *= PlayState.daPixelZoom;
+                }
+                else
+                {
+                    // 与 setupNoteData 保持同一套皮肤自适应公式 (缺这一步时 Change Mania 之后
+                    // 长条高度会和生成时不一致, 模组材质上表现为接缝跳变)。
+                    var contentH:Float = sustainContentHeight();
+                    scale.y *= (44.0 / contentH);
+                    scale.y += (2.0 / contentH);
                 }
             }
             else
@@ -424,9 +688,14 @@ class Note extends FlxSprite {
         var stepCrochet:Float = (genStepCrochet > 0) ? genStepCrochet : Conductor.stepCrochet;
         // Scale sustain height by mania (4K = 1.0, unchanged; high-K stays proportional to arrows).
         scale.y = (stepCrochet / 100) * 1.05 * newSongSpeed * multSpeed * Note.getManiaScale(mania);
-        // 皮肤自适应: 非默认帧高时按 (44/frameHeight) 归一化 (默认皮肤行为不变)
-        if(!PlayState.isPixelStage) scale.y *= (44.0 / frameHeight);
-        if(!PlayState.isPixelStage) scale.y += (2.0 / frameHeight);
+        // 皮肤自适应: 按"可见内容高度"归一化 (默认皮肤 44px, 行为不变)。
+        // 不能用 frameHeight: 裁剪帧 (例如 50x44 的内容装在 52x64 的逻辑帧里) 的帧框比内容高,
+        // 用帧高归一化会把长条压短, 段与段之间露出空隙。
+        if(!PlayState.isPixelStage) {
+            var contentH:Float = sustainContentHeight();
+            scale.y *= (44.0 / contentH);
+            scale.y += (2.0 / contentH);
+        }
         if(PlayState.isPixelStage) {
             scale.y *= 1.19;
             scale.y *= (6 / frameHeight);
@@ -443,6 +712,17 @@ class Note extends FlxSprite {
     }
 
     private function set_noteType(value:String):String {
+        // 0.6.3 / 0.7.3 / 1.0.4 都以谱面 splashSkin 作为溅射材质的起点（0.6.3 的
+        // Note.set_noteType 第一句就是 `noteSplashTexture = PlayState.SONG.splashSkin;`）。
+        // 漏掉它时 noteSplashTexture 会停在 null，spawnNoteSplash 里
+        // `skin = note.noteSplashTexture` 把谱面的 splashSkin 覆盖成 null，引擎于是永远
+        // 回退到默认溅射图集 —— 模组自定义溅射（例如 SonicTheFunkChinese 的
+        // images/noteSplashes-sonic.png）就表现为"识别不到"。
+        // 谱面没写 splashSkin 时保持 null，交给 NoteSplash 按兼容模式挑默认
+        // （0.6.3 = noteSplashes；0.7.3/1.0.4 = noteSplashes/noteSplashes[+皮肤后缀]）。
+        noteSplashTexture = (PlayState.SONG != null && PlayState.SONG.splashSkin != null && PlayState.SONG.splashSkin.length > 0)
+            ? PlayState.SONG.splashSkin : null;
+
         if(noteData > -1 && noteType != value) {
             switch(value) {
                 case 'Hurt Note':
@@ -660,13 +940,14 @@ class Note extends FlxSprite {
                 isSustainEnd = false;
                 prevNote.animation.play(colArray[prevNote.baseTex()] + 'hold');
                 prevNote.scale.y *= Conductor.stepCrochet / 100 * 1.05;
-                if(!PlayState.isPixelStage) prevNote.scale.y *= (44.0 / prevNote.frameHeight);
+                // 皮肤自适应: 按"可见内容高度"归一化 (默认皮肤 44px, 行为不变)。
+                if(!PlayState.isPixelStage) prevNote.scale.y *= (44.0 / prevNote.sustainContentHeight());
                 if(PlayState.instance != null) prevNote.scale.y *= PlayState.instance.songSpeed;
                 if(PlayState.isPixelStage) {
                     prevNote.scale.y *= 1.19;
                     prevNote.scale.y *= (6 / prevNote.frameHeight);
                 } else {
-                    prevNote.scale.y += (2.0 / prevNote.frameHeight);
+                    prevNote.scale.y += (2.0 / prevNote.sustainContentHeight());
                 }
                 prevNote.updateHitbox();
             }
@@ -791,6 +1072,8 @@ class Note extends FlxSprite {
         customCharAnim = null;
         noteSplashTexture = null;
         noteSplashDisabled = false;
+        // noteSplashData 是懒创建的: 只有脚本碰过才有必要重置。
+        if (_splashData != null) _splashData.reset();
         noteSplashHue = 0;
         noteSplashSat = 0;
         noteSplashBrt = 0;
@@ -804,6 +1087,7 @@ class Note extends FlxSprite {
         eventVal2 = '';
         eventLength = 0;
         rating = 'unknown';
+        ratingRaw = 'unknown';
         ratingMod = 0;
         ratingDisabled = false;
         sourceIndex = -1;
@@ -840,15 +1124,9 @@ class Note extends FlxSprite {
         _animCacheKey = null;
 
         // ── release render resources (keep the FlxSprite structure) ──
+        // 依旧
         if (animation != null)
-        {
             animation.curAnim = null;
-            animation.destroyAnimations();
-        }
-        frames = null;
-        graphic = null;      // set_graphic: oldGraphic.useCount--
-        _frame = null;
-        _frameGraphic = null;
         clipRect = null;
         shader = null;
         colorSwap = null;
@@ -901,6 +1179,15 @@ class Note extends FlxSprite {
             animation.add(name, cached, 30, true);
         }
     }
+
+
+    var _boundMaterialValid:Bool = false;
+    var _boundMaterialTex:String = null;
+    var _boundMaterialBase:Int = -1;
+    var _boundMaterialMania:Int = -1;
+    var _boundMaterialSustain:Bool = false;
+    var _boundMaterialEnd:Bool = false;
+    var _boundMaterialPixel:Bool = false;
 
     public function reloadNote(?prefix:String = '', ?texture:String = '', ?suffix:String = '') {
         if(prefix == null) prefix = '';
@@ -982,6 +1269,16 @@ class Note extends FlxSprite {
 		}
         if(isSustainNote) scale.y = lastScaleY;
         updateHitbox();
+        if (frames != null)
+        {
+            _boundMaterialValid = !((prefix != null && prefix.length > 0) || (suffix != null && suffix.length > 0));
+            _boundMaterialTex = texture;
+            _boundMaterialBase = baseTex();
+            _boundMaterialMania = mania;
+            _boundMaterialSustain = isSustainNote;
+            _boundMaterialEnd = isSustainEnd;
+            _boundMaterialPixel = PlayState.isPixelStage;
+        }
 
         // 材质溯源同步: 让 texture 字段始终反映"当前 frames 由哪种输入加载而来",
         // 池化复用时 setupNoteData 的按值比较才能安全跳过重载。
@@ -1040,6 +1337,25 @@ class Note extends FlxSprite {
             rgbShader.fallbackShader = (colorSwap != null) ? colorSwap.shader : null;
     }
 
+
+    //Note优化谁爱做谁做去
+    inline function _materialReusable(textureValue:String):Bool
+    {
+        return _boundMaterialValid
+            && _boundMaterialTex == textureValue
+            && _boundMaterialBase == baseTex()
+            && _boundMaterialMania == mania
+            && _boundMaterialSustain == isSustainNote
+            && _boundMaterialEnd == isSustainEnd
+            && _boundMaterialPixel == PlayState.isPixelStage;
+    }
+
+    function applyNoteGraphicSize():Void
+    {
+        setGraphicSize(Std.int(frameWidth * 0.7 * Note.noteScale(mania)));
+        updateHitbox();
+    }
+
     function loadNoteAnims() {
         var b:Int = (noteData >= 0) ? baseTex() : 0;
         addCachedAnim(colArray[b] + 'Scroll', colArray[b] + '0');
@@ -1048,8 +1364,7 @@ class Note extends FlxSprite {
             addCachedAnim(colArray[b] + 'holdend', colArray[b] + ' hold end');
             addCachedAnim(colArray[b] + 'hold', colArray[b] + ' hold piece');
         }
-        setGraphicSize(Std.int(width * 0.7 * Note.noteScale(mania)));
-        updateHitbox();
+        applyNoteGraphicSize();
     }
 
     function loadPixelNoteAnims() {
@@ -1071,6 +1386,7 @@ class Note extends FlxSprite {
         // 像素动画始终以显式帧数组 add，按 sprite 独立注册（缓存仅用于去重复创建无谓对象）
         animation.add(name, frames, 30, true);
     }
+
 
     public function setupNoteData(chartNoteData:PreloadedChartNote):Void {
         // 自愈: 池化复用/异常路径下 frames 缺失时强制重载一次, 避免空帧参与渲染。
@@ -1149,7 +1465,20 @@ class Note extends FlxSprite {
         else if(tx.length > 0) targetTexture = tx;
 
         animation.curAnim = null;
+        var _reuseMaterial:Bool = false;
+        if (frames != null && frames.numFrames > 0 && !isSustainNote && sustainLength <= 0 && !PlayState.isPixelStage)
+            _reuseMaterial = _materialReusable(targetTexture);
+        if (!_reuseMaterial)
+            @:bypassAccessor texture = null;
         this.texture = targetTexture;
+        if (_reuseMaterial)
+        {
+            applyNoteGraphicSize();
+            if (!PlayState.isPixelStage) antialiasing = ClientPrefs.data.globalAntialiasing;
+            if (targetTexture.length > 0 && targetTexture != 'NOTE_assets')
+                applyLaneColorShader = false;
+        }
+        //为什么要缓存
 
         noteType = chartNoteData.noteType;
         animSuffix = chartNoteData.animSuffix;
@@ -1164,6 +1493,10 @@ class Note extends FlxSprite {
         // 只有 Lua 显式设置过才覆盖；未设置保持 noteType setter 算出的轨道色溅射。
         if (chartNoteData.noteSplashTexture != null)
             noteSplashTexture = chartNoteData.noteSplashTexture;
+        // 0.7.3/1.0.4: unspawnNotes 上写的 noteSplashData 也要带到出谱的 Note 上
+        // (splashDataOrNull 不分配对象; null = 脚本没写过, 保留 Note 自己的默认值)
+        var dtoSplash:NoteSplashData = chartNoteData.splashDataOrNull;
+        if (dtoSplash != null) noteSplashData.copyFrom(dtoSplash);
         if (chartNoteData.noteSplashHue != null)
             noteSplashHue = chartNoteData.noteSplashHue;
         if (chartNoteData.noteSplashSat != null)
@@ -1204,9 +1537,13 @@ class Note extends FlxSprite {
                     var stepCrochet:Float = (genStepCrochet > 0) ? genStepCrochet : Conductor.stepCrochet;
                     var songSpeedVal:Float = PlayState.instance.songSpeed;
                     scale.y = (stepCrochet / 100) * 1.05 * songSpeedVal * multSpeed * Note.getManiaScale(mania);
-                    // 皮肤自适应: 非默认帧高时按 (44/frameHeight) 归一化 (默认皮肤行为不变)
-                    if(!PlayState.isPixelStage) scale.y *= (44.0 / frameHeight);
-                    if(!PlayState.isPixelStage) scale.y += (2.0 / frameHeight);
+                    // 皮肤自适应: 按"可见内容高度"归一化 (默认皮肤 44px, 行为不变)。
+                    // 不能用 frameHeight: 裁剪帧 (50x44 内容 + 52x64 帧框) 会被压短并露出空隙。
+                    if(!PlayState.isPixelStage) {
+                        var contentH:Float = sustainContentHeight();
+                        scale.y *= (44.0 / contentH);
+                        scale.y += (2.0 / contentH);
+                    }
                     if(PlayState.isPixelStage) {
                         scale.y *= 1.19;
                         scale.y *= (6 / frameHeight);

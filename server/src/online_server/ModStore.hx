@@ -1,11 +1,18 @@
 package online_server;
 
-import sys.FileSystem;
+import online_server.db.Db;
+import online_server.db.ModRepo;
+import online_server.db.Sqlite;
 
 /**
- * Mod repository storage (local JSON, <data-dir>/mods.json). No outbound HEAD probes, so size
- * stays -1 and downloads redirect to the first URL; favorited holds account ids that Api maps
- * to names. Shares JsonStore's Mutex; never re-enter a lock.
+ * Mod repository storage, backed by SQLite (table `mods`, see db/Migrations.hx and
+ * db/ModRepo.hx). This class is the public facade: validation, the role/business rules and the
+ * response shapes stay exactly as the JSON implementation had them, while ModRepo owns the
+ * statements. No outbound HEAD probes, so size stays -1 and downloads redirect to the first URL;
+ * favorited holds account ids that Api maps to names.
+ *
+ * Locking: every public method takes Db's lock (or lockTx for the multi-row favourite cleanup) and
+ * ModRepo assumes it is already held; the lock is never re-entered.
  */
 typedef Mod = {
 	var id:String;
@@ -40,108 +47,44 @@ typedef ModResult = {
 }
 
 class ModStore {
-	/** Page size for search: take 15, skip 15 * page. */
-	public static inline var PAGE_SIZE:Int = 15;
+	/**
+	 * Page size for search: take 15, skip 15 * page.
+	 *
+	 * Named PAGE_ROWS, not PAGE_SIZE: the Android NDK's <sys/user.h> defines PAGE_SIZE as a
+	 * C macro, and hxcpp emits statics under their Haxe name, so a Haxe `static var PAGE_SIZE`
+	 * becomes `static int PAGE_SIZE;` -> `static int 4096;` and the module fails to compile on
+	 * Android (the in-client LAN host links server/src into the APK). Same reason
+	 * PLAYER_PAGE_SIZE/SEARCH_PAGE_SIZE are safe: those are not macros.
+	 */
+	public static inline var PAGE_ROWS:Int = 15;
 
+	/** Legacy JSON path, kept only so storagePath() keeps reporting the same string. */
 	static var path:String = null;
-	/** { mods:Array<Mod> } */
-	static var db:Dynamic = null;
 
+	/**
+	 * Records the legacy path and makes sure the shared database is open (idempotent, first caller
+	 * wins). No JSON file is read or created here: the tables come from Db.open() -> Migrations and
+	 * all mod data already lives in SQLite.
+	 */
 	public static function init(file:String):Void {
 		path = file;
-		JsonStore.lock(function() {
-			var loaded = JsonStore.read(path, null);
-			if (loaded == null || loaded.mods == null) {
-				loaded = { mods: [] };
-			}
-			db = loaded;
-			migrateU();
-			if (!FileSystem.exists(path)) JsonStore.write(path, db);
-			return true;
-		});
+		if (!Db.isOpen()) Db.openFor(file);
 	}
 
 	public static function storagePath():String return path;
-
-	static function allU():Array<Mod> return cast db.mods;
-
-	/** Backfill for old or hand-edited JSON: ensures the array and counter fields exist. */
-	static function migrateU():Bool {
-		var changed = false;
-		for (m in allU()) {
-			if (m.keywords == null) {
-				m.keywords = [];
-				changed = true;
-			}
-			if (m.images == null) {
-				m.images = [];
-				changed = true;
-			}
-			if (m.favorited == null) {
-				m.favorited = [];
-				changed = true;
-			}
-			if (m.downloads == null) {
-				m.downloads = [];
-				changed = true;
-			}
-			if (Reflect.field(m, "favoritedCount") == null) {
-				m.favoritedCount = m.favorited.length;
-				changed = true;
-			}
-			if (Reflect.field(m, "downloadHits") == null) {
-				m.downloadHits = sumHitsU(m);
-				changed = true;
-			}
-			if (Reflect.field(m, "submitted") == null) {
-				m.submitted = nowMs();
-				changed = true;
-			}
-		}
-		return changed;
-	}
 
 	// ------------------------------------------------------------------
 	// Lookup
 	// ------------------------------------------------------------------
 
 	/** Exact primary-key match, case-sensitive. */
-	static function byIdU(id:String):Mod {
-		if (id == null) return null;
-		for (m in allU()) if (m.id == id) return m;
-		return null;
+	public static function byId(id:String):Mod {
+		return Db.lock(function():Mod return ModRepo.byId(id));
 	}
 
-	/** Case-insensitive duplicate-name check. */
-	static function byIdInsensitiveU(id:String):Mod {
-		if (id == null) return null;
-		var lower = id.toLowerCase();
-		for (m in allU()) if (m.id != null && m.id.toLowerCase() == lower) return m;
-		return null;
+	public static function count():Int {
+		return Db.lock(function():Int return ModRepo.count());
 	}
-
-	static function downloadByIdU(id:String):ModDownload {
-		if (id == null) return null;
-		for (m in allU()) {
-			if (m.downloads == null) continue;
-			for (d in m.downloads) if (d.id == id) return d;
-		}
-		return null;
-	}
-
-	static function downloadByIdInsensitiveU(id:String):ModDownload {
-		if (id == null) return null;
-		var lower = id.toLowerCase();
-		for (m in allU()) {
-			if (m.downloads == null) continue;
-			for (d in m.downloads) if (d.id != null && d.id.toLowerCase() == lower) return d;
-		}
-		return null;
-	}
-
-	public static function byId(id:String):Mod return JsonStore.lock(function() return byIdU(id));
-
-	public static function count():Int return JsonStore.lock(function() return allU().length);
 
 	// ------------------------------------------------------------------
 	// Validation
@@ -178,7 +121,9 @@ class ModStore {
 	}
 
 	public static function titleError(raw:String):String {
-		if (StringTools.trim(raw == null ? "" : raw).length < 3) return "Title needs 3 letters at least";
+		// 3 CHARACTERS: byte counting let a single CJK character (3 bytes) pass while rejecting
+		// two ASCII letters.
+		if (ServerConfig.utf8Length(StringTools.trim(raw == null ? "" : raw)) < 3) return "Title needs 3 letters at least";
 		return null;
 	}
 
@@ -190,19 +135,19 @@ class ModStore {
 		var id = strField(data, "id");
 		var idError = modIdError(id);
 		if (idError != null) return { mod: null, error: idError };
-		var title = strField(data, "title");
+		var title = ServerConfig.repairUtf8(strField(data, "title"));
 		var tError = titleError(title);
 		if (tError != null) return { mod: null, error: tError };
 
-		return JsonStore.lock(function() {
-			if (byIdInsensitiveU(id) != null) return { mod: null, error: "The ID for this mod is already taken!" };
+		return Db.lock(function():ModResult {
+			if (ModRepo.byIdInsensitive(id) != null) return { mod: null, error: "The ID for this mod is already taken!" };
 			var now = nowMs();
 			var m:Mod = {
 				id: id,
 				title: title,
-				description: strField(data, "description"),
-				keywords: strArrayField(data, "keywords"),
-				images: strArrayField(data, "images"),
+				description: ServerConfig.repairUtf8(strField(data, "description")),
+				keywords: ServerConfig.repairUtf8List(strArrayField(data, "keywords")),
+				images: ServerConfig.repairUtf8List(strArrayField(data, "images")),
 				favorited: [],
 				favoritedCount: 0,
 				downloadHits: 0,
@@ -210,28 +155,27 @@ class ModStore {
 				updated: now,
 				downloads: []
 			};
-			allU().push(m);
-			JsonStore.write(path, db);
+			ModRepo.insert(m);
 			return { mod: m, error: null };
 		});
 	}
 
 	public static function edit(data:Dynamic):ModResult {
-		var title = strField(data, "title");
+		var title = ServerConfig.repairUtf8(strField(data, "title"));
 		var tError = titleError(title);
 		if (tError != null) return { mod: null, error: tError };
 		var id = strField(data, "id");
 
-		return JsonStore.lock(function() {
-			var m = byIdU(id);
+		return Db.lock(function():ModResult {
+			var m = ModRepo.byId(id);
 			if (m == null) return { mod: null, error: "Failed to submit..." };
 			m.title = title;
-			var desc = strField(data, "description");
+			var desc = ServerConfig.repairUtf8(strField(data, "description"));
 			if (desc != null) m.description = desc;
-			m.keywords = strArrayField(data, "keywords");
-			m.images = strArrayField(data, "images");
+			m.keywords = ServerConfig.repairUtf8List(strArrayField(data, "keywords"));
+			m.images = ServerConfig.repairUtf8List(strArrayField(data, "images"));
 			m.updated = nowMs();
-			JsonStore.write(path, db);
+			ModRepo.update(m);
 			return { mod: m, error: null };
 		});
 	}
@@ -239,12 +183,10 @@ class ModStore {
 	/** Deletes the mod together with all of its downloads. */
 	public static function remove(data:Dynamic):String {
 		var id = strField(data, "id");
-		return JsonStore.lock(function() {
-			var m = byIdU(id);
+		return Db.lock(function():String {
+			var m = ModRepo.byId(id);
 			if (m == null) return "Failed to submit...";
-			var i = allU().indexOf(m);
-			if (i >= 0) allU().splice(i, 1);
-			JsonStore.write(path, db);
+			ModRepo.remove(id);
 			return null;
 		});
 	}
@@ -258,34 +200,33 @@ class ModStore {
 		var idError = dlIdError(rawDlId);
 		if (idError != null) return idError;
 
-		return JsonStore.lock(function() {
-			var m = byIdU(modId);
+		return Db.lock(function():String {
+			var m = ModRepo.byId(modId);
 			if (m == null) return "None found...";
 			var full = modId + ":" + rawDlId;
-			if (downloadByIdInsensitiveU(full) != null) return "The ID for this download is already taken!";
-			if (m.downloads == null) m.downloads = [];
+			if (ModRepo.downloadByIdInsensitive(full) != null) return "The ID for this download is already taken!";
 			m.downloads.push({
 				id: full,
-				urls: urls == null ? [] : urls,
+				urls: urls == null ? [] : ServerConfig.repairUtf8List(urls),
 				hits: 0,
 				size: -1,
 				modID: modId
 			});
 			m.updated = nowMs();
-			JsonStore.write(path, db);
+			ModRepo.update(m);
 			return null;
 		});
 	}
 
 	/** A missing download yields "Failed to submit...". */
 	public static function editDownload(id:String, urls:Array<String>):String {
-		return JsonStore.lock(function() {
-			var d = downloadByIdU(id);
-			if (d == null) return "Failed to submit...";
-			d.urls = urls == null ? [] : urls;
+		return Db.lock(function():String {
+			var ref = ModRepo.findDownload(id, false);
+			if (ref == null) return "Failed to submit...";
+			ref.download.urls = urls == null ? [] : ServerConfig.repairUtf8List(urls);
 			// Size stays -1 because no HEAD probe is sent.
-			d.size = -1;
-			JsonStore.write(path, db);
+			ref.download.size = -1;
+			ModRepo.update(ref.mod);
 			return null;
 		});
 	}
@@ -293,10 +234,10 @@ class ModStore {
 	/** Removes a download; the id must contain ':', and a missing mod/download yields "None found...". */
 	public static function removeDownload(id:String):String {
 		if (id == null || id.indexOf(":") < 0) return "ID incomplete!";
-		return JsonStore.lock(function() {
+		return Db.lock(function():String {
 			var modId = id.split(":")[0];
-			var m = byIdU(modId);
-			if (m == null || m.downloads == null) return "None found...";
+			var m = ModRepo.byId(modId);
+			if (m == null) return "None found...";
 			var kept:Array<ModDownload> = [];
 			var removed = false;
 			for (d in m.downloads) {
@@ -307,7 +248,7 @@ class ModStore {
 			m.downloads = kept;
 			m.downloadHits = sumHitsU(m);
 			m.updated = nowMs();
-			JsonStore.write(path, db);
+			ModRepo.update(m);
 			return null;
 		});
 	}
@@ -318,18 +259,17 @@ class ModStore {
 	 * route redirects to; an empty url list returns null.
 	 */
 	public static function pickDownloadURL(id:String):String {
-		return JsonStore.lock(function() {
-			var d = downloadByIdU(id);
-			if (d == null) return null;
-			var sorted = sortUrls(d.urls);
+		return Db.lock(function():String {
+			var ref = ModRepo.findDownload(id, false);
+			if (ref == null) return null;
+			var sorted = sortUrls(ref.download.urls);
 			if (sorted.length == 0) return null;
 			var picked = sorted[0];
 			if (picked == null || picked == "") return null;
 
-			d.hits = (d.hits == null ? 0 : d.hits) + 1;
-			var m = byIdU(d.modID);
-			if (m != null) m.downloadHits = sumHitsU(m);
-			JsonStore.write(path, db);
+			ref.download.hits = Sqlite.toNum(ref.download.hits, 0) + 1;
+			ref.mod.downloadHits = sumHitsU(ref.mod);
+			ModRepo.update(ref.mod);
 			return picked;
 		});
 	}
@@ -359,15 +299,14 @@ class ModStore {
 
 	/** Removes the user from favourites if present, otherwise inserts them at the front (forceRemove only removes). A missing mod is rejected. */
 	public static function toggleFav(userId:String, modId:String, forceRemove:Bool = false):ModResult {
-		return JsonStore.lock(function() {
-			var m = byIdU(modId);
+		return Db.lock(function():ModResult {
+			var m = ModRepo.byId(modId);
 			if (m == null) return { mod: null, error: "Failed to submit..." };
-			if (m.favorited == null) m.favorited = [];
 			var idx = m.favorited.indexOf(userId);
 			if (idx >= 0) m.favorited.splice(idx, 1);
 			else if (!forceRemove) m.favorited.unshift(userId);
 			m.favoritedCount = m.favorited.length;
-			JsonStore.write(path, db);
+			ModRepo.update(m);
 			return { mod: m, error: null };
 		});
 	}
@@ -377,10 +316,9 @@ class ModStore {
 	 * deleted. Returns the number of favourites cleared.
 	 */
 	public static function removeFavoritesOf(userId:String):Int {
-		return JsonStore.lock(function() {
+		return Db.lockTx(function():Int {
 			var n = 0;
-			for (m in allU()) {
-				if (m.favorited == null) continue;
+			for (m in ModRepo.all()) {
 				var before = m.favorited.length;
 				var idx = m.favorited.indexOf(userId);
 				while (idx >= 0) {
@@ -388,9 +326,11 @@ class ModStore {
 					n++;
 					idx = m.favorited.indexOf(userId);
 				}
-				if (m.favorited.length != before) m.favoritedCount = m.favorited.length;
+				if (m.favorited.length != before) {
+					m.favoritedCount = m.favorited.length;
+					ModRepo.update(m);
+				}
 			}
-			if (n > 0) JsonStore.write(path, db);
 			return n;
 		});
 	}
@@ -401,8 +341,8 @@ class ModStore {
 
 	/** Mod details including downloads; null when the mod does not exist. */
 	public static function details(id:String):Dynamic {
-		return JsonStore.lock(function() {
-			var m = byIdU(id);
+		return Db.lock(function():Dynamic {
+			var m = ModRepo.byId(id);
 			if (m == null) return null;
 			return detailsU(m);
 		});
@@ -415,8 +355,8 @@ class ModStore {
 				downloads.push({
 					id: d.id,
 					urls: d.urls == null ? [] : d.urls,
-					hits: d.hits == null ? 0 : d.hits,
-					size: d.size == null ? -1 : d.size,
+					hits: Sqlite.toNum(d.hits, 0),
+					size: Sqlite.toNum(d.size, -1),
 					modID: d.modID
 				});
 			}
@@ -475,7 +415,7 @@ class ModStore {
 	}
 
 	public static function search(query:String, page:Int, sort:String):Array<Mod> {
-		return JsonStore.lock(function() {
+		return Db.lock(function():Array<Mod> {
 			var sortBy = "submitted";
 			var sortDir = "desc";
 			if (sort != null && sort != "") {
@@ -489,13 +429,13 @@ class ModStore {
 			var q = query == null ? "" : query;
 			var words = q.split(" ");
 			var matched:Array<Mod> = [];
-			for (m in allU()) if (matchesU(m, q, words)) matched.push(m);
+			for (m in ModRepo.all()) if (matchesU(m, q, words)) matched.push(m);
 			matched.sort(function(a, b) return compareU(a, b, sortBy, sortDir));
 
-			var start = (page <= 0 ? 0 : page) * PAGE_SIZE;
+			var start = (page <= 0 ? 0 : page) * PAGE_ROWS;
 			var out:Array<Mod> = [];
 			var i = start;
-			while (i < matched.length && out.length < PAGE_SIZE) {
+			while (i < matched.length && out.length < PAGE_ROWS) {
 				out.push(matched[i]);
 				i++;
 			}
@@ -538,8 +478,8 @@ class ModStore {
 	}
 
 	static function numCompare(a:Float, b:Float):Int {
-		var x = a == null ? 0 : a;
-		var y = b == null ? 0 : b;
+		var x = Sqlite.toNum(a, 0);
+		var y = Sqlite.toNum(b, 0);
 		if (x == y) return 0;
 		return x < y ? -1 : 1;
 	}
@@ -554,7 +494,7 @@ class ModStore {
 	/** Sum of every download's hits. */
 	static function sumHitsU(m:Mod):Int {
 		var total:Float = 0;
-		if (m.downloads != null) for (d in m.downloads) total += (d.hits == null ? 0 : d.hits);
+		if (m.downloads != null) for (d in m.downloads) total += Sqlite.toNum(d.hits, 0);
 		return Std.int(total);
 	}
 

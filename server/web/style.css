@@ -35,6 +35,8 @@ input:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent)}
 
 /* ---------- shell ---------- */
 .app{display:flex;flex-direction:column;height:100vh}
+/* ---------- local read-only banner (D-R3-5) ---------- */
+.local-ro{flex:0 0 auto;display:flex;align-items:center;justify-content:center;gap:8px;padding:7px 14px;background:linear-gradient(90deg,rgba(124,92,255,.22),rgba(61,220,151,.16));border-bottom:1px solid var(--border);color:var(--text);font-size:12.5px;letter-spacing:.2px}
 .topbar{height:58px;flex:0 0 58px;display:flex;align-items:center;gap:18px;padding:0 18px;border-bottom:1px solid var(--border);background:#0f1218}
 .brand{display:flex;align-items:center;gap:10px;cursor:pointer;min-width:210px}
 .topnav{display:flex;gap:4px;flex:1}

@@ -36,6 +36,11 @@ class TraceConsole
 
 	/**
 	 * Stop (idempotent).
+	 *
+	 * Availability is re-derived instead of being forced to `false`: stopping the
+	 * listener must not pretend the terminal behind it disappeared. A desktop build
+	 * launched from a shell keeps stdout logging (TraceManager's direct path) alive
+	 * after the option is switched off.
 	 */
 	public static function stop():Void
 	{
@@ -43,11 +48,18 @@ class TraceConsole
 		running = false;
 		watchMode = false;
 		consoleAvailable = false;
-		TraceManager.setConsoleAvailable(false);
+		TraceManager.refreshConsoleAvailability();
 		TraceManager.removeListener(onTrace);
 	}
 
-	/** Detect output: windows console, else stdout/js console. */
+	/**
+	 * Detect output: windows console, /dev/stdout, logcat, browser console.
+	 *
+	 * Android has no console window, but the SDL backend mirrors this process'
+	 * stdout into logcat (`adb logcat`), which is the platform's terminal. Treating
+	 * it as unavailable is what made the Trace Console option do nothing at all on
+	 * mobile, so it counts as an output target here.
+	 */
 	private static function detectConsole():Bool
 	{
 		#if (cpp && windows && !android)
@@ -57,6 +69,8 @@ class TraceConsole
 			return false;
 		}
 		#elseif (sys && !android)
+		return true;
+		#elseif android
 		return true;
 		#elseif js
 		return true;

@@ -1,0 +1,98 @@
+name: Append China mirror links
+description: 把中国镜像仓库与加速下载链接追加到发布正文（GitHub Release 页面用）
+
+inputs:
+  tag:
+    description: 本次发布的 tag，例如 v0.2.2-alpha.36254783061
+    required: true
+  body-file:
+    description: 要追加内容的 Markdown 文件
+    required: false
+    default: release_body.md
+  gitee-repo:
+    description: Gitee 镜像仓库地址；留空则不写这一段
+    required: false
+    default: ""
+  accel-base:
+    description: 加速前缀，例如 https://gh.b52m.cn；留空则不生成加速表格
+    required: false
+    default: ""
+  accel-label:
+    description: 加速列的显示名
+    required: false
+    default: gh.b52m.cn
+  dist-dir:
+    description: 构建产物目录，用来列出加速链接
+    required: false
+    default: dist
+
+runs:
+  using: composite
+  steps:
+    - name: Append mirror section to release body
+      if: inputs.gitee-repo != '' || inputs.accel-base != ''
+      shell: bash
+      env:
+        MIRROR_TAG: ${{ inputs.tag }}
+        MIRROR_BODY_FILE: ${{ inputs.body-file }}
+        MIRROR_GITEE_REPO: ${{ inputs.gitee-repo }}
+        MIRROR_ACCEL_BASE: ${{ inputs.accel-base }}
+        MIRROR_ACCEL_LABEL: ${{ inputs.accel-label }}
+        MIRROR_DIST_DIR: ${{ inputs.dist-dir }}
+      run: |
+        set -euo pipefail
+
+        if [ ! -f "$MIRROR_BODY_FILE" ]; then
+          echo "::error::找不到 $MIRROR_BODY_FILE，无法追加中国镜像链接"
+          exit 1
+        fi
+
+        # 后面要 cd 进产物目录，这里先把正文文件固定成绝对路径
+        BODY_FILE="$(cd "$(dirname "$MIRROR_BODY_FILE")" && pwd)/$(basename "$MIRROR_BODY_FILE")"
+        GITEE_REPO="${MIRROR_GITEE_REPO%/}"
+        ACCEL_BASE="${MIRROR_ACCEL_BASE%/}"
+
+        {
+          echo
+          echo '---'
+          echo
+          echo '## 中国镜像 / China Mirror'
+          echo
+          echo '> GitHub 直连在国内可能很慢，可以从下面的入口下载。'
+          echo
+        } >> "$BODY_FILE"
+
+        if [ -n "$GITEE_REPO" ]; then
+          {
+            echo "- Gitee 镜像仓库：$GITEE_REPO"
+            echo "- 本版本在 Gitee 的发行版页：$GITEE_REPO/releases/tag/$MIRROR_TAG"
+            echo "  （如果这个版本还没有同步到 Gitee，该页面可能不存在，直接看仓库即可）"
+            echo
+          } >> "$BODY_FILE"
+        fi
+
+        if [ -z "$ACCEL_BASE" ] || [ ! -d "$MIRROR_DIST_DIR" ]; then
+          echo "已追加中国镜像链接（$BODY_FILE）"
+          exit 0
+        fi
+
+        DOWNLOAD_BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/$MIRROR_TAG"
+
+        {
+          echo "下载链接也可以自己加加速前缀：把 https://github.com 换成 $ACCEL_BASE/github.com 即可。"
+          echo
+          echo "| 构建产物 | GitHub 原始链接 | 加速链接（$MIRROR_ACCEL_LABEL） |"
+          echo "|----------|-----------------|----------------------|"
+        } >> "$BODY_FILE"
+
+        shopt -s nullglob
+        cd "$MIRROR_DIST_DIR"
+        for file in *.apk *.ipa *.zip crash-symbols/*.zip; do
+          [ -f "$file" ] || continue
+          name="$(basename "$file")"
+          printf '| `%s` | [下载](%s/%s) | [加速下载](%s/github.com/%s/releases/download/%s/%s) |\n' \
+            "$name" "$DOWNLOAD_BASE" "$name" "$ACCEL_BASE" "$GITHUB_REPOSITORY" "$MIRROR_TAG" "$name" \
+            >> "$BODY_FILE"
+        done
+
+        echo "已追加中国镜像链接（$BODY_FILE）"

@@ -143,7 +143,14 @@ class TraceManager
 		return consoleAvailable;
 	}
 
-	private static function refreshConsoleAvailability():Void
+	/**
+	 * Re-derive whether a real output target exists.
+	 *
+	 * Public because both the option toggle and `TraceConsole.stop()` have to ask
+	 * again after a console is allocated or freed; hard-coding `false` there used to
+	 * switch off stdout logging for every build that still had a terminal.
+	 */
+	public static function refreshConsoleAvailability():Void
 	{
 		#if (cpp && windows && !android)
 		try {
@@ -162,12 +169,40 @@ class TraceManager
 	}
 
 	/**
-	 * Sync from ClientPrefs (desktop only).
+	 * Apply the Trace Console preference.
+	 *
+	 * Single source of truth for the startup path (TitleState) *and* the options
+	 * checkbox, so the two can never drive the console the opposite way round.
+	 *
+	 * The console window on Windows is owned: one this process allocated is closed
+	 * again when the option goes off, while one inherited from a terminal is left
+	 * alone (the terminal belongs to whoever launched the game).
+	 *
+	 * allowConsoleAlloc is only ever true for the options checkbox. Starting the game
+	 * must never spawn a console by itself: with the preference left on, that popped a
+	 * cmd window on every single launch. At startup an already attached console (game
+	 * started from a terminal) is reused, and the player can still open one on purpose
+	 * from the settings menu.
 	 */
-	public static function syncWithPrefs():Void
+	public static function syncWithPrefs(allowConsoleAlloc:Bool = false):Void
 	{
-		#if desktop
+		#if (desktop || android)
+		if (ClientPrefs.data == null) return;
+
 		var wantConsole:Bool = (ClientPrefs.data.traceConsoleEnabled == true);
+
+		#if (cpp && windows && !android)
+		if (wantConsole)
+		{
+			if (allowConsoleAlloc && !Windows.hasConsole() && Windows.allocConsole())
+				Windows.enableAnsiColors();
+		}
+		else if (Windows.consoleOwned)
+		{
+			Windows.freeConsole();
+		}
+		#end
+
 		consoleOutput = wantConsole;
 		if (wantConsole)
 		{
@@ -529,7 +564,7 @@ class TraceManager
 	 * The C side keeps it in a fixed buffer, so it is capped on both entry
 	 * count and total characters.
 	 */
-	public static function getRecentCrashText(?maxEntries:Int = 30, ?maxChars:Int = 8000):String
+	public static function getRecentCrashText(?maxEntries:Int = 150, ?maxChars:Int = 28000):String
 	{
 		var all:Array<TraceEntry> = getAll();
 		var start:Int = all.length - maxEntries;
@@ -559,6 +594,10 @@ class TraceManager
 		#end
 
 		var result:Array<TraceEntry> = [];
+		// Lower-cased once: doing it inside the loop re-allocated the same string
+		// for every entry the filter walked.
+		var lowerSearch:String = (search != null && search != '') ? search.toLowerCase() : null;
+
 		for (j in 0...bufferCount)
 		{
 			var idx:Int = (bufferCount < MAX_ENTRIES) ? j : (bufferHead + j) % MAX_ENTRIES;
@@ -570,14 +609,11 @@ class TraceManager
 			if (moduleName != null && moduleName != '' && e.moduleName != moduleName)
 				continue;
 
-			if (search != null && search != '')
-			{
-				var lowerSearch:String = search.toLowerCase();
-				if (e.message.toLowerCase().indexOf(lowerSearch) < 0
+			if (lowerSearch != null
+				&& (e.message.toLowerCase().indexOf(lowerSearch) < 0
 					&& e.rawMessage.toLowerCase().indexOf(lowerSearch) < 0
-					&& e.moduleName.toLowerCase().indexOf(lowerSearch) < 0)
-					continue;
-			}
+					&& e.moduleName.toLowerCase().indexOf(lowerSearch) < 0))
+				continue;
 
 			result.push(e);
 

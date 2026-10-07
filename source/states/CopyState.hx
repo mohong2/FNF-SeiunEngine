@@ -378,7 +378,7 @@ class CopyState extends MusicBeatState
 		}
 		catch (e:Dynamic)
 		{
-			TraceManager.warn('trace.copy.manifestWriteFailed', 'Could not update the readiness manifest: {}', [e]);
+			TraceManager.warn('trace.copy.manifestUpdateFailed', 'Could not update the readiness manifest: {}', [e]);
 		}
 	}
 
@@ -719,7 +719,7 @@ class CopyState extends MusicBeatState
 	{
 		if (failedFiles.length > 0)
 		{
-			TraceManager.warn('trace.copy.failed', '{} file(s) could not be copied', [failedFiles.length]);
+			TraceManager.warn('trace.copy.copyFailed', '{} file(s) could not be copied', [failedFiles.length]);
 			FlxG.sound.play(Paths.sound('cancelMenu'));
 			handleLegacyFailure('${failedFiles.length} file(s) could not be copied');
 			return;
@@ -727,7 +727,7 @@ class CopyState extends MusicBeatState
 
 		FlxG.sound.play(Paths.sound('confirmMenu'));
 		shouldCopy = false;
-		TraceManager.info('trace.copy.complete', 'Copy pass complete');
+		TraceManager.info('trace.copy.copyComplete', 'Copy pass complete');
 		handOver();
 	}
 

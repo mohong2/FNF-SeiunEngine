@@ -158,6 +158,19 @@ class OptionsState extends MusicBeatState
 	var holdTime:Float = 0;
 	var holdValue:Float = 0;
 
+	/** Description currently rasterized into setDescText. */
+	var descShown:String = null;
+
+	/** Description waiting for the cursor to settle, and its debounce countdown. */
+	var descPending:String = null;
+	var descSettleTime:Float = 0;
+
+	/** How long the cursor must stand still before a deferred description is rendered. */
+	static final DESC_SETTLE:Float = 0.12;
+
+	/** Row index the settings page last sat on (-1 = freshly built page). */
+	var lastSettingsSelected:Int = -1;
+
 	var bg:FlxSprite;
 
 	// ═══════════════════════════════════════════════════════════════
@@ -230,6 +243,7 @@ class OptionsState extends MusicBeatState
 			'onClearImageCache'            => onClearImageCache,
 			'onChangeShowWatermark'        => onChangeShowWatermark,
 			'onChangeShowNoteOptimizationNotice' => onChangeShowNoteOptimizationNotice,
+			'onClearChartCache'            => onClearChartCache,
 			'onChangeStorageType'          => onChangeStorageType,
 			'onChangeAutoExtractAssets'    => onChangeAutoExtractAssets,
 		];
@@ -684,6 +698,10 @@ class OptionsState extends MusicBeatState
 		currentPreviewPage = '';
 
 		setOptionsArray = optionsArray;
+		descShown = null;
+		descPending = null;
+		descSettleTime = 0;
+		lastSettingsSelected = -1;
 		setCurSelected = 0;
 		setCurOption = null;
 		// setBoyfriend is not cleared: building bf is expensive (character JSON + atlas + animations), so it is reused
@@ -934,6 +952,8 @@ class OptionsState extends MusicBeatState
 
 	function updateSettingsView(elapsed:Float)
 	{
+		updateDeferredDescription(elapsed);
+
 		// Keyboard always wins on the frame it is used; mouse is ignored that frame.
 		var keyboardUsed:Bool = controls.UI_UP_P || controls.UI_DOWN_P
 			|| controls.ACCEPT || controls.BACK || controls.UI_LEFT_P || controls.UI_RIGHT_P
@@ -1151,6 +1171,18 @@ class OptionsState extends MusicBeatState
 		}
 	}
 
+	/**
+	 * Re-reads the text of one saved option. Global shortcuts (F11 window mode) change
+	 * ClientPrefs while this page can be open, and the row would otherwise keep showing the
+	 * value from before the key press until the page is rebuilt.
+	 */
+	public function refreshOptionsText(variable:String):Void
+	{
+		if (setOptionsArray == null) return;
+		for (opt in setOptionsArray)
+			if (opt != null && opt.variable == variable) settingsUpdateText(opt);
+	}
+
 	function settingsClearHold()
 	{
 		if (holdTime > 0.5) FlxG.sound.play(Paths.sound('scrollMenu'));
@@ -1169,15 +1201,76 @@ class OptionsState extends MusicBeatState
 		}));
 	}
 
+	/**
+	 * Shows the description of the current row.
+	 *
+	 * A single move renders right away and the description panel stays exactly as tall
+	 * as the text it shows. While the player keeps moving (fast scrolling, a mouse
+	 * wheel) the intermediate descriptions are replaced before they can be read, so
+	 * only the one the cursor settles on is rasterized - one text update per scroll
+	 * burst instead of one per step.
+	 *
+	 * (A constant-height text field would let FlxText reuse its bitmap instead of
+	 * reallocating it, but the panel is sized from that field, so it was tried and
+	 * reverted: it left a large empty box around short descriptions.)
+	 */
+	function requestSettingsDescription():Void
+	{
+		if (setDescText == null || setOptionsArray == null || setOptionsArray.length == 0) return;
+
+		var desc:String = setOptionsArray[setCurSelected].description;
+
+		if (desc == descShown)
+		{
+			descPending = null;
+			return;
+		}
+
+		if (descSettleTime > 0)
+		{
+			descPending = desc;
+			descSettleTime = DESC_SETTLE;
+			return;
+		}
+
+		descPending = null;
+		descSettleTime = DESC_SETTLE;
+		applySettingsDescription(desc);
+	}
+
+	/** Rasterizes a description into the label (the expensive half of a cursor move). */
+	function applySettingsDescription(desc:String):Void
+	{
+		descShown = desc;
+		setDescText.text = desc;
+		setDescText.screenCenter(Y);
+		setDescText.y += 270;
+
+		setDescBox.setPosition(setDescText.x - 10, setDescText.y - 10);
+		setDescBox.setGraphicSize(Std.int(setDescText.width + 20), Std.int(setDescText.height + 25));
+		setDescBox.updateHitbox();
+	}
+
+	/** Renders a deferred description once the cursor has stopped moving. */
+	function updateDeferredDescription(elapsed:Float):Void
+	{
+		if (descSettleTime <= 0) return;
+
+		descSettleTime -= elapsed;
+		if (descSettleTime > 0 || descPending == null) return;
+
+		var pending:String = descPending;
+		descPending = null;
+		applySettingsDescription(pending);
+	}
+
 	function changeSettingsSelection(change:Int = 0, ?playSound:Bool = true)
 	{
 		setCurSelected += change;
 		if (setCurSelected < 0) setCurSelected = setOptionsArray.length - 1;
 		if (setCurSelected >= setOptionsArray.length) setCurSelected = 0;
 
-		setDescText.text = setOptionsArray[setCurSelected].description;
-		setDescText.screenCenter(Y);
-		setDescText.y += 270;
+		requestSettingsDescription();
 
 		var bullShit:Int = 0;
 		for (item in setGrpOptions.members)
@@ -1193,16 +1286,15 @@ class OptionsState extends MusicBeatState
 			if (text.ID == setCurSelected) text.alpha = 1;
 		}
 
-		setDescBox.setPosition(setDescText.x - 10, setDescText.y - 10);
-		setDescBox.setGraphicSize(Std.int(setDescText.width + 20), Std.int(setDescText.height + 25));
-		setDescBox.updateHitbox();
-
 		if (setBoyfriend != null)
 			setBoyfriend.visible = setOptionsArray[setCurSelected].showBoyfriend;
-		// 0.7.3+ note-skin preview: shown only while the noteSkin row is selected
-		if (settingsNotes != null && settingsNoteSkinID >= 0)
+
+		// 0.7.3+ note-skin preview: slides in while the note-skin row is selected and
+		// out when it leaves. Only a transition re-runs the slide: the old code
+		// cancelled and re-created four tweens on *every* cursor move of the page.
+		if (settingsNotes != null && settingsNoteSkinID >= 0
+			&& (lastSettingsSelected == settingsNoteSkinID) != (setCurSelected == settingsNoteSkinID))
 		{
-			// Slides in while the note-skin row is selected and out when it leaves
 			var targetY:Float = (setCurSelected == settingsNoteSkinID) ? 120 : -200;
 			for (i in 0...settingsNotes.members.length)
 			{
@@ -1214,6 +1306,7 @@ class OptionsState extends MusicBeatState
 			}
 		}
 
+		lastSettingsSelected = setCurSelected;
 		setCurOption = setOptionsArray[setCurSelected];
 		if (playSound == true)
 			FlxG.sound.play(Paths.sound('scrollMenu'));
@@ -1499,6 +1592,12 @@ class OptionsState extends MusicBeatState
 	{
 		if (FlxG.game != null)
 			FlxG.game.separateUpdateDraw = ClientPrefs.data.separateUpdateDraw;
+
+		// At a draw rate above the update rate most ticks run no logic step at all, and rebuilding
+		// the draw list for an unchanged world is wasted work. Kept in lockstep with the mode
+		// rather than the preference, in case anything changes the mode directly.
+		// See FlxG.separateDrawSkipIdleFrames and FlxGame.invalidateDrawCache().
+		FlxG.separateDrawSkipIdleFrames = (FlxG.game != null) ? FlxG.game.separateUpdateDraw : false;
 	}
 
 	function onChangeAntiAliasing()
@@ -1532,30 +1631,12 @@ class OptionsState extends MusicBeatState
 	#if desktop
 	function onChangeWindowMode()
 	{
-		var mode:String = ClientPrefs.data.windowedmode;
-
 		try {
-			var window = Lib.application.window;
-			switch(mode)
-			{
-				case 'windowed':
-					FlxG.fullscreen = false;
-					Lib.application.window.fullscreen = false;
-					Lib.application.window.borderless = false;
-				case 'fullscreen':
-					FlxG.fullscreen = true;
-					Lib.application.window.fullscreen = true;
-					Lib.application.window.borderless = false;
-
-				case 'borderless':
-				{
-					// SDL3 borderless desktop fullscreen: one native switch instead of resizing through several black frames.
-					// FlxG.fullscreen / window.borderless are left alone to avoid duplicate switches and style flicker.
-					window.fullscreen = true;
-				}
-
-			}
-
+			// Shared with the boot path; see backend.WindowMode. 'borderless' is a true borderless
+			// window (no decorations, sized over the display, SDL fullscreen kept off) rather
+			// than an SDL fullscreen switch - that switch is what makes Windows hand the game to
+			// Auto HDR and sit on a black screen for a moment.
+			backend.WindowMode.apply(ClientPrefs.data.windowedmode);
 		} catch(e:Dynamic) {
 			TraceManager.error('trace.options.windowModeFailed', 'Failed to change window mode: {}', [e]);
 		}
@@ -1709,34 +1790,42 @@ class OptionsState extends MusicBeatState
 		updateCategoryTexts();
 	}
 
+	/**
+	 * Trace Console is an action row ([Press ENTER]), not a checkbox: pressing it opens
+	 * the debug console, pressing it again closes it.
+	 *
+	 * What is already attached decides which of the two a press means, and the saved
+	 * preference is kept in sync with the result, so a console that is already there
+	 * (game started from a terminal) keeps or stops receiving output instead of being
+	 * closed behind the player's back:
+	 *   no console        -> open one (the one place allowed to allocate one)
+	 *   one we allocated  -> close it again
+	 *   one we inherited  -> keep it, only toggle whether traces are written to it
+	 *
+	 * Startup never does any of this - see TraceManager.syncWithPrefs().
+	 */
 	function onChangeTraceConsole()
 	{
-		#if (desktop && cpp && windows)
-		mohong.TraceManager.enableConsoleOutput(false);
-		mohong.TraceConsole.stop();
+		#if (cpp && windows)
+		var hasConsole:Bool = mohong.Windows.hasConsole();
+		var outputOn:Bool = hasConsole && mohong.TraceManager.consoleOutput;
 
-		if (mohong.Windows.hasConsole())
+		// Only a console this process opened is ours to close.
+		if (outputOn && mohong.Windows.consoleOwned)
 			mohong.Windows.freeConsole();
-		else
-		{
-			if (mohong.Windows.allocConsole())
-			{
-				mohong.Windows.enableAnsiColors();
-				mohong.TraceManager.enableConsoleOutput(true);
-				mohong.TraceConsole.start();
-			}
-		}
+
+		ClientPrefs.data.traceConsoleEnabled = !outputOn;
 		#end
+
+		mohong.TraceManager.syncWithPrefs(true);
 	}
 
 	function onChangeTraceConsoleLevel()
 	{
-		#if (desktop && cpp && windows)
+		#if (windows)
 		if (!mohong.Windows.hasConsole()) return;
-		var level:String = ClientPrefs.data.traceConsoleLevel;
-		if (level != null && level.length > 0)
-			mohong.TraceManager.applyConsoleLevel(level);
 		#end
+		mohong.TraceManager.applyConsoleLevel(ClientPrefs.data.traceConsoleLevel);
 	}
 
 	function onChangeTouchSwipe()
@@ -1840,6 +1929,16 @@ class OptionsState extends MusicBeatState
 	function onChangeShowNoteOptimizationNotice()
 	{
 		backend.NoteOptimisationNotice.showAgain();
+	}
+
+	/** "Clear the chart cache" action: drops every cached note list and reports the freed space. */
+	function onClearChartCache()
+	{
+		var freed:Float = ChartCache.clear();
+		var mbStr:String = Std.string(Math.round(freed / 1048576 * 10) / 10);
+		var msg:String = Language.get('option.clearChartCache.done', 'Deleted every cached chart note list (~{mb} MB).')
+			.replace('{mb}', mbStr);
+		backend.Dialog.show(Language.get('option.clearChartCache.doneTitle', 'Chart Cache'), msg, 'Info');
 	}
 
 	function syncDragToWheel()

@@ -29,7 +29,9 @@ abstract ModProvider(String) from String to String {
 #end
 class DownloaderState extends MusicBeatState {
 	var items:FlxTypedSpriteGroup<ModItem>;
-	var itemsY:Int = FlxG.height - (3 * 190) - 50;
+	// 3 rows of 190 px cards, lifted just far enough that the bottom-left page arrows and the
+	// B button sit *below* the last row instead of on top of its title.
+	var itemsY:Int = FlxG.height - (3 * 190) - 80;
 	var providerIcons:FlxTypedSpriteGroup<ProviderIcon>;
 	public static var curSelected:Int = 0;
 	public static var modProvider:ModProvider = ModProvider.PEO;
@@ -38,6 +40,13 @@ class DownloaderState extends MusicBeatState {
 	var searchPlaceholder:FlxText;
 	var searchInput:InputText;
 	var pageInfo:FlxText;
+
+	/** UP/DOWN (row of 5) and LEFT/RIGHT (one card) each repeat on their own, different steps. */
+	var navRow = new NavRepeat();
+	var navCell = new NavRepeat();
+
+	/** Set every frame by update(); ModItem reads it so a pad tap never also selects a mod. */
+	public static var padTap:Bool = false;
 	
 	//var showVerified = false;
 	// public static var verified:Array<Float> = [
@@ -65,6 +74,15 @@ class DownloaderState extends MusicBeatState {
 		curSelected = 0;
 		
 		super.create();
+
+		// On-screen controls: two page arrows and B. The grid itself is tapped card by card (and
+		// the download / link buttons are tapped directly too), so A would be a dead button -- but
+		// paging is keyboard-only (Q / E), which a touchscreen cannot reach at all. The arrows
+		// therefore drive loadNextPage() and sit where the "Q / E" hint used to be; B leaves.
+		addVirtualPad(LEFT_RIGHT, B);
+		// Online pad layout: shrunk buttons tucked into the corners, clear of the UI.
+		OnlineNav.layoutRow(virtualPad);
+		addPadCamera();
 
 		FlxG.mouse.visible = true;
 
@@ -147,13 +165,16 @@ class DownloaderState extends MusicBeatState {
 		pageTip1.setFormat(OnlineLang.font(), 20, FlxColor.WHITE, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 		pageTip1.y = pageInfo.y;
 		pageTip1.alpha = 0.6;
-		add(pageTip1);
+		// The arrows sit here on touch builds, so the keyboard hint would be drawn under them.
+		if (virtualPad == null)
+			add(pageTip1);
 
 		var pageTip2 = new FlxText(-20, 0, FlxG.width, OnlineLang.L('dl.nextPage', 'E - Go to next page'));
 		pageTip2.setFormat(OnlineLang.font(), 20, FlxColor.WHITE, RIGHT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 		pageTip2.y = pageInfo.y;
 		pageTip2.alpha = pageTip1.alpha;
-		add(pageTip2);
+		if (virtualPad == null)
+			add(pageTip2);
 
 		FlxG.sound.music.fadeIn(1, 1, 0.5);
 
@@ -281,6 +302,20 @@ class DownloaderState extends MusicBeatState {
 	}
 
     override function update(elapsed:Float) {
+		// A dialog on top (the download picker, a URL confirm) owns the pointer and the keys.
+		// Without this the pad's A would also open the card underneath it.
+		if (subState != null) {
+			// The cards are updated through super.update(); keep the pad flag fresh for them.
+			padTap = OnlineNav.padBlocks(virtualPad);
+			super.update(elapsed);
+			return;
+		}
+
+		// A tap that lands on the on-screen pad belongs to the pad, never to a card behind it.
+		// Computed before super.update() because the cards are updated inside it and read this.
+		padTap = OnlineNav.padBlocks(virtualPad);
+		var pointerClick = FlxG.mouse.justPressed && !padTap;
+
 		if (!searchInput.hasFocus) {
 			if (controls.BACK #if android || FlxG.android.justReleased.BACK #end) {
 				FlxG.sound.music.volume = 1;
@@ -297,7 +332,7 @@ class DownloaderState extends MusicBeatState {
 				if (FlxG.mouse.overlaps(provIcon)) {
 					provIcon.alpha = 1.0;
 
-					if (FlxG.mouse.justPressed && !LoadingScreen.loading) {
+					if (pointerClick && !LoadingScreen.loading) {
 						modProvider = provIcon.provider;
 						updateModProvider();
 						loadNextPage(true);
@@ -306,10 +341,14 @@ class DownloaderState extends MusicBeatState {
 			}
 
 			if (!LoadingScreen.loading) {
-				if (FlxG.mouse.wheel == 1 || FlxG.keys.justPressed.Q) {
+				// Wheel and Q/E page on the desktop; on a touchscreen the two pad arrows do it,
+				// because nothing else on this screen can reach the next page.
+				var padPrev = virtualPad != null && virtualPad.buttonLeft != null && virtualPad.buttonLeft.justPressed;
+				var padNext = virtualPad != null && virtualPad.buttonRight != null && virtualPad.buttonRight.justPressed;
+				if (FlxG.mouse.wheel == 1 || FlxG.keys.justPressed.Q || padPrev) {
 					loadNextPage(-1);
 				}
-				if (FlxG.mouse.wheel == -1 || FlxG.keys.justPressed.E) {
+				if (FlxG.mouse.wheel == -1 || FlxG.keys.justPressed.E || padNext) {
 					loadNextPage(1);
 				}
 
@@ -319,25 +358,34 @@ class DownloaderState extends MusicBeatState {
 					loadNextPage(true);
 				}
 				
-				if (controls.UI_RIGHT_P) {
-					changeSelection(1);
-				}
-				if (controls.UI_LEFT_P) {
-					changeSelection(-1);
-				}
-				if (controls.UI_UP_P) {
-					if (curSelected - 5 < 0) {
-						curSelected = -1;
+				// Hold-to-repeat on both axes: UP/DOWN steps a whole row (5 cards) and LEFT/RIGHT
+				// steps one card, so they cannot share a single NavRepeat.
+				var rowSteps = navRow.poll(controls.UI_UP, controls.UI_DOWN, elapsed);
+				while (rowSteps != 0) {
+					if (rowSteps < 0) {
+						// Stepping up out of the grid lands on the search box (curSelected -1).
+						if (curSelected - 5 < 0)
+							curSelected = -1;
+						else
+							changeSelection(-5);
+						rowSteps++;
 					}
 					else {
-						changeSelection(-5);
+						changeSelection(5);
+						rowSteps--;
 					}
 				}
-				if (controls.UI_DOWN_P) {
-					changeSelection(5);
+
+				var cellSteps = navCell.poll(controls.UI_LEFT, controls.UI_RIGHT, elapsed);
+				while (cellSteps != 0) {
+					var dir = cellSteps > 0 ? 1 : -1;
+					changeSelection(dir);
+					cellSteps -= dir;
 				}
 
-				if (FlxG.mouse.justMoved || FlxG.mouse.justPressed) {
+				// Clicking the search box selects it (curSelected -1). The pointer no longer
+				// reassigns the selection on every move.
+				if (pointerClick) {
 					curSelected = -2;
 
 					if (FlxG.mouse.overlaps(searchBg)) {
@@ -352,17 +400,18 @@ class DownloaderState extends MusicBeatState {
 		super.update(elapsed);
 
 		if (!searchInput.hasFocus && !LoadingScreen.loading) {
-			if (curSelected == -1)
+			// The search box lights up under the pointer too, so it is clear it can be clicked.
+			if (curSelected == -1 || (!padTap && FlxG.mouse.overlaps(searchBg)))
 				searchBg.alpha = 0.8;
 			else
 				searchBg.alpha = 0.6;
 
-			if (controls.ACCEPT || FlxG.mouse.justPressed) {
+			if (controls.ACCEPT || pointerClick) {
 				if (curSelected == -1) {
 					searchInput.hasFocus = true;
 				}
 				else if (curSelected >= 0 && items.length - 1 >= curSelected) {
-					if (FlxG.mouse.justPressed) {
+					if (pointerClick) {
 						if (FlxG.mouse.overlaps(items.members[curSelected].dlBg)) {
 							openModDownloads(items.members[curSelected].mod.id);
 						}
@@ -604,6 +653,9 @@ class ModItem extends FlxSpriteGroup {
 	var link:FlxSprite;
 	var thumb:FlxSprite;
 
+	/** Lit up by the pointer; only a click moves the selection onto this card. */
+	var hovered:Bool = false;
+
 	public var selected = false;
 
 	public static var FRAME_WIDTH:Int = 220;
@@ -738,11 +790,16 @@ class ModItem extends FlxSpriteGroup {
 	override function update(elapsed) {
 		super.update(elapsed);
 
-		if ((FlxG.mouse.justPressed || FlxG.mouse.justMoved) && FlxG.mouse.overlaps(bg)) {
+		// Hover only lights the card up. It used to take the selection on any pointer move, which
+		// dragged the highlight across the grid on the way to a pad button.
+		hovered = !DownloaderState.padTap && FlxG.mouse.overlaps(bg);
+
+		if (hovered && FlxG.mouse.justPressed) {
 			DownloaderState.curSelected = ID;
 		}
 
 		selected = DownloaderState.curSelected == ID;
+		bg.alpha = selected ? 0.75 : (hovered ? 0.65 : 0.5);
 
 		if (!ClientPrefs.data.lowQuality) {
 			if (FlxG.mouse.overlaps(dlBg))

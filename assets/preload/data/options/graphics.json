@@ -38,15 +38,6 @@
 		"defaultValue": false
 	},
 	{
-		"nameKey": "option.asyncImageLoading",
-		"defaultName": "Async Image Loading",
-		"descKey": "option.asyncImageLoading.desc",
-		"defaultDesc": "When entering a song, shows a loading screen and decodes character sheets on background threads in parallel\nwith real progress. Turn off to load synchronously without the loading screen.",
-		"variable": "asyncImageLoading",
-		"type": "bool",
-		"defaultValue": true
-	},
-	{
 		"nameKey": "option.gfxLruCache",
 		"defaultName": "Texture Reuse Cache (LRU)",
 		"descKey": "option.gfxLruCache.desc",
@@ -132,7 +123,7 @@
 		"nameKey": "option.windowedmode",
 		"defaultName": "Windowed mode",
 		"descKey": "option.windowedmode.desc",
-		"defaultDesc": "Choose your window mode (Press ACCEPT to apply changes).",
+		"defaultDesc": "Choose your window mode (Press ACCEPT to apply changes).\nBorderless is a true borderless window that covers the screen without switching the display mode, so it avoids the black flash / Auto HDR switch real fullscreen can cause.\nPress F11 at any time to switch between windowed and borderless.",
 		"variable": "windowedmode",
 		"type": "string",
 		"defaultValue": "windowed",

@@ -41,6 +41,7 @@ import script.FunkinText;
 import script.FunkinSprite;
 import script.FunkinButton;
 import script.FunkinBar;
+import script.ScriptErrorGuard;
 
 #if LUA_ALLOWED
 import script.lua.FunkinLua;
@@ -343,7 +344,7 @@ class HScript
 		interp.allowStaticVariables = true;
 		interp.allowPublicVariables = true;
 		interp.errorHandler = function(e) {
-			TraceManager.error('trace.hscript.interpError', 'HScript error in ${scriptName}: $e');
+			TraceManager.error('trace.hscript.interpError', 'HScript error in {}: {}', [scriptName, e]);
 		};
 		interp.importFailedCallback = importFailedCallback;
 		parser = new Parser();
@@ -449,6 +450,11 @@ class HScript
 			// Shaders
 			"ShaderFilter" => ShaderFilter, "ColorMatrixFilter" => ColorMatrixFilter,
 			#if (!flash && sys) "FlxRuntimeShader" => FlxRuntimeShader, #end
+			// 1.0.4 exposes its error-reporting FlxRuntimeShader subclass as a global
+			// (PE 1.0.4 HScript.hx:175). That subclass only adds shader-compile error reporting,
+			// so the stock FlxRuntimeShader is a behaviour-compatible stand-in: a mod's
+			// `new ErrorHandledRuntimeShader('x.frag')` still compiles and renders.
+			#if (!flash && sys) "ErrorHandledRuntimeShader" => FlxRuntimeShader, #end
 			#if VIDEOS_ALLOWED
 			"VideoSpriteManager" => backend.VideoSpriteManager,
 			#end
@@ -507,6 +513,16 @@ class HScript
 		vars.set("Highscore", Highscore);
 		vars.set("ClientPrefs", ClientPrefs);
 		vars.set("ModConfig", ModConfig);
+
+		// 1.0.4: getModSetting (HScript 侧) —— 读取模组 data/settings.json 里的设置值。
+		// modName 省略时使用当前激活的模组目录。
+		#if MODS_ALLOWED
+		vars.set("getModSetting", function(saveTag:String, ?modName:String = null):Dynamic {
+			if (modName == null || modName.length == 0) modName = Paths.currentModDirectory;
+			if (modName == null || modName.length == 0) return null;
+			return FunkinLua.getModSetting(saveTag, modName);
+		});
+		#end
 
 		// 多k API (hscript)
 		vars.set("getMania", function():Int return (PlayState.instance != null) ? PlayState.instance.getManiaK() : -1);
@@ -835,6 +851,29 @@ class HScript
 		});
 		#end
 
+		// 0.7.3+/1.0.4 HScript globals: debugPrint / addHaxeLibrary.
+		// PE registers both on its HScript interpreter (0.7.3 HScript.hx:136/:254, 1.0.4 HScript.hx:202/:320).
+		// A script ported from those engines dies with "Unknown identifier" on the first call
+		// without them, which is exactly the mod compatibility this engine promises.
+		set('debugPrint', function(text:String, ?color:FlxColor = null) {
+			if (color == null) color = FlxColor.WHITE;
+			if (PlayState.instance != null)
+				PlayState.instance.addTextToDebug(text, color);
+			else
+				trace(text);
+		});
+
+		// PE semantics: import a Haxe class into this script's globals under its own name.
+		// set() writes into this interpreter's variables, so the binding is per-script, like PE's.
+		set('addHaxeLibrary', function(libName:String, ?libPackage:String = '') {
+			if (libName == null || libName.length == 0) return;
+			var qualified:String = (libPackage != null && libPackage.length > 0) ? libPackage + '.' + libName : libName;
+			var resolved:Dynamic = Type.resolveClass(qualified);
+			set(libName, resolved);
+			if (resolved == null)
+				TraceManager.warn('trace.hscript.addHaxeLibraryMissing', 'addHaxeLibrary: class not found: {}', [qualified]);
+		});
+
 		// Pre-register the hxCodec-compatible video classes so LUA addHaxeLibrary/runHaxeCode works.
 		// Use direct compiled references (not Type.resolveClass) to guarantee the class is available.
 		#if VIDEOS_ALLOWED
@@ -967,8 +1006,12 @@ class HScript
 		#end
 
 		// Input
-		set('keyJustPressed', function(name:String) {
+		// 1.0.4: name 可省略, 且统一小写后查表。
+		set('keyJustPressed', function(?name:String = null) {
 			if (PlayState.instance == null) return false;
+			if (name == null) name = '';
+			if (!backend.CompatEngine.is063()) name = name.toLowerCase().trim();
+			if (name.length == 0) return false;
 			// 回放时: 录制中出现过的键以模拟状态为准 (还原 mod 自定义机制键, 如空格闪避)
 			if (PlayState.replayMode && PlayState.instance.replayExam != null && PlayState.instance.replayExam.keyExists(name))
 				return PlayState.instance.replayExam.keyJustPressed(name);
@@ -985,8 +1028,11 @@ class HScript
 				default: false;
 			}
 		});
-		set('keyPressed', function(name:String) {
+		set('keyPressed', function(?name:String = null) {
 			if (PlayState.instance == null) return false;
+			if (name == null) name = '';
+			if (!backend.CompatEngine.is063()) name = name.toLowerCase().trim();
+			if (name.length == 0) return false;
 			if (PlayState.replayMode && PlayState.instance.replayExam != null && PlayState.instance.replayExam.keyExists(name))
 				return PlayState.instance.replayExam.keyPressed(name);
 			return switch(name) {
@@ -998,8 +1044,11 @@ class HScript
 				default: false;
 			}
 		});
-		set('keyReleased', function(name:String) {
+		set('keyReleased', function(?name:String = null) {
 			if (PlayState.instance == null) return false;
+			if (name == null) name = '';
+			if (!backend.CompatEngine.is063()) name = name.toLowerCase().trim();
+			if (name.length == 0) return false;
 			if (PlayState.replayMode && PlayState.instance.replayExam != null && PlayState.instance.replayExam.keyExists(name))
 				return PlayState.instance.replayExam.keyJustReleased(name);
 			return switch(name) {
@@ -1166,8 +1215,7 @@ class HScript
 			bumpVarEpoch();
 			throw e;
 		}
-		// 执行成功：重置连续错误计数。
-		errorLoopCount = 0;
+		// execute() 不是每帧回调：这里不重置连续错误计数（计数只归每帧/每步回调，见 ScriptErrorGuard）。
 		return result;
 	}
 
@@ -1185,16 +1233,20 @@ class HScript
 		try {
 			var f:Dynamic = interpGet(func);
 			if (f != null && Reflect.isFunction(f)) {
-				// Successful call resets the consecutive-error counter.
-				errorLoopCount = 0;
+				// 只有每帧/每步回调的成功才重置连续错误计数（见 ScriptErrorGuard）。
+				if (ScriptErrorGuard.isLoopCallback(func)) errorLoopCount = 0;
 				execDepth++;
+				// 脚本执行期间, 复用参数槽会串台 (脚本可能再次触发引擎回调), 见 backend.Scripts。
+				backend.Scripts.enterExec();
 				try {
 					var ret:Dynamic = Reflect.callMethod(null, f, args);
 					execDepth--;
+					backend.Scripts.exitExec();
 					bumpVarEpoch(); // the body may have written any global
 					return ret;
 				} catch (e:Dynamic) {
 					execDepth--;
+					backend.Scripts.exitExec();
 					bumpVarEpoch(); // a body that threw may still have written globals
 					throw e;
 				}
@@ -1206,7 +1258,7 @@ class HScript
 			}
 			return FunkinLua.Function_Continue;
 		} catch (e:Dynamic) {
-			handleError('Error calling "$func": $e');
+			handleError('Error calling "$func": $e', func);
 			return FunkinLua.Function_StopHScript;
 		}
 	}
@@ -1402,26 +1454,31 @@ class HScript
 
 	// ==================== Error Handling ====================
 
-	function handleError(message:String):Void {
+	function handleError(message:String, callback:String = null):Void {
 		if (closed) return;
 
-		// Always log via TraceManager so we can see the error in the console
-		// even when ClientPrefs / Language are not yet initialized.
-		var fullMessage:String = scriptDir + '/' + scriptName + '\n' + message;
-		TraceManager.error('trace.hscript.error', fullMessage);
+		// Error-loop protection: 只有每帧/每步回调参与计数（见 ScriptErrorGuard）。
+		// 达到上限后只是安静下来（不再打印 / 不再弹窗），脚本**继续运行** —— 1.0.4 并没有
+		// "因报错停掉整个脚本"这种行为，关掉会让它在别的回调里本该正常工作的功能一起失效。
+		// 上限默认 0 = 永不静默，无论报错多少每条都照常打印。
+		var silenced:Bool = false;
+		var limit:Int = ClientPrefs.data != null ? ClientPrefs.data.scriptErrorLimit : 0;
+		if (ClientPrefs.data != null && ClientPrefs.data.ignoreErrorLoopScripts && limit > 0 && ScriptErrorGuard.isLoopCallback(callback)) {
+			errorLoopCount++;
+			if (errorLoopCount >= limit) silenced = true;
+		}
+
+		if (!silenced) {
+			// Always log via TraceManager so we can see the error in the console
+			// even when ClientPrefs / Language are not yet initialized.
+			TraceManager.error('trace.hscript.error', 'HScript error in {}: {}', [scriptDir + '/' + scriptName, message]);
+		}
 
 		if (ClientPrefs.data == null) return;
 
-		// Error-loop protection (default): count consecutive errors, silently ignore the
-		// script once it hits the limit instead of spamming a dialog every frame.
 		if (ClientPrefs.data.ignoreErrorLoopScripts) {
-			errorLoopCount++;
-			if (errorLoopCount >= ClientPrefs.data.scriptErrorLimit) {
-				closed = true;
-				TraceManager.warn('trace.script.ignoredAfterErrors', 'Script ignored after {} repeated errors: {}', [errorLoopCount, scriptName]);
-				interp = null;
-				parser = null;
-			}
+			if (silenced && (errorLoopCount == limit || errorLoopCount % 600 == 0))
+				TraceManager.warn('trace.script.errorLoopSilenced', 'Repeated errors silenced ({} times, script still running): {} :: {}', [errorLoopCount, scriptName, callback]);
 			return;
 		}
 
@@ -1494,7 +1551,7 @@ class PlayStateInterp extends hscript.Interp
 				_instanceFields = Type.getInstanceFields(PlayState);
 		} catch (e:Dynamic) {
 			_instanceFields = [];
-			mohong.TraceManager.error('trace.hscript.interpInit', 'PlayStateInterp init: $e');
+			mohong.TraceManager.error('trace.hscript.interpInit', 'PlayStateInterp init: {}', [e]);
 		}
 	}
 

@@ -53,6 +53,12 @@ class RoomState extends MusicBeatState /*#if interpret implements interpret.Inte
 	var chatIconBg:FlxSprite;
 	var chatIcon:FlxSprite;
 
+	/** UP/DOWN/LEFT/RIGHT hold-to-repeat, shared with the on-screen pad. */
+	var nav = new NavRepeat();
+
+	/** Icon under the pointer, or -1. Hover only lights it up; a click is what selects it. */
+	var hoverIndex:Int = -1;
+
 	var itemTip:FlxText;
 	var itemTipBg:FlxSprite;
 
@@ -375,6 +381,14 @@ class RoomState extends MusicBeatState /*#if interpret implements interpret.Inte
 	override function create() {
 		super.create();
 
+		// On-screen controls: UP/DOWN walk the icon ring and B leaves the room. There is no A:
+		// every icon is tapped directly, so a confirm button would only duplicate the tap.
+		// Mounted up here because the icon row below has to know whether the buttons exist before
+		// it can dodge their corner.
+		addVirtualPad(UP_DOWN, B);
+		// Online pad layout: shrunk buttons tucked into the corners, clear of the UI.
+		OnlineNav.layoutColumn(virtualPad);
+
 		#if windows
 		if (!Lib.application.window.resizable)
 			Lib.application.window.resizable = true;
@@ -474,7 +488,10 @@ class RoomState extends MusicBeatState /*#if interpret implements interpret.Inte
 		settingsIconBg.makeGraphic(100, 100, TEXT_BG_COLOR);
 		settingsIconBg.updateHitbox();
 		settingsIconBg.y = FlxG.height - settingsIconBg.height - 20;
-		settingsIconBg.x = FlxG.width - settingsIconBg.width - 20;
+		// A and B sit in the bottom-right corner, so on touch builds the whole icon row (and the
+		// room-code / song labels stacked above it, which all hang off this x) moves left until it
+		// clears them. Desktop builds without touch controls keep the original corner.
+		settingsIconBg.x = FlxG.width - settingsIconBg.width - 20 - (virtualPad != null ? 100 : 0);
 		groupHUD.add(settingsIconBg);
 
 		settingsIcon = new FlxSprite(settingsIconBg.x, settingsIconBg.y);
@@ -589,6 +606,10 @@ class RoomState extends MusicBeatState /*#if interpret implements interpret.Inte
 		
 		updateTexts(true);
 
+		// The pad itself was mounted at the top of create(); its camera is registered last so it
+		// draws over the stage and the HUD.
+		addPadCamera();
+
 		FlxG.mouse.visible = true;
 		FlxG.autoPause = false;
 
@@ -681,6 +702,26 @@ class RoomState extends MusicBeatState /*#if interpret implements interpret.Inte
 		return hit;
 	}
 
+	/** Icon index under the pointer, or -1. Hover only reports it; the click selects it. */
+	function itemUnderPointer():Int {
+		if (mouseOverlapsItem(settingsIconBg))
+			return settingsIcon.ID;
+		if (mouseOverlapsItem(chatIconBg))
+			return chatIcon.ID;
+		if (mouseOverlapsItem(playIconBg))
+			return playIcon.ID;
+		// The three text rows are tested as text *and* as block: the block is a 1x1 sprite scaled
+		// to the text, so before the share size is known it can be zero-height, and a row with a
+		// zero-height block could not be clicked at all ("Selected Song" was one of them).
+		if (mouseOverlapsItem(roomCodeBg) || mouseOverlapsItem(roomCode))
+			return roomCode.ID;
+		if (mouseOverlapsItem(songNameBg) || mouseOverlapsItem(songName))
+			return songName.ID;
+		if (mouseOverlapsItem(verifyModBg) || mouseOverlapsItem(verifyMod))
+			return verifyMod.ID;
+		return -1;
+	}
+
 	/**
 	 * A long hold of ESC/BACK did not leave the room, and the earlier fix (`LeavePie.finished`
 	 * reset + `leaveRoom(forceStateChange)`) did not help. This traces `pressed('back')` / global
@@ -759,6 +800,11 @@ class RoomState extends MusicBeatState /*#if interpret implements interpret.Inte
 			return;
 		}
 
+		// A dialog on top (room settings, the stage picker) owns the pointer and the keys. Without
+		// this a pad tap or a click would also act on a lobby icon underneath.
+		if (subState != null)
+			return;
+
 		if (FlxG.keys.justPressed.F11) {
 			GameClient.reconnect();
 		}
@@ -779,6 +825,10 @@ class RoomState extends MusicBeatState /*#if interpret implements interpret.Inte
 		}
 
 		lastFocused = chatBox.focused && chatBox.typeText.text.length > 0;
+
+		// Every frame, not only on the 5-second refresh: the rows are stacked off live text
+		// heights and their hit blocks hang off that geometry (see layoutTextStack).
+		layoutTextStack();
 
 		updateTimer -= elapsed;
 		if (updateTimer <= 0) {
@@ -854,6 +904,12 @@ class RoomState extends MusicBeatState /*#if interpret implements interpret.Inte
 				else
 					item.scale.set(FlxMath.lerp(item.scale.x, 1.1, elapsed * 10), FlxMath.lerp(item.scale.y, 1.1, elapsed * 10));
 			}
+			else if (hoverIndex == item.ID) {
+				// Hovered but not selected: a gentler version of the selection pop, so the two
+				// states stay tellable apart.
+				item.angle = FlxMath.lerp(item.angle, 0, elapsed * 5);
+				item.scale.set(FlxMath.lerp(item.scale.x, 1.05, elapsed * 10), FlxMath.lerp(item.scale.y, 1.05, elapsed * 10));
+			}
 			else {
 				item.angle = FlxMath.lerp(item.angle, 0, elapsed * 5);
 				item.scale.set(FlxMath.lerp(item.scale.x, 1, elapsed * 10), FlxMath.lerp(item.scale.y, 1, elapsed * 10));
@@ -861,30 +917,17 @@ class RoomState extends MusicBeatState /*#if interpret implements interpret.Inte
 		}
 		playIcon.alpha = GameClient.getPlayerSelf().hasSong ? 1.0 : 0.5;
 
+		// The chat box owns the pointer while it is focused; drop any leftover highlight then.
+		hoverIndex = -1;
+
 		if (!chatBox.focused) {
-			if (FlxG.mouse.justMoved) {
-				if (mouseOverlapsItem(settingsIconBg)) {
-					curSelected = settingsIcon.ID;
-				}
-				else if (mouseOverlapsItem(chatIconBg)) {
-					curSelected = chatIcon.ID;
-				}
-				else if (mouseOverlapsItem(playIconBg)) {
-					curSelected = playIcon.ID;
-				}
-				else if (mouseOverlapsItem(roomCodeBg)) {
-					curSelected = roomCode.ID;
-				}
-				else if (mouseOverlapsItem(songNameBg)) {
-					curSelected = songName.ID;
-				}
-				else if (mouseOverlapsItem(verifyModBg)) {
-					curSelected = verifyMod.ID;
-				}
-				else {
-					curSelected = -1;
-				}
-			}
+			// A tap that lands on the on-screen pad belongs to the pad, never to an icon behind it.
+			var padTap = OnlineNav.padBlocks(virtualPad);
+			var pointerClick = FlxG.mouse.justPressed && !padTap;
+
+			// Hover only lights the icon up. Moving the pointer no longer takes the selection away
+			// from the keyboard, which is what made this screen unusable on a touchscreen.
+			hoverIndex = padTap ? -1 : itemUnderPointer();
 
 			var held = false;
 			for (key in ['note_left', 'note_down', 'note_up', 'note_right']) {
@@ -916,17 +959,16 @@ class RoomState extends MusicBeatState /*#if interpret implements interpret.Inte
 					playerAnim('taunt' + altSuffix);
 				}
 			} else {
-				if (controls.UI_LEFT_P) {
-					changeSelection(1);
-				}
-				if (controls.UI_RIGHT_P) {
-					changeSelection(-1);
-				}
-				if (controls.UI_UP_P) {
-					changeSelection(1);
-				}
-				if (controls.UI_DOWN_P) {
-					changeSelection(-1);
+				// Wheel + keyboard walk the icon ring, with hold-to-repeat. LEFT/UP step one way
+				// and RIGHT/DOWN the other; NavRepeat reports "up" as -1, so the sign flips here.
+				// (This screen has no d-pad: the icons themselves are the touch target.)
+				var prevHeld = controls.UI_LEFT || controls.UI_UP;
+				var nextHeld = controls.UI_RIGHT || controls.UI_DOWN;
+				var steps = -nav.poll(prevHeld, nextHeld, elapsed) + FlxG.mouse.wheel;
+				while (steps != 0) {
+					var dir = steps > 0 ? 1 : -1;
+					changeSelection(dir);
+					steps -= dir;
 				}
 				if (FlxG.keys.pressed.CONTROL && FlxG.keys.justPressed.C) {
 					Clipboard.text = GameClient.getRoomSecret(true);
@@ -938,7 +980,10 @@ class RoomState extends MusicBeatState /*#if interpret implements interpret.Inte
 				}
 			}
 			
-			if ((!FlxG.keys.pressed.ALT && controls.ACCEPT) || FlxG.mouse.justPressed) {
+			// A click selects the icon it hit first, then runs it; clicking empty space does nothing.
+			if ((!FlxG.keys.pressed.ALT && controls.ACCEPT) || (pointerClick && hoverIndex >= 0)) {
+				if (pointerClick)
+					curSelected = hoverIndex;
 				switch (curSelected) {
 					case 0:
 						openSubState(new RoomSettingsSubstate());
@@ -949,14 +994,24 @@ class RoomState extends MusicBeatState /*#if interpret implements interpret.Inte
 
 						if (!selfPlayer.hasSong && GameClient.room.state.song != "" && (Mods.getModDirectories().contains(GameClient.room.state.modDir) || GameClient.room.state.modDir == "")) {
 							Mods.currentModDirectory = GameClient.room.state.modDir;
-							try {
-								GameClient.send("verifyChart", Song.hashRawSong(GameClient.room.state.song, GameClient.room.state.folder));
-							}
-							catch (exc) {
-								Alert.alert(OnlineLang.L('room.exception', 'Caught an exception!'), ShitUtil.readableError(exc));
+							if (GameClient.chartIsSegmented(GameClient.room.state.song, GameClient.room.state.folder, GameClient.room.state.modDir)) {
+								// Segmented chart: no one-file chart to hash, so say why the play button refuses
+								// instead of letting hashRawSong throw (or, worse, verifying nothing at all).
+								GameClient.refuseSegmentedChart();
 								if (optionShake != null)
 									optionShake.cancel();
 								optionShake = ShitUtil.shake(playIcon, 0.05, 0.3, FlxAxes.X);
+							}
+							else {
+								try {
+									GameClient.send("verifyChart", Song.hashRawSong(GameClient.room.state.song, GameClient.room.state.folder));
+								}
+								catch (exc) {
+									Alert.alert(OnlineLang.L('room.exception', 'Caught an exception!'), ShitUtil.readableError(exc));
+									if (optionShake != null)
+										optionShake.cancel();
+									optionShake = ShitUtil.shake(playIcon, 0.05, 0.3, FlxAxes.X);
+								}
 							}
 						}
 						else if (selfPlayer.hasSong) {
@@ -1006,7 +1061,7 @@ class RoomState extends MusicBeatState /*#if interpret implements interpret.Inte
 						}
 				}
 			}
-			else if (FlxG.mouse.justPressedRight) {
+			else if (FlxG.mouse.justPressedRight && !padTap) {
 				if (curSelected == 5) {
 					FlxG.switchState(new DownloaderState());
 				}
@@ -1053,11 +1108,20 @@ class RoomState extends MusicBeatState /*#if interpret implements interpret.Inte
 
 			if (Mods.getModDirectories().contains(GameClient.room.state.modDir) || GameClient.room.state.modDir == null || GameClient.room.state.modDir == "") {
 				Mods.currentModDirectory = GameClient.room.state.modDir;
+				if (GameClient.chartIsSegmented(GameClient.room.state.song, GameClient.room.state.folder, GameClient.room.state.modDir)) {
+					// The background callers pass ignoreAlert; only the verify button raises the popup.
+					if (!ignoreAlert)
+						GameClient.refuseSegmentedChart();
+					return false;
+				}
 				try {
 					GameClient.send("verifyChart", Song.hashRawSong(GameClient.room.state.song, GameClient.room.state.folder));
 					return false;
 				}
 				catch (exc) {
+					// Used to be silent: the verify button could do nothing and say nothing.
+					if (!ignoreAlert)
+						GameClient.refuseUnhashableChart(exc);
 				}
 			}
 
@@ -1073,7 +1137,21 @@ class RoomState extends MusicBeatState /*#if interpret implements interpret.Inte
 					if (GameClient.isConnected() && GameClient.room.state.modDir == mod) {
 						if (Mods.getModDirectories().contains(GameClient.room.state.modDir)) {
 							Mods.currentModDirectory = GameClient.room.state.modDir;
-							GameClient.send("verifyChart", Song.hashRawSong(GameClient.room.state.song, GameClient.room.state.folder));
+							// This runs in the async download callback: an exception here has no caller left
+							// to catch it, so it is handled inside -- otherwise the hash is lost silently and
+							// the room waits for hasSong forever.
+							try {
+								if (GameClient.chartIsSegmented(GameClient.room.state.song, GameClient.room.state.folder, GameClient.room.state.modDir)) {
+									GameClient.refuseSegmentedChart();
+								}
+								else {
+									GameClient.send("verifyChart", Song.hashRawSong(GameClient.room.state.song, GameClient.room.state.folder));
+								}
+							}
+							catch (exc:Dynamic) {
+								Sys.println(exc);
+								GameClient.refuseUnhashableChart(exc);
+							}
 						}
 					}
 				});
@@ -1107,13 +1185,48 @@ class RoomState extends MusicBeatState /*#if interpret implements interpret.Inte
 	/** The room code is filled once, on the first room state. */
 	var _roomCodeShown = false;
 
-	/** Write the room-code text and sync its right-aligned background block. */
+	/** Write the room-code text; layoutTextStack() sizes and places its block. */
 	function setRoomCodeText(text:String):Void {
 		roomCode.text = text;
-		roomCode.x = settingsIconBg.x + settingsIconBg.width - roomCode.width;
-		roomCodeBg.scale.set(roomCode.width, roomCode.height);
-		roomCodeBg.updateHitbox();
-		roomCodeBg.x = roomCode.x;
+	}
+
+	/**
+	 * Re-stacks the three right-aligned rows (mod / song / room code) and their blocks.
+	 *
+	 * This runs every frame. The rows hang off each other's *live* heights, and each block is a
+	 * 1x1 sprite scaled to its text, so sizing them only on the 5-second refresh read heights from
+	 * before the text had ever regenerated: the rows ended up overlapping, and a block that came
+	 * out zero-high made its row impossible to click.
+	 */
+	function layoutTextStack():Void {
+		if (roomCodeBg == null || songNameBg == null || verifyModBg == null)
+			return;
+
+		stackRow(roomCode, roomCodeBg, null);
+		stackRow(songName, songNameBg, roomCodeBg);
+		stackRow(verifyMod, verifyModBg, songNameBg);
+	}
+
+	/** Sizes one right-aligned row and its block, and stacks it directly above "below". */
+	function stackRow(text:FlxText, bg:FlxSprite, ?below:FlxSprite):Void {
+		if (text == null || bg == null)
+			return;
+
+		// updateHitbox() regenerates the text first, so width/height describe what is drawn.
+		// Measure at scale 1: the hover animation scales these rows, and baking that into the box
+		// would move the row out from under the pointer that just hovered it.
+		var sx:Float = text.scale.x;
+		var sy:Float = text.scale.y;
+		text.scale.set(1, 1);
+		text.updateHitbox();
+		text.scale.set(sx, sy);
+
+		text.x = settingsIconBg.x + settingsIconBg.width - text.width;
+		text.y = (below == null ? settingsIconBg.y : below.y) - text.height - 10;
+
+		bg.scale.set(Math.max(1, text.width), Math.max(1, text.height));
+		bg.updateHitbox();
+		bg.setPosition(text.x, text.y);
 	}
 
     function updateTexts(?init:Bool = false) {
@@ -1155,20 +1268,12 @@ class RoomState extends MusicBeatState /*#if interpret implements interpret.Inte
 				verifyMod.text = OnlineLang.L('room.modUnknown', 'No mod named: ') + daModName + OnlineLang.L('room.modVerify.tail', ' (Download/Verify it here!)');
 		}
 
-		verifyMod.x = songNameBg.x + songNameBg.width - verifyMod.width;
-		verifyModBg.scale.set(verifyMod.width, verifyMod.height);
-		verifyModBg.updateHitbox();
-		verifyModBg.x = verifyMod.x;
-
 		songName.text = OnlineLang.L('room.song', 'Selected Song: ') + GameClient.room.state.song;
 		if (GameClient.room.state.song == null || GameClient.room.state.song.trim() == "")
 			songName.text += OnlineLang.L('room.songNone', '(None)');
 		else if (!selfPlayer.hasSong)
 			songName.text += OnlineLang.L('room.songNotFound', ' (Not found!)');
-		songName.x = roomCodeBg.x + roomCodeBg.width - songName.width;
-		songNameBg.scale.set(songName.width, songName.height);
-		songNameBg.updateHitbox();
-		songNameBg.x = songName.x;
+		layoutTextStack();
 
 		updateCharacters();
 

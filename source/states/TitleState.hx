@@ -181,6 +181,15 @@ class TitleState extends MusicBeatState
 		backend.NoteSkinData.reloadNoteSkins();
 #end
 
+		// Desktop: apply the saved window mode now that prefs are in memory. Doing this from
+		// Main was too early (prefs load here), which is how the saved mode got lost on restart.
+		#if desktop
+		backend.WindowMode.apply(ClientPrefs.data.windowedmode);
+		// F11 flips windowed <-> borderless at any time. Installed here rather than in Main
+		// because the stage only exists once the game is up.
+		backend.WindowMode.installShortcuts();
+		#end
+
 		// Windows: Apply saved Trace Console preference (not before prefs are loaded).
 		#if windows
 		TraceManager.syncWithPrefs();
@@ -237,7 +246,8 @@ class TitleState extends MusicBeatState
 
 		Highscore.load();
 
-		titleJSON = Json.parse(Paths.getTextFromFile('images/gfDanceTitle.json'));
+		// 1.0.4 用 tjson 解析标题数据（容忍尾随逗号与注释）。
+		titleJSON = backend.JsonUtil.parseTolerant(Paths.getTextFromFile('images/gfDanceTitle.json'));
 
 		#if TITLE_SCREEN_EASTER_EGG
 		if (FlxG.save.data.psychDevsEasterEgg == null) FlxG.save.data.psychDevsEasterEgg = '';
@@ -262,7 +272,16 @@ class TitleState extends MusicBeatState
 		{
 			if(FlxG.save.data != null && FlxG.save.data.fullscreen)
 			{
-				FlxG.fullscreen = FlxG.save.data.fullscreen;
+				// Legacy save flag (MusicBeatState writes FlxG.fullscreen here every frame). Old
+				// saves only had this, so migrate it into the window mode once.
+				if (ClientPrefs.data.windowedmode == null)
+					ClientPrefs.data.windowedmode = backend.WindowMode.FULLSCREEN;
+
+				// Only the real fullscreen mode may set it: letting this flag turn SDL fullscreen
+				// back on while the mode is borderless is what pushed borderless onto the Windows
+				// Auto HDR / black-screen path.
+				if (ClientPrefs.data.windowedmode == backend.WindowMode.FULLSCREEN)
+					FlxG.fullscreen = true;
 			}
 			persistentUpdate = true;
 			persistentDraw = true;
@@ -900,9 +919,6 @@ class TitleState extends MusicBeatState
 	override function beatHit()
 	{
 		super.beatHit();
-		#if HSCRIPT_ALLOWED
-		callOnHscript('onBeatHit', []);
-		#end
 
 		if(logoBl != null)
 			logoBl.animation.play('bump', true);

@@ -42,7 +42,18 @@ from datetime import datetime
 TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(TOOL_DIR)
 DEFAULT_CRASH_DIR = os.path.join(REPO_ROOT, 'export', 'release', 'windows', 'bin', 'crash')
-DEFAULT_MAP = os.path.join(REPO_ROOT, 'export', 'release', 'windows', 'obj', 'ApplicationMain.map')
+def _first_existing(*paths):
+    for p in paths:
+        if os.path.isfile(p):
+            return p
+    return paths[0]
+
+# tools/SymbolsAfterBuild.hx MOVES the map into export/symbols/<platform>-<mode>/
+# after every lime build, so look there first and keep the old obj/ spot as a
+# fallback for a tree where the hook has not run yet.
+DEFAULT_MAP = _first_existing(
+    os.path.join(REPO_ROOT, 'export', 'symbols', 'windows-release', 'ApplicationMain.map'),
+    os.path.join(REPO_ROOT, 'export', 'release', 'windows', 'obj', 'ApplicationMain.map'))
 DEFAULT_EXE = os.path.join(REPO_ROOT, 'export', 'release', 'windows', 'bin', 'SeiunEngine.exe')
 
 REPORT_PREFIXES = ('native_crash', 'SeiunEngine_', 'MohonghEngine_')
@@ -123,11 +134,17 @@ def read_report(path):
     with open(path, 'r', encoding='utf-8', errors='replace') as fh:
         lines = fh.read().splitlines()
 
-    exc = _first(lines, r'^Exception code:\s*(0x[0-9a-fA-F]+)')
-    fault_text = _first(lines, r'^Fault offset:\s*(0x[0-9a-fA-F]+)')
+    # Classification only ever looks at the report's own header. Reports used to
+    # paste the previous crash files verbatim inside themselves, and a full-file
+    # scan then found an embedded native dump and mislabelled the Haxe report it
+    # sat in. The embed is gone, but the header window keeps that class of bug
+    # from coming back.
+    head = lines[:40]
+    exc = _first(head, r'^Exception code:\s*(0x[0-9a-fA-F]+)')
+    fault_text = _first(head, r'^Fault offset:\s*(0x[0-9a-fA-F]+)')
     if exc or fault_text:
         kind = 'native'
-    elif _first(lines, r'^=== .*Crash Report ==='):
+    elif _first(head, r'^(=== .*Crash Report ===)'):
         kind = 'haxe'
     else:
         kind = 'unknown'
@@ -154,10 +171,12 @@ def read_report(path):
     frames = []
     in_bt = False
     for line in lines:
-        if line.startswith('Backtrace'):
+        # Section banners ("--- Backtrace ... ---") are accepted too, so the
+        # report layout can gain headings without silently killing frame parsing.
+        if re.match(r'^(---\s*)?Backtrace', line):
             in_bt = True
             continue
-        if in_bt and line.startswith('Stack scan'):
+        if in_bt and re.match(r'^(---\s*)?Stack scan', line):
             break
         if not in_bt:
             continue
@@ -185,6 +204,10 @@ def read_report(path):
                 if nxt.strip():
                     haxe_stack.append(nxt.strip())
             break
+    # Release builds run without HXCPP_STACK_TRACE, so the section carries an
+    # explanatory note instead of frames - that is not a stack.
+    if haxe_stack and haxe_stack[0].startswith('(empty'):
+        haxe_stack = []
 
     date = _first(lines, r'^Date:\s*(.+)$') or date_from_name(os.path.basename(path))
     return {

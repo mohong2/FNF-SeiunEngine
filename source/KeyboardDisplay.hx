@@ -307,17 +307,19 @@ class KeyboardDisplay extends FlxSpriteGroup
 		// 先通知脚本（fullyCustom 模式下脚本用它自己重绘）
 		callScript('onKeyboardPress', [key]);
 
-		var kc:Int = _kc;
-		if (members[kc + key] != null)
-			members[kc + key].alpha = 1 * getOverallAlpha();
-		if (showKeyLabels && members[kc * 2 + key] != null)
-			members[kc * 2 + key].color = FlxColor.BLACK;
-
 		if (!PlayState.replayMode)
 			total++;
 		if (totalText != null)
 			totalText.text = Std.string(total);
 		hitArray.unshift(Date.now());
+
+		if (!visible) return;
+
+		var kc:Int = _kc;
+		if (members[kc + key] != null)
+			members[kc + key].alpha = 1 * getOverallAlpha();
+		if (showKeyLabels && members[kc * 2 + key] != null)
+			members[kc * 2 + key].color = FlxColor.BLACK;
 
 		if (!ClientPrefs.data.keyboardTimeDisplay || saveBitmap == null || saveBitmap.bitmapData == null || fullyCustom)
 			return;
@@ -344,6 +346,9 @@ class KeyboardDisplay extends FlxSpriteGroup
 	{
 		// 先通知脚本（fullyCustom 模式下脚本用它自己重绘）
 		callScript('onKeyboardRelease', [key]);
+
+		// 不可见时 pressed() 就没建过键雨, 这里无事可做 (见 pressed 的说明)。
+		if (!visible) return;
 
 		var kc:Int = _kc;
 		if (members[kc + key] != null)
@@ -463,15 +468,17 @@ class KeyboardDisplay extends FlxSpriteGroup
 
 	public function dataUpdate(elapsed:Float)
 	{
-		var balls = hitArray.length - 1;
-		while (balls >= 0)
+		if (hitArray.length > 0)
 		{
-			var cock:Date = hitArray[balls];
-			if (cock != null && cock.getTime() + 1000 < Date.now().getTime())
-				hitArray.remove(cock);
-			else
-				balls = 0;
-			balls--;
+			var nowMs:Float = Date.now().getTime();
+			var cut:Int = hitArray.length;
+			while (cut > 0)
+			{
+				var d:Date = hitArray[cut - 1];
+				if (d == null || d.getTime() + 1000 >= nowMs) break;
+				cut--;
+			}
+			if (cut < hitArray.length) hitArray.resize(cut);
 		}
 		kps = hitArray.length;
 

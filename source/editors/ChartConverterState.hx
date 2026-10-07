@@ -163,12 +163,12 @@ class ChartConverterState extends MusicBeatState
 
 					parseAndConvert(path);
 				}
-				catch(e:Exception) showError(e.message);
+				catch(e:Dynamic) showError(Std.string(e)); // hxcpp 文件错误不是 Exception 实例, 必须用 Dynamic 接
 			});
 		}
-		catch(e:Exception)
+		catch(e:Dynamic)
 		{
-			showError(e.message);
+			showError(Std.string(e));
 		}
 	}
 

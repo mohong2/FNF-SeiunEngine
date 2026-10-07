@@ -125,6 +125,11 @@ class GameRoom {
 	/** Business-layer one-shot flags (not schema fields; never encoded into state). */
 	public var songStarted:Bool = false;
 	public var songEnded:Bool = false;
+	/**
+	 * sid holding the room-wide pause; "" when the room is running (see RoomLogic.applyPause).
+	 * Not a schema field: the pause is an event, and a late joiner must never inherit a stale one.
+	 */
+	public var pauseOwner:String = "";
 
 	/** Time of the last broadcast "ping". */
 	public var lastPingTime:Float = 0;
@@ -595,6 +600,12 @@ class GameRoom {
 
 		// Re-number the HUD rows after the leave.
 		RoomLogic.reassignOx(this);
+
+		// A player who was holding the room's pause must not trap everyone else: releasing it
+		// broadcasts resumeGame, so the remaining players are never stuck on a frozen round.
+		if (pauseOwner == record.sessionId) {
+			RoomLogic.releasePause(this, "the player who paused left");
+		}
 	}
 
 	// ------------------------------------------------------------------

@@ -7,7 +7,7 @@ set HAXELIB_PATH=%CD%\.haxelib
 
 where haxe >nul 2>nul
 if errorlevel 1 (
-	echo Haxe was not found on PATH. Install Haxe 4.2.5 first: https://haxe.org/download/
+	echo Haxe was not found on PATH. Install Haxe 4.3.7 or newer first: https://haxe.org/download/
 	pause
 	exit /b 1
 )

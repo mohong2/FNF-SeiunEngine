@@ -86,4 +86,12 @@ class Room extends Schema {
 	@:type("boolean")
 	public var royalModeDadSide:Bool = false;
 
+	/**
+	 * Room pause policy ("Pause Policy" in the room settings). Appended last on purpose: field
+	 * indexes come from declaration order, so inserting a field in the middle would renumber every
+	 * later field and break older clients. See RoomLogic.PAUSE_* for the three values.
+	 */
+	@:type("number")
+	public var pauseMode: Dynamic = 1;
+
 }

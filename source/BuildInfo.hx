@@ -22,7 +22,7 @@ class BuildInfo
 	/** Short git hash injected at build time by tools/gen_buildinfo.py. */
 	public static inline var COMMIT:String = "unknown";
 	/** Version read from Project.xml by tools/gen_buildinfo.py (runtime metadata wins). */
-	public static inline var VERSION:String = "0.2.2preonline1";
+	public static inline var VERSION:String = "0.2.2preonline2";
 	/** True when the tree had uncommitted changes at build time. */
 	public static inline var DIRTY:Bool = false;
 
@@ -55,7 +55,7 @@ class BuildInfo
 
 	/**
 	 * True for development builds: the version string carries "pre" or "beta".
-	 * Current version (0.2.2preonline1) hits this, so the test-build paragraph shows.
+	 * Current version (0.2.2preonline2) hits this, so the test-build paragraph shows.
 	 */
 	public static function isTestBuild():Bool
 	{
@@ -63,7 +63,7 @@ class BuildInfo
 		return v.indexOf('pre') >= 0 || v.indexOf('beta') >= 0;
 	}
 
-	/** One-line identity for the watermark: ASCII only, e.g. "v0.2.2preonline1 | 24182dc". */
+	/** One-line identity for the watermark: ASCII only, e.g. "v0.2.2preonline2 | 24182dc". */
 	public static function watermarkText():String
 	{
 		return 'v' + appVersion() + ' | ' + buildId();

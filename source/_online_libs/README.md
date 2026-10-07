@@ -54,9 +54,10 @@ The upstream library source contains two expressions using the Haxe 4.3 null-coa
 | `io/colyseus/serializer/schema/Decoder.hx` | 328 | `? previousValue ?? refs.get(refId)` |
 | `io/colyseus/serializer/schema/types/MapSchema.hx` | 135 | `var items = this.items ?? new OrderedMap<String, T>(...)` |
 
-`??` requires Haxe **4.3**. This engine is pinned to Haxe **4.2.5**
-(`README.md`, `USE HAXE 4.2.5.txt`, the CI workflows); the upstream project used **4.3.7**.
-Haxe 4.2.5 rejects even `p ?? 1` with `Unexpected ?`.
+`??` requires Haxe **4.3**. This engine's toolchain requirement is now Haxe **4.3.7**
+(minimum 4.3.0; see `README.md`, `USE HAXE 4.3.7.txt` and the CI workflows), but the
+**4.2.5 baseline still passes the same type-check** during the migration, so the
+deviation below is kept. Haxe 4.2.5 rejects even `p ?? 1` with `Unexpected ?`.
 
 The copies vendored here use the forward-compatible form `x != null ? x : y`, which is valid
 under both 4.2.5 and 4.3.x.

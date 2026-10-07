@@ -25,6 +25,12 @@ permissions:
   contents: write
   actions: write
 
+# 中国大陆镜像与加速入口；留空则不生成对应内容
+env:
+  MIRROR_GITEE_REPO: https://gitee.com/lmo_hongz/FNF-SeiunEngine
+  MIRROR_ACCEL_BASE: https://gh.b52m.cn
+  MIRROR_ACCEL_LABEL: gh.b52m.cn
+
 jobs:
   prepare:
     runs-on: ubuntu-latest
@@ -204,11 +210,25 @@ jobs:
           `build-info.txt` of the matching zip. Offline fallback for desktop:
           `python tools/mapresolve.py ApplicationMain.map <fault offset>`.
 
+          The Windows `ApplicationMain.map` is verified against the published exe before it
+          ships (`python tools/verify_map.py SeiunEngine.exe ApplicationMain.map`), so a
+          resolved frame is exact and not merely plausible. Re-check any pair yourself
+          before trusting it - a map from a different link resolves every frame to the
+          wrong function.
+
           Every download carries the version, so a file taken off the release page is self-identifying:
           game builds are `SeiunEngine-<target>-<version>.<ext>` and crash symbols end in `-symbols-<version>.zip`.
 
           Checksums are included in `SHA256SUMS.txt`.
           EOF
+
+      - name: Append China mirror links
+        uses: ./.github/actions/append-mirror-links
+        with:
+          tag: ${{ env.TAG_NAME }}
+          gitee-repo: ${{ env.MIRROR_GITEE_REPO }}
+          accel-base: ${{ env.MIRROR_ACCEL_BASE }}
+          accel-label: ${{ env.MIRROR_ACCEL_LABEL }}
 
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:

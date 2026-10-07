@@ -881,7 +881,7 @@ class ModItem extends FlxSpriteGroup
 		var rawPackPath = Paths.mods(folder + '/pack.json');
 		if(FileSystem.exists(rawPackPath)) {
 			try {
-				var rawJson = haxe.Json.parse(File.getContent(rawPackPath));
+				var rawJson = backend.JsonUtil.parseTolerant(File.getContent(rawPackPath));
 				var langDescKey = Language.get("Mod.description");
 				if(langDescKey != null && Reflect.hasField(rawJson, langDescKey))
 					this.langdescription = Reflect.field(rawJson, langDescKey);

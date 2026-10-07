@@ -1,7 +1,7 @@
 # SeiunEngine 更新日志 · Changelog
 
-> 完整记录 2026年6月19日 至 8月30日 的所有改进、修复与突破
-> A comprehensive record of every improvement, fix, and breakthrough from June 19 to August 30, 2026.
+> 完整记录 2026年6月19日 至 10月7日 的所有改进、修复与突破
+> A comprehensive record of every improvement, fix, and breakthrough from June 19 to October 7, 2026.
 
 ---
 
@@ -394,10 +394,91 @@
 
 - 「更新与渲染分离」这条怀疑方向经核查**不成立**：`RenderThread` 是空壳（多线程渲染早已移除），`drawWrapper` 在 `Main.hx` 与 `ClientPrefs.hx` 中都被置空，渲染始终在单线程主循环里。真正的 update/draw 重排发生在 lime 的原生帧循环，不在 flixel。
 - 相机特效完成回调里销毁相机后无保护解引用 `flashSprite` 的问题也一并修了。
-- 完整的排查记录（含证据、代码位置与取舍理由）见 `docs/CRASH_ROOTCAUSE_20260912.md`。
+- 完整的排查记录（含证据、代码位置与取舍理由）保存在内部文档里，不随引擎仓库发布。
 - ⚠ **lime / flixel 两处补丁必须上游化到 `mohong2/lime` 与 `mohong2/flixel`**，否则 CI 重新克隆依赖后，打出来的包又会带上这两个缺陷。
 
 （2026-09-12，日志还是 AI 代笔。）
+
+---
+
+### 2026年9月26日 – 10月7日（0.2.2 Pre-Online.2）
+
+> 本条目记录 0.2.2 Pre-Online.2 整个开发周期的最终成果；周期内被后续提交取代或撤销的中间状态不再单独记录。玩家向的完整公告见 `release-notes/0.2.2preonline2.md`。
+
+#### 联机：SQLite 服务端、游戏内开服与局域网发现
+
+- **服务端存储换成 SQLite**：WAL 模式、单连接 + 唯一数据库互斥锁、按 `user_version` 版本化的只增式建表（13 张表）；首次启动自动导入旧 JSON 并把原文件改名为 `*.imported-<时间戳>`（绝不删除）；token 只存 HMAC-SHA256 哈希、常量时间比较、支持过期与撤销；`/dev/urandom` 优先（无该设备的平台走 HMAC DRBG）；结构化 JSON Lines 日志按天切分；新增只读 `GET /api/health` 与 `--log-dir` / `--log-level`；可编译零运行时依赖的独立 `SeiunServer.exe`，neko 目标用法不变。HTTP 面的对外签名、错误串、排序、分页与 id 格式逐字保持。
+- **管理控制台网页编译进服务端**（部署目录存在 `server/web/` 时仍以磁盘为准）；公告字数按字符截断（500 字符 + 2048 字节上限），磁盘上已损坏的值自动修复，同类 12 处字数上限全接口排查；持久化公告随 `GET /api/front` 返回，客户端固定区域渲染，CJK 折行按字符。
+- **游戏内开服（LAN HOST）**：内嵌服务端在游戏进程内绑定 2567 / 2568，端口被占向上顺延、房间码带局域网 IP、免账号加入、本机只读网页控制台（独立服务端对应 `--console-local-readonly`）、Android 尽力而为开服；停止释放端口，可反复开停。
+- **局域网发现**：服务器列表新增「搜索本网络中的服务器」——监听 UDP 2569 广播 4 秒列出发现的服务器，勾选后 Add Selected Servers 才写入列表（已存在的不可勾选，可整批丢弃）；删除了按网卡枚举本机 IPv4 的「Use This PC (LAN)」行（多网卡 / WSL / Hyper-V 虚拟网卡会各占一行，点了还会直接改掉当前选中条目的地址）。服务器地址探测三态：可达 / 超时 / 协议不符。Android 放行明文 `ws://` / `http://`；Windows 开服打印防火墙放行命令。
+- **房间暂停策略**（仅房主 / 任一玩家默认 / 保留旧逻辑）由服务端唯一仲裁：暂停带发起者回显，恢复只对持有者生效，持有者离开 / 掉线 / 结束歌曲时自动广播恢复。双方各有自己的评分弹窗（远端锚定各自角色一侧并夹在 5%~95% 屏宽，同侧玩家横向拉开）。
+- **开始闸门**：房主开始后全员进谱面等待页（按 ACCEPT / 手柄 A / 点提示文字算准备），触屏端出现 A 虚拟键，房主 start 到达才进倒计时。
+- **联机界面导航统一**（OnlineNav / NavRepeat，键盘与触屏同一套）；联机对局逻辑从 PlayState 拆分到独立的 PlayOnline 模块；联机时全部运行期优化只改本局内存值、退出按快照恢复；分段谱面联机明确拒绝并提示；联机谱面分析按每个音符自己的 mania 快照取键数。
+
+#### 谱面：缓存、流式与内存
+
+- **巨谱缓存 `chart_cache/`**：流式谱面 Note 循环的输出（完整 DTO）按列压缩落盘（`.skel` / `.notes`），命中即回放、跳过骨架扫描 / 逐小节解析 / 折叠 / 排序；失效判据是「每个分段文件大小 + 修改时间 + 调用方配置串」，同一张列表 1.78 GB → 几 MB，读写最多持 1 MB 块。实测 45 GB 的 amphotercity（2,064,278,444 taps → 4,291,710 代表点）缓存为 `.skel` 14,215,997 B + `.notes` 12,855,326 B。设置：Huge Chart Cache / Compress the Chart Cache / Clear the Chart Cache（三语）。
+- **选歌预览跳过**：流式尺寸的谱面不再为预览解析整张谱面（预览只需要歌名与 `needsVoices`）。
+- **分段谱面识别放宽**：任意起始编号（0 / 1 / 5 / 100 均可）、断号只记录不作废、编号文件少于 2 个按单文件；`<song>.json` 闸与 `.parts.json` 清单不变；11 例回归（合成 7 + 真实 4）全部符合预期。同一首歌拆成多个 `<song>-<n>.json` 可以作为一首完整的歌游玩。
+- **无 `events` 字段也可流式**：字节级特征判据，slide20（2,105,875,665 B / 153,955,328 notes）不再退回整份 DOM 解析（那正是 Freeplay 卡死的根因）。
+- **Note 列式存储**：数值字段逐字段成列、全谱恒定的字段提升为标量（不分配列）、首次出现分歧才回填——每条 Note 约 358 B 的占用压到几十 B；列按倍增扩容、边解析边写入，hxcpp 块池不再被撑到全谱体量；`unspawnNotes` 的脚本写入经列存储照常生效。
+- **计数器换 Int64**：谱面与命中计数超过二十亿不再溢出。
+- **Note 材质复用判断免分配**：原先池化复用时每条 Note 都要现拼一个材质 key 字符串再比较；改为逐字段比较，重载路径不再产生字符串垃圾。
+- **弹窗 / 溅射 / 物化 / 排水预算按时间计费**：这些预算原本是「60 fps 设计速率、按绘制帧重置」，帧率上限越高每秒实际预算越大（360 fps 上限下为设计值的 6 倍）；现在按 elapsed×60 累积、按整单位消耗、单帧封顶 —— 60 fps 及以下行为逐位不变，更高帧率每秒付出的速率与设计一致。
+- **评分弹窗免分配化**：贴图键（评分 / 数字 / COMBO）构建一次缓存复用，不再每次命中每个精灵现拼字符串；连击数字写入复用缓冲；淡出不再依赖 FlxTween 全局管理器，改为池化记录由 PlayState 逐帧推进（暂停时与移动一致冻结，联机双方各自的弹窗各自推进），稳态零分配。
+- **图形清理重构**：`purgeUnusedGraphics()` 由「每清一个 key 就重扫全部缓存」改为单遍收集 + 批量移除，长会话下原有的周期性主线程冻结消失；被清理图形注册的 Sparrow 图集帧缓存一并逐出，不再留下「僵尸图集」（此前模组动态生成的精灵会渲染成空白并陷入脚本报错循环）。
+
+#### 图形与渲染
+
+- **Haxe 4.3.7 工具链迁移**：编译器与 API 层 430 整体升级，hxcpp 用引擎维护的 haxe-4.3 分支，CI / 发布构建对齐；引擎代码适配 4.3.7 的 API 变化。
+- **图集重打包加固**：像素写入统一走边界检查的 `blit()`（越界跳过并告警计数）；打包画布按请求尺寸校验（平台钳制分配即放弃重打包、保留原图）；CPU 副本已释放的源图不参与 `copyPixels`（整体放弃重打包，绝不产出透明图集）；跨线程发布由主线程持有；强制 GC 前静默异步工作线程——关掉「堆写坏、几秒后在 GC 线程崩溃」的一类隐患。
+- **移除异步图片加载**：删除 AsyncGfxLoader 与「异步图片加载」设置，位图解码统一回主线程按帧小批量处理（GC 崩溃排查的最终结论：跨线程发布位图是堆损坏源，不再保留这条风险）。
+- **分离 update / draw + 空闲帧跳过重绘**：无逻辑步的绘制帧直接重新呈现已录制的绘制命令，不再整帧重建；直写 `camera.canvas.graphics` 的代码请调用 `FlxGame.invalidateDrawCache()`。
+- **窗口模式统一**：新增 `backend.WindowMode`（windowed / fullscreen=真实 SDL 显示模式切换 / borderless=去装饰+贴满+顶置），启动路径与设置页共用同一实现。
+- **PsychUIDropDownMenu 重构**：滚轮 / 重新挂载下的定位等历史问题收敛到新实现；Dialog / NativeMem / TraceManager 配套调整。
+- **回放录制输入检测 O(1)**：inputTick 单调计数器取代每帧 186 次按键探针（实测每帧 1547 ns → 0.9 ns）。
+- **侧边 HUD 在 perfMode 下固定宽度 + 节流**：Botplay / Turbo 下计数每帧变化、按值跳过永不命中，比例字体的 autoSize 每次重排都会新分配一张位图与 GPU 纹理；现在侧边计数使用固定 fieldWidth（单行、永久复用同一位图），perfMode 开启且未强制原版重写时读数按 20 Hz 节流（perfMode 关闭或开启 `Stock HUD Text Rewrite` 时保持逐值精确刷新）。
+
+#### 视频：播放与录制
+
+- **播放**：接入 hxvlc 2.3.1（libVLC 3.0.23），移除树内影子副本；`startVideo` 支持 1.0.4 完整参数（canSkip / forMidSong / shouldLoop / playOnLoad）；保留 hxcodec 风格 FlxVideo / FlxVideoSprite / VideoSprite 包装层与 VideoPreloader，模组按老习惯调用。
+- **录制（桌面端）**：F9 或「开歌自动录制」把游戏画面 + Inst / Voices 混音送进 ffmpeg 管道，输出到 `render_video/`；编码器 x264 / NVENC / AMF / QSV / x265 / VP9 / VP8，码控 CRF/CQP / VBR / CBR；**1 帧 = 1/fps 秒的歌时**（帧号从 Conductor 时钟推导，暂停 / seek / 变速自动对齐，掉帧不改时长）；渲染期钉死帧率 + fixedTimestep；环形缓冲满时等待编码器而不是丢帧；预览渲染跑全流程不写文件用于校时；RenderIndicator 状态角标；每次渲染旁写 `.log`（设定、帧数、速度与 ffmpeg 的 stderr）。新增「渲染」设置页（9 项，三语）。
+
+#### 脚本：1.0.4 兼容、HScript 1.3.0 与诊断
+
+- **1.0.4 Lua API 全量对齐**：Psych 1.0.4 放宽的 62 处参数签名全部跟进（doTween* / noteTween* 的 ease、mouseClicked/Pressed/Released 的 button、getMouseX/Y、makeLuaText、startVideo 四新参、precacheImage 的 allowGPU、setProperty 系的 allowInstances、getPropertyFromGroup / setPropertyFromGroup 的 allowMaps 等）；回调实参对齐（eventEarlyTrigger 收 `(event, value1, value2, strumTime)`、onTweenCompleted(tag, vars)）；新增 getFileTranslation / getTranslationPhrase 与 1.0.4 `data/<language>.lang` 读取器（与引擎 JSON 语言表合并、{1}/{2} 替换）；移植 Paths.getAtlas / Paths.getAsepriteAtlas（'auto' 真正自动探测图集格式）；HScript 侧新增 getModSetting 与可选参 keyJustPressed / keyPressed / keyReleased。类型放宽（addAnimation 接受数组或 '0,1,2' 字符串、动画帧率 Float、setGraphicSize Float）、removeFromGroup 同时支持两种方言、版本相关默认值（setHealth、setObjectCamera、loadFrames 等）统一走 CompatEngine——0.6.3 / 0.7.3 模式行为逐字不变。
+- **模组 JSON 与 1.0.4 同口径解析**：pack.json、stages/*.json、data/settings.json、images/gfDanceTitle.json 走宽容优先解析（tjson 先、严格兜底），尾逗号与 `//` / `/* */` 注释不再炸；歌曲 / 角色 / 对话保持严格（与 1.0.4 一致）。实测修复某模组因 pack.json 尾逗号从未被注册为全局模组（全局模组列表 2 → 3）。
+- **close() 不再关错脚本**：linc_luajit 的回调表静态共享，「后创建的实例」覆盖同名回调，close() 可能作用于别的脚本（某模组自定义菜单永不出现的根因）；回调执行期记录发起实例，close() 作用于它，日志留 `CLOSE() <script>`。
+- **callMethodFromObject 空参数不再调用**：instanceArg 先解析 modchart 精灵 / 文本再回退变量表，未解析时跳过调用并警告——修复某模组 mouse.overlaps 传 null 的 0xC0000005 原生崩溃。
+- **getDataFromSave 补上默认值**（0.7.3 / 1.0.4 语义：缺字段回退调用方默认；0.6.3 保持原样）——修复 1.0.4 模组「选项菜单建一半、ESC 无效」一类问题；allowMaps 读取恢复；tagged 音效按 `sound_<tag>` 双写；无 tag 的 stopSound / pauseSound / resumeSound / getSoundTime / setSoundTime 作用于 FlxG.sound.music；playSound 失败不再写 null 槽位。
+- **脚本加固**：makeLuaSprite 等缺 tag 安全跳过；safeColor 统一十六进制转换（非法色 → 不透明白，严格校验仅 1.0.4 模式）；键盘名小写仅 0.7.3 / 1.0.4 生效；引擎软件光标进游玩前强制关闭、暂停菜单退出时恢复原值；KeyboardDisplay / 侧边 HUD 跟随 scoreTxt.visible 一起隐藏（玩家自己的隐藏 HUD 设置与联机路径除外）。
+- **1.0.4 判定名映射**：新增设置「1.0.4 Judgement Names for Mods」（默认开、仅 1.0.4 模式生效）：脚本读到的 marvelous 改写为 sick（与 1.0.4 同窗命中的叫法一致），按名字映射判定的模组不再准确率 / 连击错乱；引擎自身判定、计分、结算、联机与回放不变，`Note.ratingRaw` 保留真实评级。
+- **脚本报错不再停用整个脚本，且默认永不静默**：报错上限默认 0 —— 无论报错多少，每条都照常打印；设为正值后连续报错才触发静默（一条汇总 + 限流），其余回调照常运行；一次性回调报错只打印。原先「每帧回调错满 50 次整个脚本被关闭（连 onEndSong 都收不到）」的行为取消。
+- **回调热路径**：onStepHit / onBeatHit / onSectionHit 对 HScript 的重复派发修复（基类与 PlayState 各派发一次 → 恰好一次，次数 / 位置 / 参数与旧实现一致）；TitleState.beatHit 同；RecalculateRating 每命中 7 次脚本变量推送合并为 2 次；节拍回调参数复用 backend.Scripts 槽；CompatEngine 版本判定 O(1) 缓存（isModern 不再每次线性扫描 + 双解析，另加 refresh()）。
+- **音符排序默认快路径**：fastSort 更名 stockNoteSort 并反转默认——默认只排 living+visible（原 fasterNoteSort），仅联机显式要求原版全量排序；离线基准 500~8000 槽位相差 7~26 倍（2000 槽位 0.607ms → 0.083ms 每帧），400 组随机对照可见音符绘制顺序 0 例差异；旧存档的 `fastSort=false` 自动升级到快路径。
+- **新「脚本优化」设置页**：Reuse Script Callback Arguments（默认开）、Stock Event Drain / Stock BPM Lookup Objects / Stock HUD Text Rewrite（默认关，为读写 eventNotes / 持有 BPM 对象 / 直接改 HUD 文本的脚本保留原版行为）。
+- **脚本诊断 `logs/script_log.txt`**：每次启动重建、上限 2 万行；记录加载的 Lua 脚本路径、扫描的脚本目录（缺失标 MISSING）、每条脚本报错（脚本 + 回调 + 原始错误）、生命周期回调接收情况（onCreate / onCreatePost / onDestroy / onSongStart / onEndSong / onPause / onResume 等白名单）；[scan] 行写明 currentMod 与 globalMods（决定模组脚本搜不搜 `data/<song>/`）；[save] / [snd] 行分别诊断存档字段与 tagged 音效查找。
+- **HScript 引擎 hscript-seiun 1.3.0**：解析器 / 解释器性能重写（解析约 +16%、执行约 +38%）；新语法 or-pattern、守卫通配 case、解构扩展、泛型函数、map comprehension、通配 import、对象展开；修复带参脚本类构造、super.new、Math / Std / Map 解析、ClassExtendMacro 弃用告警、hscript.Bytes（带版本号格式）、hscript.Async、Printer 11 处缺陷。
+
+#### 玩法：Botplay NPS、结算与 Note 长条
+
+- **Turbo / Botplay HUD**：Turbo 标签 `TURBO BOTPLAY`；分数行 `Notes: 对手 + bf = 合计 | NPS | HP`；NPS 用单调时钟 1 秒滑动窗口（100×10ms）+ 快起慢落弹道（一帧 5000 的突发约 1.47s 平滑回零），峰值取窗口真值，脚本写 opCombo 不伪造爆发；超长数字紧凑化保证单行。
+- **结算界面**：超完美计入音符总数（不再落到 FALSE 兜底图）；评级图标统一装 240×90 框（兜底图 660×256 不再压满卡片）；统计图例 `fieldWidth = 0` 永不换行 + 数字紧凑化（修掉折行在自己文字域上画出的整块纯黑）；camOther 上的 side HUD 与 BOTPLAY / REPLAY / ms / 判定文字一并隐藏。
+- **Note 长条几何（模组裁剪帧）**：自定义 arrowSkin 的 trimmed Sparrow 图集长条高度归一化改按图集可见区域高（新增 `Note.sustainContentHeight()` 统一 setupNoteData / initNote / recalcSustainScale / resetNoteScaleForMania 四处公式）；下落模式长条锚点的补偿符号修正（近端落点精确等于 `distance + swagWidth/2 + 0.45*stepCrochet`，与 BPM / 速度 / 是否裁剪无关——原先符号用反导致尾帽深埋长条、BPM 越高越偏）；裁剪上沿改用 `Note.contentTopInFrame()`。默认与内置皮肤逐位不变；实测 Paranoia 模组 `varelt-NOTE.png` 在 150/522 BPM × 1.0/2.6 速度四组组合下长条近端落点全部收敛到 56.0px，尾帽搭接由 69~121px（深埋）恢复到 2.3~5.1px（正常）。
+
+#### 崩溃诊断与符号
+
+- **默认安全模式**：Haxe 层报错自带源文件与行号（行号表生成 / 刷新链路修正，提供 tools/refresh_linemap.ps1）；符号流程与崩溃保护解耦，CI 与发布构建同样保持安全模式；新增 Android 符号化工具 tools/symbolize_android.py；`.map` 符号继续单独随 Release 发布（不进游戏包）。
+- **崩溃报告保留 150 行游戏日志**（原约 30 行），原生缓冲扩到 32 KB，报告上下文带当次生效的图形设置。
+- **组容器不再解引用已被回收的成员**：成员内存已释放时将其移出容器，而不是继续取用。
+
+#### 设置、本地化与杂项
+
+- 新设置页：「渲染」（录制 9 项）、「脚本优化」（4 项）；谱面缓存三项；各项简中 / 繁中 / 英文文案齐全。
+- 选项布局校验脚本基线修好：登记新变量与新增页面、补齐繁中文案、删零引用死键、修掉英文 / 简中渲染页描述的字面 `\n`；三语言键集合一致。
+- 三语联机文案同一套键；之前没有按键的 trace 行补上多语言。
+- 文件对话框「上一次操作未结束又开新对话框」不再向主循环抛异常整进程崩溃：复位状态、记日志、走 onError 回调；谱面编辑器保存 / 打开链路加固。
+- CI / 发布：发布资源写入真实版本号（不再出现空 app 版本）；haxelib git 认证可选且不致命；固定 lime 项目文件路径；Release 正文追加中国镜像与加速链接。
 
 ---
 
@@ -799,10 +880,91 @@ Bundled regression harness (temp/touch-fix-test/TouchFixTest.hx): replicates the
 
 - The "update/render separation" theory was checked and **does not hold**: `RenderThread` is a stub (multi-threaded rendering was removed long ago) and `drawWrapper` is nulled in both `Main.hx` and `ClientPrefs.hx`, so rendering has always been single-threaded. The real update/draw rescheduling lives in lime's native frame loop, not in flixel.
 - Also fixed: a camera could be destroyed from inside its own effect completion callback and then have `flashSprite` dereferenced unguarded.
-- The full investigation (evidence, code locations, and the reasoning behind each trade-off) is in `docs/CRASH_ROOTCAUSE_20260912.md`.
+- The full investigation (evidence, code locations, and the reasoning behind each trade-off) is kept in an internal document and is not shipped with the engine repository.
 - ⚠ **The lime and flixel patches must be upstreamed to `mohong2/lime` and `mohong2/flixel`**, otherwise CI re-clones the dependencies and ships those two defects again.
 
 (2026-09-12, changelog written by AI as usual.)
+
+---
+
+### September 26 – October 7, 2026 (0.2.2 Pre-Online.2)
+
+> This entry records the final state of the whole Pre-Online.2 development cycle; intermediate states that later commits superseded or reverted are not listed separately. The player-facing announcement is `release-notes/0.2.2preonline2.md`.
+
+#### Online: SQLite server, in-game hosting and LAN discovery
+
+- **Server storage moved to SQLite**: WAL mode, a single connection plus one database mutex, an append-only schema versioned by `user_version` (13 tables); the legacy JSON files are imported once on first start and renamed to `*.imported-<timestamp>` (never deleted); tokens are stored only as HMAC-SHA256 hashes, compared in constant time, with expiry and revocation; `/dev/urandom` first (an HMAC DRBG where the device does not exist); structured JSON Lines logs rotated per day; a read-only `GET /api/health` plus `--log-dir` / `--log-level`; a standalone `SeiunServer.exe` with zero runtime dependencies can be built, and the neko target is unchanged. The external HTTP surface — signatures, error strings, ordering, pagination, id formats — is kept verbatim.
+- **The admin console web page is compiled into the server** (a `server/web/` directory on disk still wins when present); announcement lengths are counted by characters (500 chars + a 2048-byte cap), already-corrupted values are repaired on load, and the same class of limit was swept across 12 user-visible endpoints; persisted announcements ride along with `GET /api/front`, the client renders them in a fixed area, and CJK wrapping counts characters.
+- **In-game hosting (LAN HOST)**: the embedded server binds 2567 / 2568 inside the game process, ports increment upward when taken, the room code carries the host's LAN IP, guests join without an account, the local web console is login-free and read-only (`--console-local-readonly` is the standalone-server switch), and Android hosts on a best-effort basis; stopping releases the ports and hosting can be repeated in one session.
+- **LAN discovery**: the server list gains "Search for Servers on This Network" — it listens for UDP 2569 broadcasts for 4 seconds and lists the servers it heard; ticking entries and pressing Add Selected Servers writes them into your list (existing entries cannot be ticked; the batch can be discarded). The per-NIC "Use This PC (LAN)" rows are gone (multi-NIC machines listed every IPv4 — including WSL / Hyper-V virtual adapters — and clicking one rewrote the currently selected server). Address probing reports three outcomes: reachable / timed out / protocol mismatch. Android allows plaintext `ws://` / `http://`; Windows hosting prints the firewall allow command.
+- **Room pause policy** (host only / any player by default / legacy behaviour) is arbitrated solely by the server: pauses echo with the initiator's identity, resuming only works for the holder, and holder leaving / disconnecting / song end auto-broadcasts a resume. Both players get their own rating popup (the remote one anchors to that player's own character side, clamped to 5%–95% of screen width, same-side players spread apart horizontally).
+- **Start gate**: after the host presses play everyone enters the chart and sees "Press ACCEPT to start" (ACCEPT / gamepad A / clicking the hint all count as ready); touch players get an A virtual button, and the countdown starts only when the host's start arrives.
+- **The online menu navigation is unified** (OnlineNav / NavRepeat, one scheme for keyboard and touch); online gameplay logic moved from PlayState into a dedicated PlayOnline module; all runtime optimizations are switched off in memory for the current song online and restored from a snapshot on exit; sectioned charts are explicitly refused online; online chart analysis takes the key count from each note's own mania snapshot.
+
+#### Charts: cache, streaming and memory
+
+- **Huge-chart cache `chart_cache/`**: the output of a streamed chart's note loop (complete DTOs) is written column-compressed (`.skel` / `.notes`); a hit replays the list and skips the skeleton scan, the per-section parse, the fold and the sort. Invalidation is "every section file's size + modification time + the caller's configuration string"; one 1.78 GB list became a few MB, with at most a 1 MB block held in memory. Measured: 45 GB amphotercity (2,064,278,444 taps → 4,291,710 representatives) caches to `.skel` 14,215,997 B + `.notes` 12,855,326 B. Settings: Huge Chart Cache / Compress the Chart Cache / Clear the Chart Cache (trilingual).
+- **Song select skips preview parsing** for streaming-sized charts (the preview only needs the song name and `needsVoices`).
+- **Sectioned-chart detection relaxed**: any starting index (0 / 1 / 5 / 100 all work), gaps are recorded instead of fatal, fewer than two numbered files is a single file; the `<song>.json` gate and the `.parts.json` manifest are unchanged; all 11 regression cases (7 synthetic + 4 real) behave as intended. A song split across several `<song>-<n>.json` files plays as one complete song.
+- **Charts without an `events` field can stream too**: a byte-level feature test, so slide20 (2,105,875,665 B / 153,955,328 notes) no longer falls back to a whole-file DOM parse — the reason Freeplay used to freeze on it.
+- **Note data moved to a column store**: one column per numeric field, chart-constant fields hoisted to a plain scalar (no column allocated) until the first divergence — the per-note footprint drops from about 358 B to a few tens of bytes; columns grow by doubling and can be filled while parsing, so hxcpp's block pool is no longer stretched to the chart's full size; script writes through `unspawnNotes` keep working on top of the column store.
+- **Counters are Int64 now**: chart and hit counts beyond two billion no longer overflow.
+- **Allocation-free note material reuse checks**: pooled note reloads used to build a material-key string per note just to compare it; the check is now field-by-field, so the reload path produces no string garbage at all.
+- **Popup / splash / materialisation / drain budgets are charged by time**: these budgets were 60 fps design rates reset per *rendered* frame, so the per-second rate scaled with the fps cap (6x the design rate under a 360 fps cap); they now accumulate as elapsed x 60, are spent in whole units and are capped per frame — behaviour at 60 fps and below is bit-identical, and higher frame rates pay the same per-second rate as designed.
+- **Allocation-free rating popups**: the image keys (rating / digits / COMBO) are built once and cached instead of concatenating strings for every sprite of every hit; combo digits go into a reused buffer; fades no longer depend on FlxTween's global manager — they are pooled records advanced by PlayState every frame (freezing on pause exactly like the movement does; online, each player's popup is ticked by its own instance), allocation-free in steady state.
+- **Graphics purge reworked**: `purgeUnusedGraphics()` no longer re-scans every cache once per purged key — dead candidates are collected in one pass and removed in batches, ending the periodic multi-second main-thread freezes on long sessions; the Sparrow atlas frame caches registered by a purged graphic are evicted with it, so no "zombie atlas" is left behind (mods that spawn sprites dynamically used to render nothing and fall into a Lua error loop).
+
+#### Graphics and rendering
+
+- **Haxe 4.3.7 toolchain migration**: the compiler and API level 430 moved wholesale, hxcpp comes from this engine's maintained `haxe-4.3` branch, and CI / release builds are aligned; the engine code is adapted to 4.3.7's API changes.
+- **Atlas repack hardening**: every pixel write goes through a bounds-checked `blit()` (invalid input is skipped and counted with a warning); the packed canvas is verified against the requested size (a clamped allocation abandons the repack and keeps the original); a source whose CPU copy was released never enters `copyPixels` (the whole repack aborts — never a transparent atlas); cross-thread results are published by the main thread; async workers are quieted before a forced GC — closing the class of "the heap got corrupted, and seconds later the GC thread crashed".
+- **Async image loading removed**: `AsyncGfxLoader` and its setting are gone; bitmap decoding happens on the main thread in small per-frame batches (the GC-crash investigation's conclusion: the cross-thread bitmap publication path is a heap-corruption source, and the async win is not worth the risk).
+- **Separate update / draw with idle-frame draw reuse**: a draw tick that ran no logic step re-presents the recorded draw commands instead of rebuilding the frame; code writing to `camera.canvas.graphics` directly should call `FlxGame.invalidateDrawCache()`.
+- **Window modes unified**: the new `backend.WindowMode` handles windowed / fullscreen (a real SDL display-mode switch) / borderless (decorations off + fill + topmost) through one path shared by the boot flow and the options page.
+- **PsychUIDropDownMenu reworked**: historical positioning problems (wheel / re-parenting) are folded into the new implementation; Dialog / NativeMem / TraceManager adjusted alongside.
+- **O(1) input detection for replay recording**: a monotonic inputTick counter replaces 186 key probes per frame (measured 1547 ns → 0.9 ns per frame).
+- **Side HUD: fixed field width + throttle under perfMode**: under Botplay / Turbo the counters change every frame, so the value-change skip never fires, and with a proportional font each autoSize re-layout allocated a brand-new bitmap + GPU texture into the bitmap cache; the side counters now use a fixed field width (single line, one bitmap reused forever), and with perfMode on (and Stock HUD Text Rewrite not forced) their readout is throttled to 20 Hz — exact per-value-change refresh stays when perfMode is off or `Stock HUD Text Rewrite` is on.
+
+#### Video: playback and recording
+
+- **Playback**: hxvlc 2.3.1 (libVLC 3.0.23) is in and the in-tree shadow copy is gone; `startVideo` accepts 1.0.4's full parameter set (canSkip / forMidSong / shouldLoop / playOnLoad); the hxcodec-style FlxVideo / FlxVideoSprite / VideoSprite wrappers and VideoPreloader are kept, so mods keep calling them the old way.
+- **Recording (desktop)**: press F9 in a song (or enable Render on Song Start) to pipe the game frames plus the Inst / Voices mix into ffmpeg, writing to `render_video/`; encoders x264 / NVENC / AMF / QSV / x265 / VP9 / VP8 with CRF/CQP / VBR / CBR rate control; **1 frame = 1/fps of song time** (frame numbers derive from the Conductor clock, so pause / seek / speed changes align automatically and dropped frames never change the duration); rendering pins the frame rate with a fixed timestep; the ring buffer waits for the encoder instead of dropping frames; a preview render runs the whole pipeline without writing a file; a RenderIndicator badge shows the state; every render writes a `.log` next to the output. A new "Render" settings page (9 items, trilingual).
+
+#### Scripting: 1.0.4 compatibility, HScript 1.3.0 and diagnostics
+
+- **Full 1.0.4 Lua API alignment**: all 62 signatures Psych 1.0.4 relaxed are relaxed here too (`doTween*` / `noteTween*` `ease`, `mouseClicked/Pressed/Released` `button`, `getMouseX/Y`, `makeLuaText`, `startVideo`'s four new arguments, `precacheImage` `allowGPU`, `setProperty`-family `allowInstances`, `getPropertyFromGroup` / `setPropertyFromGroup` `allowMaps`, and so on); callback arguments match (`eventEarlyTrigger` gets `(event, value1, value2, strumTime)`, `onTweenCompleted(tag, vars)`); the missing `getFileTranslation` / `getTranslationPhrase` are added with a reader for 1.0.4's plain-text `data/<language>.lang` format (merged with the engine's JSON language tables, `{1}` / `{2}` substitution included); `Paths.getAtlas` / `Paths.getAsepriteAtlas` were ported so `'auto'` really auto-detects the atlas format; HScript gains `getModSetting` and optional-argument `keyJustPressed` / `keyPressed` / `keyReleased`. Types are widened (`addAnimation` takes an array or the `'0,1,2'` string form, framerates are `Float`, `setGraphicSize` takes `Float`), `removeFromGroup` answers both dialects, and version-dependent defaults (`setHealth`, `setObjectCamera`, `loadFrames`, …) go through `CompatEngine` — 0.6.3 / 0.7.3 modes stay byte-identical.
+- **Mod JSON is parsed the way 1.0.4 parses it**: `pack.json`, `stages/*.json`, `data/settings.json` and `images/gfDanceTitle.json` use a tolerant-first parser (tjson, strict as fallback), so trailing commas and `//` / `/* */` comments no longer break loading; song / character / dialogue parsing stays strict, matching 1.0.4. Measured fix: one mod was never registered as a global mod because of a trailing comma in its `pack.json`; the global mod list goes 2 → 3.
+- **`close()` no longer closes the wrong script**: linc_luajit's callback table is static and shared, so the last-created instance won and `close()` could act on a different script (the root cause of a mod's custom menu never appearing). The executing instance is recorded during dispatch, `close()` acts on it, and the log records `CLOSE() <script>`.
+- **`callMethodFromObject` no longer calls with unresolved arguments**: `instanceArg(...)` resolves modchart sprites / texts before falling back to the variables map, and an unresolved argument skips the call with a logged warning — fixing a `0xC0000005` native crash from a mod passing null into `mouse.overlaps`.
+- **`getDataFromSave` honours its default value** (0.7.3 / 1.0.4 semantics: an absent field returns the caller's default; 0.6.3 keeps the raw lookup) — fixing the "a 1.0.4 mod's options menu builds halfway and ESC stops working" class; `allowMaps` is honoured when reading again; tagged sounds are stored as `sound_<tag>`; tag-less `stopSound` / `pauseSound` / `resumeSound` / `getSoundTime` / `setSoundTime` act on `FlxG.sound.music`; a failed `playSound` no longer leaves a null slot.
+- **Scripts are less able to kill the process**: `makeLuaSprite` and friends skip safely when the tag is missing; `safeColor()` replaces the hand-rolled hex conversions (a garbage colour yields opaque white; the strict validation applies in 1.0.4 mode only); key names are lower-cased in 0.7.3 / 1.0.4 modes only; the engine's software cursor is force-disabled before gameplay and restored by the pause menu; KeyboardDisplay and the side HUD hide together with `scoreTxt.visible` (the user's own hide-HUD setting and the online path are excluded).
+- **1.0.4 judgement-name mapping**: a new option, "1.0.4 Judgement Names for Mods" (on by default, 1.0.4 compat mode only): the engine-private `marvelous` is rewritten to `sick` as scripts see it (what the same hit would have been called in 1.0.4), so judgement-by-name mods stop mis-counting accuracy / combo; the engine's own judgement, scoring, results, online and replays keep the real rating, and `Note.ratingRaw` preserves it for scripts that want it.
+- **Script errors no longer disable the whole script, and silencing is off by default**: the error limit defaults to 0 — every error is printed no matter how many there are; with a positive limit, repeated errors only trigger silencing (one summary line, then rate-limited) while the script's other callbacks keep running; an error in a one-shot callback is just printed. The old behaviour — a per-frame callback erroring 50 times closing the whole script (so even `onEndSong` never arrived) — is gone.
+- **Callback hot paths**: the double dispatch of `onStepHit` / `onBeatHit` / `onSectionHit` to HScript is fixed (the base class and `PlayState` each dispatched once — now exactly once, with the same count, position and arguments as the old implementation); the same fix applies to `TitleState.beatHit`; `RecalculateRating()` pushes its seven per-hit script globals in two sweeps instead of seven; the step / beat / section arguments reuse the pooled `backend.Scripts` slot; `CompatEngine` version resolution is cached O(1) (`isModern()` no longer linear-scans and resolves twice, plus an explicit `refresh()`).
+- **Fast note sort by default**: `fastSort` is renamed `stockNoteSort` and its default is inverted — the living+visible-only sort (the old `fasterNoteSort`) is the default path, and only an online match asks for the stock full sort; the offline benchmark differs 7–26x at 500–8000 slots (2000 slots: 0.607ms → 0.083ms per frame), with zero observable draw-order differences for visible notes over 400 randomized comparisons; old saves storing `fastSort = false` are upgraded automatically.
+- **A new "Script Optimization" settings page**: Reuse Script Callback Arguments (on by default) plus Stock Event Drain / Stock BPM Lookup Objects / Stock HUD Text Rewrite (off by default, preserving stock behaviour for scripts that read `eventNotes`, hold BPM objects, or write HUD text directly).
+- **Script diagnostics `logs/script_log.txt`**: recreated each launch, capped at 20,000 lines; records every loaded Lua script's path, every scanned script folder (marked `MISSING` when absent), every script error (script + callback + raw error text), and which scripts received the lifecycle callbacks (`onCreate` / `onCreatePost` / `onDestroy` / `onSongStart` / `onEndSong` / `onPause` / `onResume`, from a fixed allow-list); `[scan]` lines state `currentMod` and `globalMods` (exactly what decides whether a mod's `data/<song>/` is searched); `[save]` / `[snd]` lines diagnose save-field and tagged-sound lookups.
+- **The HScript engine hscript-seiun 1.3.0**: a profiled parser / interpreter rewrite (about 16% faster parsing, about 38% faster execution); new syntax — or-patterns, guarded wildcard cases, destructuring extensions, generic functions, map comprehensions, wildcard imports, object spread; fixes for script-class constructors with arguments, `super.new`, `Math` / `Std` / `Map` resolution, ClassExtendMacro deprecation warnings, `hscript.Bytes` (versioned format), `hscript.Async`, and eleven `Printer` defects.
+
+#### Gameplay: Botplay NPS, results screen and note sustains
+
+- **Turbo / Botplay HUD**: the Turbo label reads `TURBO BOTPLAY`; the score line reads `Notes: opponent + bf = total | NPS | HP`; NPS uses a monotonic-clock 1-second sliding window (100×10ms) with a fast rise / slow fall trajectory (a one-frame burst of 5000 decays over about 1.47 s), maxima keep the true window peaks, a script writing `opCombo` cannot fake a burst, and overly long numbers compact to stay on one line.
+- **Results screen**: the perfect-plus bucket counts toward the note total (no more `FALSE` fallback icon); rating graphics fit a 240×90 frame (the 660×256 fallback no longer covers the card); the stats legend uses `fieldWidth = 0` so it never wraps, with graded shrinking (fixing the solid black block a wrapped row painted over its own field); the side HUD and the BOTPLAY / REPLAY / ms / judgement labels on camOther are hidden together.
+- **Note sustain geometry (mod trimmed frames)**: sustain height normalization now uses the atlas's visible region height (a new `Note.sustainContentHeight()` unifies the four formulas in `setupNoteData` / `initNote` / `recalcSustainScale` / `resetNoteScaleForMania`); the falling-mode sustain anchor compensation sign is corrected (the near end lands exactly at `distance + swagWidth/2 + 0.45*stepCrochet`, independent of BPM / speed / trimming — the inverted sign used to bury the tail cap inside the sustain and grow the offset with BPM); the clip top edge uses the new `Note.contentTopInFrame()`. Default and built-in skins are bit-identical; measured on the Paranoia mod's `varelt-NOTE.png` across 150/522 BPM × 1.0/2.6 speed, the sustain's near end converges to 56.0 px in all four combinations, and tail-cap overlap goes from 69–121 px (buried) to 2.3–5.1 px (normal).
+
+#### Crash diagnostics and symbols
+
+- **Safe mode by default**: Haxe-level errors carry source file and line numbers out of the box (the linemap generation and refresh chain is fixed; `tools/refresh_linemap.ps1` is provided); the symbol flow is decoupled from the crash protection, so CI and release builds keep safe mode; a new `tools/symbolize_android.py` resolves Android crash addresses; `.map` symbols keep shipping separately on the Release, never inside the game archive.
+- **Crash reports keep 150 lines of game log** (about 30 before), the native buffer grew to 32 KB, and the report context names the graphics settings in effect.
+- **Group containers no longer dereference members whose memory is already gone**: such members are dropped from the container instead of being used.
+
+#### Settings, localization and misc
+
+- New settings pages: "Render" (the 9 recording options) and "Script Optimization" (4 options); the three chart-cache options; all strings ship in Simplified Chinese / Traditional Chinese / English.
+- The options-layout check script baseline is fixed: new variables and pages registered, missing Traditional Chinese strings filled in, dead keys removed, and the literal `\n` in the English / Simplified Chinese render-page descriptions fixed; the three languages share one key set.
+- Online strings use the same key set in all three languages; trace lines that previously had no key are localized.
+- Opening a new file dialog while the previous one is still pending no longer throws into the main loop and kills the process: the state is reset, the attempt is logged, and `onError` runs; the chart editor's save / open paths were hardened accordingly.
+- CI / releases: every release asset carries the real version (no more empty app versions); haxelib git auth is optional and non-fatal; the lime project file is pinned; the release body gains China mirror and accelerator links.
 
 ---
 
@@ -812,5 +974,5 @@ A huge thank you to all testers — your feedback has been invaluable in shaping
 
 ---
 
-*本日志覆盖 SeiunEngine 自 6.19 至 9.12 全部主要变动。*
-*This changelog covers all significant changes from June 19 to September 12, 2026.*
+*本日志覆盖 SeiunEngine 自 6.19 至 10.7 全部主要变动。*
+*This changelog covers all significant changes from June 19 to October 7, 2026.*

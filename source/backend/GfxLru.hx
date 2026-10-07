@@ -217,10 +217,12 @@ class GfxLru
 	}
 	public static function budgetMb():Float return budgetBytes / 1048576;
 
+	/**
+	 * Rough decode cost an LRU hit avoids. The async decode average this used to report is gone
+	 * with the background pre-decode path, so the fixed estimate is what is left.
+	 */
 	public static function estimateSavedMs():Float
 	{
-		if (AsyncGfxLoader.decodedOffThreadTotal > 0)
-			return AsyncGfxLoader.decodeMsTotal / AsyncGfxLoader.decodedOffThreadTotal;
 		return 300;
 	}
 
