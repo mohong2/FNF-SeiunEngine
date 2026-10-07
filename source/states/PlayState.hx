@@ -340,10 +340,21 @@ class PlayState extends MusicBeatState
 	/** The first POPUP_IMMEDIATE_HITS hits of a frame keep the stock per-hit popup (normal charts are unaffected). */
 	static inline var POPUP_IMMEDIATE_HITS:Int = 8;
 	var _popupImmediateBudget:Int = POPUP_IMMEDIATE_HITS;
+	/**
+	 * Time credit for the popup/splash budgets. POPUP_IMMEDIATE_HITS / SPLASH_FRAME_BUDGET are
+	 * 60 Hz design rates (8 popups and 16 splashes per 1/60 s, i.e. per frame on the target fps);
+	 * resetting them per *rendered* frame makes the rate scale with the fps cap instead - at a
+	 * 360 fps cap that was 6x the intended popup rate, thousands of alive popup sprites and, with
+	 * disableGC on, that much more unreclaimed heap. The credit accumulates elapsed * 60 * budget
+	 * and is spent in whole units, so 60 fps behaves exactly as before and higher fps pays the
+	 * same per-second rate. Capped at the per-frame maximum so a post-freeze frame cannot burst.
+	 */
+	var _popupBudgetCredit:Float = 0;
 	/** Per-frame splash spawn budget and living cap (pooling cannot grow without bound during manual combo storms). */
 	static inline var SPLASH_FRAME_BUDGET:Int = 16;
 	public static inline var MAX_SPLASH_ALIVE:Int = 256;
 	var _splashBudgetLeft:Int = SPLASH_FRAME_BUDGET;
+	var _splashBudgetCredit:Float = 0;
 
 	/** Once-per-lane-per-frame gates for botplay character sing animations / strum static resets (reset with strumsHit). */
 	var _botCharAnim:Array<Bool> = [false, false, false, false, false, false, false, false];
@@ -555,6 +566,20 @@ class PlayState extends MusicBeatState
 	static inline var BOTPLAY_HUD_MIN_MS:Float = 50;
 	var _botplayHudTicks:Float = -1e9;
 	/**
+	 * perfMode cache for the botplay line's compact-form decision (see applyScoreText): the total
+	 * character length of the last measured full line, its decision, and when it was measured.
+	 */
+	var _botplayLenFp:Int = -1;
+	var _botplayCompact:Bool = false;
+	var _botplayMeasureTicks:Float = -1e9;
+	/**
+	 * Side HUD refresh floor (ms of real time), used only with perfMode on: under botplay/Turbo the
+	 * eight counters change every frame, so the value-change skip never fires and each changed
+	 * label pays a String build + TextField layout + glyph redraw per frame. Throttled to the same
+	 * 20 Hz the botplay score line uses; perfMode off keeps the exact per-value-change behaviour.
+	 */
+	static inline var SIDEHUD_HUD_MIN_MS:Float = 50;
+	/**
 	 * Private, monotone copy of the opponent-side hit count. The NPS window reads this instead of
 	 * `opCombo`, because scripts can write the public field (H-Slice parity) and an upward write
 	 * would otherwise be indistinguishable from a burst of real hits. Only addOpponentHit() bumps it.
@@ -605,6 +630,8 @@ class PlayState extends MusicBeatState
 	private var _sideHudPrefix:Array<String> = null;
 	/** 侧边 HUD 上一次写出的值: notehitlol, combo, maxcombo, marvelouses, sicks, goods, bads, shits, songMisses。 */
 	private var _sideHudValues:Array<Dynamic> = null;
+	/** 侧边 HUD 在 perfMode 下的最低重写间隔 (毫秒), 见 updateSideHud()。 */
+	private var _sideHudTicks:Float = -1e9;
 
 	/**
 	 * 侧边 HUD 的八个标签都是"语言前缀 + 计数", 原实现每帧重算。FlxText 内部有内容相等守卫, 字形不会
@@ -613,9 +640,21 @@ class PlayState extends MusicBeatState
 	 * 这里把前缀缓存到 Language.generation 变化为止, 并且只在某个输入真的变了时才重写对应标签, 所以命中/
 	 * 失误仍然落在发生的那一帧, 其余帧一个字符串都不产生。每帧都重写 (脚本写进去的文本下一帧会被覆盖
 	 * 回去) 走 ClientPrefs.stockHudTextRewrite。
+	 *
+	 * Botplay/Turbo 下这些计数每帧都在涨, 按值跳过永远不命中 —— 每帧 3-5 个标签各自付一次字符串
+	 * 拼接 + TextField 排版 + 字形重绘。perfMode 开启时 (且未强制 stockHudTextRewrite) 与 botplay
+	 * 分数行一样按 SIDEHUD_HUD_MIN_MS 节流: 计数面板的读数以 20 Hz 刷新, 每帧的排版成本变为 1/3。
+	 * 按值更新的精确语义在 perfMode 关闭时保持原样。
 	 */
 	function updateSideHud():Void {
 		var forceRewrite:Bool = ClientPrefs.data.stockHudTextRewrite;
+		if (!forceRewrite && ClientPrefs.data.perfMode)
+		{
+			var hudTicks:Float = FlxG.game.ticks;
+			if (hudTicks - _sideHudTicks < SIDEHUD_HUD_MIN_MS)
+				return;
+			_sideHudTicks = hudTicks;
+		}
 		if (_sideHudPrefix == null || _sideHudLangGen != Language.generation)
 		{
 			_sideHudLangGen = Language.generation;
@@ -679,6 +718,8 @@ class PlayState extends MusicBeatState
 	private static final tnhx:Int = -10;
 	private static final cmoffset:Int = -4;
 	private static final cmy:Int = 20;
+	/** Fixed fieldWidth for the side-HUD counters (see the creation site for why autoSize is poison here). */
+	private static final SIDEHUD_FIELD_W:Int = 480;
 
 	private var generatedMusic:Bool = false;
 	public var endingSong:Bool = false;
@@ -2081,14 +2122,25 @@ class PlayState extends MusicBeatState
 			// (set_fieldWidth: value <= 0 -> wordWrap = false, autoSize = true).
 			// A fixed width makes longer values wrap and push the lines below it out of the HUD,
 			// so every side-HUD entry has to stay on exactly one line.
-			tnh = new FlxText(tnhx + 10, 259, 0, totalNotesText, 20);
+			//
+			// autoSize is exactly what must NOT happen here, though: with the localized
+			// (proportional) language font, a counter that changes every frame under botplay/Turbo
+			// changes the measured pixel width on nearly every rewrite, and FlxText.regenGraphic()
+			// then allocates a brand-new BitmapData + FlxGraphic + GPU texture per rewrite. That is
+			// ~5 labels x 20 rewrites/s of dead textures feeding FlxG.bitmap._cache (and, with
+			// disableGC, an unbounded heap). A fixed fieldWidth with wordWrap forced off keeps the
+			// single-line layout and reuses one bitmap forever; longer text simply overflows the
+			// field exactly like autoSize drew it.
+			tnh = new FlxText(tnhx + 10, 259, SIDEHUD_FIELD_W, totalNotesText, 20);
+			tnh.wordWrap = false;
 			tnh.setFormat(20, FlxColor.WHITE, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 			tnh.cameras = [camOther];
 			tnh.font = Paths.languageFont();
 			tnh.borderSize = 2;
 			add(tnh);
 
-			cm = new FlxText(-tnh.x + cmoffset, tnh.y + cmy, 0, combosText, 20);
+			cm = new FlxText(-tnh.x + cmoffset, tnh.y + cmy, SIDEHUD_FIELD_W, combosText, 20);
+			cm.wordWrap = false;
 			cm.setFormat(20, FlxColor.WHITE, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 			cm.cameras = [camOther];
 			cm.font = Paths.languageFont();
@@ -2097,7 +2149,8 @@ class PlayState extends MusicBeatState
 
 			if (ClientPrefs.data.marvelousRatings)
 			{
-				marv = new FlxText(cm.x, cm.y + 30, 0, marvelousesText, 20);
+				marv = new FlxText(cm.x, cm.y + 30, SIDEHUD_FIELD_W, marvelousesText, 20);
+				marv.wordWrap = false;
 				marv.setFormat(20, FlxColor.fromRGB(255, 215, 0), LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 				marv.cameras = [camOther];
 				marv.font = Paths.languageFont();
@@ -2105,35 +2158,40 @@ class PlayState extends MusicBeatState
 				add(marv);
 			}
 
-			sick = new FlxText(cm.x, (marv != null ? marv.y : cm.y) + 30, 0, sicksText, 20);
+			sick = new FlxText(cm.x, (marv != null ? marv.y : cm.y) + 30, SIDEHUD_FIELD_W, sicksText, 20);
+			sick.wordWrap = false;
 			sick.setFormat(20, FlxColor.WHITE, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 			sick.cameras = [camOther];
 			sick.font = Paths.languageFont();
 			sick.borderSize = 2;
 			add(sick);
 
-			good = new FlxText(cm.x, sick.y + 30, 0, goodsText, 20);
+			good = new FlxText(cm.x, sick.y + 30, SIDEHUD_FIELD_W, goodsText, 20);
+			good.wordWrap = false;
 			good.setFormat(20, FlxColor.WHITE, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 			good.cameras = [camOther];
 			good.font = Paths.languageFont();
 			good.borderSize = 2;
 			add(good);
 
-			bad = new FlxText(cm.x, good.y + 30, 0, badsText, 20);
+			bad = new FlxText(cm.x, good.y + 30, SIDEHUD_FIELD_W, badsText, 20);
+			bad.wordWrap = false;
 			bad.setFormat(20, FlxColor.WHITE, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 			bad.cameras = [camOther];
 			bad.font = Paths.languageFont();
 			bad.borderSize = 2;
 			add(bad);
 
-			shit = new FlxText(cm.x, bad.y + 30, 0, shitsText, 20);
+			shit = new FlxText(cm.x, bad.y + 30, SIDEHUD_FIELD_W, shitsText, 20);
+			shit.wordWrap = false;
 			shit.setFormat(20, FlxColor.WHITE, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 			shit.cameras = [camOther];
 			shit.font = Paths.languageFont();
 			shit.borderSize = 2;
 			add(shit);
 
-			miss = new FlxText(cm.x, shit.y + 30, 0, missesText, 20);
+			miss = new FlxText(cm.x, shit.y + 30, SIDEHUD_FIELD_W, missesText, 20);
+			miss.wordWrap = false;
 			miss.setFormat(20, FlxColor.RED, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 			miss.cameras = [camOther];
 			miss.font = Paths.languageFont();
@@ -3619,9 +3677,28 @@ class PlayState extends MusicBeatState
 		_botplayHudTicks = ticks;
 
 		scoreTxt.wordWrap = false;
-		scoreTxt.text = buildBotplayScoreText();
+		// With perfMode on, the compact-form decision is reused while the line keeps the same total
+		// character length: the HUD counter font renders digits at a fixed advance, so equal length
+		// means equal width and re-measuring an identical-length line (a TextField layout per
+		// rebuild) is pure waste. The decision is re-measured whenever the length changes and at
+		// least every 500 ms, so even a proportional font can only be briefly wrong about fit.
+		// perfMode off keeps the original measure-every-rebuild behaviour.
+		var full:String = buildBotplayScoreText();
+		if (ClientPrefs.data.perfMode && full.length == _botplayLenFp && ticks - _botplayMeasureTicks < 500)
+		{
+			scoreTxt.text = _botplayCompact ? buildBotplayScoreText(true) : full;
+			return;
+		}
+		_botplayLenFp = full.length;
+		_botplayMeasureTicks = ticks;
+		scoreTxt.text = full;
 		if (scoreTxt.textField.textWidth > FlxG.width)
+		{
+			_botplayCompact = true;
 			scoreTxt.text = buildBotplayScoreText(true);
+		}
+		else
+			_botplayCompact = false;
 	}
 
 	/**
@@ -5318,8 +5395,19 @@ class PlayState extends MusicBeatState
 		// With perfMode off the budget is unlimited: popups/splashes go straight back to stock per-hit display with no living cap.
 		if (ClientPrefs.data.perfMode)
 		{
-			_popupImmediateBudget = POPUP_IMMEDIATE_HITS;
-			_splashBudgetLeft = SPLASH_FRAME_BUDGET;
+			// Time-scaled budgets (see _popupBudgetCredit): identical to the per-frame reset at
+			// 60 fps, but the per-second rate no longer scales with the fps cap.
+			_popupBudgetCredit += elapsed * 60 * POPUP_IMMEDIATE_HITS;
+			if (_popupBudgetCredit > POPUP_IMMEDIATE_HITS) _popupBudgetCredit = POPUP_IMMEDIATE_HITS;
+			var popupBudget:Int = Std.int(_popupBudgetCredit);
+			_popupBudgetCredit -= popupBudget;
+			_popupImmediateBudget = popupBudget;
+
+			_splashBudgetCredit += elapsed * 60 * SPLASH_FRAME_BUDGET;
+			if (_splashBudgetCredit > SPLASH_FRAME_BUDGET) _splashBudgetCredit = SPLASH_FRAME_BUDGET;
+			var splashBudget:Int = Std.int(_splashBudgetCredit);
+			_splashBudgetCredit -= splashBudget;
+			_splashBudgetLeft = splashBudget;
 		}
 		else
 		{
@@ -5679,7 +5767,14 @@ class PlayState extends MusicBeatState
 			// 物化只保留一个固定配额，慢帧不会因此变得更慢。
 			// notes inside hardDeadline (at the strum line) ignore the budget and always spawn, prioritising playability over smoothing.
 			var hardDeadline:Float = Conductor.songPosition + Conductor.safeZoneOffset;
-			var spawnBudget:Int = 2048;
+			// The materialisation budgets are 60 fps design rates (2048 normal / 1024 overloaded /
+			// +4096 hard-deadline per 1/60 s). Resetting them per *rendered* frame made the
+			// per-second rate scale with the fps cap: at a 360 fps cap a dense stretch chewed 6x
+			// the intended setupNoteData work per second (and with disableGC, leaked that much
+			// more pool growth). Scaled by elapsed*60 and capped at the design value, so <=60 fps
+			// is byte-identical to the old behaviour and higher fps pays the same per-second rate.
+			var fpsScale:Float = elapsed * 60;
+			var spawnBudget:Int = Std.int(Math.min(2048, Math.max(1, 2048 * fpsScale)));
 			// Overload is judged from this frame's data-level drain: a clearly non-zero drain means arrivals outpace
 			// materialisation, so due notes are settled by the data path, materialisation keeps only a small quota
 			// near the line and the hard deadline no longer forces spawns (behind, forced spawns pay for notes the data layer will settle).
@@ -5696,7 +5791,9 @@ class PlayState extends MusicBeatState
 			var behind:Bool = perfOn && cpuControlled && _overloadFrames > 0;
 			var manualUnthrottled:Bool = !cpuControlled;
 			if (behind)
-				spawnBudget = 1024;
+				spawnBudget = Std.int(Math.min(1024, Math.max(1, 1024 * fpsScale)));
+			// Hard-deadline forcing quota (see the loop condition below), scaled like spawnBudget.
+			var hardDeadlineExtra:Int = Std.int(Math.min(4096, Math.max(1, 4096 * fpsScale)));
 			// Visible materialisation horizon: notes beyond the cull distance are only kept resident or settled in the data layer, so building them is waste.
 			// (The old 2000ms spawnTime window is ~10x the visible range at speed=10.)
 			// With perfMode off the full stock spawnTime window is used and no horizon shrink is applied.
@@ -5717,7 +5814,7 @@ class PlayState extends MusicBeatState
 			while (targetData != null && targetData.strumTime - Conductor.songPosition < effTime
 				&& limitNC < noteLimit
 				&& (!perfOn || manualUnthrottled || spawnedThisFrame < spawnBudget
-					|| (!behind && targetData.strumTime <= hardDeadline && spawnedThisFrame < spawnBudget + 4096)))
+					|| (!behind && targetData.strumTime <= hardDeadline && spawnedThisFrame < spawnBudget + hardDeadlineExtra)))
 			{
 				if (targetData.wasHit)
 				{
@@ -5941,6 +6038,20 @@ class PlayState extends MusicBeatState
 				setSongTime(Conductor.songPosition + 10000);
 				clearNotesBefore(Conductor.songPosition);
 			}
+		}
+		#end
+
+		// Pooled popup fades (RatingPopup no longer uses FlxTween): advance them once per frame,
+		// right before the presentation flush that may show new popups. Online players each have
+		// their own popup instance; both pools tick here so popup lifetime never depends on
+		// FlxTween's global manager.
+		if (ratingPopup != null)
+			ratingPopup.updateFades(elapsed);
+		#if ONLINE_ALLOWED
+		if (onlineRatingPopups != null)
+		{
+			for (opPopup in onlineRatingPopups)
+				opPopup.updateFades(elapsed);
 		}
 		#end
 
@@ -9041,7 +9152,16 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		// 于是本该廉价结算掉的行被迫留给昂贵的物化路径 —— 这正是"掉到一两帧就再也回不来"的第二半原因。
 		// 实测峰值 (折叠后): realisticful 4320 行/帧, 10m 谱面 5361 行/帧; 旧的 4096 下限比它还低。
 		// 现在每行约 62ns, 16384 行也只有 ~1ms, 所以这个下限是安全的。
-		var drainBudget:Int = turboModeActive ? Std.int(Math.max(16384, Math.min(65536, elapsed * 1000 * 100))) : 0x7FFFFFFF;
+		// The 16384 lower bound is a 60 fps design rate (16384 rows per 1/60 s ~= 983k rows/s of
+		// data-layer drain). Taken per *rendered* frame it scaled the per-second drain work with
+		// the fps cap (6x at a 360 fps cap, right when a dense stretch also feeds the loop its
+		// full budget). Scaled by elapsed*60 and capped at the design value: <=60 fps is identical
+		// to the old fixed minimum, higher fps pays the same per-second rate. The elapsed-based
+		// upper cap below is unchanged.
+		var fpsScale:Float = elapsed * 60;
+		var drainBudget:Int = turboModeActive
+			? Std.int(Math.max(Math.min(16384, 16384 * fpsScale), Math.min(65536, elapsed * 1000 * 100)))
+			: 0x7FFFFFFF;
 		var processed:Int = 0;
 
 		// 零分配行读取: 这里每帧要走几千到几万行。unspawnNotes[i] 每次现造一个 358 字节 DTO,

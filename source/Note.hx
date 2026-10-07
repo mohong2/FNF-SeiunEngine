@@ -1180,7 +1180,14 @@ class Note extends FlxSprite implements NoteSplashOwner {
         }
     }
 
-    var _boundMaterialKey:String = null;
+
+    var _boundMaterialValid:Bool = false;
+    var _boundMaterialTex:String = null;
+    var _boundMaterialBase:Int = -1;
+    var _boundMaterialMania:Int = -1;
+    var _boundMaterialSustain:Bool = false;
+    var _boundMaterialEnd:Bool = false;
+    var _boundMaterialPixel:Bool = false;
 
     public function reloadNote(?prefix:String = '', ?texture:String = '', ?suffix:String = '') {
         if(prefix == null) prefix = '';
@@ -1263,7 +1270,15 @@ class Note extends FlxSprite implements NoteSplashOwner {
         if(isSustainNote) scale.y = lastScaleY;
         updateHitbox();
         if (frames != null)
-            _boundMaterialKey = ((prefix.length > 0 || suffix.length > 0) ? null : materialKey(texture));
+        {
+            _boundMaterialValid = !((prefix != null && prefix.length > 0) || (suffix != null && suffix.length > 0));
+            _boundMaterialTex = texture;
+            _boundMaterialBase = baseTex();
+            _boundMaterialMania = mania;
+            _boundMaterialSustain = isSustainNote;
+            _boundMaterialEnd = isSustainEnd;
+            _boundMaterialPixel = PlayState.isPixelStage;
+        }
 
         // 材质溯源同步: 让 texture 字段始终反映"当前 frames 由哪种输入加载而来",
         // 池化复用时 setupNoteData 的按值比较才能安全跳过重载。
@@ -1322,11 +1337,17 @@ class Note extends FlxSprite implements NoteSplashOwner {
             rgbShader.fallbackShader = (colorSwap != null) ? colorSwap.shader : null;
     }
 
-    inline function materialKey(textureValue:String):String
+
+    //Note优化谁爱做谁做去
+    inline function _materialReusable(textureValue:String):Bool
     {
-        return textureValue + '|' + baseTex() + '|' + mania
-            + '|' + (isSustainNote ? 'S' : 'N') + '|' + (isSustainEnd ? 'E' : '0')
-            + '|' + (PlayState.isPixelStage ? 'P' : 'N');
+        return _boundMaterialValid
+            && _boundMaterialTex == textureValue
+            && _boundMaterialBase == baseTex()
+            && _boundMaterialMania == mania
+            && _boundMaterialSustain == isSustainNote
+            && _boundMaterialEnd == isSustainEnd
+            && _boundMaterialPixel == PlayState.isPixelStage;
     }
 
     function applyNoteGraphicSize():Void
@@ -1446,7 +1467,7 @@ class Note extends FlxSprite implements NoteSplashOwner {
         animation.curAnim = null;
         var _reuseMaterial:Bool = false;
         if (frames != null && frames.numFrames > 0 && !isSustainNote && sustainLength <= 0 && !PlayState.isPixelStage)
-            _reuseMaterial = (materialKey(targetTexture) == _boundMaterialKey);
+            _reuseMaterial = _materialReusable(targetTexture);
         if (!_reuseMaterial)
             @:bypassAccessor texture = null;
         this.texture = targetTexture;

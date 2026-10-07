@@ -5,7 +5,19 @@ import flixel.FlxG;
 import flixel.FlxCamera;
 import flixel.graphics.FlxGraphic;
 import flixel.group.FlxSpriteGroup;
-import flixel.tweens.FlxTween;
+
+/**
+*正在使用FlxTween.tween卡爆你
+ */
+class PopupFade
+{
+	public var spr:FlxSprite;
+	public var t:Float = 0;
+	public var dur:Float = 0;
+	public var delay:Float = 0;
+
+	public function new() {}
+}
 
 /**
  * Object pool for rating popups.
@@ -88,8 +100,21 @@ class RatingPopup
 	/** Retired sprites, reused LIFO => acquire/retire are O(1) (was: linear scan over the pool). */
 	var _free:Array<FlxSprite> = [];
 
-	/** Sprite -> its running fade; kept only so clearAll() can stop a fade early. */
-	var _tweens:Map<FlxSprite, FlxTween> = new Map();
+	/** Active fades (one per live popup sprite), advanced by updateFades() once per frame. */
+	var _fades:Array<PopupFade> = [];
+	/** Retired fade records, reused LIFO. */
+	var _fadePool:Array<PopupFade> = [];
+
+	/** Cached image-key strings per pixel mode (see _ratingKey/_numKey/_comboWordKey). */
+	var _ratingKeysN:Map<String, String> = new Map();
+	var _ratingKeysP:Map<String, String> = new Map();
+	var _numKeys:Array<String> = null;
+	var _numKeysPixel:Bool = false;
+	var _comboKey:String = null;
+	var _comboKeyPixel:Bool = false;
+
+	/** Reused digit buffer for the combo number row (was one Array<Int> per popup). */
+	var _digitScratch:Array<Int> = [];
 
 	/** Resolved popup graphics (rating / digits / COMBO word), reused across hits. */
 	var _gfxCache:Map<String, FlxGraphic> = new Map();
@@ -146,15 +171,9 @@ class RatingPopup
 			return;
 		}
 		if (!spr.alive) return; // never push the same sprite twice
-		_tweens.remove(spr);
 		if (container != null) container.remove(spr, true);
 		spr.kill();
 		_free.push(spr);
-	}
-
-	inline function _cancelTween(spr:FlxSprite) {
-		var t = _tweens.get(spr);
-		if (t != null) { t.cancel(); _tweens.remove(spr); }
 	}
 
 	/** Remove every popup from the container and return the sprites to the pool. */
@@ -168,10 +187,12 @@ class RatingPopup
 		{
 			var spr:FlxSprite = arr[i--];
 			if (spr == null) continue;
-			_cancelTween(spr);
 			if (spr.alive) _retire(spr);
 			else container.remove(spr, true); // defensive: a dead sprite must never keep a slot
 		}
+		// Drop every fade record too: retired sprites must not keep fading when updateFades() runs.
+		while (_fades.length > 0)
+			_recycleFade(_fades.length - 1);
 	}
 
 	inline function _show(spr:FlxSprite):Void
@@ -183,14 +204,125 @@ class RatingPopup
 		if (targetCameras != null) spr.cameras = targetCameras;
 	}
 
-	/** Start the stock fade-out; the sprite is unlisted and pooled when the tween finishes. */
+	/**
+	 * Start the stock fade-out. Same visual contract as the old FlxTween version (no ease option
+	 * meant a linear interpolation): alpha holds 1 through the delay, then interpolates linearly
+	 * to 0 over the duration, and the sprite retires the instant the fade ends. Only the tween
+	 * object is gone; a sprite re-shown mid-fade replaces its record instead of running two fades.
+	 */
 	function _fade(spr:FlxSprite, duration:Float, delay:Float):Void
 	{
-		var t = FlxTween.tween(spr, {alpha: 0}, duration, {
-			startDelay: delay,
-			onComplete: function(_) _retire(spr)
-		});
-		_tweens.set(spr, t);
+		var f:PopupFade = _fadeOf(spr);
+		if (f == null)
+		{
+			f = (_fadePool.length > 0) ? _fadePool.pop() : new PopupFade();
+			_fades.push(f);
+		}
+		f.spr = spr;
+		f.t = 0;
+		f.dur = duration;
+		f.delay = delay;
+	}
+
+	function _fadeOf(spr:FlxSprite):PopupFade
+	{
+		var i:Int = _fades.length - 1;
+		while (i >= 0)
+		{
+			if (_fades[i].spr == spr) return _fades[i];
+			--i;
+		}
+		return null;
+	}
+
+	/** Swap-removes the fade at index i and returns the record to the pool. */
+	inline function _recycleFade(i:Int):Void
+	{
+		var f:PopupFade = _fades[i];
+		_fades[i] = _fades[_fades.length - 1];
+		_fades.pop();
+		f.spr = null;
+		_fadePool.push(f);
+	}
+
+	/**
+	 * Advances every fade by one frame; PlayState calls this once per update for each popup
+	 * (its own and one per remote sid online). The one behavioural difference from FlxTween:
+	 * popups freeze while the state is paused, consistent with their velocity movement, which
+	 * already freezes on pause. Allocation-free in steady state (records are pooled).
+	 */
+	public function updateFades(elapsed:Float):Void
+	{
+		var i:Int = 0;
+		while (i < _fades.length)
+		{
+			var f:PopupFade = _fades[i];
+			var spr:FlxSprite = f.spr;
+			if (spr == null || !spr.alive)
+			{
+				// Sprite retired by other means (clearAll / foreign removal): drop the record.
+				_recycleFade(i);
+				continue;
+			}
+			f.t += elapsed;
+			var ft:Float = f.t - f.delay;
+			if (ft <= 0)
+				spr.alpha = 1;
+			else
+			{
+				var k:Float = ft / f.dur;
+				if (k >= 1)
+				{
+					_recycleFade(i);
+					_retire(spr);
+					continue;
+				}
+				spr.alpha = 1 - k;
+			}
+			i++;
+		}
+	}
+
+	/**
+	 * Cached image-key strings. show() used to concatenate px+ratingKey+sx / px+'num'+d+sx /
+	 * px+'combo'+sx for every sprite of every popup — several short-lived strings per hit, per
+	 * frame under Turbo. The whole set is tiny (a few rating keys x 2 pixel modes + 10 digits +
+	 * 1 word), so each string is built once and reused.
+	 */
+	inline function _ratingKey(ratingKey:String):String
+	{
+		var m:Map<String, String> = isPixel ? _ratingKeysP : _ratingKeysN;
+		var k:String = m.get(ratingKey);
+		if (k == null)
+		{
+			k = (isPixel ? 'pixelUI/' : '') + ratingKey + (isPixel ? '-pixel' : '');
+			m.set(ratingKey, k);
+		}
+		return k;
+	}
+
+	inline function _numKey(d:Int):String
+	{
+		if (_numKeys == null || _numKeysPixel != isPixel)
+		{
+			var px:String = isPixel ? 'pixelUI/' : '';
+			var sx:String = isPixel ? '-pixel' : '';
+			_numKeys = [];
+			for (i in 0...10)
+				_numKeys.push(px + 'num' + i + sx);
+			_numKeysPixel = isPixel;
+		}
+		return _numKeys[d];
+	}
+
+	inline function _comboWordKey():String
+	{
+		if (_comboKey == null || _comboKeyPixel != isPixel)
+		{
+			_comboKey = (isPixel ? 'pixelUI/' : '') + 'combo' + (isPixel ? '-pixel' : '');
+			_comboKeyPixel = isPixel;
+		}
+		return _comboKey;
 	}
 
 	/** Resolve a popup graphic once; re-resolve only if the engine purge destroyed the cached one. */
@@ -217,8 +349,6 @@ class RatingPopup
 	{
 		if (!comboStacking) clearAll();
 
-		var px:String  = isPixel ? 'pixelUI/' : '';
-		var sx:String  = isPixel ? '-pixel' : '';
 		var pr:Float   = rate;
 		var pz:Float   = daPixelZoom;
 		var cam:Array<FlxCamera> = targetCameras;
@@ -234,7 +364,7 @@ class RatingPopup
 		if (showRating)
 		{
 			var r:FlxSprite = _acquire();
-			_config(r, _graphic(px + ratingKey + sx),
+			_config(r, _graphic(_ratingKey(ratingKey)),
 				baseX + RATING_X_OFFSET + offRX,
 				RATING_Y_OFFSET - offRY,
 				!hideHud, cam, aa,
@@ -250,12 +380,13 @@ class RatingPopup
 		var maxX:Float = 0;
 		if (showComboNum)
 		{
-			var digits:Array<Int> = _splitDigits(combo);
+			_splitDigitsInto(combo);
+			var digits:Array<Int> = _digitScratch;
 			var numDelay:Float = crochet * FADE_DELAY_NUM / pr;
 			for (loop in 0...digits.length)
 			{
 				var ns:FlxSprite = _acquire();
-				_config(ns, _graphic(px + 'num' + digits[loop] + sx),
+				_config(ns, _graphic(_numKey(digits[loop])),
 					baseX + (NUM_SPACING * loop) + NUM_X_START + offNX,
 					NUM_Y_OFFSET - offNY,
 					!hideHud, cam, aa,
@@ -274,7 +405,7 @@ class RatingPopup
 		if (showCombo)
 		{
 			var c:FlxSprite = _acquire();
-			_config(c, _graphic(px + 'combo' + sx),
+			_config(c, _graphic(_comboWordKey()),
 				baseX + offRX,
 				COMBO_Y_OFFSET - offRY,
 				!hideHud, cam, aa,
@@ -311,20 +442,38 @@ class RatingPopup
 	}
 
 	/**
-	 * Digits drawn under the rating icon. Every digit is shown, so the popup never looks like it
+	 * Digits drawn under the rating icon, written into _digitScratch (reused, zero allocation in
+	 * steady state). Every digit is shown, so the popup never looks like it
 	 * wrapped back to 0 at a digit boundary (the vanilla-style 4-digit cap rendered 10000 as
 	 * "0000", 10001 as "0001", ...). The number row grows with the combo and the COMBO word
 	 * follows its right edge (maxX), which is the pre-existing behaviour of this engine.
 	 * combo < 10 is still hidden by the caller (PlayState keeps that on purpose).
 	 */
-	static function _splitDigits(n:Int):Array<Int>
+	function _splitDigitsInto(n:Int):Void
 	{
-		if (n == 0) return [0];
-		var d:Array<Int> = [];
-		while (n > 0) { d.push(n % 10); n = Math.floor(n / 10); }
-		d.reverse();
-		if (d.length == 2) d.insert(0, 0);
-		return d;
+		_digitScratch.resize(0);
+		if (n == 0)
+		{
+			_digitScratch.push(0);
+			return;
+		}
+		while (n > 0)
+		{
+			_digitScratch.push(n % 10);
+			n = Math.floor(n / 10);
+		}
+		var a:Int = 0;
+		var b:Int = _digitScratch.length - 1;
+		while (a < b)
+		{
+			var tmp:Int = _digitScratch[a];
+			_digitScratch[a] = _digitScratch[b];
+			_digitScratch[b] = tmp;
+			a++;
+			b--;
+		}
+		if (_digitScratch.length == 2)
+			_digitScratch.insert(0, 0); // keep the leading-zero pad of the old behaviour
 	}
 
 	public function destroyAll():Void
@@ -334,7 +483,12 @@ class RatingPopup
 		for (s in _pool) s.destroy();
 		_pool = [];
 		_free = [];
-		_tweens = new Map();
+		_fades = [];
+		_fadePool = [];
+		_ratingKeysN = new Map();
+		_ratingKeysP = new Map();
+		_numKeys = null;
+		_comboKey = null;
 		_gfxCache = new Map();
 	}
 }

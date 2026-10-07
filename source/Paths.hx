@@ -211,40 +211,75 @@ class Paths
 	 */
 	public static function purgeUnusedGraphics():Int
 	{
-		var purged:Int = 0;
+		// Candidates in one pass per cache, batch removal, then park/destroy each dead object
+		// exactly once. The old shape called purgeGraphicFromCaches() per purged key, and that
+		// helper re-scans the entire FlxG.bitmap cache (and, without a fileKey, the entire
+		// tracked-assets map plus the atlas frame cache) on every call — O(n^2) once a long
+		// session has filled the caches with dead autoSize-text bitmaps, which played back as a
+		// multi-second main-thread freeze every MEMORY_PURGE_INTERVAL frames.
+		var deadKeys:Map<String, Bool> = new Map<String, Bool>();
+		var bitmapDeadKeys:Map<String, Bool> = new Map<String, Bool>();
+		var deadObjects:Map<FlxGraphic, {obj:FlxGraphic, fileKey:String}> = new Map<FlxGraphic, {obj:FlxGraphic, fileKey:String}>();
 
-		var trackedKeys:Array<String> = [];
 		for (key in currentTrackedAssets.keys())
 		{
 			var obj = currentTrackedAssets.get(key);
 			if (obj != null && obj.useCount <= 0)
-				trackedKeys.push(key);
-		}
-		for (key in trackedKeys)
-		{
-			var obj = currentTrackedAssets.get(key);
-			if (obj != null && obj.useCount <= 0)
 			{
-				purgeGraphicFromCaches(obj, key);
-				purged++;
+				deadKeys.set(key, true);
+				deadObjects.set(obj, {obj: obj, fileKey: key});
 			}
 		}
-
-		var cacheKeys:Array<String> = [];
 		@:privateAccess
-		for (key in FlxG.bitmap._cache.keys())
-			cacheKeys.push(key);
-		@:privateAccess
-		for (key in cacheKeys)
 		{
-			var obj = FlxG.bitmap._cache.get(key);
-			if (obj != null && obj.useCount <= 0 && !currentTrackedAssets.exists(key) && !isFlxBarCacheKey(key))
+			for (key in FlxG.bitmap._cache.keys())
 			{
-				purgeGraphicFromCaches(obj);
-				purged++;
+				var obj = FlxG.bitmap._cache.get(key);
+				if (obj != null && obj.useCount <= 0 && !isFlxBarCacheKey(key))
+				{
+					bitmapDeadKeys.set(key, true);
+					if (!deadObjects.exists(obj))
+						deadObjects.set(obj, {obj: obj, fileKey: null});
+				}
+			}
+			// Batch removal passes: no cache is mutated while it is being iterated.
+			for (key in bitmapDeadKeys.keys())
+			{
+				FlxG.bitmap._cache.remove(key);
+				openfl.Assets.cache.removeBitmapData(key);
 			}
 		}
+		for (key in deadKeys.keys())
+			currentTrackedAssets.remove(key);
 
+		var purged:Int = 0;
+		for (entry in deadObjects)
+		{
+			var obj = entry.obj;
+			// The cached sparrow-atlas frames hold a reference to this graphic and are registered in
+			// its frameCollections, so destroy() nulls their frames/parent. Evict them now —
+			// otherwise getSparrowAtlas() would return a zombie husk and mods that build sprites
+			// from cached atlases (e.g. FruitNinja-style spawners) would render nothing and end up
+			// in a Lua error loop until the whole script gets silently disabled.
+			var staleAtlasKeys:Array<String> = [];
+			for (cacheKey => frames in atlasFramesCache)
+			{
+				if (frames == null || frames.parent == obj)
+					staleAtlasKeys.push(cacheKey);
+			}
+			for (k in staleAtlasKeys)
+				atlasFramesCache.remove(k);
+
+			// Try storing in LRU cache before destroying. If retained, keep VRAM copy loaded
+			// for instant reuse on song replay. Repacked graphics are exempted from size checks.
+			if (backend.GfxLru.park(obj, entry.fileKey, backend.GfxRepack.isPacked(entry.fileKey)))
+			{
+				purged++;
+				continue;
+			}
+			obj.destroy();
+			purged++;
+		}
 		return purged;
 	}
 
