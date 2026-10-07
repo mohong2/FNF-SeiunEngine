@@ -76,7 +76,9 @@ runs:
     - name: Resolve haxelib paths
       uses: ./.github/actions/haxelib-path
       with:
-        libs: hxcpp discord_rpc
+        # lime is resolved as well: the macOS architecture guard below inspects the
+        # rebuilt ndll through HAXELIB_LIME_PATH instead of hardcoding .haxelib/<lib>/git.
+        libs: hxcpp lime discord_rpc
 
     # The hxcpp 4.3.x forward port does not carry the 4.2.1 fork's -march=x86-64-v3
     # additions at all (they were dropped while porting), so the old
@@ -278,6 +280,74 @@ runs:
         du -sh "$OUT/symbols" || true
         ls -la "$OUT/symbols"
 
+    # A macOS build that ships the wrong slice is worse than a red build: it looks
+    # green until something dlopen()s it. IconHelper loads lime.ndll to rasterize the
+    # .icns, and hxcpp's -arch fallback had quietly produced an x86_64 ndll on the
+    # arm64 runner, so the build died in IconHelper with "incompatible architecture".
+    # Verify the built artifacts really are the target architecture before packaging.
+    - name: Verify macOS build architecture
+      if: startsWith(inputs.target, 'macos')
+      shell: bash
+      run: |
+        set -euo pipefail
+        TARGET="${{ inputs.target }}"
+        case "$TARGET" in
+          macos-arm64) WANT="arm64" ;;
+          macos-x64)   WANT="x86_64" ;;
+          *) echo "::error::unknown macOS target $TARGET - cannot verify architecture"; exit 1 ;;
+        esac
+        echo "verifying $TARGET -> expect $WANT"
+
+        # lipo prints a Mach-O's architectures (and handles fat binaries).
+        check() {
+          local label="$1" path="$2"
+          if [ ! -f "$path" ]; then
+            echo "::error::$label missing: $path"
+            return 1
+          fi
+          local archs
+          archs="$(lipo -archs "$path" 2>/dev/null || true)"
+          if [ -z "$archs" ]; then
+            echo "::error::$label is not a Mach-O or lipo failed: $path"
+            return 1
+          fi
+          echo "$label: $archs"
+          if ! printf "%s\n" "$archs" | tr " " "\n" | grep -qx "$WANT"; then
+            echo "::error::$label is $archs, expected $WANT - the build produced the wrong architecture"
+            return 1
+          fi
+        }
+
+        fail=0
+
+        # The ndll lime just rebuilt: what the .app ships, and what IconHelper
+        # dlopens during the icon step.
+        for ndll in "$HAXELIB_LIME_PATH"/ndll/Mac64/lime.ndll "$HAXELIB_LIME_PATH"/ndll/Mac/lime.ndll; do
+          if [ -f "$ndll" ]; then check "lime.ndll ($(basename "$(dirname "$ndll")"))" "$ndll" || fail=1; fi
+        done
+
+        APP="$(find export/release/macos/bin -maxdepth 2 -name '*.app' | head -n1 || true)"
+        if [ -z "$APP" ]; then
+          echo "::error::no .app bundle under export/release/macos/bin - cannot verify the architecture"
+          fail=1
+        else
+          EXE="$APP/Contents/MacOS/SeiunEngine"
+          if [ ! -f "$EXE" ]; then EXE="$(find "$APP/Contents/MacOS" -type f | head -n1 || true)"; fi
+          if [ -z "$EXE" ]; then
+            echo "::error::no executable inside $APP/Contents/MacOS - cannot verify the architecture"
+            fail=1
+          else
+            check "SeiunEngine binary" "$EXE" || fail=1
+          fi
+          INAPP="$(find "$APP" -name 'lime.ndll' | head -n1 || true)"
+          if [ -n "$INAPP" ]; then check "lime.ndll (in .app)" "$INAPP" || fail=1; fi
+        fi
+
+        if [ "$fail" -ne 0 ]; then
+          echo "::error::macOS $TARGET architecture verification failed"
+          exit 1
+        fi
+        echo "architecture verified: $TARGET is $WANT"
     - name: Ad-hoc codesign macOS app
       if: startsWith(inputs.target, 'macos')
       shell: bash

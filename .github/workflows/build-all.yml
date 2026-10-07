@@ -4,13 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: 'Publish mode (none, alpha, release)'
+        description: 'Publish mode. Default is a formal release (tag v<version>, prerelease=false).'
         required: true
-        default: none
+        default: release
         type: choice
         options:
           - none
-          - alpha
           - release
       custom_notes:
         description: 'Optional custom release notes (Markdown). Overrides release-notes/<version>.md; leave empty to use the version file.'
@@ -87,19 +86,13 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      # Every published build is a formal release now: tag v<version>, prerelease=false.
       - name: Resolve release metadata
         run: |
-          if [ "${{ github.event.inputs.publish }}" = "release" ]; then
-            echo "TAG_NAME=v${{ needs.prepare.outputs.version_name }}" >> "$GITHUB_ENV"
-            echo "RELEASE_NAME=v${{ needs.prepare.outputs.version_name }}" >> "$GITHUB_ENV"
-            echo "IS_PRERELEASE=false" >> "$GITHUB_ENV"
-            echo "RELEASE_KIND=release" >> "$GITHUB_ENV"
-          else
-            echo "TAG_NAME=v${{ needs.prepare.outputs.version_name }}-alpha.${{ github.run_id }}" >> "$GITHUB_ENV"
-            echo "RELEASE_NAME=Alpha v${{ needs.prepare.outputs.version_name }} (build ${{ github.run_id }})" >> "$GITHUB_ENV"
-            echo "IS_PRERELEASE=true" >> "$GITHUB_ENV"
-            echo "RELEASE_KIND=pre-release" >> "$GITHUB_ENV"
-          fi
+          echo "TAG_NAME=v${{ needs.prepare.outputs.version_name }}" >> "$GITHUB_ENV"
+          echo "RELEASE_NAME=v${{ needs.prepare.outputs.version_name }}" >> "$GITHUB_ENV"
+          echo "IS_PRERELEASE=false" >> "$GITHUB_ENV"
+          echo "RELEASE_KIND=release" >> "$GITHUB_ENV"
 
       - name: Download artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4

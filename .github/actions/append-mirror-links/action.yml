@@ -3,7 +3,7 @@ description: 把中国镜像仓库与加速下载链接追加到发布正文（G
 
 inputs:
   tag:
-    description: 本次发布的 tag，例如 v0.2.2-alpha.36254783061
+    description: 本次发布的 tag，例如 v0.2.2preonline2
     required: true
   body-file:
     description: 要追加内容的 Markdown 文件

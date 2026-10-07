@@ -1,4 +1,4 @@
-name: Alpha Release
+name: Release
 
 on:
   workflow_dispatch:
@@ -23,7 +23,7 @@ env:
 
 jobs:
   release:
-    name: Publish alpha release
+    name: Publish release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -127,7 +127,7 @@ jobs:
 
           ## Build Info
 
-          Automated alpha pre-release from Build workflow run ${{ env.RUN_ID }}.
+          Automated release from Build workflow run ${{ env.RUN_ID }}.
 
           Artifacts:
           - Linux x64
@@ -168,16 +168,16 @@ jobs:
       - name: Append China mirror links
         uses: ./.github/actions/append-mirror-links
         with:
-          tag: v${{ env.APP_VERSION }}-alpha.${{ env.RUN_ID }}
+          tag: v${{ env.APP_VERSION }}
           gitee-repo: ${{ env.MIRROR_GITEE_REPO }}
           accel-base: ${{ env.MIRROR_ACCEL_BASE }}
           accel-label: ${{ env.MIRROR_ACCEL_LABEL }}
 
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
-          tag_name: v${{ env.APP_VERSION }}-alpha.${{ env.RUN_ID }}
-          name: Alpha v${{ env.APP_VERSION }} (build ${{ env.RUN_ID }})
-          prerelease: true
+          tag_name: v${{ env.APP_VERSION }}
+          name: v${{ env.APP_VERSION }}
+          prerelease: false
           body_path: release_body.md
           files: |
             dist/*
