@@ -237,13 +237,14 @@
 
 	<haxedef name="HXCPP_MAP_FILE" value="ApplicationMain.map" />
 	<haxedef name="HXCPP_CPP11" if="cpp" />
-	<haxedef name="HXCPP_GC_GENERATIONAL" if="cpp" />
+	<!-- HXCPP_GC_GENERATIONAL 你太坏了。-->
 	<haxedef name="HXCPP_ALIGN_ALLOC" if="cpp" />
 	<haxedef name="HXCPP_NO_ARCH_LEVEL" />
 	<!-- 符号构建才保留未剥离 .so 供行号表生成 -->
 	<section if="android" unless="debug">
 		<haxedef name="HXCPP_DEBUG_LINK_AND_STRIP" if="hxcpp_symbols" />
 	</section>
+	<!--GC你老牧师了你知道吗-->
 
 	<haxedef name="loop_unroll_max_cost" value="25"/>
 

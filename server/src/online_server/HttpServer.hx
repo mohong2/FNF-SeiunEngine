@@ -3,6 +3,7 @@ package online_server;
 import haxe.io.Bytes;
 import sys.net.Host;
 import sys.net.Socket;
+import sys.thread.Deque;
 import sys.thread.Thread;
 
 typedef HttpRequest = {
@@ -32,9 +33,21 @@ typedef HttpResponse = {
 
 /**
  * Minimal HTTP/1.1 server for the matchmaking handshake and the REST endpoints.
- * Each connection gets its own thread; `Connection: close` means no keep-alive.
+ *
+ * A FIXED pool of WORKER_COUNT connection workers drains one blocking queue, instead of the
+ * historical "one thread per connection": the engine runs the host's sqlite and HTTP layers in
+ * the same process as the game (HAXCPP_GC_GENERATIONAL is on), and under hxcpp's generational GC
+ * each HaxeThread carries a per-thread mOldReferrers mark chunk whose lifecycle races with rapid
+ * thread create/destroy (crash evidence: StackContext::pushReferrer dereferenced a garbage chunk
+ * pointer from the sqlite request's write barrier). Menus fire one request per state switch, so
+ * mashing the back button used to spawn a short-lived-thread storm and crash the server thread
+ * mid-query. Workers are created once per start() and only exit on the stop() sentinels, so the
+ * game no longer creates/destroys threads while the player navigates. `Connection: close` means
+ * no keep-alive.
  */
 class HttpServer {
+	static inline var WORKER_COUNT:Int = 4;
+
 	var listenSocket:Socket;
 	var handler:HttpRequest->HttpResponse;
 	/**
@@ -45,6 +58,8 @@ class HttpServer {
 	var running:Bool = true;
 	/** Set by start(): a second start() must not spawn a second accept thread on the same socket. */
 	var started:Bool = false;
+	/** Accepted connections, FIFO; a null is the shutdown sentinel (see stop()). */
+	var connections:Deque<Socket>;
 
 	public function new(host:String, port:Int, handler:HttpRequest->HttpResponse) {
 		this.handler = handler;
@@ -56,10 +71,13 @@ class HttpServer {
 		listenSocket.listen(32);
 	}
 
-	/** Starts the accept thread. Idempotent; a no-op after stop(). */
+	/** Starts the accept thread and the connection workers. Idempotent; a no-op after stop(). */
 	public function start():Void {
 		if (!running || started) return;
 		started = true;
+		connections = new Deque<Socket>();
+		for (_ in 0...WORKER_COUNT)
+			Thread.create(workerLoop);
 		Thread.create(acceptLoop);
 	}
 
@@ -68,7 +86,7 @@ class HttpServer {
 	 * from a thread other than the one that called start(). Closing the listen socket is what
 	 * frees the port, so the port is free when this returns; the accept thread leaves on its next
 	 * iteration. In-flight connections are not interrupted: every response is Connection: close
-	 * and short lived.
+	 * and short lived, and connections already queued ahead of the sentinels are still served.
 	 */
 	public function stop():Void {
 		running = false;
@@ -76,6 +94,12 @@ class HttpServer {
 		listenSocket = null;
 		if (socket != null) {
 			try socket.close() catch (e:Dynamic) {}
+		}
+		// Wake workers blocked on pop(true): each exits when it dequeues a null. FIFO order means
+		// anything accepted before the sentinels is handled first.
+		if (connections != null) {
+			for (_ in 0...WORKER_COUNT)
+				connections.add(null);
 		}
 	}
 
@@ -94,12 +118,22 @@ class HttpServer {
 					try client.close() catch (e:Dynamic) {}
 					break;
 				}
-				Thread.create(function() handleClient(client));
+				connections.add(client);
 			} catch (e:Dynamic) {
 				// A stop closes the listen socket under the blocked accept(); that is not an error.
 				if (!running) break;
 				Sys.sleep(0.01);
 			}
+		}
+	}
+
+	function workerLoop():Void {
+		while (true) {
+			// Blocks until a connection arrives or stop() enqueues its null sentinel.
+			var client = connections.pop(true);
+			if (client == null)
+				return;
+			handleClient(client);
 		}
 	}
 
