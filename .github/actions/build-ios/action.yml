@@ -117,9 +117,19 @@ runs:
         sed -i '' 's#</config>#<set name="ios.identity" value="-" /></config>#' "$CONF"
         cat "$CONF"
 
+    # -Dhxcpp_api_level=430 is deliberately NOT passed here. Under hxcpp 4.3, set64()
+    # sets HXCPP_M64 whenever HXCPP_ARM64 is set, and hxcpp's finish-setup.xml derives
+    # the iOS library suffix (LIBEXTRA) from HXCPP_M64. One 'rebuild ios' call builds
+    # armv7 + arm64 + simulator in a single hxcpp invocation, so the arm64 pass leaks
+    # HXCPP_M64 into the simulator pass: liblime.iphonesim.a (i386, no suffix) is never
+    # produced, only liblime.iphonesim-64.a. Lime then falls back to the unsuffixed name
+    # and dies with:
+    #   Source path ".../ndll/iPhone/liblime.iphoneos.a" does not exist
+    # Without the api-level define hxcpp keeps the pre-4.3 naming and iOS builds (as it
+    # did for 0.2.2preonline1).
     - name: Rebuild Lime iOS ndll
       shell: bash
-      run: haxelib run lime rebuild ios -arm64 -release -Dhxcpp_api_level=430
+      run: haxelib run lime rebuild ios -arm64 -release
 
     - name: Compile iOS (device, arm64)
       shell: bash

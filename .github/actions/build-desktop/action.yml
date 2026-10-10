@@ -144,6 +144,40 @@ runs:
           -exec perl -0pi -e 's{(<flag value="-stdlib=libc\+\+" unless="STDLIBCPP" />)}{$1\n  <flag value="-Wno-unused-command-line-argument" if="HXCPP_CLANG" />}' {} +
         find "$HAXELIB_HXCPP_PATH" -path '*/toolchain/mac-toolchain.xml' -exec grep -q 'Wno-unused-command-line-argument' {} \;
 
+    # The lime ndll carries x86-only compiler flags unconditionally on mac
+    # (project/lib/openal/files.xml and project/lib/pixman/files.xml: -mmmx -msse
+    # -msse2 -msse3 -mssse3) and compiles the SSE mixer sources unless 'rpi || android'.
+    # That was invisible while hxcpp passed -m64: clang silently ignores -m64 on arm64,
+    # so the x86 intrinsics compiled to nothing useful but never errored. Now that the
+    # -arch flag is pinned (see Verify macOS build architecture), clang rejects them:
+    #   xmmintrin.h:14:2: error: "This header is only meant to be used on x86 and x64"
+    # Drop the flags and the SSE sources when building for arm64; mixer_c.c is always
+    # compiled, so openal keeps a working mixer.
+    - name: Drop x86-only SIMD flags on macOS arm64
+      if: inputs.target == 'macos-arm64'
+      shell: bash
+      run: |
+        set -euo pipefail
+        LIBS="$HAXELIB_LIME_PATH/project/lib"
+        SIMD='-(mmmx|msse|msse2|msse3|mssse3|msse4\.1)"'
+
+        for f in "$LIBS"/openal/files.xml "$LIBS"/pixman/files.xml; do
+          [ -f "$f" ] || { echo "::error::$f not found - cannot strip x86 SIMD flags"; exit 1; }
+          # 1. the compiler flags themselves
+          perl -0pi -e 's{^[ \t]*<compilerflag value="-(?:mmmx|msse|msse2|msse3|mssse3|msse4\.1)"[^>]*/>[ \t]*\r?\n}{}mg' "$f"
+          # 2. the SSE-only source files (openal mixer_sse*, pixman-sse2/ssse3).
+          #    Match the path tail: avoiding \${NATIVE_TOOLKIT_PATH} here keeps the
+          #    pattern readable and immune to shell/yaml quoting of the braces.
+          perl -0pi -e 's{^[ \t]*<file name="[^"]*(?:mixer_sse|mixer_sse2|mixer_sse3|mixer_sse41|pixman-sse2|pixman-ssse3)\.c"[^>]*/>[ \t]*\r?\n}{}mg' "$f"
+        done
+
+        if grep -Eq -e "$SIMD" "$LIBS"/openal/files.xml "$LIBS"/pixman/files.xml; then
+          echo "::error::x86 SIMD flags still present after patching"
+          grep -En -e "$SIMD" "$LIBS"/openal/files.xml "$LIBS"/pixman/files.xml || true
+          exit 1
+        fi
+        echo "stripped x86-only SIMD flags for arm64"
+
     - name: Read app version
       shell: bash
       run: |
