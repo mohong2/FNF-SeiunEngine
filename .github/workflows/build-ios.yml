@@ -33,16 +33,18 @@ jobs:
       - name: Resolve hxcpp revision
         shell: bash
         run: |
-          git ls-remote https://github.com/mohong2/hxcpp.git refs/heads/main | awk '{print $1}' > hxcpp-head.txt
+          # Hash the branch hmm.json actually pins (haxe-4.3). main moves
+          # independently of it, so keying the cache on main left it stale.
+          git ls-remote https://github.com/mohong2/hxcpp.git refs/heads/haxe-4.3 | awk '{print $1}' > hxcpp-head.txt
           cat hxcpp-head.txt
 
       - name: Restore hxcpp compile cache
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: .hxcpp-cache
-          key: seiu-hxcpp-ios-v2-${{ hashFiles('hxcpp-head.txt', 'source/**/*.hx', 'assets/**/*', 'art/**/*', 'templates/**/*', 'Project.xml', 'hmm.json') }}
+          key: seiu-hxcpp-ios-v3-${{ hashFiles('hxcpp-head.txt', 'source/**/*.hx', 'assets/**/*', 'art/**/*', 'templates/**/*', 'Project.xml', 'hmm.json') }}
           restore-keys: |
-            seiu-hxcpp-ios-v2-
+            seiu-hxcpp-ios-v3-
 
       - uses: ./.github/actions/build-ios
         with:
