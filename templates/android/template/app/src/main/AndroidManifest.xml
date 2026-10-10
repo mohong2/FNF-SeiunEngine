@@ -14,7 +14,7 @@
 	     Ignored on Android 11+ where All-files-access is requested instead.
 
 	     usesCleartextTraffic: SeiunEngine Online self-hosted servers speak plain
-	     ws:// (port 2568) and http:// (port 2567) -- a LAN host has no TLS
+	     ws:// (port 2568) and http:// (port 2567): a LAN host has no TLS
 	     certificate to offer. Since targetSdk 28 Android blocks cleartext by
 	     default, so without this flag even ws://localhost is refused with a
 	     "Cleartext HTTP traffic not permitted" error. It only relaxes the
