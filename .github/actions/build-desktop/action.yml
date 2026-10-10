@@ -144,40 +144,68 @@ runs:
           -exec perl -0pi -e 's{(<flag value="-stdlib=libc\+\+" unless="STDLIBCPP" />)}{$1\n  <flag value="-Wno-unused-command-line-argument" if="HXCPP_CLANG" />}' {} +
         find "$HAXELIB_HXCPP_PATH" -path '*/toolchain/mac-toolchain.xml' -exec grep -q 'Wno-unused-command-line-argument' {} \;
 
-    # The lime ndll carries x86-only compiler flags unconditionally on mac
-    # (project/lib/openal/files.xml and project/lib/pixman/files.xml: -mmmx -msse
-    # -msse2 -msse3 -mssse3) and compiles the SSE mixer sources unless 'rpi || android'.
-    # That was invisible while hxcpp passed -m64: clang silently ignores -m64 on arm64,
-    # so the x86 intrinsics compiled to nothing useful but never errored. Now that the
-    # -arch flag is pinned (see Verify macOS build architecture), clang rejects them:
-    #   xmmintrin.h:14:2: error: "This header is only meant to be used on x86 and x64"
-    # Drop the flags and the SSE sources when building for arm64; mixer_c.c is always
-    # compiled, so openal keeps a working mixer.
-    - name: Drop x86-only SIMD flags on macOS arm64
+    # Build the lime ndll without x86 SIMD on the arm64 job.
+    #
+    # With -arch arm64 pinned (see Verify macOS build architecture), clang rejects lime's
+    # x86-only code: xmmintrin.h errors with "This header is only meant to be used on x86
+    # and x64". That was invisible while hxcpp passed -m64, which clang ignores on arm64.
+    #
+    # The fix has to be symmetric - removing a source file whose callers still reference
+    # its symbols only moves the failure to the link step (undefined symbols for
+    # _MixHrtf_SSE / __pixman_implementation_create_sse2). So each removal is paired:
+    #
+    #   openal  : config.h includes config-macos-x86_64.h unconditionally, and that header
+    #             #defines HAVE_SSE/SSE2/SSE3 unconditionally - so ALu.c and mixvoice.c
+    #             reference the SSE mixers even on arm64. Undefine the macros; openal then
+    #             falls back to the C resamplers. (mixer_neon.c exists but is gated on
+    #             'rpi', so plain C is the arm64 path - correct, if slower.)
+    #   openal  : drop mixer_sse*.c (the SSE implementations).
+    #   pixman  : drop the -m* compiler flags, plus pixman-sse2.c, pixman-ssse3.c AND the
+    #             unconditional pixman-x86.c / pixman-mmx.c - pixman-x86.c is what calls
+    #             __pixman_implementation_create_sse2.
+    - name: Build lime ndll without x86 SIMD on macOS arm64
       if: inputs.target == 'macos-arm64'
       shell: bash
       run: |
         set -euo pipefail
         LIBS="$HAXELIB_LIME_PATH/project/lib"
-        SIMD='-(mmmx|msse|msse2|msse3|mssse3|msse4\.1)"'
+        CFG="$LIBS/openal/include/config-macos-x86_64.h"
+        OPENAL="$LIBS/openal/files.xml"
+        PIXMAN="$LIBS/pixman/files.xml"
 
-        for f in "$LIBS"/openal/files.xml "$LIBS"/pixman/files.xml; do
-          [ -f "$f" ] || { echo "::error::$f not found - cannot strip x86 SIMD flags"; exit 1; }
-          # 1. the compiler flags themselves
-          perl -0pi -e 's{^[ \t]*<compilerflag value="-(?:mmmx|msse|msse2|msse3|mssse3|msse4\.1)"[^>]*/>[ \t]*\r?\n}{}mg' "$f"
-          # 2. the SSE-only source files (openal mixer_sse*, pixman-sse2/ssse3).
-          #    Match the path tail: avoiding \${NATIVE_TOOLKIT_PATH} here keeps the
-          #    pattern readable and immune to shell/yaml quoting of the braces.
-          perl -0pi -e 's{^[ \t]*<file name="[^"]*(?:mixer_sse|mixer_sse2|mixer_sse3|mixer_sse41|pixman-sse2|pixman-ssse3)\.c"[^>]*/>[ \t]*\r?\n}{}mg' "$f"
+        for f in "$CFG" "$OPENAL" "$PIXMAN"; do
+          [ -f "$f" ] || { echo "::error::$f not found - cannot disable x86 SIMD"; exit 1; }
         done
 
-        if grep -Eq -e "$SIMD" "$LIBS"/openal/files.xml "$LIBS"/pixman/files.xml; then
-          echo "::error::x86 SIMD flags still present after patching"
-          grep -En -e "$SIMD" "$LIBS"/openal/files.xml "$LIBS"/pixman/files.xml || true
+        # 1. openal: stop claiming SSE support, so ALu.c/mixvoice.c stop referencing it.
+        perl -0pi -e 's{^[ \t]*#define[ \t]+HAVE_SSE[0-9]*[ \t]*\r?\n}{}mg' "$CFG"
+
+        # 2. openal: drop the SSE mixer implementations.
+        perl -0pi -e 's{^[ \t]*<file name="[^"]*(?:mixer_sse|mixer_sse2|mixer_sse3|mixer_sse41)\.c"[^>]*/>[ \t]*\r?\n}{}mg' "$OPENAL"
+
+        # 3. pixman: drop the flags and every x86-specific source, including the
+        #    unconditional pixman-x86.c that calls into the SSE implementations.
+        perl -0pi -e 's{^[ \t]*<compilerflag value="-(?:mmmx|msse|msse2|msse3|mssse3|msse4\.1)"[^>]*/>[ \t]*\r?\n}{}mg' "$PIXMAN"
+        perl -0pi -e 's{^[ \t]*<file name="[^"]*(?:pixman-sse2|pixman-ssse3|pixman-x86|pixman-mmx)\.c"[^>]*/>[ \t]*\r?\n}{}mg' "$PIXMAN"
+
+        # Guards: the build must fail loudly if any half-removal is left behind, because
+        # that is exactly the state that produces unlinkable objects.
+        if grep -Eq -e '^\s*#define\s+HAVE_SSE' "$CFG"; then
+          echo "::error::HAVE_SSE still defined in $CFG - openal would reference missing SSE mixers"
           exit 1
         fi
-        echo "stripped x86-only SIMD flags for arm64"
-
+        if grep -Eq -e '-(mmmx|msse|msse2|msse3|mssse3)' "$PIXMAN"; then
+          echo "::error::x86 SIMD compiler flags still present in $PIXMAN"
+          exit 1
+        fi
+        if grep -Eq -e '(pixman-sse2|pixman-ssse3|pixman-x86|pixman-mmx)\.c' "$PIXMAN"; then
+          echo "::error::x86 pixman sources still listed in $PIXMAN"
+          exit 1
+        fi
+        if grep -Eq -e 'mixer_sse' "$OPENAL"; then
+          echo "::warning::a commented-out mixer_sse reference remains in $OPENAL (harmless)"
+        fi
+        echo "lime ndll will build without x86 SIMD for arm64"
     - name: Read app version
       shell: bash
       run: |
