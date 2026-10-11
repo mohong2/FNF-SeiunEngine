@@ -79,7 +79,7 @@ runs:
         & $SDKMANAGER "platforms;android-33" "build-tools;34.0.0" "platform-tools" "ndk;21.4.7075529"
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         Add-Content -Path $env:GITHUB_ENV -Value "ANDROID_SDK=$env:ANDROID_HOME"
-        Add-Content -Path $env:GITHUB_ENV -Value "ANDROID_NDK_ROOT=$env:ANDROID_HOME\ndk\21.4.7075529"
+        Add-Content -Path $env:GITHUB_ENV -Value "ANDROID_NDK_ROOT=$env:ANDROID_HOME/ndk/21.4.7075529"
         Add-Content -Path $env:GITHUB_ENV -Value "ANDROID_SETUP=true"
 
     - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
