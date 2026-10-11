@@ -34,8 +34,7 @@ class TurboDensity
 	/** Same-lane same-direction taps closer than this on screen are treated as one note (pixels). */
 	public static inline final DEFAULT_MIN_GAP_PX:Float = 4.0;
 
-	/** Most raw taps a single note may represent; guards against extreme charts distorting the density value. */
-	public static inline final MAX_REPRESENTED:Int = 512;
+	public static inline final MAX_REPRESENTED:Int = 65536;
 
 	/**
  * Chart content fingerprint.
