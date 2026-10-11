@@ -18,10 +18,7 @@ env:
 jobs:
   android:
     name: Android
-    # Linux, not Windows: the same ~2800-file app compile takes 15m36s on ubuntu
-    # against 26-36 minutes on windows-latest, the runner bills at 1x instead of 2x,
-    # and there is far more disk for the 400-800 MB .so/APK/symbol artifacts.
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     # The symbol pipeline builds the APK twice (the linemap is generated between the
     # builds and must converge). Now that the lime fork honours -arm64 / -armv7, each
     # job compiles a single ABI (~30 minutes) instead of one of them plus the other
@@ -53,8 +50,7 @@ jobs:
       - name: Resolve hxcpp revision
         shell: pwsh
         run: |
-          # Hash the branch hmm.json actually pins (haxe-4.3); main is a different branch.
-          git ls-remote https://github.com/mohong2/hxcpp.git refs/heads/haxe-4.3 | ForEach-Object { ($_ -split "`t")[0] } | Set-Content hxcpp-head.txt
+          git ls-remote https://github.com/mohong2/hxcpp.git refs/heads/main | ForEach-Object { ($_ -split "`t")[0] } | Set-Content hxcpp-head.txt
           Get-Content hxcpp-head.txt
 
       - name: Restore hxcpp compile cache

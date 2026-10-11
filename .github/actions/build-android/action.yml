@@ -16,28 +16,6 @@ inputs:
 runs:
   using: composite
   steps:
-    # The first "haxelib run lime" call bootstraps a HOST lime.ndll (RunScript), and on
-    # a Linux host that build compiles SDL's X11/ALSA/Pulse backends. Without these
-    # headers it dies with "X11/Xlib.h: No such file or directory" while still inside
-    # the SDK-configuration step, which reads as an unrelated failure. Same set as the
-    # desktop Linux job, plus the wayland/dbus/drm backends SDL also lists.
-    - name: Install system dependencies
-      if: runner.os == 'Linux'
-      shell: bash
-      run: |
-        sudo apt-get update \
-          -o Acquire::Retries=3 \
-          -o Acquire::http::Timeout=10 \
-          -o Acquire::https::Timeout=10 \
-          -o Acquire::Languages=none || true
-        sudo apt-get install -y --no-install-recommends \
-          libx11-dev libxext-dev libxi-dev libxrandr-dev libxinerama-dev libxcursor-dev \
-          libxss-dev libxxf86vm-dev libxfixes-dev libxrender-dev libxdamage-dev \
-          libxcb1-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev \
-          libgl1-mesa-dev libglu1-mesa-dev libegl1-mesa-dev \
-          libasound2-dev libpulse-dev libdbus-1-dev libudev-dev libdrm-dev libgbm-dev \
-          libwayland-dev
-
     # See build-desktop: public haxelib deps need no auth, and a bad token must never fail the
     # job (it is dropped again so it cannot break the public clones).
     - name: Auth private haxelib deps
@@ -72,14 +50,12 @@ runs:
     - name: Install Android SDK components
       shell: pwsh
       run: |
-        # Windows ships sdkmanager.bat, the Linux images ship the shell script next to it.
-        $sdkExt = if ($env:RUNNER_OS -eq 'Windows') { '.bat' } else { '' }
-        $SDKMANAGER = "$env:ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager$sdkExt"
+        $SDKMANAGER = "$env:ANDROID_HOME\cmdline-tools\latest\bin\sdkmanager.bat"
         1..20 | ForEach-Object { "y" } | & $SDKMANAGER --licenses 2>$null | Out-Null
         & $SDKMANAGER "platforms;android-33" "build-tools;34.0.0" "platform-tools" "ndk;21.4.7075529"
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         Add-Content -Path $env:GITHUB_ENV -Value "ANDROID_SDK=$env:ANDROID_HOME"
-        Add-Content -Path $env:GITHUB_ENV -Value "ANDROID_NDK_ROOT=$env:ANDROID_HOME/ndk/21.4.7075529"
+        Add-Content -Path $env:GITHUB_ENV -Value "ANDROID_NDK_ROOT=$env:ANDROID_HOME\ndk\21.4.7075529"
         Add-Content -Path $env:GITHUB_ENV -Value "ANDROID_SETUP=true"
 
     - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
@@ -90,7 +66,7 @@ runs:
     - name: Install haxelib dependencies
       shell: pwsh
       run: |
-        haxelib setup "$env:GITHUB_WORKSPACE/.haxelib"
+        haxelib setup "$env:GITHUB_WORKSPACE\.haxelib"
         haxe -cp ./setup -main Main --interp
 
     # Resolve the active library directories once, so no step below hardcodes
@@ -103,15 +79,15 @@ runs:
     - name: Enable hxcpp compile cache
       shell: pwsh
       run: |
-        Remove-Item "$HOME/.hxcpp_config.xml", "$HOME/.lime/config.xml" -Force -ErrorAction SilentlyContinue
-        New-Item -ItemType Directory -Force -Path "$HOME/.lime" | Out-Null
+        Remove-Item "$env:USERPROFILE\.hxcpp_config.xml", "$env:USERPROFILE\.lime\config.xml" -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.lime" | Out-Null
         @(
           '<?xml version="1.0" encoding="utf-8"?>'
           '<config>'
           '  <section id="defines">'
           '  </section>'
           '</config>'
-        ) | Set-Content "$HOME/.lime/config.xml" -Encoding UTF8
+        ) | Set-Content "$env:USERPROFILE\.lime\config.xml" -Encoding UTF8
         $cacheDir = "$env:GITHUB_WORKSPACE\.hxcpp-cache"
         $cacheDir = $cacheDir -replace '\\','/'
         New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
@@ -175,7 +151,7 @@ runs:
       env:
         _JAVA_OPTIONS: "-Xmx5g -XX:MaxMetaspaceSize=1g"
       run: >
-        pwsh -NoProfile -File tools/build_android_symbols.ps1
+        powershell -ExecutionPolicy Bypass -File tools\build_android_symbols.ps1
         -Arch "${{ inputs.arch }}" -AppVersion "$env:APP_VERSION-${{ github.run_id }}"
 
     - name: Prepare APK artifact
