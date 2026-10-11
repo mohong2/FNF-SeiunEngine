@@ -158,7 +158,14 @@ function Find-Unstripped {
     # The old fixed list returned $Entry.src[0] - the bundle's copy of an EARLIER
     # build - while the fresh byproduct sat in obj\obj\<target>\ untouched.
     $picked = & $python (Join-Path $PSScriptRoot 'gen_linemap.py') --find-so 'release' $Entry.abi
-    if ($LASTEXITCODE -eq 0 -and $picked) { return $picked.Trim() }
+    # Only trust the generator's answer if the file is really there: a stale path
+    # (or a relative one resolved from the wrong place) would otherwise be handed
+    # straight to Copy-Item and fail there with a confusing binding error.
+    if ($LASTEXITCODE -eq 0 -and $picked) {
+        $pickedPath = $picked.Trim()
+        if (Test-Path $pickedPath) { return $pickedPath }
+        Write-Warning "gen_linemap.py --find-so named a missing file for $($Entry.abi): $pickedPath"
+    }
     foreach ($candidate in $Entry.src) {
         if (Test-Path $candidate) { return $candidate }
     }
@@ -185,7 +192,7 @@ foreach ($entry in $abiSources) {
 # generated from such a link covers only the prebuilt static libraries, locates
 # none of the game code - and still "converges", because the embedded table and
 # the freshly generated one are equally blind. Purge and pay the recompile once.
-$objRoot = Join-Path $outDir 'obj\obj'
+$objRoot = Join-Path $outDir 'obj/obj'
 if (Test-Path $objRoot) {
     $poisoned = @()
     foreach ($dir in Get-ChildItem $objRoot -Directory) {
@@ -236,7 +243,10 @@ while (-not $converged -and $attempts -lt 2) {
         $bin = Join-Path $root "assets/linemap/$($entry.abi).bin"
         if (-not (Test-Path $bin)) { continue }
         $found = Find-Unstripped $entry
-        if ($null -eq $found) { continue }
+        if ($null -eq $found) {
+            Write-Host "[symbols] attempt $attempts $($entry.abi): no unstripped .so to compare against - skipped"
+            continue
+        }
         $tempBin = Join-Path $env:TEMP ("seiun_lm_" + [Guid]::NewGuid().ToString('N') + '.bin')
         & $python (Join-Path $PSScriptRoot 'gen_linemap.py') $found $tempBin | Out-Host
         if ($LASTEXITCODE -ne 0) { throw "gen_linemap.py verification failed for $($entry.abi)" }
@@ -260,6 +270,7 @@ foreach ($entry in $abiSources) {
         Write-Warning "no unstripped .so for $($entry.abi) (looked for: $($entry.src -join ', '))"
         continue
     }
+    Write-Host "[symbols] using unstripped source for $($entry.abi): $found"
     $dest = Join-Path $symbolsDir ("libApplicationMain-" + $entry.abi + '.so')
     Copy-Item $found $dest -Force
     $unstripped[$entry.abi] = $dest
@@ -322,6 +333,10 @@ Set-Content -Path $buildInfo -Value $lines -Encoding UTF8
 foreach ($abi in $pendingVerify) {
     $entry = $abiSources | Where-Object { $_.abi -eq $abi } | Select-Object -First 1
     if (-not $entry) { continue }
+    if (-not $unstripped.ContainsKey($abi)) {
+        Write-Warning "no staged unstripped .so for $abi - skipping symbols-$abi.zip"
+        continue
+    }
     $stage = Join-Path $env:TEMP ('seiun_sym_' + $abi)
     Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $stage | Out-Null

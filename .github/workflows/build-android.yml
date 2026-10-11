@@ -53,7 +53,8 @@ jobs:
       - name: Resolve hxcpp revision
         shell: pwsh
         run: |
-          git ls-remote https://github.com/mohong2/hxcpp.git refs/heads/main | ForEach-Object { ($_ -split "`t")[0] } | Set-Content hxcpp-head.txt
+          # Hash the branch hmm.json actually pins (haxe-4.3); main is a different branch.
+          git ls-remote https://github.com/mohong2/hxcpp.git refs/heads/haxe-4.3 | ForEach-Object { ($_ -split "`t")[0] } | Set-Content hxcpp-head.txt
           Get-Content hxcpp-head.txt
 
       - name: Restore hxcpp compile cache
