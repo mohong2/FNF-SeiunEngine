@@ -54,12 +54,13 @@ class Main extends Sprite
 	// Height of the game in pixels (might be less / more in actual pixels depending on your zoom).
 	#if mobile
 	// Mobile must verify/extract the bundled assets before anything else runs, so the boot
-	// starts in a blocking state that hands over to TitleState itself. Desktop has no
-	// extraction step and keeps starting directly in TitleState.
+	// starts in CopyState, which extends BootState and adds the extraction pass on top of
+	// the shared boot splash (one loading screen on every platform). Desktop and web start
+	// in BootState itself: splash + real graphics/sound precache, then the title.
 	// Fully qualified: CopyState only exists on mobile, and Main.hx sits in the root package.
 	var initialState:Class<FlxState> = states.CopyState;
 	#else
-	var initialState:Class<FlxState> = TitleState; // The FlxState the game starts with.
+	var initialState:Class<FlxState> = states.BootState; // The FlxState the game starts with.
 	#end
 	#if !android
 	var zoom:Float = 1; // If -1, zoom is automatically calculated to fit the window dimensions.
@@ -259,15 +260,8 @@ class Main extends Sprite
 		if (updateFramerate < 30) updateFramerate = framerate;
 		if (drawFramerate < 30) drawFramerate = framerate;
 
-		#if !mobile
-		// Desktop has no extraction step, so the test-build notice is simply the first state
-		// (shouldShow() is false on release builds, so they start in TitleState as before).
-		// It hands over to TitleState itself and owns the same prefs bootstrap CopyState
-		// performs on mobile. The note-optimisation disclaimer is unrelated: it appears when
-		// the note-optimisation settings page is opened.
-		if (states.TestBuildNoticeState.shouldShow())
-			initialState = states.TestBuildNoticeState;
-		#end
+		// The test-build notice is queued by BootState.handOver() after the boot screen has
+		// finished loading, so release and test builds share the same entry state.
 
 		addChild(new FlxGame(gameWidth, gameHeight, initialState, zoom, updateFramerate, drawFramerate, skipSplash, startFullscreen));
 

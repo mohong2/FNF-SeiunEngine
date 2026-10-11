@@ -15,12 +15,7 @@ using StringTools;
 
 import mohong.TraceManager;
 import backend.Dialog;
-import flixel.addons.transition.FlxTransitionableState;
-import flixel.FlxSprite;
-import flixel.FlxState;
-import flixel.text.FlxText;
 import flixel.FlxG;
-import flixel.util.FlxColor;
 import haxe.Json;
 
 #if mobile
@@ -45,13 +40,20 @@ typedef ReadinessManifest = {
 }
 
 /**
- * First mobile state: confirm that the bundled `assets/` + `mods/` really landed in the
- * storage root, extract them when they have not, and only then hand over to TitleState.
+ * The mobile boot state: confirm that the bundled `assets/` + `mods/` really landed in the
+ * storage root, extract them when they have not, and only then continue the boot.
+ *
+ * It extends `states.BootState`, so the whole cold start stays ONE screen on every
+ * platform: the classic flixel splash (four corner pieces flying into the centre) plays
+ * while extraction runs on the native thread, and the violet→cyan bar at the bottom shows
+ * the real progress — extraction mapped onto [0, 0.8], the shared graphics/sound precache
+ * onto [0.8, 1]. The old yellow "funkay" UI is gone.
  *
  * This logic used to be a handful of branches inside TitleState.create()/update(). A
  * dedicated blocking state is the fix for the "tapping quickly skips extraction" class of
  * bugs:
- *   - nothing here reacts to input, so no tap can reach Title/MainMenu early;
+ *   - nothing here reacts to input during the copy pass, so no tap can reach Title/MainMenu
+ *     early (BootState's skip only shortens the splash animation, never the work);
  *   - a mod `stateRedirects` entry for TitleState can no longer throw away the copy UI,
  *     because TitleState is not the state on screen yet;
  *   - readiness is *verified* (native marker + this manifest + probes on critical paths)
@@ -59,7 +61,7 @@ typedef ReadinessManifest = {
  *   - a failed or partial pass is visible (dialog + logs/CopyState-*.txt) and can be
  *     retried, instead of silently dropping into the game with missing assets.
  */
-class CopyState extends MusicBeatState
+class CopyState extends BootState
 {
 	public static var instance:CopyState;
 
@@ -92,9 +94,6 @@ class CopyState extends MusicBeatState
 	/** Relative directories that must exist. */
 	static final CRITICAL_PROBE_DIRS:Array<String> = ['assets/images'];
 
-	public var loadingImage:FlxSprite;
-	public var bottomBG:FlxSprite;
-	public var loadedText:FlxText;
 	public var copyLoop:FlxAsyncLoop;
 
 	var loopTimes:Int = 0;
@@ -122,23 +121,19 @@ class CopyState extends MusicBeatState
 	override function create():Void
 	{
 		instance = this;
+		// BootState.create() performs the prefs bootstrap (PlayerSettings, ClientPrefs,
+		// storage root), builds the shared splash + bar scene, starts the jingle and then
+		// calls startBootFlow() below.
+		super.create();
+	}
 
-		// PlayerSettings.player1 is null until init() runs, and BOTH of the things below need
-		// it: ClientPrefs.loadPrefs() ends in reloadControls() (PlayerSettings.player1.controls),
-		// and MusicBeatState.controls is the property PlayerSettings.player1.controls, which
-		// MusicBeatState.create() dereferences via setOnHscript. TitleState used to call init()
-		// before loadPrefs() and before super.create(); the boot state has to do the same or the
-		// process dies with SIGSEGV at a null + small offset during startup.
-		if (PlayerSettings.player1 == null)
-			PlayerSettings.init();
-
-		// The boot states own the prefs bootstrap: autoExtractAssets, storageType and the
-		// saved language all come from here, and MusicBeatState.create() loads the language.
-		ClientPrefs.ensureLoaded();
-		// Prefs are in memory now, so the storage root can be resolved for real. Main.new()
-		// had to use the version-aware default because prefs were not loaded yet.
-		SUtil.applyStorageDirectory();
-
+	/**
+	 * Boot flow entry decided by readiness instead of the default "precache and done":
+	 * extract first when the build is not ready, then hand the rest of the bar to the
+	 * inherited precache on the very same screen.
+	 */
+	override function startBootFlow():Void
+	{
 		var problem:String = readinessProblem();
 		TraceManager.info('trace.copy.readiness', 'Asset readiness: {}', [problem == null ? 'ready' : problem]);
 
@@ -170,32 +165,27 @@ class CopyState extends MusicBeatState
 			#if android
 			bumpVerifyCounter(SUtil.getStorageDirectory());
 			#end
-			// No extra fade: an up-to-date boot has to look exactly like it did before.
-			FlxTransitionableState.skipNextTransIn = true;
-			FlxTransitionableState.skipNextTransOut = true;
-			super.create();
-			handOver();
+			beginPrecache();
 			return;
 		}
 
 		if (!ClientPrefs.data.autoExtractAssets)
 		{
-			FlxTransitionableState.skipNextTransIn = true;
-			FlxTransitionableState.skipNextTransOut = true;
-			super.create();
 			warnMissingAssets(problem);
 			return;
 		}
 
 		copyReason = problem;
-		super.create();
 		beginCopy();
 	}
 
 	override function update(elapsed:Float):Void
 	{
-		// Deliberately input-free: no key, pad or touch branch may switch the state from
-		// here, which is what makes the copy pass impossible to skip.
+		// Deliberately input-free during the copy pass: no key, pad or touch branch may
+		// switch the state from here, which is what makes extraction impossible to skip.
+		// (super.update drives the splash clock, the skip and the precache queue.)
+		super.update(elapsed);
+
 		if (shouldCopy)
 		{
 			#if android
@@ -208,19 +198,22 @@ class CopyState extends MusicBeatState
 			{
 				stallWarned = true;
 				TraceManager.warn('trace.copy.stalled', 'No extraction progress for {}s', [STALL_TIMEOUT]);
-				if (loadedText != null)
-					loadedText.text = Language.get('CopyState.stalled', 'Still extracting, please wait...');
+				bar.setTask(Language.get('CopyState.stalled', 'Still extracting, please wait...'));
 			}
 			#else
-			if (copyLoop != null && copyLoop.finished && canUpdate)
+			if (copyLoop != null)
 			{
-				canUpdate = false;
-				finishLegacyCopy();
+				// Legacy loop has no per-file callback; show the counter's real progress.
+				if (maxLoopTimes > 0)
+					bar.setProgress(BootState.EXTRACT_PORTION * (loopTimes / maxLoopTimes));
+				if (copyLoop.finished && canUpdate)
+				{
+					canUpdate = false;
+					finishLegacyCopy();
+				}
 			}
 			#end
 		}
-
-		super.update(elapsed);
 	}
 
 	override function destroy():Void
@@ -436,48 +429,7 @@ class CopyState extends MusicBeatState
 	}
 	#end
 
-	// -------------------------------------------------- Hand-over / warnings
-
-	/**
-	 * Leave the copy state through plain flixel rather than MusicBeatState.switchState.
-	 *
-	 * switchState() opens a CustomFadeTransition substate and installs its *static*
-	 * finishCallback; CustomFadeTransition.destroy() then calls that callback a second time
-	 * while FlxGame is already inside switchState(), and the fade-out substate is left open
-	 * until then. This hand-over is the only transition the engine performs while assets are
-	 * still warm from extraction, so the machinery is skipped here: the mod state redirect is
-	 * applied explicitly (TitleState also re-checks stateRedirects on its first update), and
-	 * no transition substate is created. The up-to-date path already skipped the fade for the
-	 * same reason.
-	 */
-	function handOver():Void
-	{
-		// The cold-start storage-location warning is raised by TitleState's normal flow, next
-		// to the engine's other boot dialogs: showing a native dialog from the very first
-		// state is one unknown too many for a startup path.
-		TraceManager.info('trace.copy.handOver', 'Assets ready; entering TitleState');
-
-		FlxTransitionableState.skipNextTransIn = true;
-		FlxTransitionableState.skipNextTransOut = true;
-
-		// Once per cold start, after the assets are verified (so fonts and language exist)
-		// and before the title: the test-build notice (shouldShow() is false on release
-		// builds, so those hand over directly). The notice hands over to TitleState itself,
-		// mod state redirect included. Deliberately not persisted, because it is wanted on
-		// every launch rather than once per install. The note-optimisation disclaimer is a
-		// different thing and is raised when that settings page is opened.
-		if (TestBuildNoticeState.shouldShow())
-		{
-			FlxG.switchState(new TestBuildNoticeState());
-			return;
-		}
-
-		var next:FlxState = new TitleState();
-		#if MODS_ALLOWED
-		next = states.ModState.resolveState(next);
-		#end
-		FlxG.switchState(next);
-	}
+	// -------------------------------------------------- Warnings
 
 	/** Auto-extraction is off but the assets are not usable: say so instead of hiding it. */
 	function warnMissingAssets(problem:String):Void
@@ -493,7 +445,7 @@ class CopyState extends MusicBeatState
 				+ 'Extract now, or enable the option in Android Settings.'),
 			[
 				{name: Language.get('CopyState.extractNow', 'Extract now'), callback: extractNow},
-				{name: Language.get('CopyState.continueAnyway', 'Continue anyway'), callback: handOver}
+				{name: Language.get('CopyState.continueAnyway', 'Continue anyway'), callback: continueAnyway}
 			],
 			false);
 	}
@@ -506,6 +458,12 @@ class CopyState extends MusicBeatState
 		copyReason = 'manual';
 		retryCount = 0;
 		beginCopy();
+	}
+
+	/** "Continue anyway": straight to the title, skipping the precache (assets are broken). */
+	function continueAnyway():Void
+	{
+		warnAndContinue('continue without extraction');
 	}
 
 	// ------------------------------------------------------- Copy pass
@@ -522,7 +480,8 @@ class CopyState extends MusicBeatState
 
 		TraceManager.info('trace.copy.start', 'Copy pass started (reason {}, attempt {})', [copyReason, retryCount + 1]);
 
-		buildCopyUi();
+		bar.setProgress(0);
+		bar.setTask(Language.get('CopyState.copying', 'Extracting game files...'));
 
 		#if android
 		startNativeExtraction();
@@ -530,29 +489,6 @@ class CopyState extends MusicBeatState
 		checkExistingFiles();
 		startLegacyLoop();
 		#end
-	}
-
-	function buildCopyUi():Void
-	{
-		if (loadingImage != null)
-			return;
-
-		add(new FlxSprite(0, 0).makeGraphic(FlxG.width, FlxG.height, 0xffcaff4d));
-
-		loadingImage = new FlxSprite(0, 0, Paths.image('funkay'));
-		loadingImage.setGraphicSize(0, FlxG.height);
-		loadingImage.updateHitbox();
-		loadingImage.screenCenter();
-		add(loadingImage);
-
-		bottomBG = new FlxSprite(0, FlxG.height - 26).makeGraphic(FlxG.width, 26, 0xFF000000);
-		bottomBG.alpha = 0.6;
-		add(bottomBG);
-
-		loadedText = new FlxText(bottomBG.x, bottomBG.y + 4, FlxG.width, '', 16);
-		loadedText.setFormat(Paths.languageFont(), 16, FlxColor.WHITE, CENTER);
-		loadedText.text = Language.get('CopyState.copying', 'Extracting game files...');
-		add(loadedText);
 	}
 
 	#if android
@@ -575,8 +511,8 @@ class CopyState extends MusicBeatState
 			lastProgressAt = haxe.Timer.stamp();
 			loopTimes = done;
 			maxLoopTimes = total;
-			if (loadedText != null)
-				loadedText.text = (total > 0) ? '$done/$total' : Language.get('CopyState.copying', 'Extracting game files...');
+			// Extraction claims the first 0.8 of the bar; the shared precache gets the rest.
+			bar.setProgress((total > 0) ? BootState.EXTRACT_PORTION * (done / total) : 0);
 		};
 		listener.completeHandler = function(resultJson:String)
 		{
@@ -638,7 +574,11 @@ class CopyState extends MusicBeatState
 		FlxG.sound.play(Paths.sound('confirmMenu'));
 		shouldCopy = false;
 		TraceManager.info('trace.copy.complete', 'Extraction complete');
-		handOver();
+
+		// Same screen, same bar: extraction took [0, 0.8], the shared precache takes the rest.
+		rangeStart = BootState.EXTRACT_PORTION;
+		rangeEnd = 1;
+		beginPrecache();
 	}
 
 	function handleFailure(reason:String, details:Array<String>):Void
@@ -675,18 +615,18 @@ class CopyState extends MusicBeatState
 		shouldCopy = true;
 		canUpdate = true;
 		copyReason = 'retry';
-		if (loadedText != null)
-			loadedText.text = Language.get('CopyState.copying', 'Extracting game files...');
+		bar.setProgress(0);
+		bar.setTask(Language.get('CopyState.copying', 'Extracting game files...'));
 
 		startNativeExtraction();
 	}
+	#end
 
 	function warnAndContinue(reason:String):Void
 	{
 		TraceManager.warn('trace.copy.continueWithMissing', 'Continuing with missing assets: {}', [reason]);
 		handOver();
 	}
-	#end
 
 	// ------------------------------------ Legacy (non-Android mobile) copy loop
 
@@ -699,7 +639,9 @@ class CopyState extends MusicBeatState
 			// platform paths can disagree). Never wait on an empty async loop.
 			shouldCopy = false;
 			TraceManager.info('trace.copy.noop', 'No files to copy; continuing.');
-			handOver();
+			rangeStart = BootState.EXTRACT_PORTION;
+			rangeEnd = 1;
+			beginPrecache();
 			return;
 		}
 
@@ -728,7 +670,10 @@ class CopyState extends MusicBeatState
 		FlxG.sound.play(Paths.sound('confirmMenu'));
 		shouldCopy = false;
 		TraceManager.info('trace.copy.copyComplete', 'Copy pass complete');
-		handOver();
+
+		rangeStart = BootState.EXTRACT_PORTION;
+		rangeEnd = 1;
+		beginPrecache();
 	}
 
 	function handleLegacyFailure(reason:String):Void
@@ -753,6 +698,8 @@ class CopyState extends MusicBeatState
 					shouldCopy = true;
 					canUpdate = true;
 					loopTimes = 0;
+					bar.setProgress(0);
+					bar.setTask(Language.get('CopyState.copying', 'Extracting game files...'));
 					checkExistingFiles();
 					startLegacyLoop();
 				},
@@ -764,12 +711,6 @@ class CopyState extends MusicBeatState
 				'The game will continue with missing files; some content may be broken.'), 'Warning');
 			warnAndContinue(reason);
 		}
-	}
-
-	function warnAndContinue(reason:String):Void
-	{
-		TraceManager.warn('trace.copy.continueWithMissing', 'Continuing with missing assets: {}', [reason]);
-		handOver();
 	}
 
 	function checkExistingFiles():Void

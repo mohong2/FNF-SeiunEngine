@@ -89,6 +89,9 @@ class TestBuildNoticeState extends MusicBeatState
 		FlxTransitionableState.skipNextTransIn = true;
 		FlxTransitionableState.skipNextTransOut = true;
 
+		// BootState hides the system cursor for the splash; the Continue button needs it back.
+		FlxG.mouse.visible = true;
+
 		super.create();
 
 		#if LUA_ALLOWED
