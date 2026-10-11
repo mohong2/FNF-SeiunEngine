@@ -1,16 +1,21 @@
 package online.objects;
 
 import flixel.addons.display.FlxPieDial;
+import android.flixel.FlxButton;
 import online.util.OnlineLang;
 
 class LeavePie extends FlxTypedSpriteGroup<FlxSprite> {
-	public var pieDial:FlxPieDial;
+    public var pieDial:FlxPieDial;
 	var exitTip:FlxText;
 	var theFog:FlxSprite;
 	var finished:Bool = false;
-    
-    public function new() {
+
+	/** The room's on-screen BACK button, if a virtual pad is mounted. */
+	var padBack:FlxButton;
+
+    public function new(?padBack:FlxButton = null) {
         super();
+		this.padBack = padBack;
 
 		theFog = new FlxSprite();
 		theFog.makeGraphic(FlxG.width, FlxG.height, FlxColor.BLACK);
@@ -42,10 +47,14 @@ class LeavePie extends FlxTypedSpriteGroup<FlxSprite> {
 		// `RoomState.controls` is `PlayerSettings.player1.controls`, not an engine-wide
 		// `Controls.instance`, so `controls.pressed('back')` alone is not trustworthy: global key
 		// state is read as well, making a held ESC or BACKSPACE equivalent to a held BACK.
+		// `padBackHeld()` bypasses that whole chain: on Android the held state does not survive
+		// past the first frame (FlxButton's press/release bookkeeping drops it), which is why a
+		// held on-screen B never filled the dial even though a tap registered.
 		var backHeld:Bool = getState().controls.pressed('back')
 			#if android || FlxG.android.pressed.BACK #end
 			|| FlxG.keys.pressed.ESCAPE
-			|| FlxG.keys.pressed.BACKSPACE;
+			|| FlxG.keys.pressed.BACKSPACE
+			|| padBackHeld();
 
 		if (backHeld && !chatFocused) {
 			exitTip.alpha = 1;
@@ -83,6 +92,44 @@ class LeavePie extends FlxTypedSpriteGroup<FlxSprite> {
     function getState():MusicBeatState {
         return cast FlxG.state;
     }
+
+	/**
+	 * Raw "a pointer is currently down on the pad's BACK button" test.
+	 *
+	 * `controls.pressed('back')` goes through `FlxActionInputDigitalIFlxInput` -> the virtual
+	 * button's internal `FlxInput`, and on Android that held state does not survive past the
+	 * press frame, so the dial never filled. This reads the touch manager directly instead:
+	 * a held finger stays `pressed` in `FlxG.touches.list` for as long as it is down (the
+	 * manager only releases it on the system's TOUCH_END), and the hit test is the same
+	 * `overlapsPoint(worldPos, true, camera)` FlxButton itself uses, so button scaling and
+	 * the dedicated pad camera are handled exactly like the tap path that already works.
+	 * It also keeps working when the button's own update is skipped.
+	 */
+	public function padBackHeld():Bool
+	{
+		if (padBack == null || !padBack.visible || !padBack.exists)
+			return false;
+
+		for (touch in FlxG.touches.list)
+		{
+			if (!touch.pressed)
+				continue;
+			for (camera in padBack.cameras)
+				if (padBack.overlapsPoint(touch.getWorldPosition(camera, FlxPoint.weak()), true, camera))
+					return true;
+		}
+
+		#if desktop
+		// Desktop touch-support mode drives the pad with the mouse, mirroring
+		// FlxButton.checkTouchOverlap's desktop branch.
+		if (FlxG.mouse.pressed)
+			for (camera in padBack.cameras)
+				if (padBack.overlapsPoint(FlxG.mouse.getWorldPosition(camera, FlxPoint.weak()), true, camera))
+					return true;
+		#end
+
+		return false;
+	}
 
 	/**
 	 * Flixel-addons 2.11.0 (`flixel/addons/display/FlxPieDial.hx` exposes only `amount` / `draw`)

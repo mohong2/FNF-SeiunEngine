@@ -600,7 +600,9 @@ class RoomState extends MusicBeatState /*#if interpret implements interpret.Inte
 		itemTip.setFormat(OnlineLang.font(), 18, FlxColor.WHITE, CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 		groupHUD.add(itemTip);
 
-		groupHUD.add(leavePie = new LeavePie());
+		// Hand the pie the pad's BACK button so it can read the touch manager directly:
+		// `controls.pressed('back')` loses the held state after the first frame on Android.
+		groupHUD.add(leavePie = new LeavePie(virtualPad != null ? virtualPad.buttonB : null));
 
 		add(groupHUD);
 		
@@ -749,7 +751,8 @@ class RoomState extends MusicBeatState /*#if interpret implements interpret.Inte
 		}
 		#end
 
-		var controlsBack:Bool = controls.pressed('back') #if android || FlxG.android.pressed.BACK #end;
+		var controlsBack:Bool = controls.pressed('back') #if android || FlxG.android.pressed.BACK #end
+			|| (leavePie != null && leavePie.padBackHeld());
 		var held:Bool = FlxG.keys.pressed.ESCAPE || FlxG.keys.pressed.BACKSPACE || controlsBack;
 
 		leaveTraceTimer -= elapsed;
