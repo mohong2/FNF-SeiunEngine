@@ -19,7 +19,11 @@ jobs:
   android:
     name: Android
     runs-on: windows-latest
-    timeout-minutes: 120
+    # The symbol pipeline builds the APK twice (the linemap is generated between the
+    # builds and must converge), so the job is far longer than the old plain build:
+    # arm64 measured ~91 minutes and armv7 was still working when the previous
+    # 120 minute cap killed it mid-build.
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
