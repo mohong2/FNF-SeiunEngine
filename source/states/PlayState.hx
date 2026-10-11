@@ -4138,8 +4138,14 @@ class PlayState extends MusicBeatState
 		var __tLoop:Float = __t0;
 		// 自定义 Note 类型注册表随模组列表变化（编辑器/模组菜单可切换），每首歌加载前重建。
 		NoteTypeRegistry.refresh();
-		songSpeedType = ClientPrefs.getGameplaySetting('scrolltype','multiplicative');
+		// Replay keeps the scrolltype restoreState() put back: this assignment used to run
+		// unconditionally, so a changed player setting silently overwrote the recorded one, and
+		// 'Change Scroll Speed' events then took the wrong branch - a constant chart started
+		// applying them, which both jumped songSpeed mid-replay and with it
+		// noteKillOffset = 350/songSpeed (the note-recycle window), making replayed keys miss
+		// notes they had hit live.
 		if (!(replayMode && replayExam != null)) {
+			songSpeedType = ClientPrefs.getGameplaySetting('scrolltype','multiplicative');
 			switch(songSpeedType) {
 				case "multiplicative":
 					songSpeed = SONG.speed * ClientPrefs.getGameplaySetting('scrollspeed', 1);
@@ -7122,11 +7128,12 @@ class PlayState extends MusicBeatState
 			var lastTime:Float = Conductor.songPosition;
 			var hitTime:Float = (replayMode && time != -999999) ? time : lastTime;
 			var startedByInput:Bool = false;
-			if (startingSong)
+			if (startingSong || (replayMode && time != -999999))
 			{
 				// Judge against the real countdown position so early presses get a
 				// normal ms (like mid-song), not a forced zero point. Keyboard events
 				// can run before Note.update(), so refresh canBeHit here.
+				var judgeTime:Float = (replayMode && time != -999999) ? hitTime : Conductor.songPosition;
 				if (!hasActiveScripts())
 				{
 					for (daNote in activeNotes)
@@ -7134,8 +7141,8 @@ class PlayState extends MusicBeatState
 						if (daNote == null) continue;
 						if (daNote.mustPress && !daNote.isSustainNote)
 						{
-							daNote.canBeHit = daNote.strumTime > Conductor.songPosition - (Conductor.safeZoneOffset * daNote.lateHitMult)
-								&& daNote.strumTime < Conductor.songPosition + (Conductor.safeZoneOffset * daNote.earlyHitMult);
+							daNote.canBeHit = daNote.strumTime > judgeTime - (Conductor.safeZoneOffset * daNote.lateHitMult)
+								&& daNote.strumTime < judgeTime + (Conductor.safeZoneOffset * daNote.earlyHitMult);
 							if (daNote.canBeHit) daNote.tooLate = false;
 						}
 					}
@@ -7146,8 +7153,8 @@ class PlayState extends MusicBeatState
 					{
 						if (daNote.mustPress && !daNote.isSustainNote)
 						{
-							daNote.canBeHit = daNote.strumTime > Conductor.songPosition - (Conductor.safeZoneOffset * daNote.lateHitMult)
-								&& daNote.strumTime < Conductor.songPosition + (Conductor.safeZoneOffset * daNote.earlyHitMult);
+							daNote.canBeHit = daNote.strumTime > judgeTime - (Conductor.safeZoneOffset * daNote.lateHitMult)
+								&& daNote.strumTime < judgeTime + (Conductor.safeZoneOffset * daNote.earlyHitMult);
 							if (daNote.canBeHit) daNote.tooLate = false;
 						}
 					});

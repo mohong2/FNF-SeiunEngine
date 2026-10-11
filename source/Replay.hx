@@ -509,6 +509,13 @@ class Replay extends FlxBasic
 				FlxG.log.warn('Replay was recorded on ${replayMania + 1}K but current chart is ${PlayState.mania + 1}K');
 		}
 
+		// Restoring playbackRate runs its setter, which recomputes
+		// Conductor.safeZoneOffset from the *then-current* safeFrames - safeFrames itself is
+		// restored later in this function, so the zone stayed derived from the player's setting
+		// instead of the recorded one and nothing re-ran the formula afterwards. Recompute it
+		// here, once, from the fully restored pair.
+		Conductor.safeZoneOffset = (ClientPrefs.data.safeFrames / 60) * 1000 * ps.playbackRate;
+
 		lastSongSpeed = ps.songSpeed;
 		lastPlaybackRate = ps.playbackRate;
 	}
@@ -975,6 +982,8 @@ class Replay extends FlxBasic
 		// countdown would move to the first frames while releases stayed put, leaving keys stuck held.
 		if ((rawTime == null || Math.isNaN(Std.parseFloat(Std.string(rawTime)))) && out.length > 0)
 			time = out[out.length - 1].time + 1;
+		if (out.length > 0 && time < out[out.length - 1].time && out[out.length - 1].time - time <= 1000)
+			time = out[out.length - 1].time;
 		var songSpeed:Float = toFloat(d.songSpeed, 1); if (songSpeed <= 0) songSpeed = 1;
 		var playbackRate:Float = toFloat(d.playbackRate, 1); if (playbackRate <= 0) playbackRate = 1;
 
