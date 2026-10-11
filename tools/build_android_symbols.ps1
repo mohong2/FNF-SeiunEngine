@@ -12,7 +12,7 @@
       1. haxelib run lime build android -DHXCPP_DEBUG_LINK_AND_STRIP
          hxcpp saves an UNSTRIPPED copy of libApplicationMain.so next to the
          stripped deployment file.
-      2. tools\gen_linemap.bat release
+      2. the linemap generator (tools/gen_linemap.py, called directly here)
          reads the DWARF line table of that copy and writes
          assets\linemap\<abi>.bin (python + pyelftools, installed on demand).
       3. haxelib run lime build android
@@ -48,14 +48,53 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
+# python3 on Linux runners, python on Windows. Both are checked so the script is
+# usable from either a developer shell or CI.
+$python = if (Get-Command python -ErrorAction SilentlyContinue) { 'python' } else { 'python3' }
+
+# gen_linemap.bat is the Windows convenience wrapper (it only bootstraps pyelftools
+# and forwards to gen_linemap.py). Call the generator directly so the pipeline runs
+# on any runner, and bootstrap pyelftools exactly like the wrapper does.
+function Invoke-LinemapGenerator {
+	param([string]$Build = 'release', [string]$Abi = '')
+
+	# A non-zero exit must be inspected, not turned into a terminating error by
+	# $ErrorActionPreference (pwsh 7.4 can do that for native commands).
+	$previous = $ErrorActionPreference
+	$ErrorActionPreference = 'Continue'
+
+	& $python -c "import elftools" 2>$null | Out-Null
+	if ($LASTEXITCODE -ne 0) {
+		Write-Host '[symbols] installing pyelftools...'
+		& $python -m pip install --user pyelftools 2>$null
+		if ($LASTEXITCODE -ne 0) {
+			# Debian/Ubuntu images mark the system python as externally managed.
+			& $python -m pip install --break-system-packages pyelftools
+		}
+		if ($LASTEXITCODE -ne 0) {
+			$ErrorActionPreference = $previous
+			throw "could not install pyelftools"
+		}
+	}
+
+	$genArgs = @((Join-Path $PSScriptRoot 'gen_linemap.py'), '--android', $Build)
+	if ($Abi) { $genArgs += @('--abi', $Abi) }
+
+	& $python @genArgs
+	$exitCode = $LASTEXITCODE
+	$ErrorActionPreference = $previous
+
+	if ($exitCode -ne 0) { throw "gen_linemap.py failed (exit $exitCode)" }
+}
+
 # Step 0: bake the git revision into source/BuildInfo.hx so the in-game watermark and the
 # cold-start notice identify the binary that is about to be built. The file is tracked; after
 # a release build restore the committed "unknown" placeholder with
 #   git checkout -- source/BuildInfo.hx
-& python (Join-Path $PSScriptRoot 'gen_buildinfo.py')
+& $python (Join-Path $PSScriptRoot 'gen_buildinfo.py')
 if ($LASTEXITCODE -ne 0) { throw "gen_buildinfo.py failed (exit $LASTEXITCODE)" }
 
-$outDir = 'export\release\android'
+$outDir = 'export/release/android'
 $symbolsDir = Join-Path $outDir 'symbols'
 
 function Invoke-Lime {
@@ -90,7 +129,7 @@ function Get-LimeArgs {
 
 function Get-Fingerprint {
     param([string]$Path, [ValidateSet('file', 'whole')][string]$Mode = 'file')
-    $value = & python (Join-Path $PSScriptRoot 'fnv1a.py') $Mode $Path
+    $value = & $python (Join-Path $PSScriptRoot 'fnv1a.py') $Mode $Path
     if ($LASTEXITCODE -ne 0) { throw "fnv1a.py failed for $Path" }
     return $value.Trim()
 }
@@ -100,10 +139,10 @@ function Get-Fingerprint {
 # names them after the ABI, so the bundle comes first. obj\obj\<target>\... is the
 # per-target spot (an older layout) and obj\libApplicationMain-*.so is the stripped
 # deployment copy - usable only as a last resort.
-$bundleDir = Join-Path $root 'export\symbols\android-release'
+$bundleDir = Join-Path $root 'export/symbols/android-release'
 $abiSources = @(
-    @{ abi = 'arm64-v8a';   src = @("$bundleDir\libApplicationMain-arm64-v8a.so", "$outDir\obj\obj\android-64\libApplicationMain.so", "$outDir\obj\libApplicationMain.so", "$outDir\obj\libApplicationMain-64.so"); so = 'libApplicationMain-64.so' },
-    @{ abi = 'armeabi-v7a'; src = @("$bundleDir\libApplicationMain-armeabi-v7a.so", "$outDir\obj\obj\android-v7\libApplicationMain.so", "$outDir\obj\libApplicationMain-v7.so"); so = 'libApplicationMain-v7.so' }
+    @{ abi = 'arm64-v8a';   src = @("$bundleDir/libApplicationMain-arm64-v8a.so", "$outDir/obj/obj/android-64/libApplicationMain.so", "$outDir/obj/libApplicationMain.so", "$outDir/obj/libApplicationMain-64.so"); so = 'libApplicationMain-64.so' },
+    @{ abi = 'armeabi-v7a'; src = @("$bundleDir/libApplicationMain-armeabi-v7a.so", "$outDir/obj/obj/android-v7/libApplicationMain.so", "$outDir/obj/libApplicationMain-v7.so"); so = 'libApplicationMain-v7.so' }
 )
 
 # A single-ABI build only needs that ABI's table: parsing the other one's DWARF
@@ -118,7 +157,7 @@ function Find-Unstripped {
     # Same selector as gen_linemap.bat: the NEWEST copy that actually carries DWARF.
     # The old fixed list returned $Entry.src[0] - the bundle's copy of an EARLIER
     # build - while the fresh byproduct sat in obj\obj\<target>\ untouched.
-    $picked = & python (Join-Path $PSScriptRoot 'gen_linemap.py') --find-so 'release' $Entry.abi
+    $picked = & $python (Join-Path $PSScriptRoot 'gen_linemap.py') --find-so 'release' $Entry.abi
     if ($LASTEXITCODE -eq 0 -and $picked) { return $picked.Trim() }
     foreach ($candidate in $Entry.src) {
         if (Test-Path $candidate) { return $candidate }
@@ -130,7 +169,7 @@ function Find-Unstripped {
 # C++ lookup (which needs at least 20 bytes), then replaced by the real table.
 $stub = [byte[]](0x53, 0x45, 0x4C, 0x4D, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 foreach ($entry in $abiSources) {
-    $bin = Join-Path $root "assets\linemap\$($entry.abi).bin"
+    $bin = Join-Path $root "assets/linemap/$($entry.abi).bin"
     if (-not (Test-Path $bin)) {
         New-Item -ItemType Directory -Force -Path (Split-Path $bin) | Out-Null
         [System.IO.File]::WriteAllBytes($bin, $stub)
@@ -150,7 +189,7 @@ $objRoot = Join-Path $outDir 'obj\obj'
 if (Test-Path $objRoot) {
     $poisoned = @()
     foreach ($dir in Get-ChildItem $objRoot -Directory) {
-        & python (Join-Path $PSScriptRoot 'gen_linemap.py') --check-objdir $dir.FullName
+        & $python (Join-Path $PSScriptRoot 'gen_linemap.py') --check-objdir $dir.FullName
         if ($LASTEXITCODE -ne 0) { $poisoned += $dir.FullName }
     }
     if ($poisoned.Count -gt 0) {
@@ -184,25 +223,24 @@ $pendingVerify = @()
 while (-not $converged -and $attempts -lt 2) {
     $attempts++
     if ($linemapAbi) {
-        & (Join-Path $PSScriptRoot 'gen_linemap.bat') release $linemapAbi
+        Invoke-LinemapGenerator 'release' $linemapAbi
     } else {
-        & (Join-Path $PSScriptRoot 'gen_linemap.bat') release
+        Invoke-LinemapGenerator 'release'
     }
-    if ($LASTEXITCODE -ne 0) { throw "gen_linemap.bat failed (exit $LASTEXITCODE)" }
 
     Invoke-Lime (Get-LimeArgs)
 
     $converged = $true
     $matched = @()
     foreach ($entry in $abiSources) {
-        $bin = Join-Path $root "assets\linemap\$($entry.abi).bin"
+        $bin = Join-Path $root "assets/linemap/$($entry.abi).bin"
         if (-not (Test-Path $bin)) { continue }
         $found = Find-Unstripped $entry
         if ($null -eq $found) { continue }
         $tempBin = Join-Path $env:TEMP ("seiun_lm_" + [Guid]::NewGuid().ToString('N') + '.bin')
-        & python (Join-Path $PSScriptRoot 'gen_linemap.py') $found $tempBin | Out-Host
+        & $python (Join-Path $PSScriptRoot 'gen_linemap.py') $found $tempBin | Out-Host
         if ($LASTEXITCODE -ne 0) { throw "gen_linemap.py verification failed for $($entry.abi)" }
-        $compare = & python (Join-Path $PSScriptRoot 'linemap_compare.py') $bin $tempBin
+        $compare = & $python (Join-Path $PSScriptRoot 'linemap_compare.py') $bin $tempBin
         $compareExit = $LASTEXITCODE
         Remove-Item $tempBin -Force -ErrorAction SilentlyContinue
         Write-Host "[symbols] attempt $attempts $($entry.abi): $compare"
@@ -229,9 +267,9 @@ foreach ($entry in $abiSources) {
 }
 
 # ---- collect + fingerprint --------------------------------------------------
-$apk = Get-ChildItem "$outDir\bin\app\build\outputs\apk\release\*.apk" |
+$apk = Get-ChildItem "$outDir/bin/app/build/outputs/apk/release/*.apk" |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
-if ($null -eq $apk) { throw "no APK found under $outDir\bin\app\build\outputs\apk\release" }
+if ($null -eq $apk) { throw "no APK found under $outDir/bin/app/build/outputs/apk/release" }
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [System.IO.Compression.ZipFile]::OpenRead($apk.FullName)
@@ -264,7 +302,7 @@ foreach ($entry in $abiSources) {
     [System.IO.Compression.ZipFileExtensions]::ExtractToFile($zipEntries[$libEntry], $libOut, $true)
     $lines.Add("$abi lib=$libEntry $(Get-Fingerprint -Path $libOut -Mode file)")
 
-    $linemap = Join-Path $root "assets\linemap\$abi.bin"
+    $linemap = Join-Path $root "assets/linemap/$abi.bin"
     if (Test-Path $linemap) {
         $lines.Add("$abi linemap=" + $abi + ":" + (Get-Fingerprint -Path $linemap -Mode whole))
     } else {
@@ -288,7 +326,7 @@ foreach ($abi in $pendingVerify) {
     Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
     Copy-Item $unstripped[$abi] (Join-Path $stage $entry.so) -Force
-    Copy-Item (Join-Path $root "assets\linemap\$abi.bin") (Join-Path $stage "$abi.bin") -Force
+    Copy-Item (Join-Path $root "assets/linemap/$abi.bin") (Join-Path $stage "$abi.bin") -Force
     Copy-Item $buildInfo (Join-Path $stage 'build-info.txt') -Force
     $zipPath = Join-Path $outDir "symbols-$abi.zip"
     Remove-Item $zipPath -Force -ErrorAction SilentlyContinue

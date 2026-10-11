@@ -50,7 +50,9 @@ runs:
     - name: Install Android SDK components
       shell: pwsh
       run: |
-        $SDKMANAGER = "$env:ANDROID_HOME\cmdline-tools\latest\bin\sdkmanager.bat"
+        # Windows ships sdkmanager.bat, the Linux images ship the shell script next to it.
+        $sdkExt = if ($env:RUNNER_OS -eq 'Windows') { '.bat' } else { '' }
+        $SDKMANAGER = "$env:ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager$sdkExt"
         1..20 | ForEach-Object { "y" } | & $SDKMANAGER --licenses 2>$null | Out-Null
         & $SDKMANAGER "platforms;android-33" "build-tools;34.0.0" "platform-tools" "ndk;21.4.7075529"
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -66,7 +68,7 @@ runs:
     - name: Install haxelib dependencies
       shell: pwsh
       run: |
-        haxelib setup "$env:GITHUB_WORKSPACE\.haxelib"
+        haxelib setup "$env:GITHUB_WORKSPACE/.haxelib"
         haxe -cp ./setup -main Main --interp
 
     # Resolve the active library directories once, so no step below hardcodes
@@ -79,15 +81,15 @@ runs:
     - name: Enable hxcpp compile cache
       shell: pwsh
       run: |
-        Remove-Item "$env:USERPROFILE\.hxcpp_config.xml", "$env:USERPROFILE\.lime\config.xml" -Force -ErrorAction SilentlyContinue
-        New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.lime" | Out-Null
+        Remove-Item "$HOME/.hxcpp_config.xml", "$HOME/.lime/config.xml" -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Force -Path "$HOME/.lime" | Out-Null
         @(
           '<?xml version="1.0" encoding="utf-8"?>'
           '<config>'
           '  <section id="defines">'
           '  </section>'
           '</config>'
-        ) | Set-Content "$env:USERPROFILE\.lime\config.xml" -Encoding UTF8
+        ) | Set-Content "$HOME/.lime/config.xml" -Encoding UTF8
         $cacheDir = "$env:GITHUB_WORKSPACE\.hxcpp-cache"
         $cacheDir = $cacheDir -replace '\\','/'
         New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
@@ -151,7 +153,7 @@ runs:
       env:
         _JAVA_OPTIONS: "-Xmx5g -XX:MaxMetaspaceSize=1g"
       run: >
-        powershell -ExecutionPolicy Bypass -File tools\build_android_symbols.ps1
+        pwsh -NoProfile -File tools/build_android_symbols.ps1
         -Arch "${{ inputs.arch }}" -AppVersion "$env:APP_VERSION-${{ github.run_id }}"
 
     - name: Prepare APK artifact
