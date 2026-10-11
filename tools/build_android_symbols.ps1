@@ -48,6 +48,16 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
+# An unhandled error in a pwsh -File run comes out as just "script: message" on CI,
+# with no line number, which is how a null parameter binding error stayed invisible.
+trap {
+    Write-Host "### UNHANDLED ERROR"
+    Write-Host "### message : $($_.Exception.Message)"
+    Write-Host "### line    : $($_.InvocationInfo.ScriptLineNumber)"
+    Write-Host "### position: $($_.InvocationInfo.PositionMessage)"
+    exit 1
+}
+
 # python3 on Linux runners, python on Windows. Both are checked so the script is
 # usable from either a developer shell or CI.
 $python = if (Get-Command python -ErrorAction SilentlyContinue) { 'python' } else { 'python3' }
@@ -157,7 +167,8 @@ function Find-Unstripped {
     # Same selector as gen_linemap.bat: the NEWEST copy that actually carries DWARF.
     # The old fixed list returned $Entry.src[0] - the bundle's copy of an EARLIER
     # build - while the fresh byproduct sat in obj\obj\<target>\ untouched.
-    $picked = & $python (Join-Path $PSScriptRoot 'gen_linemap.py') --find-so 'release' $Entry.abi
+    $pickedRaw = & $python (Join-Path $PSScriptRoot 'gen_linemap.py') --find-so 'release' $Entry.abi
+    $picked = ($pickedRaw | Where-Object { $_ -and "$_".Trim() } | Select-Object -First 1)
     # Only trust the generator's answer if the file is really there: a stale path
     # (or a relative one resolved from the wrong place) would otherwise be handed
     # straight to Copy-Item and fail there with a confusing binding error.
@@ -239,6 +250,12 @@ while (-not $converged -and $attempts -lt 2) {
 
     $converged = $true
     $matched = @()
+    Write-Host "[symbols] root=$root outDir=$outDir bundle=$bundleDir"
+    foreach ($candidateEntry in $abiSources) {
+        foreach ($candidatePath in $candidateEntry.src) {
+            Write-Host ("[symbols] candidate {0}: exists={1} {2}" -f $candidateEntry.abi, (Test-Path $candidatePath), $candidatePath)
+        }
+    }
     foreach ($entry in $abiSources) {
         $bin = Join-Path $root "assets/linemap/$($entry.abi).bin"
         if (-not (Test-Path $bin)) { continue }
