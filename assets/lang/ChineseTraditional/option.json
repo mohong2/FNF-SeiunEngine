@@ -106,8 +106,6 @@
 
     "option.oldPauseMenu": "舊版暫停介面",
     "option.oldPauseMenu.desc": "如果選中，將使用舊版 0.6.3 風格的 Alphabet 列表暫停選單，而非新版毛玻璃樣式。",
-    "option.seiuMenuFx": "Seiun 選單特效",
-    "option.seiuMenuFx.desc": "啟用後，主選單、自由選曲和故事模式選單會帶有輝光、粒子和節拍連動特效。關閉可讓介面更簡潔。",
     "option.freeplayAutoPreview": "自由選曲自動播放",
     "option.freeplayAutoPreview.desc": "啟用後，進入自由選曲時自動播放目前選中歌曲的背景音樂，切換歌曲時也會跟隨切換。",
 

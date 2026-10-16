@@ -51,10 +51,6 @@ class FreeplayState extends SeiunMenuState
 	public var confirmTween:FlxTween;
 	public var canInput:Bool = true; 
 	public var previewBG:FlxSprite;
-	public var previewGlow:FlxSprite;
-	public var previewLabel:FlxText;
-	public var previewEq:FlxTypedGroup<FlxSprite>;
-	public var previewEqBars:Array<FlxSprite> = [];
 	public var previewGroup:FlxTypedGroup<FlxSprite>;
 	public var previewExiting:Bool = false;
 	public var wasVisible:Map<FlxSprite, Bool> = new Map(); 
@@ -107,13 +103,6 @@ class FreeplayState extends SeiunMenuState
 	private var holdTime:Float = 0;
 	private var instPlaying:Int = -1;
 
-	// === Seiun menu animation layers ===
-	var particleGroup:FlxTypedGroup<FlxSprite>;
-	var auroraGlowA:FlxSprite;
-	var auroraGlowB:FlxSprite;
-	var selGlow:FlxSprite;
-	var selCursor:Alphabet;
-	var ambientTimer:Float = 0;
 	var autoPreviewNext:Bool = false;
 	var autoMusicActive:Bool = false;
 	var holdingNav:Bool = false;
@@ -210,75 +199,14 @@ class FreeplayState extends SeiunMenuState
 		add(bg);
 		bg.screenCenter();
 
-		if (MenuFX.enabled())
-		{
-			// ── Seiun aurora: drifting additive glows tinted by the song color ──
-			auroraGlowA = MenuFX.makeGlow(900, 0xFFFD719B, 0.3);
-			auroraGlowA.blend = ADD;
-			auroraGlowA.scrollFactor.set(0, 0);
-			auroraGlowA.screenCenter();
-			add(auroraGlowA);
-
-			auroraGlowB = MenuFX.makeGlow(740, 0xFF8A5CFF, 0.24);
-			auroraGlowB.blend = ADD;
-			auroraGlowB.scrollFactor.set(0, 0);
-			auroraGlowB.screenCenter();
-			add(auroraGlowB);
-		}
-
-		if (MenuFX.enabled())
-		{
-			// Halo that follows the selected song. Added before the song list so
-			// it renders *behind* the text instead of washing it out.
-			selGlow = MenuFX.makeGlow(300, 0xFFFFFFFF, 0.5);
-			selGlow.scale.set(1.5, 0.8);
-			selGlow.updateHitbox();
-			selGlow.blend = ADD;
-			selGlow.visible = false;
-			add(selGlow);
-		}
-
 		grpSongs = new FlxTypedGroup<Alphabet>();
 		add(grpSongs);
-
-		if (MenuFX.enabled())
-		{
-			selCursor = new Alphabet(0, 0, '>', true);
-			selCursor.visible = false;
-			add(selCursor);
-		}
 
 		previewGroup = new FlxTypedGroup<FlxSprite>();
 
 		previewBG = new FlxSprite().makeGraphic(FlxG.width, FlxG.height, FlxColor.BLACK);
 		previewBG.alpha = 0;
 		previewGroup.add(previewBG);
-
-		// ── Seiun preview cosmetics: glow, "now playing" label, equalizer ──
-		previewGlow = MenuFX.makeGlow(760, 0xFFFD719B, 0.5);
-		previewGlow.blend = ADD;
-		previewGlow.scrollFactor.set();
-		previewGlow.screenCenter();
-		previewGlow.alpha = 0;
-		previewGroup.add(previewGlow);
-
-		previewLabel = new FlxText(0, 0, FlxG.width, "NOW PLAYING", 22);
-		previewLabel.setFormat(Paths.languageFont(), 22, 0xFFFFD6F4, CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
-		previewLabel.borderSize = 2;
-		previewLabel.scrollFactor.set();
-		previewLabel.alpha = 0;
-		previewGroup.add(previewLabel);
-
-		previewEq = new FlxTypedGroup<FlxSprite>();
-		for (i in 0...7)
-		{
-			var bar:FlxSprite = new FlxSprite(0, 0).makeGraphic(12, 72, FlxColor.WHITE);
-			bar.antialiasing = false;
-			bar.scrollFactor.set();
-			bar.visible = false;
-			previewEq.add(bar);
-			previewEqBars.push(bar);
-		}
 
 		previewSongTxt = new FlxText(0, 0, FlxG.width, "", 44);
 		previewSongTxt.setFormat(Paths.languageFont(), 44, FlxColor.WHITE, CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
@@ -302,7 +230,6 @@ class FreeplayState extends SeiunMenuState
 
 		previewGroup.visible = false;
 		add(previewGroup);
-		add(previewEq);
 
 		// === Create mod filter header bar ===
 		createModFilterUI();
@@ -327,7 +254,7 @@ class FreeplayState extends SeiunMenuState
 		bg.loadGraphic(Paths.image('menuDesat'));
 		bg.screenCenter();
 		bg.antialiasing = ClientPrefs.data.globalAntialiasing;
-		MenuFX.ensureMenuMusic(1);
+		SeiunMenuState.ensureMenuMusic(1);
 
 		scoreText = new FlxText(FlxG.width * 0.7, 5, 0, "", 32);
 		scoreText.setFormat(Paths.languageFont(), 32, FlxColor.WHITE, RIGHT);
@@ -369,7 +296,6 @@ class FreeplayState extends SeiunMenuState
 			bg.color = initSong.color;
 			intendedColor = bg.color;
 		}
-		MenuFX.accentColor = bg.color;
 
 
 		if(lastDifficultyName == '')
@@ -382,39 +308,6 @@ class FreeplayState extends SeiunMenuState
 		changeSelection();
 		changeDiff();
 
-		// ── Entry animation: songs cascade in with a stagger ──
-		if (MenuFX.enabled())
-		{
-			particleGroup = new FlxTypedGroup<FlxSprite>();
-			add(particleGroup);
-		}
-		for (i in 0...grpSongs.length)
-		{
-			var it:Alphabet = grpSongs.members[i];
-			var icon:HealthIcon = (i < iconArray.length) ? iconArray[i] : null;
-			var targetAlpha:Float = (i == curSelected) ? 1 : 0.6;
-
-			// Parked rows are neither visible nor updated: animating them in would
-			// allocate a tween per song just to fade in something nobody can see.
-			if (it == null || !it.active)
-			{
-				if (it != null) it.alpha = targetAlpha;
-				if (icon != null) icon.alpha = targetAlpha;
-				continue;
-			}
-
-			// Stagger by distance from the selected song so the song the player
-			// last chose (even at the bottom of the list) appears immediately.
-			var delay:Float = Math.min(Math.abs(i - curSelected) * 0.035, 0.4);
-			it.alpha = 0;
-			icon.alpha = 0;
-			FlxTween.tween(it, {alpha: targetAlpha}, 0.3, {startDelay: delay, ease: FlxEase.sineOut});
-			var baseScale:Float = (i == curSelected) ? 1.2 : 0.85;
-			FlxTween.cancelTweensOf(icon.scale);
-			icon.scale.set(baseScale * 0.5, baseScale * 0.5);
-			FlxTween.tween(icon.scale, {x: baseScale, y: baseScale}, 0.4, {startDelay: delay, ease: FlxEase.backOut});
-			FlxTween.tween(icon, {alpha: targetAlpha}, 0.3, {startDelay: delay, ease: FlxEase.sineOut});
-		}
 
 		#if PRELOAD_ALL
 		// Auto-play the selected song's BGM after the menu settles in
@@ -647,9 +540,9 @@ class FreeplayState extends SeiunMenuState
 		if (ClientPrefs.data.freeplayAutoPreview && !playingMusic && !paused)
 			scheduleAutoMusic(0.1);
 		else
-			MenuFX.playMenuMusic(1);
+			SeiunMenuState.playMenuMusic(1);
 		#else
-		MenuFX.playMenuMusic(1);
+		SeiunMenuState.playMenuMusic(1);
 		#end
 
 		FlxG.sound.play(Paths.sound('scrollMenu'), 0.4);
@@ -778,51 +671,6 @@ class FreeplayState extends SeiunMenuState
 			FlxG.sound.music.volume += 0.5 * FlxG.elapsed;
 		}
 
-		// ── Seiun menu animations ──
-		if (auroraGlowA != null)
-		{
-			var t:Float = MenuFX.time;
-			var baseCol:Int = bg.color;
-			MenuFX.driftGlow(auroraGlowA, t, FlxG.width * 0.42, FlxG.height * 0.42, 150, 75, 0.35, 0.28, 0, 0, 0.26, 0.08, 0.5, 0, 0xFFFD719B, 0, baseCol, 0.55);
-			MenuFX.driftGlow(auroraGlowB, t, FlxG.width * 0.76, FlxG.height * 0.66, 125, 65, 0.23, 0.31, 2.1, 1.2, 0.2, 0.07, 0.42, 1.0, 0xFF8A5CFF, 0, baseCol, 0.45);
-		}
-
-		if (curSelected >= 0 && curSelected < grpSongs.length)
-		{
-			var sel:Alphabet = grpSongs.members[curSelected];
-
-			if (selGlow != null)
-			{
-				selGlow.visible = !playingMusic;
-				selGlow.x = sel.x + sel.width * 0.5 - selGlow.width * selGlow.scale.x * 0.5;
-				selGlow.y = sel.y + sel.height * 0.5 - selGlow.height * selGlow.scale.y * 0.5;
-				selGlow.color = bg.color;
-			}
-			if (selCursor != null)
-			{
-				selCursor.visible = !playingMusic;
-				selCursor.x = sel.x - selCursor.width - 14;
-				selCursor.y = sel.y + sel.height * 0.5 - selCursor.height * 0.5 + MenuFX.bob(6, 3.2, 0);
-			}
-		}
-		else
-		{
-			if (selGlow != null) selGlow.visible = false;
-			if (selCursor != null) selCursor.visible = false;
-		}
-
-		// Ambient sparkles drifting in the background
-		ambientTimer += elapsed;
-		if (ambientTimer > 0.16)
-		{
-			ambientTimer = 0;
-			MenuFX.ambientSparkle(particleGroup,
-				FlxG.random.float(0, FlxG.width),
-				FlxG.random.float(FlxG.height * 0.15, FlxG.height * 0.85),
-				FlxColor.fromRGB(255, 240, 220),
-				FlxG.random.float(3, 6));
-		}
-
 		lerpScore = Math.floor(FlxMath.lerp(lerpScore, intendedScore, CoolUtil.boundTo(elapsed * 24, 0, 1)));
 		lerpRating = FlxMath.lerp(lerpRating, intendedRating, CoolUtil.boundTo(elapsed * 12, 0, 1));
 
@@ -891,15 +739,15 @@ class FreeplayState extends SeiunMenuState
 		
 		if (mouseOverlapIndex != newMouseOverlapIndex) {
 			if (mouseOverlapIndex >= 0 && mouseOverlapIndex < grpSongs.length && mouseOverlapIndex != curSelected) {
-				MenuFX.fadeAlpha(grpSongs.members[mouseOverlapIndex], 0.6, 0.15);
+				grpSongs.members[mouseOverlapIndex].alpha = 0.6;
 				if (mouseOverlapIndex < iconArray.length)
-					MenuFX.fadeAlpha(iconArray[mouseOverlapIndex], 0.6, 0.15);
+					iconArray[mouseOverlapIndex].alpha = 0.6;
 			}
 			
 			if (newMouseOverlapIndex >= 0 && newMouseOverlapIndex != curSelected) {
-				MenuFX.fadeAlpha(grpSongs.members[newMouseOverlapIndex], 1.0, 0.15);
+				grpSongs.members[newMouseOverlapIndex].alpha = 1.0;
 				if (newMouseOverlapIndex < iconArray.length)
-					MenuFX.fadeAlpha(iconArray[newMouseOverlapIndex], 1.0, 0.15);
+					iconArray[newMouseOverlapIndex].alpha = 1.0;
 			}
 			
 			mouseOverlapIndex = newMouseOverlapIndex;
@@ -1025,11 +873,11 @@ class FreeplayState extends SeiunMenuState
 				// the main menu (early return below).
 				if (GameClient.isConnected())
 				{
-					MenuFX.menuSwitch(new online.states.RoomState());
+					MusicBeatState.switchState(new online.states.RoomState());
 					return;
 				}
 				#end
-				MenuFX.menuSwitch(new MainMenuState());
+				MusicBeatState.switchState(new MainMenuState());
 			});
 			}
 		}
@@ -1057,27 +905,6 @@ class FreeplayState extends SeiunMenuState
         curTime = FlxG.sound.music.time;
         updatePreviewTexts();
 
-		// ── Animated preview cosmetics: glow pulse + equalizer bars ──
-		if (!previewExiting && previewGlow != null)
-		{
-			previewGlow.color = bg.color;
-			previewGlow.alpha = 0.34 + Math.sin(MenuFX.time * 3) * 0.09;
-		}
-		if (!previewExiting && previewLabel != null)
-			previewLabel.alpha = 0.7 + Math.sin(MenuFX.time * 4) * 0.3;
-		var eqBaseY:Float = FlxG.height * 0.6;
-		if (!previewExiting)
-		{
-			for (i in 0...previewEqBars.length)
-			{
-				var bar:FlxSprite = previewEqBars[i];
-				var s:Float = 0.22 + 0.78 * Math.abs(Math.sin(MenuFX.time * (2.1 + i * 0.24) + i * 1.15));
-				bar.scale.y = s;
-				bar.y = eqBaseY - bar.height * s;
-				bar.color = bg.color;
-			}
-		}
-        
         if (controls.UI_LEFT_P)
         {
             jumpPreview(-5000);
@@ -1251,10 +1078,7 @@ class FreeplayState extends SeiunMenuState
 			canInput = false;
 			persistentUpdate = false;
 			FlxG.sound.play(Paths.sound('confirmMenu'), 0.7);
-			MenuFX.screenFlash(FlxG.camera, 0xFFFFFFFF, 0.45, 0.55);
-			MenuFX.punchZoom(0.06);
 			var sel:Alphabet = grpSongs.members[curSelected];
-			MenuFX.burstParticles(particleGroup, sel.x + sel.width * 0.5, sel.y + sel.height * 0.5, curSongData.color, 26, 380);
 			
 			TraceManager.info('trace.freeplay.currentWeek', 'CURRENT WEEK: {}', [WeekData.getWeekFileName()]);
 				if(colorTween != null) {
@@ -1282,7 +1106,6 @@ class FreeplayState extends SeiunMenuState
 				// zoom/scroll tricks that could leak into gameplay.
 				FlxTween.tween(sel.scale, {x: 1.45, y: 1.45}, 0.25, {ease: FlxEase.quadOut});
 				FlxTween.tween(icon.scale, {x: 1.45, y: 1.45}, 0.25, {ease: FlxEase.quadOut});
-				MenuFX.shockwaveRing(particleGroup, sel.x + sel.width * 0.5, sel.y + sel.height * 0.5, curSongData.color, 240, 8);
 				for (i in 0...grpSongs.length)
 				{
 					if (i == curSelected) continue;
@@ -1378,9 +1201,6 @@ class FreeplayState extends SeiunMenuState
 
 		var curSong = getCurrentSong();
 		if(curSong == null) return;
-
-		// Carry the song color into the shared menu palette (cross-state continuity)
-		MenuFX.accentColor = curSong.color;
 
 		var newColor:Int = curSong.color;
 		if(newColor != intendedColor) {
@@ -1483,17 +1303,6 @@ class FreeplayState extends SeiunMenuState
 		if(newPos > -1)
 		{
 			curDifficulty = newPos;
-		}
-
-		// ── Seiun selection juice ──
-		if (curSelected >= 0 && curSelected < grpSongs.length)
-		{
-			var sel:Alphabet = grpSongs.members[curSelected];
-			// Note: the icon "pop" is already handled by the backOut scale tween
-			// above, so we avoid a second scale pulse that would fight it.
-			MenuFX.punchZoom(0.018);
-			MenuFX.burstParticles(particleGroup, sel.x + sel.width * 0.5, sel.y + sel.height * 0.5, curSong.color, 10, 190);
-			if (selGlow != null) MenuFX.pulse(selGlow, 0.25, 0.25);
 		}
 
 		// Auto BGM follows the selected song (no preview UI, no vocals)
@@ -1603,15 +1412,6 @@ class FreeplayState extends SeiunMenuState
 		previewTimeTxt.y = FlxG.height * 0.44;
 		progressBar.x = (FlxG.width - progressBar.width) * 0.5;
 		progressBar.y = FlxG.height * 0.49;
-		previewLabel.screenCenter(X);
-		previewLabel.y = FlxG.height * 0.24;
-		previewGlow.screenCenter();
-		for (i in 0...previewEqBars.length)
-		{
-			var bar:FlxSprite = previewEqBars[i];
-			bar.x = FlxG.width * 0.5 + (i - 3) * 34 - bar.width * 0.5;
-			bar.scale.y = 0.25;
-		}
 	}
 
 	/** Smooth staggered entrance for the preview UI. */
@@ -1623,11 +1423,9 @@ class FreeplayState extends SeiunMenuState
 		// Backdrop fades in first
 		previewBG.alpha = 0;
 		FlxTween.tween(previewBG, {alpha: 0.62}, 0.3, {ease: FlxEase.sineOut});
-		previewGlow.alpha = 0;
-		FlxTween.tween(previewGlow, {alpha: 0.5}, 0.4, {ease: FlxEase.sineOut});
 
 		// Foreground elements slide up with a stagger
-		var order:Array<FlxSprite> = [previewLabel, previewSongTxt, previewTimeTxt, progressBar];
+		var order:Array<FlxSprite> = [previewSongTxt, previewTimeTxt, progressBar];
 		for (i in 0...order.length)
 		{
 			var member:FlxSprite = order[i];
@@ -1640,13 +1438,6 @@ class FreeplayState extends SeiunMenuState
 				ease: FlxEase.sineOut
 			});
 		}
-		for (i in 0...previewEqBars.length)
-		{
-			var bar:FlxSprite = previewEqBars[i];
-			bar.visible = true;
-			bar.alpha = 0;
-			FlxTween.tween(bar, {alpha: 1}, 0.3, {startDelay: 0.2 + i * 0.04, ease: FlxEase.sineOut});
-		}
 	}
 
 	/** Smooth fade-out for the preview UI, then calls onComplete. */
@@ -1654,11 +1445,8 @@ class FreeplayState extends SeiunMenuState
 	{
 		previewExiting = true;
 		FlxTween.tween(previewBG, {alpha: 0}, 0.25, {ease: FlxEase.quadIn});
-		FlxTween.tween(previewGlow, {alpha: 0}, 0.25, {ease: FlxEase.quadIn});
-		for (bar in previewEqBars)
-			FlxTween.tween(bar, {alpha: 0}, 0.2, {ease: FlxEase.quadIn});
 
-		var order:Array<FlxSprite> = [previewLabel, previewSongTxt, previewTimeTxt, progressBar];
+		var order:Array<FlxSprite> = [previewSongTxt, previewTimeTxt, progressBar];
 		var done:Int = 0;
 		for (member in order)
 		{
@@ -1685,8 +1473,6 @@ class FreeplayState extends SeiunMenuState
 		autoMusicActive = false;
 		previewExiting = false;
 		FlxTween.cancelTweensOf(previewBG);
-		FlxTween.cancelTweensOf(previewGlow);
-		for (bar in previewEqBars) FlxTween.cancelTweensOf(bar);
 		#if PRELOAD_ALL
 		destroyFreeplayVocals();
 		FlxG.sound.music.volume = 0;
@@ -1705,7 +1491,7 @@ class FreeplayState extends SeiunMenuState
 			vocals = new FlxSound();
 
 		FlxG.sound.list.add(vocals);
-		MenuFX.markMenuMusicStopped();
+		SeiunMenuState.markMenuMusicStopped();
 		FlxG.sound.playMusic(Paths.inst(PlayState.SONG.song), 0.7);
 		vocals.play();
 		vocals.persist = true;
@@ -1739,7 +1525,7 @@ class FreeplayState extends SeiunMenuState
 		hidePreviewUI(function()
 		{
 			restoreNonPreviewElements();
-			MenuFX.playMenuMusic(1);
+			SeiunMenuState.playMenuMusic(1);
 
 			#if PRELOAD_ALL
 			// Auto BGM resumes after a manual preview is closed (if enabled)
@@ -1759,7 +1545,7 @@ class FreeplayState extends SeiunMenuState
 		if (autoMusicActive && autoMusicSong == songKey) return; // already playing this song
 
 		destroyFreeplayVocals();
-		MenuFX.markMenuMusicStopped();
+		SeiunMenuState.markMenuMusicStopped();
 
 		var prevModDir:String = Paths.currentModDirectory;
 		Paths.currentModDirectory = autoSong.folder;
@@ -2026,15 +1812,9 @@ class FreeplayState extends SeiunMenuState
 		var pName:String = (pSong != null) ? pSong.songName : '?';
 		previewSongTxt.text = pName;
 		if (paused)
-		{
-			previewLabel.text = Language.get("FreeplayState.paused", "PAUSED");
 			previewTimeTxt.text = timeStr + '  (PAUSED)';
-		}
 		else
-		{
-			previewLabel.text = Language.get("FreeplayState.nowPlaying", "NOW PLAYING");
 			previewTimeTxt.text = timeStr + rateText;
-		}
 	}
 	
 	public function formatTime(seconds:Float):String
@@ -2090,24 +1870,8 @@ class FreeplayState extends SeiunMenuState
 		if (wasVisible.exists(multiFileText)) multiFileText.visible = wasVisible.get(multiFileText);
 	}
 
-	override function onMenuBeat(beat:Int):Void
-	{
-		if (playingMusic || paused || grpSongs == null || grpSongs.length == 0
-			|| curSelected < 0 || curSelected >= grpSongs.length)
-			return;
-
-		if (curSelected < iconArray.length)
-			MenuFX.pulse(iconArray[curSelected], 0.1, 0.16);
-		if (selCursor != null)
-			MenuFX.pulse(selCursor, 0.22, 0.14);
-		MenuFX.glowPulse(selGlow, 0.95, 0.5, 0.4);
-		MenuFX.punchZoom(0.012);
-	}
-
 	override function destroy()
     {
-		if (particleGroup != null)
-			for (p in particleGroup) FlxTween.cancelTweensOf(p);
 		if (autoMusicTimer != null)
 		{
 			autoMusicTimer.cancel();

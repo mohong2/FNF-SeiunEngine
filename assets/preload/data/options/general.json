@@ -62,15 +62,6 @@
 		"defaultValue": false
 	},
 	{
-		"nameKey": "option.seiuMenuFx",
-		"defaultName": "Seiun Menu Effects",
-		"descKey": "option.seiuMenuFx.desc",
-		"defaultDesc": "If enabled, the menus get extra glowing auroras, particles and beat-synced pulses. Disable for a cleaner look.",
-		"variable": "seiuMenuFx",
-		"type": "bool",
-		"defaultValue": true
-	},
-	{
 		"nameKey": "option.sidehud",
 		"defaultName": "Side HUD",
 		"descKey": "option.sidehud.desc",

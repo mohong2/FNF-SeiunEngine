@@ -10,11 +10,12 @@ Read-only. Fails (exit 1) when
   * a category nameKey / description key is missing in one of the languages.
 
 BASELINE_VARIABLES is the set of options that existed before the settings were
-re-ordered, minus the ones removed on purpose since (asyncImageLoading); keeping
-it frozen here is what makes "no option was dropped or duplicated by the
-reshuffle" a checkable statement instead of a claim. Options added on purpose
-afterwards are listed in EXPECTED_NEW_VARIABLES, so a variable that appears out
-of nowhere still fails.
+re-ordered, minus the ones removed on purpose since (asyncImageLoading, and now
+seiuMenuFx, the Seiun menu-effects toggle deleted together with the effects
+themselves); keeping it frozen here is what makes "no option was dropped or
+duplicated by the reshuffle" a checkable statement instead of a claim. Options
+added on purpose afterwards are listed in EXPECTED_NEW_VARIABLES, so a variable
+that appears out of nowhere still fails.
 
 NOTE_OPTIMISATION_VARIABLES pins the note-optimisation page to exactly the
 switches it holds (the extreme-chart switches plus the runtime script-callback
@@ -72,7 +73,7 @@ GRAPHICS_PAGE_VARIABLES = {
 BASELINE_VARIABLES = {
     # general
     'language', 'checkForUpdates', 'checkForPrereleases', 'freeplayAutoPreview', 'oldmodsmenu',
-    'oldPauseMenu', 'seiuMenuFx', 'sidehud', 'opponentfe',
+    'oldPauseMenu', 'sidehud', 'opponentfe',
     # gameplay
     'controllerMode', 'downScroll', 'middleScroll', 'keyboardDisplay', 'opponentStrums',
     'ghostTapping', 'noReset', 'lastNoteAnimation', 'saveReplayData', 'trackAlpha',

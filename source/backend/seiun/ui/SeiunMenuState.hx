@@ -2,46 +2,46 @@ package backend.seiun.ui;
 
 import backend.MusicBeatState;
 import flixel.FlxG;
+import flixel.tweens.FlxTween;
+import flixel.tweens.FlxEase;
 
 /**
  * Base class for Seiun Engine menu states.
  *
- * Drives a continuous, music-synced clock (`MenuFX.time` / `MenuFX.beat`)
- * that keeps every menu animation in phase, even across state switches.
- * Subclasses override `onMenuBeat()` to run beat-synced effects.
+ * The menu theme keeps playing while the player moves from one menu to
+ * another: every menu state asks for the music through `ensureMenuMusic()`
+ * instead of restarting the track on each state switch.
  */
 class SeiunMenuState extends MusicBeatState
 {
-	var lastMenuBeat:Int = -1;
+	/** True while the currently playing music is the menu theme. */
+	public static var menuMusicActive:Bool = false;
 
-	override function create()
+	/**
+	 * Start the menu music unless the same track is already playing.
+	 * This keeps the song playing seamlessly across menu state switches.
+	 */
+	public static function ensureMenuMusic(volume:Float = 1):Void
 	{
-		Conductor.changeBPM(MenuFX.bpm);
-		MenuFX.baseZoom = FlxG.camera.zoom;
-		super.create();
-	}
-
-	override function update(elapsed:Float)
-	{
-		MenuFX.time += elapsed;
-		if (MenuFX.menuMusicActive && FlxG.sound.music != null && FlxG.sound.music.playing)
-			Conductor.songPosition = FlxG.sound.music.time;
-
-		super.update(elapsed);
-
-		if (MenuFX.beat != lastMenuBeat)
+		if (menuMusicActive && FlxG.sound.music != null && FlxG.sound.music.playing)
 		{
-			lastMenuBeat = MenuFX.beat;
-			onMenuBeat(MenuFX.beat);
+			FlxG.sound.music.volume = volume;
+			return;
 		}
+		playMenuMusic(volume);
 	}
 
-	override function beatHit()
+	/** Restart the menu music from scratch (used after switching mods). */
+	public static function playMenuMusic(volume:Float = 1):Void
 	{
-		super.beatHit();
-		MenuFX.beat = curBeat;
+		FlxG.sound.playMusic(Paths.music('freakyMenu'), 0);
+		FlxTween.tween(FlxG.sound.music, {volume: volume}, 0.5, {ease: FlxEase.sineOut});
+		menuMusicActive = true;
 	}
 
-	/** Called once per musical beat of the menu music. */
-	function onMenuBeat(beat:Int):Void {}
+	/** Tell the base class the menu music is no longer playing (e.g. gameplay). */
+	public static function markMenuMusicStopped():Void
+	{
+		menuMusicActive = false;
+	}
 }

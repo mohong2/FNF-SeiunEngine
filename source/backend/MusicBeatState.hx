@@ -52,9 +52,6 @@ class MusicBeatState extends FlxUIState
 
 	public static var camBeat:FlxCamera;
 
-	/** When true, the next state switch uses a snappier menu transition fade. */
-	public static var quickMenuTransition:Bool = false;
-
 	public var scriptName:String = null;
 
 	public function new(?scriptName:String) {
@@ -186,9 +183,7 @@ class MusicBeatState extends FlxUIState
 		Language.load();
 		var skip:Bool = FlxTransitionableState.skipNextTransOut;
 		super.create();
-		var fadeTime:Float = quickMenuTransition ? 0.35 : 0.7;
-		if(!skip) openSubState(new CustomFadeTransition(fadeTime, true));
-		quickMenuTransition = false;
+		if(!skip) openSubState(new CustomFadeTransition(0.7, true));
 		FlxTransitionableState.skipNextTransOut = false;
 
 		#if HSCRIPT_ALLOWED
@@ -339,8 +334,7 @@ class MusicBeatState extends FlxUIState
 		var curState:Dynamic = FlxG.state;
 		var leState:MusicBeatState = curState;
 		if(!FlxTransitionableState.skipNextTransIn) {
-			var transitionTime:Float = quickMenuTransition ? 0.25 : 0.6;
-			leState.openSubState(new CustomFadeTransition(transitionTime, false));
+			leState.openSubState(new CustomFadeTransition(0.6, false));
 			if(nextState == FlxG.state)
 				CustomFadeTransition.finishCallback = function() { FlxG.resetState(); }
 			else

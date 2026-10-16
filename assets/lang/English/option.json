@@ -106,8 +106,6 @@
     "option.chartAutosave.desc" : "If checked, chart editors will automatically save backups and create autosave data (also when entering Playtest). Unchecked by default so your chart is NEVER saved without you pressing Save manually.",
     "option.oldPauseMenu": "Old Pause Menu",
     "option.oldPauseMenu.desc": "If checked, the old 0.6.3-style pause menu with Alphabet list will be used instead of the new acrylic one.",
-    "option.seiuMenuFx": "Seiun Menu Effects",
-    "option.seiuMenuFx.desc": "If enabled, the main menu, freeplay and story menus get glowing auroras, particles and beat-synced pulses. Disable for a cleaner look.",
     "option.freeplayAutoPreview": "Freeplay Auto Music",
     "option.freeplayAutoPreview.desc": "If enabled, Freeplay automatically plays the selected song's background music, following your selection.",
 

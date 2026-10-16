@@ -18,7 +18,7 @@ import Discord.DiscordClient;
 import Section.SwagSection;
 import Song.SwagSong;
 import WiggleEffect.WiggleEffectType;
-import backend.seiun.ui.MenuFX;
+import backend.seiun.ui.SeiunMenuState;
 import flixel.FlxBasic;
 import flixel.FlxGame;
 import flixel.FlxObject;
@@ -4049,7 +4049,7 @@ class PlayState extends MusicBeatState
 		previousFrameTime = FlxG.game.ticks;
 		lastReportedPlayheadPosition = 0;
 
-		MenuFX.markMenuMusicStopped();
+		SeiunMenuState.markMenuMusicStopped();
 		resumeSongAudio();
 		FlxG.sound.music.pitch = playbackRate;
 		// Remember which FlxSound owns this callback so destroy() can detach it.

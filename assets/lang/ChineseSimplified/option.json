@@ -105,8 +105,6 @@
     "option.chartAutosave.desc" : "如果选中，谱面编辑器将自动保存备份并创建自动保存数据（进入试玩时也会保存）。默认关闭，这样你的谱面在你手动按下保存之前绝不会被自动保存。",
     "option.oldPauseMenu": "旧版暂停界面",
     "option.oldPauseMenu.desc": "如果选中，将使用旧版 0.6.3 风格的 Alphabet 列表暂停菜单，而非新版毛玻璃样式。",
-    "option.seiuMenuFx": "Seiun 菜单特效",
-    "option.seiuMenuFx.desc": "启用后，主菜单、自由选曲和故事模式菜单会带有辉光、粒子和节拍联动特效。关闭可让界面更简洁。",
     "option.freeplayAutoPreview": "自由选曲自动播放",
     "option.freeplayAutoPreview.desc": "启用后，进入自由选曲时自动播放当前选中歌曲的背景音乐，切换歌曲时也会跟随切换。",
 

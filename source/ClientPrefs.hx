@@ -255,9 +255,6 @@ import sys.io.Process;
 	// Old pause menu style
 	public var oldPauseMenu:Bool = false;
 
-	// Seiun Engine menu effects (aurora glows, particles, beat-synced pulses)
-	public var seiuMenuFx:Bool = true;
-
 	// Freeplay: automatically play the selected song's music
 	public var freeplayAutoPreview:Bool = false;
 
