@@ -407,5 +407,11 @@
     "option.renderAudio": "渲染音频",
     "option.renderAudio.desc": "把歌曲的 Inst / Voices 音轨混入渲染出的视频。\n找不到音频文件时（例如歌曲只存在于打包资源里）视频将没有声音。",
     "option.renderOnSongStart": "进歌自动录制",
-    "option.renderOnSongStart.desc": "开启后,歌曲一开始就自动开始录制,不需要任何快捷键。\n歌曲结束或离开歌曲时会自动停止。\n成品输出到游戏目录下的 render_video 文件夹。"
+    "option.renderOnSongStart.desc": "开启后,歌曲一开始就自动开始录制,不需要任何快捷键。\n歌曲结束或离开歌曲时会自动停止。\n成品输出到游戏目录下的 render_video 文件夹。",
+
+    "option.transitionStyle": "切屏动画",
+    "option.transitionStyle.desc": "切换界面时的过渡动画。\n黑幕擦除：黑幕从上往下扫过屏幕，并短暂停在全黑（默认）。\n淡入淡出：整屏黑场淡入淡出。\n关闭：不做动画，瞬间切换。",
+    "option.transitionStyle.Wipe": "黑幕擦除",
+    "option.transitionStyle.Fade": "淡入淡出",
+    "option.transitionStyle.Off": "关闭"
 }

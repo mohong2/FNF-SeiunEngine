@@ -408,5 +408,11 @@
     "option.renderAudio": "Render Audio",
     "option.renderAudio.desc": "Mixes the song's Inst / Voices tracks into the rendered video.\nWhen no audio file can be found (an embedded-only song, for example) the video\nwill have no sound.",
     "option.renderOnSongStart": "Render on Song Start",
-    "option.renderOnSongStart.desc": "When on, recording starts automatically the moment a song starts - no hotkey.\nIt stops by itself when the song ends, or when you leave the song.\nOutput goes to the render_video folder next to the game."
+    "option.renderOnSongStart.desc": "When on, recording starts automatically the moment a song starts - no hotkey.\nIt stops by itself when the song ends, or when you leave the song.\nOutput goes to the render_video folder next to the game.",
+
+    "option.transitionStyle": "State Transition",
+    "option.transitionStyle.desc": "How the game moves from one screen to the next.\nWipe: a black shutter sweeps down the screen and pauses on black for a moment (default).\nFade: a plain full-screen fade.\nOff: no animation, screens swap instantly.",
+    "option.transitionStyle.Wipe": "Wipe",
+    "option.transitionStyle.Fade": "Fade",
+    "option.transitionStyle.Off": "Off"
 }

@@ -70,6 +70,11 @@ import sys.io.Process;
 	public var globalAntialiasing:Bool = true;
 	public var noteSplashes:Bool = true;
 	public var lowQuality:Bool = false;
+	/**
+	 * State transition style: 'Wipe' (downward black shutter, default), 'Fade' (full screen
+	 * fade) or 'Off' (states swap instantly). Read by backend.transition.TransitionDirector.
+	 */
+	public var transitionStyle:String = 'Wipe';
 	public var shaders:Bool = true;
 	public var framerate:Int = 60;
 	public var drawFramerate:Int = 144;

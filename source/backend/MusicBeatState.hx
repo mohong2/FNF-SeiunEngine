@@ -24,6 +24,7 @@ import script.hscript.HScript;
 #end
 
 import script.lua.FunkinLua;
+import backend.transition.TransitionDirector;
 
 import script.lua.ModchartSprite;
 import script.lua.ModchartText;
@@ -183,7 +184,7 @@ class MusicBeatState extends FlxUIState
 		Language.load();
 		var skip:Bool = FlxTransitionableState.skipNextTransOut;
 		super.create();
-		if(!skip) openSubState(new CustomFadeTransition(0.7, true));
+		if(!skip && !TransitionDirector.isInstant()) openSubState(new CustomFadeTransition(TransitionDirector.IN_DURATION, true));
 		FlxTransitionableState.skipNextTransOut = false;
 
 		#if HSCRIPT_ALLOWED
@@ -333,8 +334,8 @@ class MusicBeatState extends FlxUIState
 
 		var curState:Dynamic = FlxG.state;
 		var leState:MusicBeatState = curState;
-		if(!FlxTransitionableState.skipNextTransIn) {
-			leState.openSubState(new CustomFadeTransition(0.6, false));
+		if(!FlxTransitionableState.skipNextTransIn && !TransitionDirector.isInstant()) {
+			leState.openSubState(new CustomFadeTransition(TransitionDirector.OUT_DURATION, false));
 			if(nextState == FlxG.state)
 				CustomFadeTransition.finishCallback = function() { FlxG.resetState(); }
 			else

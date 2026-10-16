@@ -161,5 +161,19 @@
 		"variable": "camZooms",
 		"type": "bool",
 		"defaultValue": true
+	},
+	{
+		"nameKey": "option.transitionStyle",
+		"defaultName": "State Transition",
+		"descKey": "option.transitionStyle.desc",
+		"defaultDesc": "How the game moves from one screen to the next.\nWipe: a black shutter sweeps down the screen and pauses on black for a moment (default).\nFade: a plain full-screen fade.\nOff: no animation, screens swap instantly.",
+		"variable": "transitionStyle",
+		"type": "string",
+		"defaultValue": "Wipe",
+		"options": [
+			"Wipe",
+			"Fade",
+			"Off"
+		]
 	}
 ]
