@@ -2,7 +2,7 @@
 <project>
 	<!-- _________________________ Application Settings _________________________ -->
 
-	<app title="SeiunEngine" file="SeiunEngine" packageName="com.mohong.Seiunengine" package="com.mohong.Seiunengine" main="Main" version="0.2.2preonline2" company="mo_hong" company-url="https://github.com/mohong2/FNF-SeiunEngine"/>
+	<app title="SeiunEngine" file="SeiunEngine" packageName="com.mohong.Seiunengine" package="com.mohong.Seiunengine" main="Main" version="0.2.2preonline3" company="mo_hong" company-url="https://github.com/mohong2/FNF-SeiunEngine"/>
 
 	<!--Switch Export with Unique ApplicationID and Icon-->
 	<set name="APP_ID" value="0x0100f6c013bbc000" />
@@ -238,8 +238,7 @@
 	<haxedef name="HXCPP_MAP_FILE" value="ApplicationMain.map" />
 	<haxedef name="HXCPP_CPP11" if="cpp" />
 	<!-- HXCPP_GC_GENERATIONAL 你太坏了。-->
-	<haxedef name="HXCPP_ALIGN_ALLOC" if="cpp" />
-	<haxedef name="HXCPP_NO_ARCH_LEVEL" />
+	<!-- HXCPP_ALIGN_ALLOC 你不想获得一大堆警告就开着 -->
 	<!-- 符号构建才保留未剥离 .so 供行号表生成 -->
 	<section if="android" unless="debug">
 		<haxedef name="HXCPP_DEBUG_LINK_AND_STRIP" if="hxcpp_symbols" />
