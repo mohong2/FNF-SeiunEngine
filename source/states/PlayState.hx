@@ -1723,9 +1723,6 @@ class PlayState extends MusicBeatState
 		scoreTxt.setFormat(Paths.languageFont(), 20, FlxColor.WHITE, CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 		scoreTxt.scrollFactor.set();
 		scoreTxt.borderSize = 2;
-		// Rebuilt on every note hit; 1x rasterization keeps that rebuild inside a 360 fps frame
-		// (the bitmap cost grows with the square of the window/mobile scale, see FlxText.renderScaleCap).
-		scoreTxt.renderScaleCap = 1;
 		scoreTxt.visible = !ClientPrefs.data.hideHud;
 		if (CompatEngine.isModern())
 			uiGroup.add(scoreTxt);
@@ -2217,13 +2214,6 @@ class PlayState extends MusicBeatState
 			miss.borderSize = 2;
 			add(miss);
 
-			// The stat counters are rewritten whenever a judgement lands (i.e. on the hit frame);
-			// keep their rasterization at 1x like the score line for the same reason.
-			for (hudText in [tnh, cm, marv, sick, good, bad, shit, miss])
-			{
-				if (hudText == null) continue;
-				hudText.renderScaleCap = 1;
-			}
 			}
 
 
@@ -2234,8 +2224,6 @@ class PlayState extends MusicBeatState
 		msTxtKade.visible = !ClientPrefs.data.hideHud;
 		msTxtKade.setFormat(19, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 		msTxtKade.borderSize = 2;
-		// Rebuilt on every note hit, same reasoning as scoreTxt.renderScaleCap.
-		msTxtKade.renderScaleCap = 1;
 		msTxtKade.font = Paths.font("kadems.ttf");
 		add(msTxtKade);
 
