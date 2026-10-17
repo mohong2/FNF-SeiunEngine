@@ -76,8 +76,12 @@ class Song
 
 	static public var isNewVersion:Bool = false;
 
-	/** Identity of a cached chart skeleton: the chart bytes are covered by the source signature. */
-	static inline final SKELETON_CACHE_CONFIG:String = 'chartstream-scan-v1';
+	/**
+	 * Identity of a cached chart skeleton: the chart bytes are covered by the source signature.
+	 * v2: the scanner can be the C++ one (ChartNative) and the skeleton carries the flat range view;
+	 * a v1 file must never be replayed as if it had been produced by this code.
+	 */
+	static inline final SKELETON_CACHE_CONFIG:String = 'chartstream-scan-v2';
 
 	private static function onLoadJson(songJson:Dynamic) // Convert old charts to newest format
 	{
@@ -393,6 +397,9 @@ class Song
 		var cacheEnabled:Bool = ClientPrefs.data.chartCache;
 		var scanFromCache:Bool = false;
 		var scan:ChartStream.ChartScanResult = null;
+		// Raw events arrays a native scan returns for the parts after part 0 (see mergeNativeEvents).
+		var nativeEvents:Array<String> = null;
+		var nativeScanMs:Float = -1;
 		if (cacheEnabled)
 		{
 			scan = cast ChartCache.loadSkeleton(parts, SKELETON_CACHE_CONFIG);
@@ -400,19 +407,72 @@ class Song
 		}
 		if (scan == null)
 		{
-			try
+			#if cpp
+			// Native scanner (C++): the Haxe cursor walks every byte of every part on one thread; on a
+			// 45 GB chart that walk is a large share of the load. ChartNative does the same walk on all
+			// cores and returns the same skeleton/ranges/note count. Every failure falls through to the
+			// Haxe path below, which stays the reference implementation.
+			if (ClientPrefs.data.nativeChartParse && parts != null && parts.length > 0)
 			{
-				scan = scanningParts ? ChartStream.scanParts(parts) : ChartStream.scan(path);
+				try
+				{
+					var nativeScan:ChartNative.NativeScanResult = ChartNative.scanParts(parts, 0);
+					if (nativeScan != null && nativeScan.skeletonJson != null)
+					{
+						scan = nativeScanToScan(nativeScan);
+						nativeEvents = nativeScan.eventsJson;
+						nativeScanMs = nativeScan.scanMs;
+					}
+				}
+				catch (e:Dynamic)
+				{
+					scan = null;
+				}
 			}
-			catch (e:Dynamic)
+			#end
+			if (scan == null)
 			{
-				return null;
+				try
+				{
+					scan = scanningParts ? ChartStream.scanParts(parts) : ChartStream.scan(path);
+				}
+				catch (e:Dynamic)
+				{
+					return null;
+				}
+				if (scan == null || scan.chart == null) return null;
 			}
-			if (scan == null || scan.chart == null) return null;
-			if (cacheEnabled) ChartCache.saveSkeleton(parts, SKELETON_CACHE_CONFIG, scan);
 		}
 		if (scan.chart == null) return null;
+		// Cache a freshly produced skeleton here, once, for both scan routes (native and Haxe); a
+		// skeleton that already came from the cache is not written back.
+		if (cacheEnabled && !scanFromCache) ChartCache.saveSkeleton(parts, SKELETON_CACHE_CONFIG, scan);
 		__tScan = haxe.Timer.stamp();
+
+		// Flat view of the section byte ranges: ChartNative.foldParts() reads these directly, so the
+		// per-section range objects never have to be unwrapped one by one in Haxe. Built here for
+		// every streamed chart (cache hit included), so PlayState can use it without caring where the
+		// skeleton came from.
+		var flatStart:Array<Float> = null;
+		var flatLen:Array<Int> = null;
+		var flatPart:Array<Int> = null;
+		#if cpp
+		if (ClientPrefs.data.nativeChartParse && scan.ranges != null)
+		{
+			var rangeCount:Int = scan.ranges.length;
+			flatStart = []; flatStart.resize(rangeCount);
+			flatLen = []; flatLen.resize(rangeCount);
+			flatPart = []; flatPart.resize(rangeCount);
+			for (i in 0...rangeCount)
+			{
+				var range:ChartStream.ChartSectionRange = scan.ranges[i];
+				if (range == null) continue;
+				flatStart[i] = range.start;
+				flatLen[i] = range.len;
+				flatPart[i] = range.part;
+			}
+		}
+		#end
 
 
 		var chart:Dynamic = scan.chart;
@@ -431,6 +491,13 @@ class Song
 			}
 		}
 
+
+		#if cpp
+		// Native scan: parts after part 0 contribute their chart-level events as raw JSON (part 0's
+		// own events already travelled inside the skeleton). Merge exactly like ChartStream.scanParts().
+		if (nativeEvents != null && nativeEvents.length > 0)
+			mergeNativeEvents(chart, nativeEvents);
+		#end
 
 		var ev:Dynamic = Reflect.field(chart, 'events');
 		if (ev == null || !Std.isOfType(ev, Array))
@@ -500,6 +567,8 @@ class Song
 			path: path,
 			paths: parts,
 			ranges: scan.ranges,
+			// Flat range view for ChartNative.foldParts(); null when the native switch is off.
+			nativeRanges: (flatStart != null) ? { start: flatStart, len: flatLen, part: flatPart } : null,
 			// Note entries counted while scanning; PlayState uses it as its materialisation budget.
 			// noteCount crosses a Dynamic boundary and is read back through Reflect, so it is stored
 			// as a Float: an Int64 field would come back as a boxed cpp.Int64. scan.noteCount is a
@@ -515,7 +584,8 @@ class Song
 			+ ' total=' + Std.int((__tConvert - __tSong0) * 1000) + 'ms'
 			+ ' parts=' + ((parts != null) ? parts.length : 1)
 			+ ' sections=' + scan.ranges.length + ' notes=' + haxe.Int64.toStr(scan.noteCount)
-			+ ' cache=' + (scanFromCache ? 'hit' : (cacheEnabled ? 'miss' : 'off')));
+			+ ' cache=' + (scanFromCache ? 'hit' : (cacheEnabled ? 'miss' : 'off'))
+			+ ((nativeScanMs >= 0) ? ' nativeScan=' + Std.int(nativeScanMs) + 'ms' : ''));
 		return cast chart;
 		#else
 		return null;
@@ -725,6 +795,62 @@ class Song
 	 * a saved chart file: PE 0.6.3/0.7.3/1.0.4 would ignore unknown fields, but the token is
 	 * per-load state and must not travel with the file.
 	 */
+	#if cpp
+	/** Converts a native scan result into the ChartScanResult every streaming path already consumes. */
+	static function nativeScanToScan(nr:ChartNative.NativeScanResult):ChartStream.ChartScanResult
+	{
+		var chart:Dynamic = Json.parse(nr.skeletonJson);
+		var rangeCount:Int = (nr.sectionCount > 0) ? nr.sectionCount
+			: ((nr.rangesStart != null) ? nr.rangesStart.length : 0);
+		var ranges:Array<ChartStream.ChartSectionRange> = [];
+		ranges.resize(rangeCount);
+		for (i in 0...rangeCount)
+			ranges[i] = { start: nr.rangesStart[i], len: nr.rangesLen[i], part: nr.rangesPart[i] };
+		return {
+			chart: chart,
+			ranges: ranges,
+			// The scan counts note entries across every part; a part can hold more than an Int32.
+			noteCount: haxe.Int64.fromFloat(nr.noteCount),
+			sawNegativeNote: nr.sawNegativeNote
+		};
+	}
+
+	/**
+	 * Merges the raw chart-level event arrays of a native scan (parts after part 0) into the skeleton,
+	 * with the same exact-duplicate rule ChartStream.scanParts() uses.
+	 */
+	static function mergeNativeEvents(chart:Dynamic, rawEvents:Array<String>):Void
+	{
+		if (chart == null || rawEvents == null) return;
+		var events:Array<Dynamic> = null;
+		var existing:Dynamic = Reflect.field(chart, 'events');
+		if (Std.isOfType(existing, Array)) events = cast existing;
+
+		var seen:Map<String, Bool> = new Map<String, Bool>();
+		if (events != null)
+			for (event in events) seen.set(Json.stringify(event), true);
+		var any:Bool = (events != null);
+
+		for (raw in rawEvents)
+		{
+			if (raw == null || raw.length < 2) continue;
+			var parsed:Dynamic = null;
+			try parsed = Json.parse(raw) catch (e:Dynamic) { continue; }
+			if (!Std.isOfType(parsed, Array)) continue;
+			for (event in (cast parsed : Array<Dynamic>))
+			{
+				var key:String = Json.stringify(event);
+				if (seen.exists(key)) continue;
+				seen.set(key, true);
+				if (events == null) events = [];
+				events.push(event);
+				any = true;
+			}
+		}
+		if (any && events != null) Reflect.setField(chart, 'events', events);
+	}
+	#end
+
 	public static function stripRuntimeFields(songObj:Dynamic):Void
 	{
 		if (songObj == null) return;

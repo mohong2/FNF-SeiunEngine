@@ -615,6 +615,10 @@ class BootState extends MusicBeatState
 		FlxTransitionableState.skipNextTransIn = true;
 		FlxTransitionableState.skipNextTransOut = true;
 
+		// Dev-only chart-load probe (see ChartLoadProbe): when SEIUN_CHART_PROBE is set, boot
+		// straight into a PlayState for that chart instead of the title screen.
+		if (ChartLoadProbe.tryAutoStart()) return;
+
 		if (TestBuildNoticeState.shouldShow())
 		{
 			FlxG.switchState(new TestBuildNoticeState());

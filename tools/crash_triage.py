@@ -48,10 +48,17 @@ def _first_existing(*paths):
             return p
     return paths[0]
 
-# tools/SymbolsAfterBuild.hx MOVES the map into export/symbols/<platform>-<mode>/
-# after every lime build, so look there first and keep the old obj/ spot as a
-# fallback for a tree where the hook has not run yet.
-DEFAULT_MAP = _first_existing(
+def _newest_existing(*paths):
+    existing = [p for p in paths if os.path.isfile(p)]
+    if not existing:
+        return paths[0]
+    return max(existing, key=os.path.getmtime)
+
+
+# The symbols bundle (tools/SymbolsAfterBuild.hx) is the published copy; export/release/windows/obj
+# is the one this tree's latest link produced. A build invoked in a way that skips the postbuild hook
+# leaves the bundle older than the binary, so take whichever file is newer instead of trusting order.
+DEFAULT_MAP = _newest_existing(
     os.path.join(REPO_ROOT, 'export', 'symbols', 'windows-release', 'ApplicationMain.map'),
     os.path.join(REPO_ROOT, 'export', 'release', 'windows', 'obj', 'ApplicationMain.map'))
 DEFAULT_EXE = os.path.join(REPO_ROOT, 'export', 'release', 'windows', 'bin', 'SeiunEngine.exe')
@@ -67,6 +74,40 @@ NAME_DATE_COMPACT = re.compile(r'(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})')
 # build fingerprint / paths
 # ----------------------------------------------------------------------------
 
+FNV_OFFSET = 0x811C9DC5
+FNV_PRIME = 0x01000193
+
+
+def fnv1a_head_tail(path, chunk=65536):
+    # The engine build hash (source/backend/native_crash.inc, tools/fnv1a.py "file"): FNV-1a over
+    # the first 64 KB plus, for files above 128 KB, the last 64 KB. It survives the mtime rewrite
+    # that installing/copying a build does, so a report matches its exact binary anywhere.
+    h = FNV_OFFSET
+    size = os.path.getsize(path)
+    with open(path, "rb") as fh:
+        data = fh.read(chunk)
+        for b in data:
+            h = ((h ^ b) * FNV_PRIME) & 0xFFFFFFFF
+        if size > chunk * 2:
+            fh.seek(size - chunk)
+            data = fh.read(chunk)
+            for b in data:
+                h = ((h ^ b) * FNV_PRIME) & 0xFFFFFFFF
+    return "%08x" % h
+
+
+def same_build(report, current):
+    # True when the report came from the binary `current` describes. The report @mtime is the
+    # install time on the reporting device, so size+mtime only matches a local build by luck;
+    # the FNV hash of the shipped bytes is exact everywhere.
+    if not report or not current:
+        return False
+    report_hash = report.get("build_hash")
+    if report_hash and current.get("hash") and report_hash.lower() == current["hash"].lower():
+        return True
+    return report_fingerprint(report) == current["fingerprint"]
+
+
 def exe_fingerprint(path):
     if not path or not os.path.isfile(path):
         return None
@@ -80,10 +121,15 @@ def exe_fingerprint(path):
             stamp = struct.unpack('<I', fh.read(4))[0]
     except Exception:
         stamp = 0
+    try:
+        build_hash = fnv1a_head_tail(path)
+    except Exception:
+        build_hash = None
     return {
         'path': os.path.abspath(path),
         'size': size,
         'stamp': stamp,
+        'hash': build_hash,
         'modified': datetime.fromtimestamp(os.path.getmtime(path)).strftime('%Y-%m-%d %H:%M:%S'),
         'fingerprint': '%dB@%ds' % (size, stamp),
     }
@@ -142,7 +188,10 @@ def read_report(path):
     head = lines[:40]
     exc = _first(head, r'^Exception code:\s*(0x[0-9a-fA-F]+)')
     fault_text = _first(head, r'^Fault offset:\s*(0x[0-9a-fA-F]+)')
-    if exc or fault_text:
+    # The SIGABRT hook (abort()/terminate()) writes a real native backtrace but has no faulting
+    # address, so the exception fields are absent. Its kind line is the only classification signal.
+    kind_text = _first(head, r'^Kind:\s*(.+)$')
+    if exc or fault_text or (kind_text and 'Native crash' in kind_text):
         kind = 'native'
     elif _first(head, r'^(=== .*Crash Report ===)'):
         kind = 'haxe'
@@ -331,6 +380,20 @@ def format_hit(hit, stale=False):
         text += '   (STALE)'
     return text
 
+
+def app_backtrace_frames(report, limit=8):
+    '''SeiunEngine.exe frames from the report backtrace (innermost first).
+
+    abort()/terminate() reports carry a full backtrace but no fault offset, so the stack is the
+    only addressable evidence they have.'''
+    out = []
+    for frame in report.get('backtrace') or []:
+        if 'SeiunEngine.exe' in frame['module']:
+            out.append(frame)
+            if len(out) >= limit:
+                break
+    return out
+
 # ----------------------------------------------------------------------------
 # map selection
 # ----------------------------------------------------------------------------
@@ -346,7 +409,7 @@ def select_map(report, forced_map, current, crash_dir, default_map=None):
         if not os.path.isfile(forced_map):
             raise FileNotFoundError('map not found: %s' % forced_map)
         path = os.path.abspath(forced_map)
-        exact = bool(fp) and os.path.splitext(os.path.basename(path))[0] == fp
+        exact = bool(fp) and (os.path.splitext(os.path.basename(path))[0] == fp or same_build(report, current))
         quality = 'chosen by you (matches the report build)' if exact else 'chosen by you (cannot verify against this report)'
         return {'path': path, 'exact': exact, 'quality': quality}
     if fp:
@@ -354,7 +417,7 @@ def select_map(report, forced_map, current, crash_dir, default_map=None):
         if os.path.isfile(snap):
             return {'path': snap, 'exact': True, 'quality': 'snapshot for this build'}
     if os.path.isfile(default_map):
-        exact = bool(fp and current and fp == current['fingerprint'])
+        exact = same_build(report, current)
         if exact:
             quality = 'current build'
         elif not fp:
@@ -415,8 +478,19 @@ def analyze(report_path, forced_map, current, crash_dir, frames=8, map_cache=Non
     if map_data and report['fault_offset'] is not None:
         hit = resolve_offset(map_data, report['fault_offset'])
         step('resolve fault offset', 'OK', '0x%X -> %s' % (report['fault_offset'], format_hit(hit, stale)));
+    elif map_data and report['kind'] == 'native' and report['backtrace']:
+        app_frames = app_backtrace_frames(report, frames)
+        if app_frames:
+            hit = resolve_offset(map_data, app_frames[0]['offset'])
+            step('resolve backtrace', 'OK', 'no fault offset (abort/terminate path); %d app frame(s), first: 0x%X -> %s'
+                 % (len(app_frames), app_frames[0]['offset'], format_hit(hit, stale)))
+        else:
+            step('resolve backtrace', 'SKIP', 'the backtrace has no SeiunEngine.exe frames')
     elif map_data:
-        step('resolve fault offset', 'SKIP', 'this report has no fault offset (Haxe-level crash)')
+        detail = 'this report has no fault offset (Haxe-level crash)'
+        if report['kind'] == 'native':
+            detail = 'no Windows fault offset/backtrace (POSIX report? use tools/symbolize_android.py)'
+        step('resolve fault offset', 'SKIP', detail)
     else:
         step('resolve fault offset', 'SKIP', 'no map loaded')
 
@@ -479,7 +553,20 @@ def report_block(report, info, map_data, current, frames, stale):
                 hit = resolve_offset(map_data, f['offset'])
                 out.append('      #%02d 0x%X -> %s' % (f['index'], f['offset'], format_hit(hit, stale)))
     elif map_data:
-        out.append('  fault offset : (this report has no fault offset - Haxe-level crash, nothing to symbolise)')
+        if report['kind'] == 'native' and report['backtrace']:
+            # abort()/terminate(): no faulting instruction, but the captured stack is addressable.
+            app_frames = app_backtrace_frames(report, frames)
+            out.append('  fault offset : (none - abort()/terminate() path, no faulting instruction)')
+            if app_frames:
+                out.append('  call stack (app module, first %d):' % len(app_frames))
+                for f in app_frames:
+                    hit = resolve_offset(map_data, f['offset'])
+                    out.append('      #%02d 0x%X -> %s' % (f['index'], f['offset'], format_hit(hit, stale)))
+        else:
+            msg = '  fault offset : (this report has no fault offset - Haxe-level crash, nothing to symbolise)'
+            if report['kind'] == 'native':
+                msg = '  fault offset : (native report without a Windows fault offset/backtrace - use tools/symbolize_android.py for POSIX dumps)'
+            out.append(msg)
     out.append('')
     return out
 
@@ -493,10 +580,17 @@ def summary_rows(crash_dir, current, map_data):
     for path in reversed(report_files(crash_dir)):
         report = read_report(path)
         fp = report_fingerprint(report)
-        match = bool(current and fp and fp == current['fingerprint'])
+        match = bool(current and same_build(report, current))
         symbol = ''
         if map_data and report['fault_offset'] is not None:
             hit = resolve_offset(map_data, report['fault_offset'])
+            if hit:
+                symbol = '%s + 0x%X' % (hit['symbol'], hit['displacement'])
+                if not match:
+                    symbol = '~ ' + symbol
+        elif map_data and report['kind'] == 'native' and report['backtrace']:
+            frames = app_backtrace_frames(report, 1)
+            hit = resolve_offset(map_data, frames[0]['offset']) if frames else None
             if hit:
                 symbol = '%s + 0x%X' % (hit['symbol'], hit['displacement'])
                 if not match:

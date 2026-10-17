@@ -145,6 +145,12 @@ import sys.io.Process;
 	public var chartCache:Bool = true;
 	/** Performance option: deflate the cached note list (much smaller files, ~1s more on load). */
 	public var chartCacheCompress:Bool = true;
+	/**
+	 * Performance option: parse and fold huge streamed charts (64 MB+ / multi-part) with the native
+	 * C++ scanner instead of the Haxe byte cursor (`source/ChartNative.hx`). Off = the old Haxe path;
+	 * any native failure also falls back to it, so this is a pure A/B switch.
+	 */
+	public var nativeChartParse:Bool = true;
 	/** Placeholder state for the "clear chart cache" action button: the action never reads it. */
 	public var clearChartCache:Bool = false;
 	/** Performance option: disables the hxcpp GC during a song, trading memory for frame time (off by default, prevents leaks). */

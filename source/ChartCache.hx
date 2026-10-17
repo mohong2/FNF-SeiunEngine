@@ -333,6 +333,12 @@ class ChartCache
 					block = null;
 				}
 			}
+			// The record count in the header is the only value the decoder trusts blindly: a damaged
+			// count (one byte changed, a truncated copy) decodes exactly that many records and would
+			// otherwise hand back a silently short note list. A file that was not consumed to its end
+			// is treated like every other damaged cache: catch below deletes it and the chart is rebuilt.
+			if (input.tell() != stat.size)
+				throw new haxe.Exception('ChartCache: ' + (stat.size - input.tell()) + ' trailing bytes after ' + count + ' records');
 			input.close();
 			return { notes: notes, fedNotes: fed, folded: header.folded, noteTypes: header.types };
 		}

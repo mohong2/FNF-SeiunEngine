@@ -435,6 +435,14 @@ class PlayState extends MusicBeatState
 	public static inline final CHART_DOM_RELEASE_MIN_NOTES:Int = 100000;
 	/** Streamed payload below this stays on the inline single-threaded read path. */
 	public static inline final PREFETCH_MIN_PAYLOAD_BYTES:Float = 16 * 1024 * 1024;
+	/**
+	 * A single sectionNotes byte range above this disables the worker prefetch for that chart and
+	 * reads sections inline. A range of this size already decodes into six figures of ChartRawNote
+	 * objects, and on dense charts (501k-note sections) the worker chunk that the old path built
+	 * from two such sections was exactly where the load crashed. Reading inline is the conservative
+	 * behaviour; the native fast path handles charts whose raw note count is past MAX_CHART_NOTES.
+	 */
+	public static inline final PREFETCH_MAX_SECTION_BYTES:Int = 1024 * 1024;
 	/** perfMode/bulkSkip saved before the song and restored afterwards (Turbo never persists its overrides). */
 	private var _turboPrevPerf:Bool = false;
 	private var _turboPrevBulk:Bool = false;
@@ -4169,7 +4177,9 @@ class PlayState extends MusicBeatState
 		streamRewrite:Bool, streamAmmo:Int):String
 	{
 		var ammo:Int = (mania >= 0 && mania < Note.ammo.length) ? Note.ammo[mania] : -1;
-		return 'v1'
+		// v2: native fold path + early-fold Haxe loop. A v1 cache was produced by different code and
+		// must not be replayed (the same logic revision would otherwise be indistinguishable).
+		return 'v2'
 			+ '|speed=' + FlxMath.roundDecimal(songSpeed, 2)
 			+ '|mania=' + mania
 			+ '|ammo=' + ammo
@@ -4323,8 +4333,19 @@ class PlayState extends MusicBeatState
 		if (!cacheHit && chartStream != null && chartStreamInfo.ranges != null)
 		{
 			var streamRanges:Array<ChartStream.ChartSectionRange> = cast chartStreamInfo.ranges;
-			for (r in streamRanges) if (r != null) streamPayloadBytes += r.len;
-			if (streamPayloadBytes >= PREFETCH_MIN_PAYLOAD_BYTES && chartPaths != null)
+			var maxSectionBytes:Int = 0;
+			for (r in streamRanges)
+				if (r != null)
+				{
+					streamPayloadBytes += r.len;
+					if (r.len > maxSectionBytes) maxSectionBytes = r.len;
+				}
+			if (maxSectionBytes > PREFETCH_MAX_SECTION_BYTES)
+			{
+				trace('Chart prefetch skipped: a sectionNotes array is ' + maxSectionBytes
+					+ ' bytes (> ' + PREFETCH_MAX_SECTION_BYTES + '); reading sections inline');
+			}
+			else if (streamPayloadBytes >= PREFETCH_MIN_PAYLOAD_BYTES && chartPaths != null)
 			{
 				try chartPrefetch = new ChartPrefetch(chartPaths, streamRanges, PREFETCH_WORKERS)
 				catch (e:Dynamic) chartPrefetch = null;
@@ -4394,12 +4415,100 @@ class PlayState extends MusicBeatState
 		// noteType string intern table (local to this function): JSON parsing creates a new String for every
 		// note type, and duplicate strings on million-note charts hold hundreds of MB alive.
 		var typeIntern:Map<String, String> = new Map<String, String>();
+		// A note without a type field resolves to '' (defaultNoteTypes[0]); register it once here so the
+		// fold shortcut below never has to run the registry path for an untyped note.
+		noteTypeMap.set('', true);
 
 		// Multi-key: Change Mania events make the chart use a new key count from that point on; each note is
 		// interpreted with the key count in effect at its own time, so notes before and after the event keep their own counts.
 		// Prefetched chunks: section index -> parsed notes, refilled by ChartPrefetch when exhausted.
 		var prefetched:Array<Array<ChartStream.ChartRawNote>> = null;
 		var prefetchedPos:Int = 0;
+
+		// ── Native fast path (C++, see ChartNative) ──
+		// A huge chart's note list is the Haxe loop below run once per raw note entry (2.06B on the
+		// amphotercity chart). ChartNative parses the recorded section byte ranges and folds them on
+		// every core with no per-note object allocation, producing the same packed columns. Only the
+		// fold path (Turbo, or a chart past the materialisation budget) takes it, the fold rules and
+		// every option come from this function, and any failure leaves nativeFold null so the Haxe
+		// loop runs exactly as before.
+		var nativeFold:ChartNative.NativeFoldResult = null;
+		var nativeFoldMs:Float = 0;
+		if (!cacheHit && chartStream != null && chartPaths != null && chartStreamInfo != null
+			&& (turboModeActive || (chartStreamInfo.noteCount != null && chartStreamInfo.noteCount > MAX_CHART_NOTES)))
+		{
+			var nativeRanges:Dynamic = Reflect.field(chartStreamInfo, 'nativeRanges');
+			if (nativeRanges != null && ChartNative.available() && !hasChangeManiaEvent(songData.events))
+			{
+				var flatStart:Array<Float> = cast Reflect.field(nativeRanges, 'start');
+				var flatLen:Array<Int> = cast Reflect.field(nativeRanges, 'len');
+				var flatPart:Array<Int> = cast Reflect.field(nativeRanges, 'part');
+				// Per-section scalars the fold needs. The skeleton owns them; this is one cheap pass over
+				// ~386k section objects, not over the chart bytes.
+				var secCount:Int = (noteData != null) ? noteData.length : 0;
+				var secFlags:Array<Int> = []; secFlags.resize(secCount);
+				var secBpm:Array<Float> = []; secBpm.resize(secCount);
+				for (si in 0...secCount)
+				{
+					var sec:SwagSection = noteData[si];
+					if (sec == null) continue;
+					var sf:Int = 0;
+					if (sec.mustHitSection) sf |= 1;
+					if (sec.gfSection == true) sf |= 2;
+					if (sec.changeBPM) sf |= 4;
+					if (sec.altAnim == true) sf |= 8;
+					secFlags[si] = sf;
+					secBpm[si] = (sec.bpm != null) ? sec.bpm : 0;
+				}
+				var typeNameTable:Array<String> = Note.defaultNoteTypes.copy();
+				for (customType in NoteTypeRegistry.customTypes()) typeNameTable.push(customType);
+				var foldOpts:ChartNative.NativeFoldOptions = {
+					workers: 0,
+					laneCount: Note.ammo[mania],
+					mania: mania,
+					isNewVersion: isNewVer,
+					songSpeed: songSpeed,
+					sustainSpeedDiv: FlxMath.roundDecimal(songSpeed, 2),
+					playOpponent: playOpponent,
+					rewrite: streamRewrite,
+					rewriteAmmo: streamAmmo,
+					stepCrochet: stepCrochet,
+					rangeMs: 1.0,
+					minGapPx: TurboDensity.DEFAULT_MIN_GAP_PX,
+					maniaScale: Note.getManiaScale(mania),
+					typeNames: typeNameTable
+				};
+				try
+				{
+					nativeFold = ChartNative.foldParts(chartPaths, flatStart, flatLen, flatPart, secFlags, secBpm, foldOpts);
+				}
+				catch (e:Dynamic)
+				{
+					nativeFold = null;
+				}
+				if (nativeFold != null && (nativeFold.strumTime == null || nativeFold.strumTime.length == 0))
+					nativeFold = null;
+				if (nativeFold == null)
+				{
+					// A null result is the contract (fall back to Haxe); record why so the next crash
+					// report or log tail names the reason instead of staying silent.
+					var nativeReason:String = ChartNative.lastFoldError();
+					if (nativeReason != null && nativeReason != '')
+						trace('Chart native fold unavailable (' + nativeReason + '); using the Haxe path');
+				}
+				if (nativeFold != null)
+				{
+					nativeFoldMs = nativeFold.foldMs;
+					packed = nativeFoldToChartNotes(nativeFold);
+					for (nativeType in nativeFold.typeTable)
+						if (nativeType != null) noteTypeMap.set(nativeType, true);
+					_turboRawTapCount = haxe.Int64.fromFloat(nativeFold.fedCount);
+					chartSectionIndex = (noteData == null) ? 0 : noteData.length;
+					trace('Chart native fold: ' + nativeFold.strumTime.length + ' rows in '
+						+ FlxMath.roundDecimal(nativeFoldMs / 1000, 3) + 's');
+				}
+			}
+		}
 
 		__tLoop = haxe.Timer.stamp();
 		// Loop split: time blocked on the section parse vs time consuming that section's notes.
@@ -4417,6 +4526,10 @@ class PlayState extends MusicBeatState
 			_turboRawTapCount = (cachedNotes.fedNotes > 0) ? cachedNotes.fedNotes : packed.length;
 			for (cachedType in cachedNotes.noteTypes) noteTypeMap.set(cachedType, true);
 			chartSectionIndex = (noteData == null) ? 0 : noteData.length;
+		}
+		else if (nativeFold != null)
+		{
+			// The native fold already produced the packed columns, the note type table and the fed count.
 		}
 		else for (section in noteData)
 		{
@@ -4509,8 +4622,33 @@ class PlayState extends MusicBeatState
 				var isGFSide:Bool = gfSec && (gottaHitNote == mustHit);
 				if (playOpponent) gottaHitNote = !gottaHitNote;
 
-				var noteType:String = noteTypeDyn;
-				if (!Std.isOfType(noteTypeDyn, String))
+				// Fold/Turbo raw path first (GhostCollapser.wantsRepresentative): decide from the note's
+				// own fields whether this tap becomes a representative BEFORE resolving its type and
+				// flags, so the notes that merge are never looked up or allocated at all. The merge rules
+				// are the same ones the DTO path uses (see GhostCollapser.feed()). Holds (susLen > 0)
+				// never merge and go through pushHold() once their DTO exists.
+				var foldHold:Bool = (collapser != null) && susLen > 0;
+				if (collapser != null && !foldHold
+					&& !collapser.wantsRepresentative(rawStrum, noteDataIdx, gottaHitNote))
+				{
+					// Keep the type registration for typed notes: PlayState walks noteTypeMap to load
+					// custom_notetypes scripts, and a type that only appears on merged-away notes must
+					// still be registered. Untyped notes resolve to '' which is pre-registered above.
+					if (noteCount > 3)
+					{
+						var mergedType:String = Std.isOfType(noteTypeDyn, String)
+							? (cast noteTypeDyn : String) : NoteTypeRegistry.fromIndex(Std.int(noteTypeDyn));
+						if (!noteTypeMap.exists(mergedType)) noteTypeMap.set(mergedType, true);
+					}
+					continue;
+				}
+
+				var noteType:String = '';
+				if (noteTypeDyn == null)
+					// Exactly what NoteTypeRegistry.fromIndex(Std.int(null)) returns (defaultNoteTypes[0]),
+					// without a registry call per note.
+					noteType = '';
+				else if (!Std.isOfType(noteTypeDyn, String))
 					// 数字下标 -> 类型名（默认 6 项 + custom_notetypes 注册表），越界安全。
 					// 旧实现直接读 defaultNoteTypes[下标]，越界下标会读到 null/垃圾值。
 					noteType = NoteTypeRegistry.fromIndex(Std.int(noteTypeDyn));
@@ -4536,16 +4674,6 @@ class PlayState extends MusicBeatState
 				var isGF:Bool = isGFSide || noteType == 'GF Sing';
 				var isNoAnim:Bool = (noteType == 'No Animation');
 				var isAltSuffix:String = isAlt ? '-alt' : '';
-
-				// Fold/Turbo raw path (GhostCollapser.wantsRepresentative): decide from the note's own
-				// fields whether this tap becomes a representative BEFORE building a PreloadedChartNote,
-				// so the notes that merge are never allocated at all. The merge rules are
-				// GhostCollapser.feed()'s. Holds (susLen > 0) never merge and go through pushHold()
-				// once their DTO exists.
-				var foldHold:Bool = (collapser != null) && susLen > 0;
-				if (collapser != null && !foldHold
-					&& !collapser.wantsRepresentative(rawStrum, noteDataIdx, gottaHitNote))
-					continue;
 
 				// Build PreloadedChartNote (lightweight data transfer object)
 				var swagNote:PreloadedChartNote = {
@@ -4656,7 +4784,8 @@ class PlayState extends MusicBeatState
 				+ (chartPaths != null ? chartPaths.length : 0) + ' part file(s), ranges='
 				+ chartStream.sectionCount() + ', notes='
 				+ (cacheHit ? cachedNotes.fedNotes
-					: (collapser != null ? collapser.fedCount : preloadedNotes.length))
+					: (collapser != null ? collapser.fedCount
+						: (nativeFold != null ? haxe.Int64.fromFloat(nativeFold.fedCount) : preloadedNotes.length)))
 				+ ', turbo=' + turboModeActive + ', mania=' + mania);
 		}
 
@@ -4706,6 +4835,12 @@ class PlayState extends MusicBeatState
 			// A cached list is stored in its final order; sorting it again could permute notes that
 			// share a strum time, so only a freshly generated list goes through the sort below.
 		}
+		else if (nativeFold != null)
+		{
+			// Native rows arrive in file order. When every part is time-ordered (the normal case) the
+			// concatenation is already sorted, so the sort is skipped and tie order is preserved.
+			if (!nativeFold.rowsSorted) packed.sortByStrumTime();
+		}
 		else if (chartStream != null)
 		{
 			// Streaming path: bucket sort, since Array.sort needs ~2.8s for 11.8M notes.
@@ -4729,14 +4864,15 @@ class PlayState extends MusicBeatState
 		}
 		else if (preloadedNotes.length > 0 && preloadedNotes[preloadedNotes.length - 1] != null)
 			lastChartNoteTime = preloadedNotes[preloadedNotes.length - 1].strumTime;
+		if (nativeFold != null) lastChartNoteTime = nativeFold.lastStrumTime;
 
 		// Turbo: fold taps by screen pixel gap -- at low scroll speed the visible band spans several seconds,
 		// which can hold six figures of notes on very dense charts; most of them overlap completely on screen
 		// (same lane and direction, only a few pixels apart), so materialising them all is pure waste.
 		// After folding, the living sprite count depends only on speed x screen geometry x lane count.
 		// This is a pure data transform: no caller objects are mutated, nothing is cached and repeated calls are identical.
-		if (!cacheHit) _turboRawTapCount = 0;
-		if (collapser != null)
+		if (!cacheHit && nativeFold == null) _turboRawTapCount = 0;
+		if (collapser != null && nativeFold == null)
 		{
 			// Streaming emits notes in file order, so re-sort by strum time for the consumers
 			// (spawn / fastSkipPastNotes) that assume ascending order. The array is already
@@ -4771,7 +4907,7 @@ class PlayState extends MusicBeatState
 		{
 			var cachedTypes:Array<String> = [for (key in noteTypeMap.keys()) key];
 			ChartCache.saveNotes(chartPaths, notesCacheConfig, unspawnNotes, _turboRawTapCount,
-				collapser != null, cachedTypes, ClientPrefs.data.chartCacheCompress);
+				(collapser != null || nativeFold != null), cachedTypes, ClientPrefs.data.chartCacheCompress);
 		}
 
 		if (chartStream != null)
@@ -4895,9 +5031,18 @@ class PlayState extends MusicBeatState
 			+ ' notesFed=' + haxe.Int64.toStr(cacheHit ? _turboRawTapCount
 				: (collapser != null ? collapser.fedCount : unspawnNotes.length))
 			+ ' representatives=' + unspawnNotes.length
-			+ ' folded=' + (cacheHit ? cachedNotes.folded : collapser != null)
+			+ ' folded=' + (cacheHit ? cachedNotes.folded : (collapser != null || nativeFold != null))
 			+ ' prefetch=' + __usedPrefetch
-			+ ' cache=' + (cacheHit ? 'hit' : (notesCacheConfig != null ? 'miss' : 'off')));
+			+ ' cache=' + (cacheHit ? 'hit' : (notesCacheConfig != null ? 'miss' : 'off'))
+			+ ((nativeFold != null) ? ' nativeFold=' + FlxMath.roundDecimal(nativeFoldMs / 1000, 3) + 's'
+				+ ' nativeRows=' + nativeFold.strumTime.length : ''));
+
+		// Dev-only probe (see ChartLoadProbe): records the real in-engine load numbers and exits.
+		if (ChartLoadProbe.enabled)
+			ChartLoadProbe.onNotesGenerated(__t0, __tLoop, __tWait, __tBody, chartSectionIndex,
+				(chartPaths != null) ? chartPaths.length : 0, _turboRawTapCount, unspawnNotes.length,
+				turboModeActive, cacheHit, __usedPrefetch, notesCacheConfig != null,
+				(nativeFold != null), nativeFoldMs);
 
 		// ── 释放 per-note JSON DOM (非流式路径) ──
 		// 上面的循环已经把 sectionNotes 全部转成打包列, 之后运行时只读 section 级标量
@@ -4944,6 +5089,83 @@ class PlayState extends MusicBeatState
 	//     array gave different results and kept writing new cache files for one chart;
 	//   - with pixel-level folding the materialised count is already bounded by speed and screen geometry,
 	//     so the saved O(n) scan is worth far less than the invalidation risk.
+
+	/**
+	 * Builds the packed note columns from one native fold result. Every field gets the value the Haxe
+	 * loop would have written for that row (the values live in ChartNative.foldParts()'s comment);
+	 * one scratch DTO is reused because ChartNotes.append() copies values into the columns.
+	 */
+	static function nativeFoldToChartNotes(r:ChartNative.NativeFoldResult):ChartNotes
+	{
+		var rowCount:Int = r.strumTime.length;
+		var out:ChartNotes = ChartNotes.builder(rowCount);
+		var dto:PreloadedChartNote = ChartNotes.scratchNote();
+		var typeTable:Array<String> = r.typeTable;
+		for (i in 0...rowCount)
+		{
+			var f:Int = r.flags[i];
+			var isHold:Bool = (f & 2) != 0;
+			var isHurt:Bool = (f & 32) != 0;
+			dto.strumTime = r.strumTime[i];
+			dto.noteData = r.noteData[i];
+			dto.mania = r.maniaAt[i];
+			var typeIndex:Int = r.typeIdx[i];
+			dto.noteType = (typeIndex >= 0 && typeTable != null && typeIndex < typeTable.length) ? typeTable[typeIndex] : '';
+			// Same per-note fields the Haxe loop derives from the resolved type name (PlayState loop:
+			// isAlt -> animSuffix '-alt'); a huge chart with Alt Animation notes needs it on tap rows
+			// and sustain rows alike.
+			dto.animSuffix = (dto.noteType == 'Alt Animation') ? '-alt' : '';
+			dto.mustPress = (f & 1) != 0;
+			dto.oppNote = (f & 128) != 0;
+			dto.gfNote = (f & 8) != 0;
+			dto.noAnimation = (f & 16) != 0;
+			dto.noMissAnimation = dto.noAnimation;
+			dto.isSustainNote = isHold;
+			dto.isSustainEnd = (f & 4) != 0;
+			dto.hitCausesMiss = isHurt;
+			dto.ignoreNote = (f & 64) != 0;
+			dto.sustainLength = r.sustainLength[i];
+			dto.parentST = r.parentST[i];
+			dto.parentSL = r.parentSL[i];
+			dto.stepCrochet = r.stepCrochetAt[i];
+			dto.noteDensity = r.density[i];
+			dto.hitHealth = 0.023;
+			dto.missHealth = isHurt ? (isHold ? 0.1 : 0.3) : 0.0475;
+			dto.multSpeed = 1;
+			dto.multAlpha = 1;
+			dto.animSuffix = '';
+			dto.noteskin = '';
+			dto.texture = '';
+			dto.blockHit = false;
+			dto.lowPriority = false;
+			dto.wasHit = false;
+			dto.offsetX = 0;
+			dto.offsetY = 0;
+			dto.noteSplashHue = null;
+			dto.noteSplashSat = null;
+			dto.noteSplashBrt = null;
+			dto.noteSplashTexture = null;
+			dto.noteSplashDisabled = false;
+			dto.hitsoundDisabled = false;
+			out.append(dto);
+		}
+		return out;
+	}
+
+	/** Whether the chart-level events change the key count mid-song (the native fold assumes one mania). */
+	static function hasChangeManiaEvent(events:Array<Dynamic>):Bool
+	{
+		if (events == null) return false;
+		for (event in events)
+		{
+			if (event == null || event[1] == null) continue;
+			var subEvents:Array<Dynamic> = cast event[1];
+			if (subEvents == null) continue;
+			for (subEvent in subEvents)
+				if (subEvent != null && subEvent[0] != null && Std.string(subEvent[0]) == 'Change Mania') return true;
+		}
+		return false;
+	}
 
 	function eventPushed(event:EventNote) {
 		switch(event.event) {
