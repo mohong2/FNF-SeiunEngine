@@ -1065,7 +1065,8 @@ class Note extends FlxSprite implements NoteSplashOwner {
 
         // ── clear Note-level state (setupNoteData redoes most of it) ──
         extraData.clear();
-        tail = [];
+        // 因为关了分代GC，导致这玩意儿非得下一次全量gc才清理，官方又不会写分代GC我真服
+        if (tail != null && tail.length > 0) tail.resize(0);
         prevNote = null;
         nextNote = null;
         noteColorOverride = null;
@@ -1128,9 +1129,14 @@ class Note extends FlxSprite implements NoteSplashOwner {
         if (animation != null)
             animation.curAnim = null;
         clipRect = null;
+        // 666神秘着色器吃到屎了
+        if (colorSwap != null)
+        {
+            colorSwap.hue = 0;
+            colorSwap.saturation = 0;
+            colorSwap.brightness = 0;
+        }
         shader = null;
-        colorSwap = null;
-        rgbShader = null;
         // colorTransform/useColorTransform are managed by FlxSprite.set_color;
         // the color reset in reinitForPool restores the default.
 

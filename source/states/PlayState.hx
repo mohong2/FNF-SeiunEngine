@@ -426,6 +426,13 @@ class PlayState extends MusicBeatState
 	 * collector and were measured to stall well before they help, so re-measure before raising it.
 	 */
 	public static inline final PREFETCH_WORKERS:Int = 1;
+	/**
+	 * Raw notes a non-streamed chart may hold in its parsed JSON DOM before generateSong() drops the
+	 * per-note arrays (notes[].sectionNotes) once the packed columns are built. Below it nothing
+	 * changes, so ordinary charts keep the exact stock behaviour (mods may still read SONG.notes).
+	 * 100k is already far past any hand-made chart; the range that hurts starts there.
+	 */
+	public static inline final CHART_DOM_RELEASE_MIN_NOTES:Int = 100000;
 	/** Streamed payload below this stays on the inline single-threaded read path. */
 	public static inline final PREFETCH_MIN_PAYLOAD_BYTES:Float = 16 * 1024 * 1024;
 	/** perfMode/bulkSkip saved before the song and restored afterwards (Turbo never persists its overrides). */
@@ -948,6 +955,9 @@ class PlayState extends MusicBeatState
 	static final NOTE_CLEANUP_INTERVAL:Int = 3;
 	/** Frame counter for periodic unused-graphic purges (see Paths.purgeUnusedGraphics). */
 	var _memoryPurgeFrameCounter:Int = 0;
+	/** disableGC 堆预算的检查节拍 (帧, 60 = 约每秒一次)。 */
+	static final GC_BUDGET_CHECK_INTERVAL:Int = 60;
+	var _gcBudgetFrameCounter:Int = 0;
 	/** Purge useCount<=0 graphics roughly every 15 seconds (60fps x 900 frames). */
 	static final MEMORY_PURGE_INTERVAL:Int = 900;
 
@@ -2300,23 +2310,26 @@ class PlayState extends MusicBeatState
 		GfxPolicy.preloadWarm();
 
 		#if cpp
+		// 全局堆策略 (幂等): 目标空闲 100% -> 50%, 高水位从"存活 x2"降到"存活 x1.5"。
+		GcState.applyHeapPolicy();
+
 		if (ClientPrefs.data.disableGC)
 		{
 			_gcDisabledForSong = true;
 			GcState.setDisabled(false);
-			cpp.vm.Gc.run(true);
-			cpp.vm.Gc.compact();
+			GcState.collect();
 			GcState.setDisabled(true);
+			// 关闭期间的堆预算: 存活 x1.5 + 192MB 余量。过线就在 update 的安全点回收一次,
+			// 否则关闭期间堆只涨不落, 退出歌曲时那次恢复回收要一次性扫完整首歌攒下的垃圾。
+			GcState.heapBudgetBytes = GcState.liveHeapBytes() * 1.5 + 192 * 1024 * 1024;
 		}
 
 		// Force a full GC after creation so the load-time collection does not
 		// hit first gameplay. Disable with FNF_GC_FULL_ON_PLAY_CREATE=0.
+		// 不再跟 Gc.compact(): 本构建没有 HXCPP_GC_MOVING, 它不归还内存 (Immix.cpp:5204 那段编译不进去),
+		// 只会再白跑一遍 STW 全堆回收 (GcCommon.cpp:100-110 至少两次 InternalCollect(true,true))。
 		if (!ClientPrefs.data.disableGC && Sys.getEnv("FNF_GC_FULL_ON_PLAY_CREATE") != "0")
-		{
-			cpp.vm.Gc.run(true);
-			// Compacts the heap after a major collection and returns free blocks to the OS (pure GC, no logic impact).
-			cpp.vm.Gc.compact();
-		}
+			GcState.collect();
 		#end
 
 		CustomFadeTransition.nextCamera = camOther;
@@ -4154,6 +4167,17 @@ class PlayState extends MusicBeatState
 			}
 		}
 
+		// 上一次生成把 per-note DOM 释放掉了(见本函数末尾的大谱面释放): 重开一局复用的是内存里
+		// 同一个 SONG 对象, 所以这里必须先按配方把谱面读回来, 否则重开会变成空谱。
+		if (Song.isDomReleased(SONG))
+		{
+			var reloadedSong:SwagSong = Song.reloadReleasedDom(SONG);
+			if (reloadedSong != null)
+				SONG = reloadedSong;
+			else
+				trace('Chart DOM release: could not reload the chart for a restart; notes will be empty.');
+		}
+
 		var songData = SONG;
 		Conductor.changeBPM(songData.bpm);
 		curSong = songData.song;
@@ -4830,6 +4854,30 @@ class PlayState extends MusicBeatState
 			+ ' folded=' + (cacheHit ? cachedNotes.folded : collapser != null)
 			+ ' prefetch=' + __usedPrefetch
 			+ ' cache=' + (cacheHit ? 'hit' : (notesCacheConfig != null ? 'miss' : 'off')));
+
+		// ── 释放 per-note JSON DOM (非流式路径) ──
+		// 上面的循环已经把 sectionNotes 全部转成打包列, 之后运行时只读 section 级标量
+		// (bpm / mustHitSection / altAnim / gfSection)。DOM 留着就是几百万个 Array<Dynamic> +
+		// 装箱数字陪整首歌: 每次 GC 标记都要把这堆小对象走一遍 (长卡顿的主因), 外加 ~150 B/note 的 RSS。
+		// 流式路径早就在逐节 section.sectionNotes = [] 了, 这里补上非流式路径。
+		// 只在"大谱面 + 有重载配方(引擎从磁盘读进来的, 编辑器/脚本直接赋的 SONG 没有)"时做,
+		// 普通谱面行为完全不变; 重开一局由函数开头的 Song.isDomReleased() 分支读回来。
+		var domRows:Int = 0;
+		if (chartStream == null && noteData != null && Reflect.field(songData, '__seiunReload') != null)
+		{
+			for (sec in noteData)
+			{
+				if (sec == null || sec.sectionNotes == null) continue;
+				domRows += sec.sectionNotes.length;
+				if (domRows >= CHART_DOM_RELEASE_MIN_NOTES) break; // 前几节就够判断, 不做全量统计
+			}
+		}
+		if (domRows >= CHART_DOM_RELEASE_MIN_NOTES)
+		{
+			for (sec in noteData) if (sec != null) sec.sectionNotes = [];
+			Song.markDomReleased(songData);
+			trace('Chart DOM released: ' + domRows + '+ raw notes -> packed columns (restart reloads the chart)');
+		}
 
 		// Pack the chart into columns and drop the DTO array: this is the only place unspawnNotes
 		// is filled, and everything afterwards reads it through ChartNotes.
@@ -5999,6 +6047,19 @@ class PlayState extends MusicBeatState
 				{
 					_memoryPurgeFrameCounter = 0;
 					Paths.purgeUnusedGraphics();
+				}
+
+				// disableGC 的堆预算闸门: 约每秒查一次 (两次 memInfo), 过线才真的回收一次再关回去。
+				// 这里是普通 update 帧 —— 与 GC 自己触发回收的位置同样安全 (不是 create() 里那种
+				// 只有 native 代码持有对象的时机, 见本文件 create() 的悬垂警告)。
+				if (_gcDisabledForSong)
+				{
+					_gcBudgetFrameCounter++;
+					if (_gcBudgetFrameCounter >= GC_BUDGET_CHECK_INTERVAL)
+					{
+						_gcBudgetFrameCounter = 0;
+						GcState.enforceBudget();
+					}
 				}
 
 				// Periodic scan to release CPU copies of large graphics meeting memory policy requirements
@@ -10213,7 +10274,8 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		{
 			_gcDisabledForSong = false;
 			GcState.setDisabled(false);
-			cpp.vm.Gc.run(true);
+			GcState.heapBudgetBytes = 0;
+			GcState.collect();
 		}
 		#end
 

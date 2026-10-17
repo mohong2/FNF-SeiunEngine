@@ -596,7 +596,45 @@ class EKData
 	 * ColorSwap values for a lane relative to its base texture.
 	 * @return [hue (0~1 shift), saturation (0~1 shift), brightness (multiplier shift, same /100 semantics as arrowHSV)]
 	 */
+	// ── 轨道色差缓存 ───────────────────────────────────────────────────────
+	// getLaneColorSwap() 每个物化 note 至少跑一次 (applyLaneColor, 由 setupNoteData /
+	// reloadNote / noteType setter 调), 而它每次调用要新建 3 个 Array<Float>
+	// (rgb2hsv 的两个临时数组 + 返回的三元组)。这是每 note 分配常数里最大的一项,
+	// 而没有分代 GC 时这些短命数组全都要等下一次全量回收才清掉。
+	// 结果只由上面的静态表决定 (baseNoteColors / noteColors / letterColorIndex),
+	// 因此按 (mania, lane) 记忆化, 命中时直接返回同一个数组实例。
+	// 调用方 (Note.applyLaneColor / StrumNote / 编辑器) 都只读不写。
+	static inline final LANE_SWAP_STRIDE:Int = 64;
+	static var _laneSwapCache:Array<Array<Float>> = null;
+
+	/** 清空记忆的轨道色差。改过 noteColors / baseNoteColors 之后必须调用。 */
+	public static function clearLaneColorSwapCache():Void
+	{
+		_laneSwapCache = null;
+	}
+
 	public static function getLaneColorSwap(mania:Int, lane:Int):Array<Float>
+	{
+		var key:Int = mania * LANE_SWAP_STRIDE + lane;
+		if (_laneSwapCache != null && key >= 0 && key < _laneSwapCache.length)
+		{
+			var hit:Array<Float> = _laneSwapCache[key];
+			if (hit != null) return hit;
+		}
+		var value:Array<Float> = computeLaneColorSwap(mania, lane);
+		if (key >= 0 && key < LANE_SWAP_STRIDE * 18)
+		{
+			if (_laneSwapCache == null)
+			{
+				_laneSwapCache = [];
+				_laneSwapCache.resize(LANE_SWAP_STRIDE * 18);
+			}
+			_laneSwapCache[key] = value;
+		}
+		return value;
+	}
+
+	static function computeLaneColorSwap(mania:Int, lane:Int):Array<Float>
 	{
 		var base:Int = getBaseTexture(mania, lane);
 		var baseRGB:Array<Int> = baseNoteColors[base];
@@ -647,6 +685,8 @@ class EKData
 	{
 		if (_loaded) return;
 		_loaded = true;
+		// 配置可能覆盖 noteColors / baseNoteColors, 先把记忆化的轨道色差丢掉。
+		clearLaneColorSwapCache();
 		#if sys
 		var path:String = Paths.json('extraKeys/extraKeys');
 		#if MODS_ALLOWED

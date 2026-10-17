@@ -484,6 +484,7 @@ class Song
 		lastChartReloadFolder = folder;
 		++lastChartToken;
 		Reflect.setField(chart, '__seiunToken', lastChartToken);
+		setReloadRecipe(chart, jsonInput, folder);
 
 
 		// convert()'s re-encoding rule is the chart-level mania (not the per-note Change Mania);
@@ -582,6 +583,7 @@ class Song
 			lastChartReloadFolder = folder;
 			++lastChartToken;
 			Reflect.setField(songJson, '__seiunToken', lastChartToken);
+			setReloadRecipe(songJson, jsonInput, folder);
 		}
 		return songJson;
 	}
@@ -726,8 +728,43 @@ class Song
 	public static function stripRuntimeFields(songObj:Dynamic):Void
 	{
 		if (songObj == null) return;
-		for (field in ['__seiunToken', '__seiunStream'])
+		for (field in ['__seiunToken', '__seiunStream', '__seiunReload', '__seiunDomReleased'])
 			if (Reflect.hasField(songObj, field)) Reflect.deleteField(songObj, field);
+	}
+
+	// ── 大谱面 per-note DOM 释放 / 重载 ─────────────────────────────────────
+	// generateSong() 建完 Note 列表后, notes[].sectionNotes 这份 JSON DOM 对引擎就没用了
+	// (运行时只读 section 级的 bpm / mustHitSection / altAnim / gfSection 等标量)。
+	// 但非流式路径一直把它留到整首歌结束: 百万 note 的谱面就是几百万个 Array<Dynamic> +
+	// 装箱数字常驻堆里, 每一次 GC 标记都要走一遍这堆小对象 —— 那是"一次长卡顿"的主要来源,
+	// 同时多占上百 MB RSS。流式路径 ([PlayState] 的 section.sectionNotes = []) 早就这样做。
+	// 释放必须可逆: 重开一局会复用内存里的同一个 SONG, 所以在对象上留下一份"从哪读回来"的配方。
+
+	public static function setReloadRecipe(songObj:Dynamic, jsonInput:String, folder:String):Void
+	{
+		if (songObj == null) return;
+		Reflect.setField(songObj, '__seiunReload', {json: jsonInput, folder: folder});
+	}
+
+	/** 这份谱面的 per-note DOM 是否已被 generateSong() 释放。 */
+	public static function isDomReleased(songObj:Dynamic):Bool
+		return songObj != null && Reflect.field(songObj, '__seiunDomReleased') == true;
+
+	public static function markDomReleased(songObj:Dynamic):Void
+	{
+		if (songObj == null) return;
+		Reflect.setField(songObj, '__seiunDomReleased', true);
+	}
+
+	/** 按配方把谱面重新读盘 (重开一局用)。没有配方或读失败返回 null, 调用方保留原对象。 */
+	public static function reloadReleasedDom(songObj:Dynamic):SwagSong
+	{
+		if (songObj == null) return null;
+		var recipe:Dynamic = Reflect.field(songObj, '__seiunReload');
+		if (recipe == null) return null;
+		var json:String = Reflect.field(recipe, 'json');
+		if (json == null || json == 'events') return null;
+		return loadFromJson(json, Reflect.field(recipe, 'folder'));
 	}
 
 	public static function castVersion(songJson:SwagSong):SwagSong // Convert psych_v1 format to old format
