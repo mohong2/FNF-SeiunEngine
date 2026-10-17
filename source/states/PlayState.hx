@@ -4654,6 +4654,7 @@ class PlayState extends MusicBeatState
 					noteType = NoteTypeRegistry.fromIndex(Std.int(noteTypeDyn));
 				else
 				{
+					noteType = cast noteTypeDyn;
 					// Intern the string and write it back to the DOM: strings are immutable, so
 					// this only removes duplicate objects. The streaming path has no DOM.
 					var interned:String = typeIntern.get(noteType);

@@ -173,6 +173,14 @@ class NoteSplashData
     public var wasHit:Bool = false;
     public var noteSplashDisabled:Bool = false;
     public var hitsoundDisabled:Bool = false;
+
+    /**
+     * 0.6.3 兼容: setPropertyFromGroup('unspawnNotes', i, 'visible', false)。
+     * 原版 unspawnNotes 是 Array<Note> (FlxSprite), 大量模组用 visible 隐藏自定义/假音符;
+     * 列式存储的行对象必须有这个字段, Reflect 写入才不会抛 Invalid field:visible。
+     * 默认 true; 只有 Lua/HScript 显式写过 false 的行 (parked DTO) 会在 setupNoteData 时生效。
+     */
+    public var visible:Bool = true;
 }
 
 /**
@@ -1489,6 +1497,9 @@ class Note extends FlxSprite implements NoteSplashOwner {
         copyY = true;
         copyAngle = true;
         copyAlpha = true;
+        // 0.6.3 兼容: 脚本对 unspawnNotes 行写的 visible 在这里落到 Note 上
+        // (原版 unspawnNotes 是 Array<Note>, visible 直接就是 FlxSprite 的字段)。
+        visible = chartNoteData.visible;
         flipY = false;
         angle = 0;
         alpha = 1;
