@@ -261,6 +261,11 @@ class ChartStream
 
 	// ── byte-level note parsing ─────────────────────────────────────────────
 
+	/** Stray tokens skipped by the last parseSectionNotes() call (see its comment); for diagnostics. */
+	public static var lastStrayTokens:Int = 0;
+	/** Bytes those stray tokens occupied in the last parseSectionNotes() call. */
+	public static var lastStrayBytes:Int = 0;
+
 	/**
 	 * Parses the raw bytes of a sectionNotes value (a JSON array) into notes without
 	 * building a DOM. Handles numbers, strings and null/true/false; anything else
@@ -269,6 +274,8 @@ class ChartStream
 	public static function parseSectionNotes(b:Bytes, off:Int, len:Int):Array<ChartRawNote>
 	{
 		var out:Array<ChartRawNote> = [];
+		var strayTokens:Int = 0;
+		var strayBytes:Int = 0;
 		var p:Int = off;
 		var end:Int = off + len;
 		p = noteWs(b, p, end);
@@ -281,7 +288,21 @@ class ChartStream
 			if (p >= end) throw new haxe.Exception('ChartStream: unterminated sectionNotes at byte ' + p);
 			var c:Int = b.get(p);
 			if (c == 93) { p++; break; }
-			if (c != 91) throw new haxe.Exception('ChartStream: expected note array at byte ' + p);
+			if (c != 91)
+			{
+				//json格式都能错，你写啥谱面啊？
+				var skipped:Int = 0;
+				while (p < end && b.get(p) != 91 && b.get(p) != 93)
+				{
+					p++;
+					skipped++;
+				}
+				if (p >= end) throw new haxe.Exception('ChartStream: unterminated sectionNotes at byte ' + p);
+				if (b.get(p) == 93) { p++; break; }
+				strayTokens++;
+				strayBytes += skipped;
+				c = 91;
+			}
 			p++;
 			var n:ChartRawNote = new ChartRawNote();
 			while (true)
@@ -331,6 +352,11 @@ class ChartStream
 			out.push(n);
 			p = noteWs(b, p, end);
 			if (p < end && b.get(p) == 44) p++;
+		}
+		if (strayTokens > 0)
+		{
+			lastStrayTokens = strayTokens;
+			lastStrayBytes = strayBytes;
 		}
 		return out;
 	}
