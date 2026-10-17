@@ -640,6 +640,12 @@ class PlayState extends MusicBeatState
 	/** 侧边 HUD 在 perfMode 下的最低重写间隔 (毫秒), 见 updateSideHud()。 */
 	private var _sideHudTicks:Float = -1e9;
 
+	// ── Hit-presentation queue (see flushHitPresentation) ────────────────────────────────
+	/** Earliest tick (FlxG.game.ticks) at which the next rebuild of each kind may run. */
+	private var _nextPopupTicks:Float = -1e9;
+	private var _nextMsTicks:Float = -1e9;
+	private var _nextScoreTicks:Float = -1e9;
+
 	/**
 	 * 侧边 HUD 的八个标签都是"语言前缀 + 计数", 原实现每帧重算。FlxText 内部有内容相等守卫, 字形不会
 	 * 重绘, 但 8 次拼接每帧照样产生 8 个字符串。
@@ -1717,6 +1723,9 @@ class PlayState extends MusicBeatState
 		scoreTxt.setFormat(Paths.languageFont(), 20, FlxColor.WHITE, CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 		scoreTxt.scrollFactor.set();
 		scoreTxt.borderSize = 2;
+		// Rebuilt on every note hit; 1x rasterization keeps that rebuild inside a 360 fps frame
+		// (the bitmap cost grows with the square of the window/mobile scale, see FlxText.renderScaleCap).
+		scoreTxt.renderScaleCap = 1;
 		scoreTxt.visible = !ClientPrefs.data.hideHud;
 		if (CompatEngine.isModern())
 			uiGroup.add(scoreTxt);
@@ -2207,6 +2216,14 @@ class PlayState extends MusicBeatState
 			miss.font = Paths.languageFont();
 			miss.borderSize = 2;
 			add(miss);
+
+			// The stat counters are rewritten whenever a judgement lands (i.e. on the hit frame);
+			// keep their rasterization at 1x like the score line for the same reason.
+			for (hudText in [tnh, cm, marv, sick, good, bad, shit, miss])
+			{
+				if (hudText == null) continue;
+				hudText.renderScaleCap = 1;
+			}
 			}
 
 
@@ -2217,6 +2234,8 @@ class PlayState extends MusicBeatState
 		msTxtKade.visible = !ClientPrefs.data.hideHud;
 		msTxtKade.setFormat(19, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 		msTxtKade.borderSize = 2;
+		// Rebuilt on every note hit, same reasoning as scoreTxt.renderScaleCap.
+		msTxtKade.renderScaleCap = 1;
 		msTxtKade.font = Paths.font("kadems.ttf");
 		add(msTxtKade);
 
@@ -3529,32 +3548,44 @@ class PlayState extends MusicBeatState
 			if (preResult == LuaUtils.Function_Stop || preResult == FunkinLua.Function_Stop)
 				return;
 
-			// Botplay: a hit only marks the line dirty (the readout is a per-frame counter, and
-			// flushHitPresentation() rebuilds it at frame end). Outside botplay the per-hit rebuild
-			// is the original behaviour and stays exactly as it was.
-			if (cpuControlled)
-				_scoreTextDirty = true;
-			else
+			// Same deferred rebuild as the no-script path below: with scripts loaded (most modded
+			// charts) the old code rebuilt the line inline on every hit, which kept the hitch.
+			_scoreTextDirty = true;
+			if (!miss && ClientPrefs.data.scoreZoom && !cpuControlled)
+				_scoreZoomDirty = true;
+			if (ClientPrefs.data.stockHudTextRewrite)
+			{
+				_scoreTextDirty = false;
 				applyScoreText();
-			if(ClientPrefs.data.scoreZoom && !miss && !cpuControlled)
-				bounceScoreTxt();
+				if (_scoreZoomDirty)
+				{
+					_scoreZoomDirty = false;
+					bounceScoreTxt();
+				}
+			}
 			callOnScripts('onUpdateScore', Scripts.fill1(Scripts.get(1), miss));
 			return;
 		}
 
-		if (!ClientPrefs.data.perfMode)
-		{
-			if (cpuControlled)
-				_scoreTextDirty = true;
-			else
-				applyScoreText();
-			if(ClientPrefs.data.scoreZoom && !miss && !cpuControlled)
-				bounceScoreTxt();
-			return;
-		}
+		// Manual play: only mark the line dirty. flushHitPresentation() rebuilds it on a later
+		// frame, one HUD rebuild per frame at most (see the queue there): a single 1280px outlined
+		// text regen costs ~0.7 ms even at 1x rasterization and a 360 fps frame budget is 2.78 ms,
+		// so rebuilding it inline on the hit frame is exactly the hitch this defers.
+		// stockHudTextRewrite keeps the old immediate rebuild: that pref exists for scripts that
+		// read/rewrite scoreTxt and expect the hit frame to already show the new value.
 		_scoreTextDirty = true;
 		if (!miss && ClientPrefs.data.scoreZoom && !cpuControlled)
 			_scoreZoomDirty = true;
+		if (ClientPrefs.data.stockHudTextRewrite)
+		{
+			_scoreTextDirty = false;
+			applyScoreText();
+			if (_scoreZoomDirty)
+			{
+				_scoreZoomDirty = false;
+				bounceScoreTxt();
+			}
+		}
 	}
 
 	/** Builds the score HUD text (the pure part of updateScore). */
@@ -3841,22 +3872,40 @@ class PlayState extends MusicBeatState
 	//何意味
 
 
+	/**
+	 * One hit-presentation rebuild per frame, highest-feedback first.
+	 *
+	 * Every entry here re-rasterizes an outlined FlxText (a 1280px score line costs ~0.7 ms at 1x
+	 * rasterization, the small ms readout ~0.4 ms) or rebuilds the popup sprites, and a 360 fps
+	 * frame only has 2.78 ms in total. Running all of them on the hit frame made that frame miss
+	 * its deadline, which an external frame-rate overlay sees as "360 -> 340 fps". Deferring all
+	 * but one to the following frames keeps every frame inside the budget; each deferred rebuild
+	 * is one frame (~3 ms) late, which is not perceivable.
+	 *
+	 * PRESENT_MIN_MS also bounds the cost at very high note densities: the pending flags coalesce,
+	 * so a 500 NPS chart costs the same per frame as a 30 NPS one.
+	 */
+	static inline var PRESENT_MIN_MS:Float = 33;
+
 	function flushHitPresentation():Void
 	{
-		if (_scoreTextDirty)
+		var ticks:Float = FlxG.game.ticks;
+
+		// 1) judgement popup: gameplay feedback, keeps the frame the judgement happened on.
+		if (_popupPending && ticks >= _nextPopupTicks)
 		{
-			_scoreTextDirty = false;
-			applyScoreText();
-			if (_scoreZoomDirty)
-			{
-				_scoreZoomDirty = false;
-				bounceScoreTxt();
-			}
+			_popupPending = false;
+			_nextPopupTicks = ticks + PRESENT_MIN_MS;
+			showComboNum = (combo >= 10);
+			showRatingPopup(ratingPopup, _pendingRatingImage, combo, FlxG.width * 0.35, showRating, showComboNum);
+			return;
 		}
 
-		if (_msTextDirty)
+		// 2) ms readout: smaller text, still direct feedback.
+		if (_msTextDirty && ticks >= _nextMsTicks)
 		{
 			_msTextDirty = false;
+			_nextMsTicks = ticks + PRESENT_MIN_MS;
 			msTxtKade.color = _pendingMsColor;
 			msTxtKade.text = _pendingMsText;
 			msTxtKade.alpha = 1;
@@ -3865,13 +3914,20 @@ class PlayState extends MusicBeatState
 			msScaleTween = FlxTween.tween(msTxtKade.scale, {x: 1, y: 1}, 0.15, {ease: FlxEase.backOut});
 			if (msTween != null) msTween.cancel();
 			msTween = FlxTween.tween(msTxtKade, {alpha: 0}, 0.5, {ease: FlxEase.quintIn});
+			return;
 		}
 
-		if (_popupPending)
+		// 3) score / accuracy line: the most expensive rebuild and the least time-critical one.
+		if (_scoreTextDirty && ticks >= _nextScoreTicks)
 		{
-			_popupPending = false;
-			showComboNum = (combo >= 10);
-			showRatingPopup(ratingPopup, _pendingRatingImage, combo, FlxG.width * 0.35, showRating, showComboNum);
+			_scoreTextDirty = false;
+			_nextScoreTicks = ticks + PRESENT_MIN_MS;
+			applyScoreText();
+			if (_scoreZoomDirty)
+			{
+				_scoreZoomDirty = false;
+				bounceScoreTxt();
+			}
 		}
 	}
 
@@ -7142,17 +7198,10 @@ class PlayState extends MusicBeatState
 			RecalculateRating(false);
 		}
 
-		if (_popupImmediateBudget > 0)
-		{
-			_popupImmediateBudget--;
-			showComboNum = (combo >= 10);
-			showRatingPopup(ratingPopup, daRating.image, combo, FlxG.width * 0.35, showRating, showComboNum);
-		}
-		else
-		{
-			_popupPending = true;
-			_pendingRatingImage = daRating.image;
-		}
+		// Always go through the presentation queue: at most one popup rebuild per frame, so the
+		// hit frame never carries both the popup and a HUD text regen (see flushHitPresentation).
+		_popupPending = true;
+		_pendingRatingImage = daRating.image;
 	}
 
 	public var strumsBlocked:Array<Bool> = [];
@@ -9867,11 +9916,11 @@ if (!cpuControlled) {
 	var rOffset:Float = ClientPrefs.data.ratingOffset;
 	var diff:Float = (recordedJ != null) ? recordedJ.hitDiff : (strumTime - songPos + rOffset);
 
-	// ms text merged per frame: only the last hit difference of the frame is kept,
-	// and flushHitPresentation() rebuilds the text and its tween pair once at frame end.
-	// The original set the text (rebuilding the whole glyph mesh) and allocated two tweens per hit.
-	// With perfMode off the stock per-hit direct text write and tween are kept, without merging.
-	if (!ClientPrefs.data.perfMode)
+	// ms text merged per frame: only the last hit difference of the frame is kept, and
+	// flushHitPresentation() rebuilds the text and its tween pair once at frame end. The original
+	// set the text (rebuilding the whole glyph bitmap) and allocated two tweens on every hit.
+	// stockHudTextRewrite keeps the old per-hit direct write for script compatibility.
+	if (ClientPrefs.data.stockHudTextRewrite)
 	{
 		if (rating == 'marvelous') msTxtKade.color = 0xFFFFD700;
 		else if (rating == 'sick') msTxtKade.color = 0x00FFFF;

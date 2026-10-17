@@ -224,7 +224,12 @@ class NoteSplash extends FlxSprite
 			colorSwap.hue = hueColor;
 			colorSwap.saturation = satColor;
 			colorSwap.brightness = brtColor;
-			shader = colorSwap.shader;
+			// A neutral ColorSwap is an identity transform. Attaching its shader anyway forces every
+			// live splash into its own GL draw call (flixel can only batch sprites that share the
+			// *same* shader object), so with several splashes alive a hit adds a handful of extra
+			// draw calls and program switches per frame - the splash's own little GPU spike. Null
+			// keeps neutral splashes batched. Same trick as Note.refreshSwapShader().
+			shader = colorSwap.isNeutral() ? null : colorSwap.shader;
 		}
 
 		// 0.7.3/1.0.4: noteSplashData.a / .antialiasing 覆盖。它们的默认值就等于本引擎

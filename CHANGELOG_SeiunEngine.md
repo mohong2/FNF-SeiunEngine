@@ -970,6 +970,61 @@ Bundled regression harness (temp/touch-fix-test/TouchFixTest.hx): replicates the
 
 ---
 
+### October 17, 2026 (0.2.2 Pre-Online.3)
+
+> Player-visible goal: the frame-time spike that happens on the frame a note is actually hit.
+
+#### Root cause (measured, not guessed)
+
+A hit frame rebuilt several outlined `FlxText` bitmaps at once. Flixel runs `FlxText.regenGraphic()`
+inside `draw()`, so none of that cost shows up in the hit handler; every `borderStyle = OUTLINE` text is
+rasterized `1 + 8 * int(borderSize * borderQuality)` times per rebuild (17 passes for the HUD's
+`borderSize = 2`), and the bitmap area scales with the **square** of the window/mobile rasterization
+scale - on a 1921x1081 borderless window that is a ~1920x45 texture per pass.
+
+Measured with a temporary in-engine probe (release build, `stress-hard` autoplayed at 6 NPS, per hit):
+score line regen ~1692 us, ms readout ~389 us, side-HUD counters ~258 us, rating popup ~450 us, hit core
+~120 us - about **3.1 ms of work landing on one frame**, while a 360 fps frame budget is 2.78 ms. Every
+hit frame therefore missed its deadline (idle frame 2.74 ms -> hit frame 5.79 ms, 6 frames over 6 ms per
+second); an external overlay reads that as "360 -> 340 fps" even though the 1 s average FPS barely moves.
+
+#### Fixes
+
+- **HUD text rasterization cap** (`FlxText.renderScaleCap`, flixel fork): the score line, the ms readout
+  and the side-HUD counters are rebuilt on every judgement, so they now rasterize at 1x instead of
+  1.5x / 2x / 3x. That is the resolution the rest of the 1280x720 world is drawn at, and the cost is
+  quadratic in the scale: the score regen alone drops 1692 us -> 604 us (2.8x) at 1.5x, ~9x on a 3x
+  mobile scale. It is a per-text knob, so a mod can opt back into crisp HUD text.
+- **Hit-presentation queue**: score line, ms readout and judgement popup are now separate one-per-frame
+  tasks (priority popup -> ms -> score, at most one rebuild per frame, 33 ms minimum per kind). A hit
+  frame no longer carries all of them; each deferred rebuild is one frame (~3 ms) late, which is not
+  perceivable, and the pending flags coalesce, so a 500 NPS chart costs no more per frame than a 30 NPS
+  one. Manual play and scripted (modded) charts both use it; `stockHudTextRewrite` restores the old
+  immediate rebuild for scripts that read the HUD text inside the hit frame.
+- **Batched note splashes**: a neutral `ColorSwap` no longer attaches its shader, so simultaneous
+  splashes batch into fewer draw calls instead of costing one shader-bearing draw call each (the same
+  trick `Note.refreshSwapShader()` already used).
+
+#### Measured result (same machine, release build, 1921x1081, 360 fps cap, `stress-hard`, 6 NPS)
+
+| metric | before | after |
+| --- | --- | --- |
+| per-hit extra work (uncapped frame-time delta) | 3.15 ms | 0.68 ms |
+| hit frame duration | 5.79 ms | 3.52 ms |
+| frames over 6 ms per second | 6 | 0 |
+| average FPS | 357.8 | 359.9 - 360.0 |
+| score line regen | 1692 us | 604 us |
+| ms readout regen | 389 us | 327 us |
+
+At a 120 fps cap (mobile-class frame budget) the hit frame is 9.10 ms against an 8.30 ms idle frame and
+the cap holds 120.00 fps. The probe was compile-time only and has been removed from the sources.
+⚠ The `FlxText.renderScaleCap` patch lives in the `flixel` fork and must be upstreamed to
+`mohong2/flixel`, otherwise CI re-clones the dependency without it.
+
+(2026-10-17, changelog written by AI as usual.)
+
+---
+
 ### Acknowledgments
 
 A huge thank you to all testers — your feedback has been invaluable in shaping SeiunEngine into what it is today.
