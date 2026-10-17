@@ -145,9 +145,9 @@ class Allscore
 	}
 
 	public static function addEntry(songName:String, difficulty:Int,
-		rating:Float = -1, ratingFC:String = "", ratingName:String = "", score:Int = 0,
-		marvelouses:Int = -1, sicks:Int = -1, goods:Int = -1, bads:Int = -1, shits:Int = -1,
-		misses:Int = -1, maxCombo:Int = -1,
+		rating:Float = -1, ratingFC:String = "", ratingName:String = "", score:haxe.Int64 = 0,
+		marvelouses:haxe.Int64 = -1, sicks:haxe.Int64 = -1, goods:haxe.Int64 = -1, bads:haxe.Int64 = -1, shits:haxe.Int64 = -1,
+		misses:haxe.Int64 = -1, maxCombo:haxe.Int64 = -1,
 		replayData:Array<Dynamic> = null,
 		details:Array<Dynamic> = null,
 		?date:String,
@@ -317,17 +317,17 @@ class Allscore
 			difficultyName: entry.difficultyName,
 			folder: entry.folder,
 			date: entry.date,
-			score: entry.score,
+			score: Int64Util.toSaveString(entry.score),
 			ratingPercent: entry.ratingPercent,
 			ratingName: entry.ratingName,
 			ratingFC: entry.ratingFC,
-			marvelouses: entry.marvelouses,
-			sicks: entry.sicks,
-			goods: entry.goods,
-			bads: entry.bads,
-			shits: entry.shits,
-			misses: entry.misses,
-			maxCombo: entry.maxCombo,
+			marvelouses: entry.marvelouses != null ? Int64Util.toSaveString(entry.marvelouses) : null,
+			sicks: Int64Util.toSaveString(entry.sicks),
+			goods: Int64Util.toSaveString(entry.goods),
+			bads: Int64Util.toSaveString(entry.bads),
+			shits: Int64Util.toSaveString(entry.shits),
+			misses: Int64Util.toSaveString(entry.misses),
+			maxCombo: Int64Util.toSaveString(entry.maxCombo),
 			songSpeed: entry.songSpeed,
 			playbackRate: entry.playbackRate,
 			songSpeedType: entry.songSpeedType,
@@ -429,14 +429,14 @@ class Allscore
 			ratingPercent: ratingPercent,
 			ratingFC: data.ratingFC != null ? Std.string(data.ratingFC) : '',
 			ratingName: data.ratingName != null ? Std.string(data.ratingName) : '',
-			score: data.score != null ? Std.parseInt(Std.string(data.score)) : 0,
-			marvelouses: data.marvelouses != null ? Std.parseInt(Std.string(data.marvelouses)) : null,
-			sicks: data.sicks != null ? Std.parseInt(Std.string(data.sicks)) : 0,
-			goods: data.goods != null ? Std.parseInt(Std.string(data.goods)) : 0,
-			bads: data.bads != null ? Std.parseInt(Std.string(data.bads)) : 0,
-			shits: data.shits != null ? Std.parseInt(Std.string(data.shits)) : 0,
-			misses: data.misses != null ? Std.parseInt(Std.string(data.misses)) : 0,
-			maxCombo: data.maxCombo != null ? Std.parseInt(Std.string(data.maxCombo)) : 0,
+			score: Int64Util.fromJson(data.score),
+			marvelouses: data.marvelouses != null ? Int64Util.fromJson(data.marvelouses) : null,
+			sicks: Int64Util.fromJson(data.sicks),
+			goods: Int64Util.fromJson(data.goods),
+			bads: Int64Util.fromJson(data.bads),
+			shits: Int64Util.fromJson(data.shits),
+			misses: Int64Util.fromJson(data.misses),
+			maxCombo: Int64Util.fromJson(data.maxCombo),
 			replayData: data.replayData,
 			details: details,
 			songSpeed: songSpeed,
@@ -474,17 +474,17 @@ typedef ScoreEntry = {
 	@:optional var difficultyName:String;
 	@:optional var folder:String;
 	var date:String;
-	var score:Int;
+	var score:haxe.Int64;
 	var ratingPercent:Float;
 	var ratingName:String;
 	var ratingFC:String;
-	@:optional var marvelouses:Int;
-	var sicks:Int;
-	var goods:Int;
-	var bads:Int;
-	var shits:Int;
-	var misses:Int;
-	var maxCombo:Int;
+	@:optional var marvelouses:haxe.Int64;
+	var sicks:haxe.Int64;
+	var goods:haxe.Int64;
+	var bads:haxe.Int64;
+	var shits:haxe.Int64;
+	var misses:haxe.Int64;
+	var maxCombo:haxe.Int64;
 	@:optional var replayData:Array<Dynamic>;
 	@:optional var details:Array<Dynamic>;
 	var songSpeed:Float;

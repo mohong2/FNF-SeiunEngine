@@ -73,8 +73,8 @@ class ScoreHistorySubstate extends MusicBeatSubstate
 	var isEmpty:Bool = false;
 	var emptyMsg:FlxText;
 
-	var displayedScore:Int = 0;
-	var targetScore:Int = 0;
+	var displayedScore:Float = 0;
+	var targetScore:haxe.Int64 = 0;
 	var displayedAccuracy:Float = 0;
 	var targetAccuracy:Float = 0;
 	var scoreText:FlxText;
@@ -233,7 +233,7 @@ class ScoreHistorySubstate extends MusicBeatSubstate
 	{
 		if (entry == null) return "FALSE";
 
-		var totalNotes:Float = entry.sicks + entry.goods + entry.bads + entry.shits + entry.misses;
+		var totalNotes:haxe.Int64 = entry.sicks + entry.goods + entry.bads + entry.shits + entry.misses;
 
 		if (totalNotes <= 0)
 			return "FALSE";
@@ -932,7 +932,7 @@ class ScoreHistorySubstate extends MusicBeatSubstate
 				songScore: entry.score,
 				ratingPercent: entry.ratingPercent,
 				ratingFC: entry.ratingFC,
-				songHits: details != null && details.length > 3 ? details[3] : 0,
+				songHits: details != null && details.length > 3 ? Int64Util.fromJson(details[3]) : 0,
 				highestCombo: entry.maxCombo,
 				songMisses: entry.misses,
 				sicks: entry.sicks,
@@ -1029,16 +1029,17 @@ class ScoreHistorySubstate extends MusicBeatSubstate
 
 		if (scoreText != null && accuracyText != null && !isEmpty)
 		{
-			if (Math.abs(displayedScore - targetScore) > 10)
-			{
-				displayedScore = Math.floor(FlxMath.lerp(displayedScore, targetScore, CoolUtil.boundTo(elapsed * 24, 0, 1)));
-				scoreText.text = Std.string(displayedScore);
-			}
-			else if (displayedScore != targetScore)
-			{
-				displayedScore = targetScore;
-				scoreText.text = Std.string(displayedScore);
-			}
+			var targetScoreF:Float = Int64Util.toFloat(targetScore);
+		if (Math.abs(displayedScore - targetScoreF) > 10)
+		{
+		displayedScore = Math.floor(FlxMath.lerp(displayedScore, targetScoreF, CoolUtil.boundTo(elapsed * 24, 0, 1)));
+		scoreText.text = haxe.Int64.toStr(haxe.Int64.fromFloat(Math.floor(displayedScore)));
+		}
+		else if (displayedScore != targetScoreF)
+		{
+		displayedScore = targetScoreF;
+		scoreText.text = haxe.Int64.toStr(haxe.Int64.fromFloat(Math.floor(displayedScore)));
+		}
 
 			if (Math.abs(displayedAccuracy - targetAccuracy) > 0.01)
 			{
@@ -1051,8 +1052,10 @@ class ScoreHistorySubstate extends MusicBeatSubstate
 				accuracyText.text = Highscore.floorDecimal(displayedAccuracy, 2) + '%';
 			}
 
-			if (!scoreAnimCompleted && displayedScore == targetScore && Math.abs(displayedAccuracy - targetAccuracy) <= 0.01)
+			if (!scoreAnimCompleted && displayedScore == Int64Util.toFloat(targetScore) && Math.abs(displayedAccuracy - targetAccuracy) <= 0.01)
 			{
+			if (scoreText != null)
+				scoreText.text = haxe.Int64.toStr(targetScore);
 				scoreAnimCompleted = true;
 				if (curSelected >= 0 && curSelected < entries.length)
 					showRatingIcon(entries[curSelected]);

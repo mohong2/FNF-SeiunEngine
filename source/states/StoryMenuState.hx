@@ -360,8 +360,11 @@ class StoryMenuState extends SeiunMenuState
 
 		updateArrowVisibility();
 		// scoreText.setFormat('VCR OSD Mono', 32);
-		lerpScore = Math.floor(FlxMath.lerp(lerpScore, intendedScore, CoolUtil.boundTo(elapsed * 30, 0, 1)));
-		if(Math.abs(intendedScore - lerpScore) < 10) lerpScore = intendedScore;
+		var targetScoreF:Float = Int64Util.toFloat(intendedScore);
+		var currentScoreF:Float = Int64Util.toFloat(lerpScore);
+		currentScoreF = Math.floor(FlxMath.lerp(currentScoreF, targetScoreF, CoolUtil.boundTo(elapsed * 30, 0, 1)));
+		if(Math.abs(targetScoreF - currentScoreF) < 10) currentScoreF = targetScoreF;
+		lerpScore = haxe.Int64.fromFloat(currentScoreF);
 
 		scoreText.text = "WEEK SCORE:" + lerpScore;
 
@@ -557,8 +560,8 @@ class StoryMenuState extends SeiunMenuState
 		#end
 	}
 
-	var lerpScore:Int = 0;
-	var intendedScore:Int = 0;
+	var lerpScore:haxe.Int64 = 0;
+	var intendedScore:haxe.Int64 = 0;
 
 	function changeWeek(change:Int = 0):Void
 	{

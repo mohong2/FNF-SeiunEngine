@@ -46,16 +46,16 @@ typedef StateRecord = {
 	var cpuControlled:Bool;
 	var practiceMode:Bool;
 	var instakillOnMiss:Bool;
-	var songScore:Int;
+	var songScore:haxe.Int64;
 	var ratingPercent:Float;
 	var ratingFC:String;
-	var songHits:Int;
-	var highestCombo:Int;
-	var songMisses:Int;
-	var sicks:Int;
-	var goods:Int;
-	var bads:Int;
-	var shits:Int;
+	var songHits:haxe.Int64;
+	var highestCombo:haxe.Int64;
+	var songMisses:haxe.Int64;
+	var sicks:haxe.Int64;
+	var goods:haxe.Int64;
+	var bads:haxe.Int64;
+	var shits:haxe.Int64;
 	var noteTime:Array<Float>;
 	var noteMs:Array<Float>;
 	var songSpeedType:String;
@@ -869,9 +869,21 @@ class Replay extends FlxBasic
 	public static function saveToFile(frames:Array<FrameSave>, stateRecord:StateRecord, path:String):Void
 	{
 		#if sys
+		// Int64 must not be handed to haxe.Json: it serializes as an object. Keep the in-memory
+		// StateRecord typed as Int64 and write the counters as exact decimal strings instead.
+		var stateJson:Dynamic = Reflect.copy(stateRecord);
+		Reflect.setField(stateJson, 'songScore', Int64Util.toSaveString(stateRecord.songScore));
+		Reflect.setField(stateJson, 'songHits', Int64Util.toSaveString(stateRecord.songHits));
+		Reflect.setField(stateJson, 'highestCombo', Int64Util.toSaveString(stateRecord.highestCombo));
+		Reflect.setField(stateJson, 'songMisses', Int64Util.toSaveString(stateRecord.songMisses));
+		Reflect.setField(stateJson, 'sicks', Int64Util.toSaveString(stateRecord.sicks));
+		Reflect.setField(stateJson, 'goods', Int64Util.toSaveString(stateRecord.goods));
+		Reflect.setField(stateJson, 'bads', Int64Util.toSaveString(stateRecord.bads));
+		Reflect.setField(stateJson, 'shits', Int64Util.toSaveString(stateRecord.shits));
+
 		var data:Dynamic = {
-			stateRecord: stateRecord,
-			frameRecord: frames
+		stateRecord: stateJson,
+		frameRecord: frames
 		};
 		var json:String = Json.stringify(data, "\t");
 		File.saveContent(path, json);

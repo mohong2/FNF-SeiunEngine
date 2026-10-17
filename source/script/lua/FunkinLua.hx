@@ -2350,44 +2350,44 @@ class FunkinLua {
 		});*/
 
 		//stupid bietch ass functions
-		Lua_helper.add_callback(lua, "addScore", function(value:Int = 0) {
+		Lua_helper.add_callback(lua, "addScore", function(value:Float = 0) {
 			if (PlayState.instance == null) return;
-			PlayState.instance.songScore += value;
+			PlayState.instance.songScore += Int64Util.fromDynamic(value);
 			PlayState.instance.RecalculateRating();
 		});
-		Lua_helper.add_callback(lua, "addMisses", function(value:Int = 0) {
+		Lua_helper.add_callback(lua, "addMisses", function(value:Float = 0) {
 			if (PlayState.instance == null) return;
-			PlayState.instance.songMisses += value;
+			PlayState.instance.songMisses += Int64Util.fromDynamic(value);
 			PlayState.instance.RecalculateRating();
 		});
-		Lua_helper.add_callback(lua, "addHits", function(value:Int = 0) {
+		Lua_helper.add_callback(lua, "addHits", function(value:Float = 0) {
 			if (PlayState.instance == null) return;
-			PlayState.instance.songHits += value;
+			PlayState.instance.songHits += Int64Util.fromDynamic(value);
 			PlayState.instance.RecalculateRating();
 		});
-		Lua_helper.add_callback(lua, "setScore", function(value:Int = 0) {
+		Lua_helper.add_callback(lua, "setScore", function(value:Float = 0) {
 			if (PlayState.instance == null) return;
-			PlayState.instance.songScore = value;
+			PlayState.instance.songScore = Int64Util.fromDynamic(value);
 			PlayState.instance.RecalculateRating();
 		});
-		Lua_helper.add_callback(lua, "setMisses", function(value:Int = 0) {
+		Lua_helper.add_callback(lua, "setMisses", function(value:Float = 0) {
 			if (PlayState.instance == null) return;
-			PlayState.instance.songMisses = value;
+			PlayState.instance.songMisses = Int64Util.fromDynamic(value);
 			PlayState.instance.RecalculateRating();
 		});
-		Lua_helper.add_callback(lua, "setHits", function(value:Int = 0) {
+		Lua_helper.add_callback(lua, "setHits", function(value:Float = 0) {
 			if (PlayState.instance == null) return;
-			PlayState.instance.songHits = value;
+			PlayState.instance.songHits = Int64Util.fromDynamic(value);
 			PlayState.instance.RecalculateRating();
 		});
 		Lua_helper.add_callback(lua, "getScore", function() {
-			return (PlayState.instance != null) ? PlayState.instance.songScore : 0;
+			return (PlayState.instance != null) ? Int64Util.toFloat(PlayState.instance.songScore) : 0;
 		});
 		Lua_helper.add_callback(lua, "getMisses", function() {
-			return (PlayState.instance != null) ? PlayState.instance.songMisses : 0;
+			return (PlayState.instance != null) ? Int64Util.toFloat(PlayState.instance.songMisses) : 0;
 		});
 		Lua_helper.add_callback(lua, "getHits", function() {
-			return (PlayState.instance != null) ? PlayState.instance.songHits : 0;
+			return (PlayState.instance != null) ? Int64Util.toFloat(PlayState.instance.songHits) : 0;
 		});
 
 		Lua_helper.add_callback(lua, "setHealth", function(?value:Null<Float> = null) {

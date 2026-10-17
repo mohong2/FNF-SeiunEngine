@@ -54,8 +54,8 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 	var replayBtn:FlxSprite;
 	var replayTxt:FlxText;
 
-	var displayedScore:Int = 0;
-	var targetScore:Int = 0;
+	var displayedScore:Float = 0;
+	var targetScore:haxe.Int64 = 0;
 	var displayedAccuracy:Float = 0;
 	var targetAccuracy:Float = 0;
 	var scoreAnimDone:Bool = false;
@@ -499,7 +499,7 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 				best = history[0];
 		}
 
-		function fmtDev(current:Int, bestVal:Int):String
+		function fmtDev(current:haxe.Int64, bestVal:haxe.Int64):String
 		{
 			if (best == null) return Std.string(current);
 			var diff = current - bestVal;
@@ -517,17 +517,17 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 		var items:Array<{label:String, value:String, color:FlxColor}> = [];
 
 		var hitsVal:Dynamic = det(3, game.songHits);
-		var missesVal:Int = (replayEntry != null) ? replayEntry.misses : game.songMisses;
+		var missesVal:haxe.Int64 = (replayEntry != null) ? replayEntry.misses : game.songMisses;
 		items.push({label: Language.get("ResultsScreen.hits", "Hits"), value: Std.string(hitsVal), color: FlxColor.WHITE});
 		items.push({label: Language.get("ResultsScreen.comboBreaks", "Combo Breaks"), value: Std.string(missesVal), color: FlxColor.fromRGB(255, 100, 100)});
 
 		items.push({label: "", value: "", color: FlxColor.WHITE});
 
-		var marvelVal:Int = (replayEntry != null && replayEntry.marvelouses != null) ? replayEntry.marvelouses : game.marvelouses;
-		var sickVal:Int = (replayEntry != null) ? replayEntry.sicks : game.sicks;
-		var goodVal:Int = (replayEntry != null) ? replayEntry.goods : game.goods;
-		var badVal:Int = (replayEntry != null) ? replayEntry.bads : game.bads;
-		var shitVal:Int = (replayEntry != null) ? replayEntry.shits : game.shits;
+		var marvelVal:haxe.Int64 = (replayEntry != null && replayEntry.marvelouses != null) ? replayEntry.marvelouses : game.marvelouses;
+		var sickVal:haxe.Int64 = (replayEntry != null) ? replayEntry.sicks : game.sicks;
+		var goodVal:haxe.Int64 = (replayEntry != null) ? replayEntry.goods : game.goods;
+		var badVal:haxe.Int64 = (replayEntry != null) ? replayEntry.bads : game.bads;
+		var shitVal:haxe.Int64 = (replayEntry != null) ? replayEntry.shits : game.shits;
 
 		if (ClientPrefs.data.marvelousRatings)
 			items.push({label: Language.get("ResultsScreen.marvelouses", "Marvelouses"), value: fmtDev(marvelVal, best != null ? (best.marvelouses != null ? best.marvelouses : 0) : 0), color: FlxColor.fromRGB(255, 215, 0)});
@@ -744,7 +744,7 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 		{
 			var liveAccPct:Float = normalizeAccuracy(game.ratingPercent);
 			var savedAccPct:Float = normalizeAccuracy(replayEntry.ratingPercent);
-			var scoreDiff:Int = game.songScore - replayEntry.score;
+			var scoreDiff:haxe.Int64 = game.songScore - replayEntry.score;
 			var accDiff:Float = liveAccPct - savedAccPct;
 			var scoreSign:String = (scoreDiff >= 0) ? "+" : "";
 			var accSign:String = (accDiff >= 0) ? "+" : "";
@@ -778,18 +778,18 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 
 	function buildHitBars(game:PlayState)
 	{
-		var counts:Array<Int> = [];
+		var counts:Array<haxe.Int64> = [];
 		var colors:Array<FlxColor> = [];
 		var labels:Array<String> = [];
 
 		// Marvelous is a first-class bucket when enabled, so the chart doesn't
 		// silently swallow the best judgement type.
-		var marvelVal:Int = (replayEntry != null && replayEntry.marvelouses != null) ? replayEntry.marvelouses : game.marvelouses;
-		var sickVal:Int = (replayEntry != null) ? replayEntry.sicks : game.sicks;
-		var goodVal:Int = (replayEntry != null) ? replayEntry.goods : game.goods;
-		var badVal:Int = (replayEntry != null) ? replayEntry.bads : game.bads;
-		var shitVal:Int = (replayEntry != null) ? replayEntry.shits : game.shits;
-		var missVal:Int = (replayEntry != null) ? replayEntry.misses : game.songMisses;
+		var marvelVal:haxe.Int64 = (replayEntry != null && replayEntry.marvelouses != null) ? replayEntry.marvelouses : game.marvelouses;
+		var sickVal:haxe.Int64 = (replayEntry != null) ? replayEntry.sicks : game.sicks;
+		var goodVal:haxe.Int64 = (replayEntry != null) ? replayEntry.goods : game.goods;
+		var badVal:haxe.Int64 = (replayEntry != null) ? replayEntry.bads : game.bads;
+		var shitVal:haxe.Int64 = (replayEntry != null) ? replayEntry.shits : game.shits;
+		var missVal:haxe.Int64 = (replayEntry != null) ? replayEntry.misses : game.songMisses;
 
 		if (ClientPrefs.data.marvelousRatings)
 		{
@@ -813,7 +813,7 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 		labels.push("shit");
 		labels.push("miss");
 
-		var totalNotes:Int = 0;
+		var totalNotes:haxe.Int64 = 0;
 		for (c in counts) totalNotes += c;
 		if (totalNotes <= 0) totalNotes = 1;
 
@@ -835,14 +835,14 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 			barBG.alpha = 0;
 			barBGGroup.add(barBG);
 
-			var w:Int = Math.ceil(barMaxW * (counts[i] / totalNotes));
+			var w:Int = Math.ceil(barMaxW * (Int64Util.toFloat(counts[i]) / Int64Util.toFloat(totalNotes)));
 			if (w < 2 && counts[i] > 0) w = 2;
 
 			var bar = new FlxSprite(barX, y).makeGraphic(w, barH, colors[i]);
 			bar.alpha = 0;
 			barGroup.add(bar);
 
-			var percent = Math.ceil(counts[i] / totalNotes * 10000) / 100;
+			var percent = Math.ceil(Int64Util.toFloat(counts[i]) / Int64Util.toFloat(totalNotes) * 10000) / 100;
 			var hitLabel = Language.get("ResultsScreen." + labels[i], labels[i].toUpperCase());
 			// One line per row, always. fieldWidth 0 is the engine's idiom for "never wrap"
 			// (set_fieldWidth(<= 0) -> wordWrap = false, autoSize = true, exactly the side HUD's rule):
@@ -865,13 +865,14 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 	}
 
 	/** 1.03B / 12.3M / 45.6K: keeps a legend row on one line when the raw count is too long. */
-	static function compactCount(v:Float):String
-	{
-		if (v >= 1e9) return CoolUtil.floorDecimal(v / 1e9, 2) + "B";
-		if (v >= 1e6) return CoolUtil.floorDecimal(v / 1e6, 1) + "M";
-		if (v >= 1e4) return CoolUtil.floorDecimal(v / 1e3, 1) + "K";
-		return Std.string(v);
-	}
+	static function compactCount(v:haxe.Int64):String
+{
+var f:Float = Int64Util.toFloat(v);
+if (f >= 1e9) return CoolUtil.floorDecimal(f / 1e9, 2) + "B";
+if (f >= 1e6) return CoolUtil.floorDecimal(f / 1e6, 1) + "M";
+if (f >= 1e4) return CoolUtil.floorDecimal(f / 1e3, 1) + "K";
+return Std.string(v);
+}
 
 	function barTween(sprite:FlxSprite, index:Int)
 	{
@@ -894,13 +895,13 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 		}
 	}
 
-	function getRatingIconName(ratingPercent:Float, ratingFC:String, marvelouses:Int, sicks:Int, goods:Int, bads:Int, shits:Int, misses:Int):String
+	function getRatingIconName(ratingPercent:Float, ratingFC:String, marvelouses:haxe.Int64, sicks:haxe.Int64, goods:haxe.Int64, bads:haxe.Int64, shits:haxe.Int64, misses:haxe.Int64):String
 	{
 		// Marvelous is a first-class bucket when the preset enables it, so it has to be part of the note
 		// total: with it missing, an all-marvelous run (Turbo botplay on a dense chart judges every hit as
 		// ratingsData[0]) has sicks/goods/bads/shits/misses all 0 -> totalNotes 0 -> the icon was the
 		// big FALSE placeholder instead of the rank the accuracy earned.
-		var totalNotes:Float = marvelouses + sicks + goods + bads + shits + misses;
+		var totalNotes:haxe.Int64 = marvelouses + sicks + goods + bads + shits + misses;
 		if (totalNotes <= 0) return "FALSE";
 		if (ratingPercent >= 1.0) return "phi";
 		if (ratingPercent >= 0.95 && misses == 0 && bads == 0 && shits == 0) return "fc v";
@@ -923,12 +924,12 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 		// [CRASH FIX] Guard against NaN ratingPercent; prefer original replay stats.
 		var safePercent:Float;
 		var ratingFC:String;
-		var marvelousCount:Int;
-		var sickCount:Int;
-		var goodCount:Int;
-		var badCount:Int;
-		var shitCount:Int;
-		var missCount:Int;
+		var marvelousCount:haxe.Int64;
+		var sickCount:haxe.Int64;
+		var goodCount:haxe.Int64;
+		var badCount:haxe.Int64;
+		var shitCount:haxe.Int64;
+		var missCount:haxe.Int64;
 		if (replayEntry != null)
 		{
 			safePercent = (Math.isNaN(replayEntry.ratingPercent) || replayEntry.ratingPercent < 0) ? 0 : replayEntry.ratingPercent;
@@ -1091,10 +1092,11 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 
 		if (!scoreAnimDone)
 		{
-			if (Math.abs(displayedScore - targetScore) > 10)
-				displayedScore = Math.floor(FlxMath.lerp(displayedScore, targetScore, CoolUtil.boundTo(elapsed * 28, 0, 1)));
-			else if (displayedScore != targetScore)
-				displayedScore = targetScore;
+		var targetScoreF:Float = Int64Util.toFloat(targetScore);
+			if (Math.abs(displayedScore - targetScoreF) > 10)
+			displayedScore = Math.floor(FlxMath.lerp(displayedScore, targetScoreF, CoolUtil.boundTo(elapsed * 28, 0, 1)));
+			else if (displayedScore != targetScoreF)
+			displayedScore = targetScoreF;
 
 			if (Math.abs(displayedAccuracy - targetAccuracy) > 0.01)
 				displayedAccuracy = FlxMath.lerp(displayedAccuracy, targetAccuracy, CoolUtil.boundTo(elapsed * 14, 0, 1));
@@ -1102,16 +1104,17 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 				displayedAccuracy = targetAccuracy;
 
 			if (scoreText != null)
-				scoreText.text = Std.string(displayedScore);
+				scoreText.text = haxe.Int64.toStr(haxe.Int64.fromFloat(Math.floor(displayedScore)));
 			if (accuracyText != null)
 			{
 				var accDisplay:Float = (targetAccuracy >= 99.99) ? 100 : displayedAccuracy;
 				accuracyText.text = Highscore.floorDecimal(accDisplay, 2) + "%";
 			}
 
-			if (displayedScore == targetScore && Math.abs(displayedAccuracy - targetAccuracy) <= 0.01)
+			if (displayedScore == Int64Util.toFloat(targetScore) && Math.abs(displayedAccuracy - targetAccuracy) <= 0.01)
 			{
 				scoreAnimDone = true;
+			if (scoreText != null) scoreText.text = haxe.Int64.toStr(targetScore);
 				showRatingIcon();
 			}
 		}
@@ -1346,7 +1349,7 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 							songScore: entry.score,
 							ratingPercent: entry.ratingPercent,
 							ratingFC: entry.ratingFC,
-							songHits: details != null && details.length > 3 ? details[3] : 0,
+							songHits: details != null && details.length > 3 ? Int64Util.fromJson(details[3]) : 0,
 							highestCombo: entry.maxCombo,
 							songMisses: entry.misses,
 							sicks: entry.sicks,

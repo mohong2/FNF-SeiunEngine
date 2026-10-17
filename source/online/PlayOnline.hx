@@ -263,7 +263,7 @@ class PlayOnline {
 
 			ps.setOnScripts('scoreOP', op.player.score);
 			ps.setOnScripts('missesOP', op.player.misses);
-			ps.setOnScripts('hitsOP', op.calcHits()); // may be inaccurate to hits
+			ps.setOnScripts('hitsOP', Int64Util.toFloat(op.calcHits())); // may be inaccurate to hits
 			ps.setOnScripts('comboOP', op.combo);
 
 			var ret:Dynamic = ps.callOnScripts('onRecalculateRatingPlayer', Scripts.fill1(Scripts.get(1), sid), true);
@@ -700,7 +700,7 @@ class PlayOnline {
 				return;
 
 			var stats:PlayStatePlayer = (forSID != null) ? ps.getPlayerStats(forSID) : null;
-			var comboValue:Int = (stats != null) ? stats.combo : 0;
+			var comboValue:haxe.Int64 = (stats != null) ? stats.combo : 0;
 			var placement = ps.getRatingOffset(forSID);
 
 			ps.showRatingPopup(popup, ratingImage, comboValue, placement[0], ps.showRating, comboValue >= 10);

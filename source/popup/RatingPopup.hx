@@ -343,7 +343,7 @@ class RatingPopup
 		return g.frameCollections != null;
 	}
 
-	public function show(ratingKey:String, combo:Int, rate:Float, baseX:Float,
+	public function show(ratingKey:String, combo:haxe.Int64, rate:Float, baseX:Float,
 		hideHud:Bool, showRating:Bool, showCombo:Bool, showComboNum:Bool,
 		comboOffset:Array<Int>, crochet:Float, comboStacking:Bool):Void
 	{
@@ -449,7 +449,7 @@ class RatingPopup
 	 * follows its right edge (maxX), which is the pre-existing behaviour of this engine.
 	 * combo < 10 is still hidden by the caller (PlayState keeps that on purpose).
 	 */
-	function _splitDigitsInto(n:Int):Void
+	function _splitDigitsInto(n:haxe.Int64):Void
 	{
 		_digitScratch.resize(0);
 		if (n == 0)
@@ -459,8 +459,8 @@ class RatingPopup
 		}
 		while (n > 0)
 		{
-			_digitScratch.push(n % 10);
-			n = Math.floor(n / 10);
+			_digitScratch.push(haxe.Int64.toInt(n % 10));
+			n = n / 10;
 		}
 		var a:Int = 0;
 		var b:Int = _digitScratch.length - 1;

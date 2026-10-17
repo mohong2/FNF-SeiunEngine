@@ -242,15 +242,23 @@ class BackupUtil
 		var data:Dynamic = {};
 		try
 		{
-			data.songScores = Highscore.songScores;
+		// Int64 maps cannot be JSON.stringify'd as numbers; store exact decimal strings.
+			function exportIntMap(source:Map<String, haxe.Int64>):Map<String, String>
+			{
+			var out:Map<String, String> = new Map();
+			for (key => value in source)
+			out.set(key, haxe.Int64.toStr(value));
+			return out;
+		}
+			data.songScores = exportIntMap(Highscore.songScores);
 			data.songRating = Highscore.songRating;
-			data.weekScores = Highscore.weekScores;
-			data.songSicks = Highscore.songSicks;
-			data.songGoods = Highscore.songGoods;
-			data.songBads = Highscore.songBads;
-			data.songShits = Highscore.songShits;
-			data.songMisses = Highscore.songMisses;
-			data.songMaxCombo = Highscore.songMaxCombo;
+			data.weekScores = exportIntMap(Highscore.weekScores);
+			data.songSicks = exportIntMap(Highscore.songSicks);
+			data.songGoods = exportIntMap(Highscore.songGoods);
+			data.songBads = exportIntMap(Highscore.songBads);
+			data.songShits = exportIntMap(Highscore.songShits);
+			data.songMisses = exportIntMap(Highscore.songMisses);
+			data.songMaxCombo = exportIntMap(Highscore.songMaxCombo);
 		}
 		catch (e:Dynamic)
 		{
@@ -400,14 +408,14 @@ class BackupUtil
 		{
 			// Restore each map: backup stores them as anonymous objects (from JSON),
 			// we convert back to proper Map by iterating Reflect.fields.
-			function restoreIntMap(fieldName:String, target:Map<String, Int>)
+			function restoreIntMap(fieldName:String, target:Map<String, haxe.Int64>)
 			{
 				if (!Reflect.hasField(data, fieldName)) return;
 				var src:Dynamic = Reflect.field(data, fieldName);
 				if (src == null) return;
 				target.clear();
 				for (key in Reflect.fields(src))
-					target.set(key, Std.int(Reflect.field(src, key)));
+					target.set(key, Int64Util.fromDynamic(Reflect.field(src, key)));
 				Reflect.setField(flixel.FlxG.save.data, fieldName, target);
 			}
 			function restoreFloatMap(fieldName:String, target:Map<String, Float>)

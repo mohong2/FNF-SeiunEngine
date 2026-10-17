@@ -66,9 +66,9 @@ class FreeplayState extends SeiunMenuState
 	public var diffText:FlxText;
 	/** Multi-file (segmented) chart state of the selected song; see ChartParts. */
 	public var multiFileText:FlxText;
-	public var lerpScore:Int = 0;
+	public var lerpScore:haxe.Int64 = 0;
 	public var lerpRating:Float = 0;
-	public var intendedScore:Int = 0;
+	public var intendedScore:haxe.Int64 = 0;
 	public var intendedRating:Float = 0;
 	
 	public var grpSongs:FlxTypedGroup<Alphabet>;
@@ -90,7 +90,7 @@ class FreeplayState extends SeiunMenuState
 	static inline var ROW_WINDOW:Int = 8;
 
 	/** Last values written into the HUD string; see the score update in update(). */
-	var shownScore:Int = 0;
+	var shownScore:haxe.Int64 = 0;
 	var shownRating:Float = 0;
 	var shownScoreInitialised:Bool = false;
 
@@ -671,11 +671,14 @@ class FreeplayState extends SeiunMenuState
 			FlxG.sound.music.volume += 0.5 * FlxG.elapsed;
 		}
 
-		lerpScore = Math.floor(FlxMath.lerp(lerpScore, intendedScore, CoolUtil.boundTo(elapsed * 24, 0, 1)));
+		var targetScoreF:Float = Int64Util.toFloat(intendedScore);
+		var currentScoreF:Float = Int64Util.toFloat(lerpScore);
+		currentScoreF = Math.floor(FlxMath.lerp(currentScoreF, targetScoreF, CoolUtil.boundTo(elapsed * 24, 0, 1)));
+		lerpScore = haxe.Int64.fromFloat(currentScoreF);
 		lerpRating = FlxMath.lerp(lerpRating, intendedRating, CoolUtil.boundTo(elapsed * 12, 0, 1));
 
-		if (Math.abs(lerpScore - intendedScore) <= 10)
-			lerpScore = intendedScore;
+		if (Math.abs(targetScoreF - currentScoreF) <= 10)
+		lerpScore = intendedScore;
 		if (Math.abs(lerpRating - intendedRating) <= 0.01)
 			lerpRating = intendedRating;
 

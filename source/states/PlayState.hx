@@ -540,7 +540,7 @@ class PlayState extends MusicBeatState
 	public var displayHealth:Float = 1;
 	/** 0.7.3 compatibility: icon hurt animation toggle (read by scripts such as iconShake). */
 	public var iconsAnimations:Bool = true;
-	public var combo:Int = 0;
+	public var combo:haxe.Int64 = 0;
 
 	// ── Botplay / Turbo side readout (H-Slice-style score text) ──
 	/** Opponent-side notes hit so far. Turbo fold groups add their whole noteDensity, so this counts original taps. */
@@ -622,15 +622,15 @@ class PlayState extends MusicBeatState
 	public var keyboardDisplay:KeyboardDisplay;
 
 	public var ratingsData:Array<Rating> = [];
-	public var marvelouses:Int = 0;
-	public var sicks:Int = 0;
-	public var goods:Int = 0;
-	public var bads:Int = 0;
-	public var shits:Int = 0;
+	public var marvelouses:haxe.Int64 = 0;
+	public var sicks:haxe.Int64 = 0;
+	public var goods:haxe.Int64 = 0;
+	public var bads:haxe.Int64 = 0;
+	public var shits:haxe.Int64 = 0;
 
-	public var sustainNotescore:Int = 0;
+	public var sustainNotescore:haxe.Int64 = 0;
 	private var sideHUDVisible:Bool = false;
-	private var notehitlol:Int = 0;
+	private var notehitlol:haxe.Int64 = 0;
 	private var tnh:FlxText;
 	private var cm:FlxText;
 	private var sick:FlxText;
@@ -694,45 +694,45 @@ class PlayState extends MusicBeatState
 		if (_sideHudValues == null)
 			_sideHudValues = [null, null, null, null, null, null, null, null, null];
 
-		if (forceRewrite || _sideHudValues[0] != notehitlol)
+		if (forceRewrite || _sideHudValues[0] != Int64Util.toFloat(notehitlol))
 		{
-			_sideHudValues[0] = notehitlol;
+			_sideHudValues[0] = Int64Util.toFloat(notehitlol);
 			tnh.text = _sideHudPrefix[0] + notehitlol;
 		}
-		if (forceRewrite || _sideHudValues[1] != combo || _sideHudValues[2] != maxcombo)
+		if (forceRewrite || _sideHudValues[1] != Int64Util.toFloat(combo) || _sideHudValues[2] != Int64Util.toFloat(maxcombo))
 		{
-			_sideHudValues[1] = combo;
-			_sideHudValues[2] = maxcombo;
+			_sideHudValues[1] = Int64Util.toFloat(combo);
+			_sideHudValues[2] = Int64Util.toFloat(maxcombo);
 			cm.text = _sideHudPrefix[1] + combo + '($maxcombo)';
 		}
-		if (marv != null && (forceRewrite || _sideHudValues[3] != marvelouses))
+		if (marv != null && (forceRewrite || _sideHudValues[3] != Int64Util.toFloat(marvelouses)))
 		{
-			_sideHudValues[3] = marvelouses;
+			_sideHudValues[3] = Int64Util.toFloat(marvelouses);
 			marv.text = _sideHudPrefix[2] + marvelouses;
 		}
-		if (forceRewrite || _sideHudValues[4] != sicks)
+		if (forceRewrite || _sideHudValues[4] != Int64Util.toFloat(sicks))
 		{
-			_sideHudValues[4] = sicks;
+			_sideHudValues[4] = Int64Util.toFloat(sicks);
 			sick.text = _sideHudPrefix[3] + sicks;
 		}
-		if (forceRewrite || _sideHudValues[5] != goods)
+		if (forceRewrite || _sideHudValues[5] != Int64Util.toFloat(goods))
 		{
-			_sideHudValues[5] = goods;
+			_sideHudValues[5] = Int64Util.toFloat(goods);
 			good.text = _sideHudPrefix[4] + goods;
 		}
-		if (forceRewrite || _sideHudValues[6] != bads)
+		if (forceRewrite || _sideHudValues[6] != Int64Util.toFloat(bads))
 		{
-			_sideHudValues[6] = bads;
+			_sideHudValues[6] = Int64Util.toFloat(bads);
 			bad.text = _sideHudPrefix[5] + bads;
 		}
-		if (forceRewrite || _sideHudValues[7] != shits)
+		if (forceRewrite || _sideHudValues[7] != Int64Util.toFloat(shits))
 		{
-			_sideHudValues[7] = shits;
+			_sideHudValues[7] = Int64Util.toFloat(shits);
 			shit.text = _sideHudPrefix[6] + shits;
 		}
-		if (forceRewrite || _sideHudValues[8] != songMisses)
+		if (forceRewrite || _sideHudValues[8] != Int64Util.toFloat(songMisses))
 		{
-			_sideHudValues[8] = songMisses;
+			_sideHudValues[8] = Int64Util.toFloat(songMisses);
 			miss.text = _sideHudPrefix[7] + songMisses;
 		}
 	}
@@ -876,17 +876,17 @@ class PlayState extends MusicBeatState
 	public var tankmanRun:FlxTypedGroup<TankmenBG>;
 	public var foregroundSprites:FlxTypedGroup<BGSprite>;
 
-	public var songScore:Int = 0;
-	public var songHits:Int = 0;
-	public var songMisses:Int = 0;
+	public var songScore:haxe.Int64 = 0;
+	public var songHits:haxe.Int64 = 0;
+	public var songMisses:haxe.Int64 = 0;
 	public var scoreTxt:FlxText;
 	public var timeTxt:FlxText;
 	/** timeTxt 上一次写出的秒数 (-1 = 下一帧重画一次, 例如时间条类型刚切回来)。 */
 	private var _timeTxtSeconds:Int = -1;
 	public var scoreTxtTween:FlxTween;
 
-	public static var campaignScore:Int = 0;
-	public static var campaignMisses:Int = 0;
+	public static var campaignScore:haxe.Int64 = 0;
+	public static var campaignMisses:haxe.Int64 = 0;
 	public static var seenCutscene:Bool = false;
 	public static var deathCounter:Int = 0;
 
@@ -943,8 +943,8 @@ class PlayState extends MusicBeatState
 	public var keysArray:Array<Dynamic>;
 	public var controlArray:Array<String>;
 	//
-	public var score:Int = 0;
-	public var maxcombo:Int = 0;
+	public var score:haxe.Int64 = 0;
+	public var maxcombo:haxe.Int64 = 0;
 	//
 	public var precacheList:Map<String, String> = new Map<String, String>();
 
@@ -3522,7 +3522,7 @@ class PlayState extends MusicBeatState
 		// online path bypasses that). With GameClient disconnected the original body below runs.
 		if (online.GameClient.isConnected()) {
 			var points:Float = FlxMath.roundDecimal(
-				online.FunkinPoints.fcalcFP(ratingPercent, songMisses, songDensity, totalNotesHit, maxcombo), 2);
+				online.FunkinPoints.fcalcFP(ratingPercent, Int64Util.toFloat(songMisses), songDensity, totalNotesHit, Int64Util.toFloat(maxcombo)), 2);
 			if (points != songPoints) {
 				songPoints = points;
 				online.GameClient.send("updateSongFP", Math.ffloor(songPoints));
@@ -3621,11 +3621,11 @@ class PlayState extends MusicBeatState
 			if (ClientPrefs.data.newFPPreview)
 			{
 				var calcPoints:Float = FlxMath.roundDecimal(
-					online.FunkinPoints.fcalcFP(ratingPercent, songMisses, songDensity, totalNotesHit, maxcombo), 2);
-				var maxPoints:Float = online.FunkinPoints.calcFP(1, 0, songDensity, totalPlayed, totalPlayed);
+					online.FunkinPoints.fcalcFP(ratingPercent, Int64Util.toFloat(songMisses), songDensity, totalNotesHit, Int64Util.toFloat(maxcombo)), 2);
+				var maxPoints:Float = online.FunkinPoints.calcFP(1, 0, songDensity, Int64Util.toFloat(totalPlayed), Int64Util.toFloat(totalPlayed));
 				var pointsPercent:Float = maxPoints == 0 ? 0 : Math.min(1, Math.max(0, calcPoints / maxPoints));
 				fpExtra += ' | FP: ' + songPoints
-					+ ' (V5: ${FlxMath.roundDecimal(online.FunkinPoints.devFP(ratingPercent, songMisses, songDensity, totalNotesHit, maxcombo, difficultyInfo), 2)})'
+					+ ' (V5: ${FlxMath.roundDecimal(online.FunkinPoints.devFP(ratingPercent, Int64Util.toFloat(songMisses), songDensity, totalNotesHit, Int64Util.toFloat(maxcombo), difficultyInfo), 2)})'
 					+ ' (${CoolUtil.floorDecimal(pointsPercent * 100, 1)}%)';
 			}
 			else
@@ -3668,7 +3668,7 @@ class PlayState extends MusicBeatState
 
 	/** Notes hit on the player's side: the engine's own judged-note accounting (totalPlayed) minus the misses. */
 	inline function bfNotesHit():Float
-		return (totalPlayed : Float) - songMisses;
+		return Int64Util.toFloat(totalPlayed - songMisses);
 
 	/**
 	 * Readout number: whole notes / NPS. Past six digits it switches to the compact form the release
@@ -3858,7 +3858,7 @@ class PlayState extends MusicBeatState
 	 * Single entry point for every rating / combo popup (per-object, merged-per-frame, Turbo opponent and online).
 	 * It also drops the per-call comboOffset copy and is the one place the F8 hit probe has to time.
 	 */
-	inline function showRatingPopup(target:RatingPopup, ratingKey:String, comboValue:Int, baseX:Float,
+	inline function showRatingPopup(target:RatingPopup, ratingKey:String, comboValue:haxe.Int64, baseX:Float,
 		showRatingSprite:Bool, showComboNumSprite:Bool):Void
 	{
 		target.show(ratingKey, comboValue, playbackRate, baseX, ClientPrefs.data.hideHud,
@@ -7056,7 +7056,7 @@ class PlayState extends MusicBeatState
 		// at this early return.
 		if (!canEndSongOnline && online.GameClient.isConnected()) {
 			online.GameClient.send("updateSongFP", Math.ffloor(songPoints));
-			online.GameClient.send("updateMaxCombo", maxcombo);
+			online.GameClient.send("updateMaxCombo", Int64Util.toFloat(maxcombo));
 			online.GameClient.send("playerEnded");
 			return;
 		}
@@ -7202,7 +7202,7 @@ class PlayState extends MusicBeatState
 				// by this point. Read by buildScoreText()/getPresencePoints() and by the online results
 			// dispatch -- both only under ONLINE_ALLOWED.
 			if (SONG.validScore || SONG.validScore == null)
-				songPoints = online.FunkinPoints.calcFP(ratingPercent, songMisses, songDensity, totalNotesHit, maxcombo);
+				songPoints = online.FunkinPoints.calcFP(ratingPercent, Int64Util.toFloat(songMisses), songDensity, totalNotesHit, Int64Util.toFloat(maxcombo));
 			#end
 
 			#if ONLINE_ALLOWED
@@ -7270,7 +7270,7 @@ class PlayState extends MusicBeatState
 			_eventCursor = 0;
 	}
 
-	public var totalPlayed:Int = 0;
+	public var totalPlayed:haxe.Int64 = 0;
 	public var totalNotesHit:Float = 0.0;
 
 	public var showCombo:Bool = false;
@@ -10271,7 +10271,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 				online.GameClient.send("noteHit", [note.strumTime, note.noteData, note.isSustainNote,
 					(note.isSustainNote ? null : onlineLastRatingImage), note.noteType,
 					notes.members.indexOf(note), note.mustPress]);
-				online.GameClient.send("updateMaxCombo", maxcombo);
+				online.GameClient.send("updateMaxCombo", Int64Util.toFloat(maxcombo));
 			}
 			#end
 
@@ -11066,7 +11066,7 @@ function calculateResetTime():Float {
 		{
 			// 四条全局量合成一次脚本遍历 (原来 4 次 setOnScripts = 4 遍全部脚本)。
 			// 它们之间没有脚本代码运行, 只是脚本间写入顺序变了, 见 setOnScripts2/3 的说明。
-			setOnScripts4('score', songScore, 'misses', songMisses, 'hits', songHits, 'combo', combo);
+			setOnScripts4('score', Int64Util.toFloat(songScore), 'misses', Int64Util.toFloat(songMisses), 'hits', Int64Util.toFloat(songHits), 'combo', Int64Util.toFloat(combo));
 
 			scriptStopped = (callOnScripts('onRecalculateRating', Scripts.EMPTY, false) == FunkinLua.Function_Stop);
 		}
@@ -11078,7 +11078,7 @@ function calculateResetTime():Float {
 			else
 			{
 				// Rating Percent
-				ratingPercent = Math.min(1, Math.max(0, totalNotesHit / totalPlayed));
+				ratingPercent = Math.min(1, Math.max(0, totalNotesHit / Int64Util.toFloat(totalPlayed)));
 				//trace((totalNotesHit / totalPlayed) + ', Total: ' + totalPlayed + ', notes hit: ' + totalNotesHit);
 
 				// Botplay forces perfect accuracy
@@ -11683,24 +11683,31 @@ class PlayStatePlayer {
 	public var ratingPercent:Float = 0.;
 	public var ratingName:String = '?';
 	public var ratingFC:String = null;
-	public var combo:Int = 0;
+	public var combo:haxe.Int64 = 0;
 
-	function calcHits():Int {
-		return player.sicks + player.goods + player.bads + player.shits;
+	function calcHits():haxe.Int64 {
+	return Int64Util.fromDynamic(player.sicks) + Int64Util.fromDynamic(player.goods)
+	+ Int64Util.fromDynamic(player.bads) + Int64Util.fromDynamic(player.shits);
+}
+
+// all the encountered notes
+	function calcTotalPlayed():haxe.Int64 
+		{
+	return Int64Util.fromDynamic(player.sicks) + Int64Util.fromDynamic(player.goods)
+	+ Int64Util.fromDynamic(player.bads) + Int64Util.fromDynamic(player.shits)
+	+ Int64Util.fromDynamic(player.misses);
 	}
 
-	// all the encountered notes
-	function calcTotalPlayed():Int {
-		return player.sicks + player.goods + player.bads + player.shits + player.misses;
-	}
+	inline function statFloat(value:Dynamic):Float
+	return Int64Util.toFloat(Int64Util.fromDynamic(value));
 
 	function calcTotalNotesHit():Float {
-		return 
-			(player.sicks * PlayState.instance.ratingsData[0].ratingMod) + 
-			(player.goods * PlayState.instance.ratingsData[1].ratingMod) + 
-			(player.bads * PlayState.instance.ratingsData[2].ratingMod) +
-			(player.shits * PlayState.instance.ratingsData[3].ratingMod)
-		;
+	return 
+	(statFloat(player.sicks) * PlayState.instance.ratingsData[0].ratingMod) + 
+	(statFloat(player.goods) * PlayState.instance.ratingsData[1].ratingMod) + 
+	(statFloat(player.bads) * PlayState.instance.ratingsData[2].ratingMod) +
+	(statFloat(player.shits) * PlayState.instance.ratingsData[3].ratingMod)
+	;
 	}
 
 	function recalculateRating():Void {
@@ -11711,7 +11718,7 @@ class PlayStatePlayer {
 		if (totalPlayed != 0) // Prevent divide by 0
 		{
 			// Rating Percent
-			ratingPercent = Math.min(1, Math.max(0, totalNotesHit / totalPlayed));
+			ratingPercent = Math.min(1, Math.max(0, totalNotesHit / Int64Util.toFloat(totalPlayed)));
 
 			// Rating Name
 			ratingName = ratingStuff[ratingStuff.length - 1][0]; // Uses last string
