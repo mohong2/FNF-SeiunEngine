@@ -723,12 +723,31 @@ class Note extends FlxSprite implements NoteSplashOwner {
         noteSplashTexture = (PlayState.SONG != null && PlayState.SONG.splashSkin != null && PlayState.SONG.splashSkin.length > 0)
             ? PlayState.SONG.splashSkin : null;
 
+        // 0.7.3 / 1.0.4 的白底 noteSkins 图集没有 HURT 变体贴图 (上游把 reloadNote('HURT') 注释掉了),
+        // Hurt 直接改 RGB 色板染成红色; 只有旧版 flat NOTE_assets 才切 HURTNOTE_assets。
+        // 新版材质下原来无条件 reloadNote('HURT') 会去找 images/noteSkins/HURTNOTE_assets.png
+        // (没有任何内置图集提供), frames 直接被清空 —— 这就是 "Hurt Note 材质错误"。
+        var psych073Hurt:Bool = (value == 'Hurt Note') && usesPsych073Material();
+
         if(noteData > -1 && noteType != value) {
             switch(value) {
                 case 'Hurt Note':
                     ignoreNote = mustPress;
                     applyLaneColorShader = false; // Hurt Note 不应用多k 调色
-                    reloadNote('HURT');
+                    if (psych073Hurt)
+                    {
+                        // 0.7.3 / 1.0.4 同款 Hurt 色板: 白底贴图由它染成红黑
+                        if (rgbShader != null)
+                        {
+                            rgbShader.r = 0xFF101010;
+                            rgbShader.g = 0xFFFF0000;
+                            rgbShader.b = 0xFF990022;
+                            rgbShader.whiteAtlas = true;
+                            rgbShader.enabled = true;
+                        }
+                    }
+                    else
+                        reloadNote('HURT');
                     noteSplashTexture = 'HURTnoteSplashes';
                     lowPriority = true;
                     if(isSustainNote) missHealth = 0.1;
@@ -757,6 +776,14 @@ class Note extends FlxSprite implements NoteSplashOwner {
             noteSplashSat = 0;
             noteSplashBrt = 0;
         }
+        if (psych073Hurt)
+        {
+            // 新版材质 Hurt: 溅射继续用自带红黑的 HURTnoteSplashes (0.6.3 同款红黑 Hurt 溅射),
+            // 但不能沿用它上面算出的轨道色偏移, 否则会被染成该轨道的颜色。
+            noteSplashHue = 0;
+            noteSplashSat = 0;
+            noteSplashBrt = 0;
+        }
         return value;
     }
 
@@ -777,11 +804,21 @@ class Note extends FlxSprite implements NoteSplashOwner {
     function refreshSwapShader():Void
     {
         if (colorSwap == null) return;
-        // 0.7.3 白底材质 (noteSkins/*) 由 rgbShader 负责染色。applyLaneColor 刷新
-        // colorSwap 本身会走进这里, 不能让它把已经挂载的 RGB 着色器覆盖成 ColorSwap——
-        // 否则 Note 会退回白底未着色状态。
-        if (rgbShader != null && rgbShader.enabled && !rgbShader.forceDisabled && ClientPrefs.data.shaders)
-            return;
+        if (rgbShader != null)
+        {
+            // 0.7.3 白底材质 (noteSkins/*) 由 rgbShader 负责染色。applyLaneColor 刷新
+            // colorSwap 本身会走进这里, 不能让它把已经挂载的 RGB 着色器覆盖成 ColorSwap——
+            // 否则 Note 会退回白底未着色状态。
+            if (rgbShader.enabled && !rgbShader.forceDisabled && ClientPrefs.data.shaders)
+                return;
+            // 白底材质在 RGB 不可用 (设置关着色器 / 谱面关 Note RGB / 脚本置 enabled=false)
+            // 时保持贴图原色: 不能退回 ColorSwap 的 HSV 偏移, 那会把白底染成错的颜色。
+            if (rgbShader.whiteAtlas)
+            {
+                if (shader != null) shader = null;
+                return;
+            }
+        }
         // perfMode 关闭时保持提交前行为：始终挂 colorSwap.shader，
         // 不因“中性色”而省略着色器，脚本/渲染路径与旧逻辑一致。
         var target:FlxShader = (ClientPrefs.data.perfMode && colorSwap.isNeutral()) ? null : colorSwap.shader;
@@ -1194,6 +1231,8 @@ class Note extends FlxSprite implements NoteSplashOwner {
     var _boundMaterialSustain:Bool = false;
     var _boundMaterialEnd:Bool = false;
     var _boundMaterialPixel:Bool = false;
+    /** 当前已加载的材质是否为 0.7.3 白底 noteSkins 图集 (池化复用跳过重载时用它恢复着色器状态)。 */
+    var _boundMaterialPsych073:Bool = false;
 
     public function reloadNote(?prefix:String = '', ?texture:String = '', ?suffix:String = '') {
         if(prefix == null) prefix = '';
@@ -1244,6 +1283,11 @@ class Note extends FlxSprite implements NoteSplashOwner {
         }
         setAnimCacheKey(blahblah);
 
+        // 0.7.3 材质兼容: noteSkins/* 是白底图集, 必须用 RGB 着色器 (rgbShader) 染色;
+        // 0.6.3 flat 图集自带箭头颜色, 继续用 ColorSwap (arrowHSV)。
+        // 先算出来: 材质绑定信息 (池化复用判断) 和下面的着色器接线都要用。
+        var usesPsych073Skin:Bool = (blahblah != null && blahblah.startsWith('noteSkins/'));
+
         if(PlayState.isPixelStage) {
             if(isSustainNote) {
                 loadGraphic(Paths.image('pixelUI/' + pixelEndsSkin));
@@ -1284,6 +1328,7 @@ class Note extends FlxSprite implements NoteSplashOwner {
             _boundMaterialSustain = isSustainNote;
             _boundMaterialEnd = isSustainEnd;
             _boundMaterialPixel = PlayState.isPixelStage;
+            _boundMaterialPsych073 = usesPsych073Skin;
         }
 
         // 材质溯源同步: 让 texture 字段始终反映"当前 frames 由哪种输入加载而来",
@@ -1305,9 +1350,20 @@ class Note extends FlxSprite implements NoteSplashOwner {
         if (texture.length > 0 && texture != 'NOTE_assets')
             applyLaneColorShader = false;
 
-        // 0.7.3 材质兼容: noteSkins/* 是白底图集, 必须用 RGB 着色器 (rgbShader) 染色;
-        // 0.6.3 flat 图集自带箭头颜色, 继续用 ColorSwap (arrowHSV)。
-        var usesPsych073Skin:Bool = (blahblah != null && blahblah.startsWith('noteSkins/'));
+        applyMaterialShader(usesPsych073Skin);
+    }
+
+    /**
+     * 把 sprite 的着色器接到"当前已加载的材质"上。
+     * reloadNote 真正加载完会调用; setupNoteData 的材质复用快路径 (跳过 reloadNote) 也必须调用 ——
+     * 否则池化复用的 Note 会停在 rgbShader.rebind() 的 fallback 分支: 新版 noteSkins 白底贴图
+     * 不挂 RGB 着色器, 表现为"一部分 Note 正常着色、一部分没有"。
+     * @param usesPsych073Skin 当前材质是否为 noteSkins/* 白底图集
+     */
+    function applyMaterialShader(usesPsych073Skin:Bool):Void
+    {
+        if (rgbShader != null) rgbShader.whiteAtlas = usesPsych073Skin;
+
         if (usesPsych073Skin)
         {
             // 保留 colorSwap 对象作为 rgbShader 的回退, 默认染色交给 RGB 色板 (arrowRGB)
@@ -1343,6 +1399,12 @@ class Note extends FlxSprite implements NoteSplashOwner {
             rgbShader.fallbackShader = (colorSwap != null) ? colorSwap.shader : null;
     }
 
+
+    /** 当前已加载的材质是否为 0.7.3 白底 noteSkins 图集 (Hurt Note 的染色方式由它决定)。 */
+    inline function usesPsych073Material():Bool
+    {
+        return _boundMaterialValid && _boundMaterialPsych073;
+    }
 
     //Note优化谁爱做谁做去
     inline function _materialReusable(textureValue:String):Bool
@@ -1483,6 +1545,10 @@ class Note extends FlxSprite implements NoteSplashOwner {
             if (!PlayState.isPixelStage) antialiasing = ClientPrefs.data.globalAntialiasing;
             if (targetTexture.length > 0 && targetTexture != 'NOTE_assets')
                 applyLaneColorShader = false;
+            // 材质没重载, 但着色器接线必须和真正 reloadNote 后一致:
+            // 上面的 rgbShader.rebind() 把 enabled 置成了 false, 不接回来的话
+            // 新版 noteSkins 白底贴图会以原色渲染 (池化复用的 Note "没有正常着色")。
+            applyMaterialShader(_boundMaterialPsych073);
         }
         //为什么要缓存
 

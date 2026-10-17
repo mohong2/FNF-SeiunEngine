@@ -169,6 +169,7 @@ class StrumNote extends FlxSprite
 		useRgbColor = (loadSkin != null && loadSkin.startsWith('noteSkins/'));
 		if (rgbShader != null)
 		{
+			rgbShader.whiteAtlas = useRgbColor;
 			rgbShader.fallbackShader = colorSwap != null ? colorSwap.shader : null;
 			rgbShader.enabled = useRgbColor;
 		}

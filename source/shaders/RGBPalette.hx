@@ -90,6 +90,14 @@ class RGBShaderReference
 	 */
 	public var fallbackColorSwap:ColorSwap = null;
 
+	/**
+	 * True while the owner sprite shows a 0.7.3 white noteSkins atlas, whose lane colours come *only*
+	 * from this palette. When RGB tinting is unavailable (shaders off / noteRGB disabled) such a sprite
+	 * must fall back to the raw texture, never to ColorSwap: that HSV path only exists for the legacy
+	 * flat NOTE_assets atlas and would tint a white base with its old relative colour shift.
+	 */
+	public var whiteAtlas:Bool = false;
+
 	/** Blocks the RGB shader while SONG.disableNoteRGB is set. */
 	public var forceDisabled:Bool = false;
 
@@ -153,6 +161,10 @@ class RGBShaderReference
 		enabled = value;
 		if (value && !forceDisabled && ClientPrefs.data.shaders)
 			_owner.shader = parent.shader;
+		else if (whiteAtlas)
+			// 白底 noteSkins 材质只由 RGB 色板染色: 着色器被关掉时显示贴图原色,
+			// 不能退回 ColorSwap 的 HSV 偏移 (那会把白底染成错误的颜色)。
+			_owner.shader = null;
 		else if (fallbackColorSwap != null)
 		{
 			if (ClientPrefs.data.perfMode && fallbackColorSwap.isNeutral())
