@@ -222,7 +222,13 @@ static const uint64_t MAX_NOTE_ENTRIES = 20000000000ull;  // 2e10, huge but expl
 // Phase 2 chunk target: consecutive sections whose sectionNotes bytes sum to about this much.
 static const uint64_t FOLD_CHUNK_BYTES = 96ull * 1024ull * 1024ull;
 static const int FOLD_CHUNK_MAX_SECTIONS = 65536;
-static const int MAX_EMITTED_ROWS = 60000000;
+// Fold-output cap. This counts FOLDED rows, not chart notes: a chart merges notes into the rows that
+// are distinguishable on screen, so even a multi-billion-note chart folds to hundreds of thousands of
+// rows. The cap only exists so a pathological chart cannot exhaust memory (1 row ~= 124 B of columns,
+// so the old 60M would already have been ~7.4 GB). A 4.48B-note chart hit it because its notes are so
+// sparse nothing merged; raising it lets the fold finish instead of forcing the Haxe path, which
+// cannot materialise a chart that size at all.
+static const int MAX_EMITTED_ROWS = 400000000;
 // GhostCollapser.MAX_REPRESENTED
 static const double MAX_REPRESENTED = 65536.0;
 

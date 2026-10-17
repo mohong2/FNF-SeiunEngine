@@ -694,6 +694,10 @@ class ChartSectionReader
 	var paths:Array<String>;
 	var ranges:Array<ChartSectionRange>;
 	var input:FileInput;
+	/** Current absolute position of `input`, kept by seekTo(): the handle's own tell() is Int32. */
+	var pos:Float = 0;
+	/** Bytes read past a short read (see readAt()); 0 when the last range read was complete. */
+	public var lastShortRead:Int = 0;
 	/** Part whose file `input` holds; -1 while closed. */
 	var openPart:Int = -1;
 	/** Last failure reason (for the caller to trace); null on success. */
@@ -732,7 +736,61 @@ class ChartSectionReader
 			throw new haxe.Exception('ChartStream: no file for chart part ' + part);
 		input = File.read(paths[part], true);
 		openPart = part;
+		// A part can be many GB (a 45 GB chart is split into 1.3 GB parts), and sys.io.FileInput.seek()
+		// takes an Int: offsets past 2 GiB wrap negative (the call throws) and past 4 GiB wrap back to a
+		// small positive number, which silently reads the WRONG bytes. Seeking in <= 1 GiB steps keeps
+		// every individual seek inside Int32 while still reaching any offset.
+		pos = 0;
 		return input;
+	}
+
+	/**
+	 * Moves the open handle to absolute byte `target`.
+	 *
+	 * sys.io.FileInput.seek() takes an Int, so it cannot address past 2 GiB -- and narrowing a 64-bit
+	 * offset into that Int does not even fail when the value wraps back into range, it silently seeks
+	 * somewhere else. Ranges in a huge chart routinely start past 4 GiB inside one part (seen:
+	 * bewilderment-49.json, section 869315, 4.48B notes over 58 parts), which made the reader parse a
+	 * random offset and report "expected note array at byte 1". The hxcpp fork this engine builds
+	 * against provides _hx_std_file_seek64 for this, so the offset never gets narrowed.
+	 */
+	function seekTo(target:Float):Void
+	{
+		if (target == pos) return;
+		var i64:Int64 = Int64.fromFloat(target);
+		#if cpp
+		// 0 = SEEK_SET. The handle is the Dynamic the FileInput wraps; the offset goes down as two
+		// 32-bit halves so nothing is narrowed on the way to _fseeki64.
+		untyped __cpp__('_hx_std_file_seek64({0}, {1}, {2}, 0)', input.__f, i64.low, i64.high);
+		#else
+		input.seek(Std.int(target), sys.io.FileSeek.SeekBegin);
+		#end
+		pos = target;
+	}
+
+	/** Reads exactly `len` bytes at absolute `start`; false when the file is short (lastShortRead set). */
+	function readAt(start:Float, b:Bytes, len:Int):Bool
+	{
+		seekTo(start);
+		var done:Int = 0;
+		lastShortRead = 0;
+		while (done < len)
+		{
+			// readBytes() raises haxe.io.Eof at the end of the file; a range that runs past it is a
+			// truncated part, which must be reported (and fall back), not thrown as an unrelated error.
+			var got:Int = 0;
+			try got = input.readBytes(b, done, len - done)
+			catch (e:haxe.io.Eof) got = 0;
+			if (got <= 0) break;
+			done += got;
+			pos += got;
+		}
+		if (done != len)
+		{
+			lastShortRead = len - done;
+			return false;
+		}
+		return true;
 	}
 
 	function closeInput():Void
@@ -743,6 +801,7 @@ class ChartSectionReader
 			input = null;
 		}
 		openPart = -1;
+		pos = 0;
 	}
 
 	/** Raw note array of section `index`; empty array when the range is missing or empty, null on read failure. */
@@ -754,10 +813,13 @@ class ChartSectionReader
 		if (r.len > MAX_RANGE_BYTES) return null;
 		try
 		{
-			var source:FileInput = handle(r.part);
-			source.seek(Std.int(r.start), sys.io.FileSeek.SeekBegin);
+			handle(r.part);
 			var b:Bytes = Bytes.alloc(r.len);
-			source.readFullBytes(b, 0, r.len);
+			if (!readAt(r.start, b, r.len))
+			{
+				lastError = 'short read (' + lastShortRead + ' byte(s) missing at ' + r.start + ')';
+				return null;
+			}
 			lastError = null;
 			return cast Json.parse(b.toString());
 		}
@@ -781,10 +843,13 @@ class ChartSectionReader
 		if (r.len > MAX_RANGE_BYTES) return null;
 		try
 		{
-			var source:FileInput = handle(r.part);
-			source.seek(Std.int(r.start), sys.io.FileSeek.SeekBegin);
+			handle(r.part);
 			var b:Bytes = Bytes.alloc(r.len);
-			source.readFullBytes(b, 0, r.len);
+			if (!readAt(r.start, b, r.len))
+			{
+				lastError = 'short read (' + lastShortRead + ' byte(s) missing at ' + r.start + ')';
+				return null;
+			}
 			lastError = null;
 			return ChartStream.parseSectionNotes(b, 0, r.len);
 		}
