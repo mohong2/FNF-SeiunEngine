@@ -16,19 +16,18 @@ WHAT IS CHECKED (all from the two files themselves, no build metadata needed)
   3. .text extent    - the map's segment-1 ".text*" entries vs the PE .text section.
                        Both bodies of code must be the same size, within one section
                        alignment (the map splits .text into .text/.text$mn/.text$x/...,
-                       so the entries are summed, not compared one by one). This is
-                       what confirms the addresses the map stores point at code that
-                       actually exists in this image.
-
-  Checks 1 and 2 are exact and are what makes a map identifiable. Check 3 confirms the
-  addresses the map actually stores still point into code in this image.
+                       so the entries are summed, not compared one by one).
 
 USAGE
+  # GUI: just run it with no arguments (or double-click on Windows)
+  python tools/verify_map.py
+
+  # CLI: give it an exe and a map, optionally --quiet
   python tools/verify_map.py <exe> <map> [--quiet]
   python tools/verify_map.py export/release/windows/bin/SeiunEngine.exe \
                              export/release/windows/symbols/ApplicationMain.map
 
-EXIT CODES
+EXIT CODES (CLI mode)
   0  the map describes this exe
   1  the map does NOT describe this exe - do not use it
   2  could not read one of the files
@@ -42,7 +41,12 @@ import sys
 
 TIMESTAMP_RE = re.compile(r"^\s*Timestamp is\s+([0-9a-fA-F]{8})")
 BASE_RE = re.compile(r"^\s*Preferred load address is\s+([0-9a-fA-F]+)")
-SECTION_RE = re.compile(r"^\s*([0-9a-fA-F]{4}):([0-9a-fA-F]{8})\s+([0-9a-fA-F]+)H\s+(\S+)\s+(\S+)\s*$")
+SECTION_RE = re.compile(
+    r"^\s*([0-9a-fA-F]{4}):([0-9a-fA-F]{8})\s+([0-9a-fA-F]+)H\s+(\S+)\s+(\S+)\s*$"
+)
+
+
+# ---------------------------------------------------------------- readers
 
 
 def read_pe(path):
@@ -118,12 +122,224 @@ def read_map_head(path, max_lines=400):
             "text_start": text_start, "text_len": text_len, "size": os.path.getsize(path)}
 
 
+def verify(pe, mp):
+    """Return a list of (name, ok, detail, why) tuples - shared by CLI and GUI."""
+    checks = []
+    checks.append((
+        "build stamp",
+        pe["timestamp"] == mp["timestamp"],
+        f"map Timestamp=0x{mp['timestamp']:08X}  exe TimeDateStamp=0x{pe['timestamp']:08X}",
+        "the map was produced by a different link - do not use it",
+    ))
+    checks.append((
+        "image base",
+        pe["image_base"] == mp["base"],
+        f"map base=0x{mp['base']:X}  exe ImageBase=0x{pe['image_base']:X}",
+        "absolute addresses in the map do not apply to this image",
+    ))
+    # The map numbers offsets from the start of each PE section, so its segment-1
+    # ".text*" block starts at 0 no matter what RVA the PE gave .text.
+    text_ok = (mp["text_start"] == 0 and mp["text_len"] > 0
+               and abs(mp["text_len"] - pe["text"]["vsize"])
+               <= max(pe["section_align"], 0x1000))
+    checks.append((
+        ".text extent",
+        text_ok,
+        f"map .text size=0x{mp['text_len']:X}  exe .text rva=0x{pe['text']['vaddr']:X} "
+        f"size=0x{pe['text']['vsize']:X}",
+        "the code the map describes is not the code in this image",
+    ))
+    return checks
+
+
+# ---------------------------------------------------------------- GUI
+
+
+def run_gui():
+    import tkinter as tk
+    from tkinter import ttk, filedialog
+
+    # ---- palette ----
+    C_OK      = "#1b7f3b"
+    C_FAIL    = "#c62828"
+    C_MUTED   = "#6b7280"
+    C_BG      = "#fbfbfb"
+    MONO      = ("Consolas", 10)
+
+    root = tk.Tk()
+    root.title("Verify Map — 验证 .map 是否属于这个 exe")
+    root.geometry("860x540")
+    root.minsize(680, 420)
+
+    style = ttk.Style()
+    for theme in ("vista", "clam", "default"):
+        try:
+            style.theme_use(theme)
+            break
+        except tk.TclError:
+            continue
+
+    outer = ttk.Frame(root, padding=14)
+    outer.pack(fill="both", expand=True)
+
+    exe_var = tk.StringVar()
+    map_var = tk.StringVar()
+
+    # ---- file pickers ----
+    files = ttk.LabelFrame(outer, text="文件", padding=10)
+    files.pack(fill="x")
+    files.columnconfigure(1, weight=1)
+
+    def pick_exe():
+        path = filedialog.askopenfilename(
+            title="选择要验证的 exe",
+            filetypes=[("PE executable", "*.exe"), ("All files", "*.*")])
+        if not path:
+            return
+        exe_var.set(path)
+        # 顺手猜一个同目录同名的 .map，省一步操作
+        if not map_var.get().strip():
+            guess = os.path.splitext(path)[0] + ".map"
+            if os.path.exists(guess):
+                map_var.set(guess)
+
+    def pick_map():
+        path = filedialog.askopenfilename(
+            title="选择对应的 .map",
+            filetypes=[("Map file", "*.map"), ("All files", "*.*")])
+        if path:
+            map_var.set(path)
+
+    ttk.Label(files, text="exe:").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
+    ttk.Entry(files, textvariable=exe_var).grid(row=0, column=1, sticky="ew", pady=4)
+    ttk.Button(files, text="浏览…", command=pick_exe).grid(
+        row=0, column=2, padx=(8, 0), pady=4)
+
+    ttk.Label(files, text="map:").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=4)
+    ttk.Entry(files, textvariable=map_var).grid(row=1, column=1, sticky="ew", pady=4)
+    ttk.Button(files, text="浏览…", command=pick_map).grid(
+        row=1, column=2, padx=(8, 0), pady=4)
+
+    # ---- results ----
+    result_frame = ttk.LabelFrame(outer, text="结果", padding=8)
+    result_frame.pack(fill="both", expand=True, pady=(12, 0))
+
+    text = tk.Text(result_frame, wrap="word", borderwidth=0, height=12,
+                   font=MONO, padx=10, pady=8, background=C_BG,
+                   state="disabled", cursor="arrow")
+    text.pack(fill="both", expand=True)
+    text.tag_configure("ok",       foreground=C_OK)
+    text.tag_configure("fail",     foreground=C_FAIL)
+    text.tag_configure("muted",    foreground=C_MUTED)
+    text.tag_configure("head",     font=("Consolas", 10, "bold"))
+    text.tag_configure("why",      foreground=C_FAIL, font=("Consolas", 9, "italic"))
+    text.tag_configure("match",    foreground=C_OK,   font=("Consolas", 10, "bold"))
+    text.tag_configure("mismatch", foreground=C_FAIL, font=("Consolas", 10, "bold"))
+
+    # ---- bottom bar ----
+    bar = ttk.Frame(outer)
+    bar.pack(fill="x", pady=(12, 0))
+    status = ttk.Label(bar, text="选择 exe 和 map，然后点「验证」。")
+    status.pack(side="left")
+    verify_btn = ttk.Button(bar, text="验证", command=lambda: do_verify())
+    verify_btn.pack(side="right")
+
+    def set_text(chunks):
+        text.configure(state="normal")
+        text.delete("1.0", "end")
+        for s, tag in chunks:
+            text.insert("end", s, tag or ())
+        text.configure(state="disabled")
+
+    def do_verify():
+        exe = exe_var.get().strip()
+        mp = map_var.get().strip()
+        if not exe or not mp:
+            status.configure(text="请先选择 exe 和 map 两个文件。")
+            set_text([("请先选择 exe 和 map 两个文件。\n", "muted")])
+            return
+
+        try:
+            pe = read_pe(exe)
+        except OSError as exc:
+            status.configure(text="读取 exe 失败")
+            set_text([(f"error: cannot read exe {exe}: {exc}\n", "fail")])
+            return
+        try:
+            m = read_map_head(mp)
+        except OSError as exc:
+            status.configure(text="读取 map 失败")
+            set_text([(f"error: cannot read map {mp}: {exc}\n", "fail")])
+            return
+
+        if pe is None:
+            status.configure(text="不是 PE 文件")
+            set_text([(f"error: {exe} is not a PE image\n", "fail")])
+            return
+        if m["timestamp"] is None or m["base"] is None:
+            status.configure(text="map 头部无效")
+            set_text([(f"error: {mp} has no MSVC map header "
+                       f"(Timestamp/Preferred load address)\n", "fail")])
+            return
+
+        checks = verify(pe, m)
+        failed = [c for c in checks if not c[1]]
+
+        chunks = [
+            (f"exe: {pe['path']}  ({pe['size']} bytes)\n", "head"),
+            (f"map: {m['path']}  ({m['size']} bytes)\n\n", "head"),
+        ]
+        for name, ok, detail, why in checks:
+            chunks.append(("  [OK  ] " if ok else "  [FAIL] ", "ok" if ok else "fail"))
+            chunks.append((f"{name:<12} ", "head"))
+            chunks.append((f"{detail}\n", None))
+            if not ok:
+                chunks.append((f"           -> {why}\n", "why"))
+        chunks.append(("\n", None))
+        if failed:
+            chunks.append(("MISMATCH: this map does NOT describe this exe.\n", "mismatch"))
+            status.configure(text="不匹配：不要用这个 map。")
+        else:
+            chunks.append(("MATCH: this map describes this exe.\n", "match"))
+            status.configure(text="匹配：这个 map 对应该 exe。")
+        set_text(chunks)
+
+    def show_help():
+        set_text([
+            ("选择 exe 和 .map 后点击「验证」。\n\n", "muted"),
+            ("脚本会从两个文件本身校验：\n", "muted"),
+            ("  1. build stamp  (map Timestamp == exe TimeDateStamp)\n", "muted"),
+            ("  2. image base   (map Preferred load address == exe ImageBase)\n", "muted"),
+            ("  3. .text extent (map 的 .text* 总和 ≈ exe 的 .text 大小)\n", "muted"),
+        ])
+
+    root.bind("<Return>", lambda e: do_verify())
+    root.bind("<Escape>", lambda e: root.destroy())
+    show_help()
+    root.mainloop()
+
+
+# ---------------------------------------------------------------- CLI
+
+
 def main() -> int:
-    args = [a for a in sys.argv[1:] if a != "--quiet"]
     quiet = "--quiet" in sys.argv
+    args = [a for a in sys.argv[1:] if a != "--quiet"]
+
+    # 没有给出两个路径：打开 GUI。若环境没有 tkinter / 无显示器，退回打印用法。
     if len(args) < 2:
-        print(__doc__)
-        return 2
+        try:
+            import tkinter  # noqa: F401
+        except ImportError:
+            print(__doc__)
+            return 2
+        try:
+            run_gui()
+        except Exception as exc:  # TclError（无显示器）等
+            print(f"error: cannot start GUI: {exc}", file=sys.stderr)
+            print(__doc__)
+            return 2
+        return 0
 
     try:
         pe = read_pe(args[0])
@@ -139,36 +355,19 @@ def main() -> int:
         print(f"error: {args[0]} is not a PE image")
         return 2
     if mp["timestamp"] is None or mp["base"] is None:
-        print(f"error: {args[1]} has no MSVC map header (Timestamp/Preferred load address)")
+        print(f"error: {args[1]} has no MSVC map header "
+              f"(Timestamp/Preferred load address)")
         return 2
 
-    os.system("")  # no-op; keeps colour codes harmless on old consoles
-    def mark(ok):
-        return "OK  " if ok else "FAIL"
-
-    checks = []
-    checks.append(("build stamp", pe["timestamp"] == mp["timestamp"],
-                   f"map Timestamp=0x{mp['timestamp']:08X}  exe TimeDateStamp=0x{pe['timestamp']:08X}",
-                   "the map was produced by a different link - do not use it"))
-    checks.append(("image base", pe["image_base"] == mp["base"],
-                   f"map base=0x{mp['base']:X}  exe ImageBase=0x{pe['image_base']:X}",
-                   "absolute addresses in the map do not apply to this image"))
-    # The map numbers offsets from the start of each PE section, so its segment-1
-    # ".text*" block starts at 0 no matter what RVA the PE gave .text.
-    text_ok = (mp["text_start"] == 0 and mp["text_len"] > 0
-               and abs(mp["text_len"] - pe["text"]["vsize"]) <= max(pe["section_align"], 0x1000))
-    checks.append((".text extent", text_ok,
-                   f"map .text size=0x{mp['text_len']:X}  exe .text rva=0x{pe['text']['vaddr']:X} "
-                   f"size=0x{pe['text']['vsize']:X}",
-                   "the code the map describes is not the code in this image"))
-
+    checks = verify(pe, mp)
     failed = [c for c in checks if not c[1]]
+
     if not quiet:
         print(f"exe: {pe['path']}  ({pe['size']} bytes)")
         print(f"map: {mp['path']}  ({mp['size']} bytes)")
         print()
         for name, ok, detail, why in checks:
-            print(f"  [{mark(ok)}] {name:<12} {detail}")
+            print(f"  [{'OK  ' if ok else 'FAIL'}] {name:<12} {detail}")
             if not ok:
                 print(f"           -> {why}")
         print()

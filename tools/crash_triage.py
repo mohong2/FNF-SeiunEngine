@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import locale
 import os
 import re
 import struct
@@ -39,9 +40,388 @@ import sys
 import time
 from datetime import datetime
 
+TRANSLATIONS = {
+    'en': {
+        'err_not_map': 'not a linker .map (no preferred load address): {v}',
+        'err_map_not_found': 'map not found: {v}',
+        'err_exe_not_found': 'exe not found: {v}',
+        'err_report_not_found': 'report not found: {v}',
+        'err_no_reports': 'no crash reports in {v}',
+        'err_nothing_picked': 'nothing picked',
+        'ok': 'OK', 'fail': 'FAIL', 'skip': 'SKIP', 'stale': 'STALE', 'match': 'match', 'other': 'other',
+        'ready': 'ready', 'done': 'done', 'summary_done': 'summary done', 'keep_map_done': 'keep-map done', 'archive_done': 'archive done',
+        
+        # TUI
+        'tui_title': 'SeiunEngine crash triage',
+        'tui_crash_dir': '  crash dir : {v}',
+        'tui_reports': '  reports   : {v}',
+        'tui_current': '  current   : {v}   ({m})',
+        'tui_no_current': '  current   : (SeiunEngine.exe not found)',
+        'tui_map_chosen': '  map       : {v}   (chosen by you)',
+        'tui_map_auto': '  map       : auto (snapshot for the report build, else the current one)',
+        'menu_newest': '  1  triage the newest report',
+        'menu_listed': '  2  triage a listed report (by number)',
+        'menu_dialog': '  3  choose a crash report with a file dialog',
+        'menu_all': '  4  triage every report',
+        'menu_summary': '  5  summary table',
+        'menu_keep_map': '  6  snapshot the current .map now (keep-map)',
+        'menu_list_maps': '  7  list .map snapshots',
+        'menu_archive': '  8  archive old reports (keep the newest 20)',
+        'menu_choose_map': '  9  choose a .map file to use from now on',
+        'menu_help_quit': '  h  help        q  quit',
+        'tui_help_1': 'A report is only exact against the .map of the build that produced it.',
+        'tui_help_2': 'Snapshot after every build (menu 6); symbols from another build are marked STALE.',
+        'tui_out_of_range': '  out of range',
+        'tui_no_reports_here': '  no reports here',
+        'tui_nothing_picked': '  (nothing picked)',
+        'tui_nothing_picked_auto': '  (nothing picked - using auto)',
+        'tui_map_for_report': 'Map file for this report:',
+        'tui_auto_map': '  [Enter] auto  ->  {v}   [{q}]',
+        'tui_auto_map_none': '  [Enter] auto  ->  (nothing found)',
+        'tui_pick_map_dialog': '  [p]           ->  pick a .map file with a file dialog',
+        'tui_paste_map_path': '  [path]        ->  paste the path of a .map file',
+        'tui_use_which_map': 'Use which .map from now on?',
+        'tui_auto_map_back': '  [Enter] auto  ->  back to auto',
+        'tui_triage_result_ok': 'RESULT: {v} report(s), all matched the map',
+        'tui_triage_result_stale': 'RESULT: {a} report(s), {b} from another build (symbols are hints)',
+
+        # GUI
+        'gui_title': 'SeiunEngine Crash Triage',
+        'gui_inputs': ' Inputs  (you pick both files) ',
+        'gui_crash_report': 'Crash report',
+        'gui_map_file': 'Map file',
+        'gui_browse': 'Browse...',
+        'gui_use_map': 'use this .map   (unchecked = auto: snapshot for the report build, else the current one)',
+        'gui_reports': ' Reports (newest first; click = select, double-click = triage) ',
+        'gui_output': ' Output (CI-style steps + report detail) ',
+        'btn_triage_selected': 'Triage selected',
+        'btn_triage_all': 'Triage ALL reports',
+        'btn_summary': 'Summary',
+        'btn_snapshot': 'Snapshot current .map',
+        'btn_archive': 'Archive old reports',
+        'btn_clear': 'Clear output',
+        'btn_quit': 'Quit',
+        'gui_cur_build': 'current build: {v}  ({m})',
+        'gui_no_cur_build': 'current build: (SeiunEngine.exe not found)',
+        'gui_auto_map': 'auto map: {v}   [{q}]',
+        'gui_auto_map_none': 'auto map: (none found)',
+        'gui_note_exe_missing': 'note: SeiunEngine.exe was not found, so build matching cannot be checked.',
+        'gui_pick_report_first': 'Pick a crash report (Browse... or click a row), optionally pick a .map, then press a button.',
+        'gui_choose_report_title': 'Choose a crash report',
+        'gui_choose_map_title': 'Choose a linker .map',
+        'gui_all_files': 'All files',
+        'gui_crash_reports': 'Crash reports',
+        'gui_map_files': 'Map files',
+
+        # 列名
+        'col_date': 'date', 'col_name': 'name', 'col_kind': 'kind', 'col_exception': 'exception', 'col_state': 'state', 'col_build': 'build', 'col_symbol': 'faulting function',
+
+        # Steps
+        'step_read_report': 'read report',
+        'step_fingerprint': 'report build fingerprint',
+        'step_select_map': 'select .map',
+        'step_load_map': 'load .map',
+        'step_compare': 'compare builds',
+        'step_resolve_fault': 'resolve fault offset',
+        'step_resolve_bt': 'resolve backtrace',
+        'step_write': 'write triage file',
+        'step_skip_no_stamp': 'this older report does not record it',
+        'step_no_map': 'none found - use -m/--map or snapshot with --keep-map',
+        'step_map_cached': 'cached ({v} functions)',
+        'step_map_loaded': '{a:.1f} MB, {b} functions, {c:.1f}s',
+        'step_build_exact': 'this map is the build that produced the report',
+        'step_build_stale': 'report {a} vs current {b}',
+        'step_build_no_cur': 'current exe not found',
+        'step_fault_detail': '0x{a:X} -> {b}',
+        'step_bt_detail': 'no fault offset (abort/terminate path); {a} app frame(s), first: 0x{b:X} -> {c}',
+        'step_bt_skip': 'the backtrace has no SeiunEngine.exe frames',
+        'step_haxe': 'this report has no fault offset (Haxe-level crash)',
+        'step_posix': 'no Windows fault offset/backtrace (POSIX report? use tools/symbolize_android.py)',
+        'step_no_map_loaded': 'no map loaded',
+        'step_write_ok': '{v}',
+        'step_write_skip': 'disabled (--no-write)',
+        'step_quality_chosen_exact': 'chosen by you (matches the report build)',
+        'step_quality_chosen_hint': 'chosen by you (cannot verify against this report)',
+        'step_quality_snapshot': 'snapshot for this build',
+        'step_quality_current': 'current build',
+        'step_quality_current_nostamp': 'current build (report has no build stamp)',
+        'step_quality_current_mismatch': 'current build (MISMATCH - this report is from another build)',
+
+        # Report Block
+        'rep_app': '  app          : {v}',
+        'rep_engine': '  engine       : {v}',
+        'rep_exception': '  exception    : {v}{n}',
+        'rep_context': '  context      : {v}',
+        'rep_fault_module': '  fault module : {v}',
+        'rep_error': '  error        : {v}',
+        'rep_build': '  report build : {v}',
+        'rep_no_build': '(not recorded in this older report)',
+        'rep_cur_exe': '  current exe  : {v}',
+        'rep_not_built': '(not built)',
+        'rep_match_yes': '  build match  : YES - this map is the build that produced the report',
+        'rep_match_no': '  build match  : NO - the map is from another build; symbols below are hints only',
+        'rep_map': '  map          : {v}',
+        'rep_no_map': '(none found)',
+        'rep_fault_offset': '  fault offset : 0x{v:X}',
+        'rep_fault_hit': '        -> {v}',
+        'rep_call_stack': '  call stack (app module, first {v}):',
+        'rep_stack_line': '      #{a:02d} 0x{b:X} -> {c}',
+        'rep_no_fault_abort': '  fault offset : (none - abort()/terminate() path, no faulting instruction)',
+        'rep_no_fault_haxe': '  fault offset : (this report has no fault offset - Haxe-level crash, nothing to symbolise)',
+        'rep_no_fault_posix': '  fault offset : (native report without a Windows fault offset/backtrace - use tools/symbolize_android.py for POSIX dumps)',
+
+        # Hit
+        'hit_below': '(below the first symbol in this map)',
+        'hit_stale': '(STALE)',
+
+        # Summary
+        'sum_header': '%-19s %-7s %-11s %-26s %-6s %s',
+        'sum_note': "note: a ~ prefix means the symbol came from another build's map (a hint, not proof).",
+        'sum_sigs': '--- signatures (exception + faulting function) ---',
+        'sum_sig_line': '  {a:4d}x  {b}',
+
+        # CLI
+        'cli_desc': 'SeiunEngine crash triage: pick the crash report and the .map, get the crashing function.',
+        'cli_epilog': 'With no switches this opens the window UI (tkinter); --tui or --no-gui uses the terminal UI.\nExit codes: 0 all matched, 1 some report is from another build, 2 nothing to do.',
+        'help_crash': 'triage this crash report',
+        'help_map': 'use this linker .map (default: auto)',
+        'help_all': 'triage every report in the crash dir',
+        'help_pick': 'choose the report with a file dialog',
+        'help_summary': 'one line per report + signature counts',
+        'help_json': 'machine-readable summary output',
+        'help_keep_map': "snapshot the current build's .map",
+        'help_clean': 'archive old reports',
+        'help_keep': 'keep the newest N reports (default 20)',
+        'help_prune_maps': 'keep only the newest N map snapshots',
+        'help_dry_run': '--clean: do not move or delete anything',
+        'help_frames': 'how many app frames to symbolise (default 8)',
+        'help_crash_dir': 'override the crash directory',
+        'help_exe': 'override the exe used for the build fingerprint',
+        'help_tui': 'terminal UI (never opens a window)',
+        'help_no_gui': 'same as --tui, kept for scripting',
+        'help_no_write': 'do not write <report>.triage.txt',
+        'help_no_color': 'plain terminal output',
+        'help_lang': 'UI language (en, zh)',
+        'loading_map': '  loading map {v}...',
+        'snapshotted': 'snapshotted: {v}',
+        'already_snapshotted': 'already snapshotted: {v}',
+        'archive_moved': 'moved {v} item(s)',
+        'archive_would_move': 'would move {v} item(s)',
+        'and_more': '  ... and {v} more',
+        'no_snapshots': '  no snapshots in {v}',
+        'summary_crash_dir': 'crash dir : {v}',
+        'summary_current': 'current   : {v}   ({m})',
+        'summary_reports': 'reports   : {v}',
+        'summary_map': 'map       : {v}   [{q}]',
+    },
+    'zh': {
+        'err_not_map': '不是链接器 .map 文件 (没有首选加载地址): {v}',
+        'err_map_not_found': '找不到 map 文件: {v}',
+        'err_exe_not_found': '找不到 exe 文件: {v}',
+        'err_report_not_found': '找不到报告文件: {v}',
+        'err_no_reports': '{v} 中没有崩溃报告',
+        'err_nothing_picked': '未选择任何文件',
+        'ok': '成功', 'fail': '失败', 'skip': '跳过', 'stale': '过期', 'match': '匹配', 'other': '不匹配',
+        'ready': '就绪', 'done': '完成', 'summary_done': '摘要完成', 'keep_map_done': '快照完成', 'archive_done': '归档完成',
+        
+        # TUI
+        'tui_title': 'SeiunEngine 崩溃分析',
+        'tui_crash_dir': '  崩溃目录 : {v}',
+        'tui_reports': '  报告数量 : {v}',
+        'tui_current': '  当前构建 : {v}   ({m})',
+        'tui_no_current': '  当前构建 : (未找到 SeiunEngine.exe)',
+        'tui_map_chosen': '  map 文件 : {v}   (手动选择)',
+        'tui_map_auto': '  map 文件 : 自动 (优先匹配报告构建的快照，否则使用当前构建)',
+        'menu_newest': '  1  分析最新的报告',
+        'menu_listed': '  2  分析列表中的报告 (按编号)',
+        'menu_dialog': '  3  通过文件对话框选择崩溃报告',
+        'menu_all': '  4  分析全部报告',
+        'menu_summary': '  5  摘要表格',
+        'menu_keep_map': '  6  立即保存当前 .map 快照 (keep-map)',
+        'menu_list_maps': '  7  列出 .map 快照',
+        'menu_archive': '  8  归档旧报告 (保留最新 20 个)',
+        'menu_choose_map': '  9  选择从此以后使用的 .map 文件',
+        'menu_help_quit': '  h  帮助        q  退出',
+        'tui_help_1': '报告只有匹配产生它的构建的 .map 时才准确。',
+        'tui_help_2': '每次构建后请保存快照 (菜单 6)；来自其他构建的符号会被标记为过期。',
+        'tui_out_of_range': '  超出范围',
+        'tui_no_reports_here': '  这里没有报告',
+        'tui_nothing_picked': '  (未选择)',
+        'tui_nothing_picked_auto': '  (未选择 - 使用自动)',
+        'tui_map_for_report': '此报告使用的 Map 文件:',
+        'tui_auto_map': '  [Enter] 自动  ->  {v}   [{q}]',
+        'tui_auto_map_none': '  [Enter] 自动  ->  (未找到)',
+        'tui_pick_map_dialog': '  [p]           ->  通过文件对话框选择 .map',
+        'tui_paste_map_path': '  [路径]        ->  直接粘贴 .map 文件路径',
+        'tui_use_which_map': '从此以后使用哪个 .map？',
+        'tui_auto_map_back': '  [Enter] 自动  ->  恢复自动',
+        'tui_triage_result_ok': '结果：{v} 个报告，全部匹配该 map',
+        'tui_triage_result_stale': '结果：{a} 个报告，{b} 个来自其他构建 (符号仅为提示)',
+
+        # GUI
+        'gui_title': 'SeiunEngine 崩溃分析',
+        'gui_inputs': ' 输入 (选择崩溃报告和 map 文件) ',
+        'gui_crash_report': '崩溃报告',
+        'gui_map_file': 'Map 文件',
+        'gui_browse': '浏览...',
+        'gui_use_map': '使用此 .map (不勾选 = 自动：优先匹配报告构建的快照，否则使用当前构建)',
+        'gui_reports': ' 崩溃报告 (最新的在前；单击=选择，双击=分析) ',
+        'gui_output': ' 输出 (CI 风格步骤 + 报告详情) ',
+        'btn_triage_selected': '分析选中项',
+        'btn_triage_all': '分析全部报告',
+        'btn_summary': '摘要',
+        'btn_snapshot': '保存当前 .map 快照',
+        'btn_archive': '归档旧报告',
+        'btn_clear': '清空输出',
+        'btn_quit': '退出',
+        'gui_cur_build': '当前构建: {v}  ({m})',
+        'gui_no_cur_build': '当前构建: (未找到 SeiunEngine.exe)',
+        'gui_auto_map': '自动 map: {v}   [{q}]',
+        'gui_auto_map_none': '自动 map: (未找到)',
+        'gui_note_exe_missing': '注意: 未找到 SeiunEngine.exe，无法检查构建匹配。',
+        'gui_pick_report_first': '选择一个崩溃报告 (点击浏览或单击列表)，可选选择一个 .map 文件，然后点击按钮。',
+        'gui_choose_report_title': '选择崩溃报告',
+        'gui_choose_map_title': '选择链接器 .map',
+        'gui_all_files': '所有文件',
+        'gui_crash_reports': '崩溃报告',
+        'gui_map_files': 'Map 文件',
+
+        # 列名
+        'col_date': '日期', 'col_name': '名称', 'col_kind': '类型', 'col_exception': '异常', 'col_state': '状态', 'col_build': '构建', 'col_symbol': '崩溃函数',
+
+        # Steps
+        'step_read_report': '读取报告',
+        'step_fingerprint': '报告构建指纹',
+        'step_select_map': '选择 .map',
+        'step_load_map': '加载 .map',
+        'step_compare': '对比构建',
+        'step_resolve_fault': '解析崩溃偏移',
+        'step_resolve_bt': '解析调用栈',
+        'step_write': '写入分析文件',
+        'step_skip_no_stamp': '此旧版报告未记录该信息',
+        'step_no_map': '未找到 - 请使用 -m/--map 或 --keep-map 保存快照',
+        'step_map_cached': '已缓存 ({v} 个函数)',
+        'step_map_loaded': '{a:.1f} MB, {b} 个函数, {c:.1f}s',
+        'step_build_exact': '此 map 就是产生此报告的构建',
+        'step_build_stale': '报告构建 {a} vs 当前构建 {b}',
+        'step_build_no_cur': '未找到当前 exe',
+        'step_fault_detail': '0x{a:X} -> {b}',
+        'step_bt_detail': '无崩溃偏移 (abort/terminate 路径)；{a} 个应用栈帧，首个: 0x{b:X} -> {c}',
+        'step_bt_skip': '调用栈中没有 SeiunEngine.exe 的帧',
+        'step_haxe': '此报告没有崩溃偏移 (Haxe 层崩溃)',
+        'step_posix': '没有 Windows 崩溃偏移/调用栈 (POSIX 报告？请使用 tools/symbolize_android.py)',
+        'step_no_map_loaded': '未加载 map',
+        'step_write_ok': '{v}',
+        'step_write_skip': '已禁用 (--no-write)',
+        'step_quality_chosen_exact': '手动选择 (与报告构建匹配)',
+        'step_quality_chosen_hint': '手动选择 (无法针对此报告验证)',
+        'step_quality_snapshot': '此构建的快照',
+        'step_quality_current': '当前构建',
+        'step_quality_current_nostamp': '当前构建 (报告无构建标记)',
+        'step_quality_current_mismatch': '当前构建 (不匹配 - 此报告来自其他构建)',
+
+        # Report Block
+        'rep_app': '  应用         : {v}',
+        'rep_engine': '  引擎         : {v}',
+        'rep_exception': '  异常         : {v}{n}',
+        'rep_context': '  上下文       : {v}',
+        'rep_fault_module': '  崩溃模块     : {v}',
+        'rep_error': '  错误         : {v}',
+        'rep_build': '  报告构建     : {v}',
+        'rep_no_build': '(旧版报告未记录)',
+        'rep_cur_exe': '  当前 exe     : {v}',
+        'rep_not_built': '(未构建)',
+        'rep_match_yes': '  构建匹配     : 是 - 此 map 就是产生此报告的构建',
+        'rep_match_no': '  构建匹配     : 否 - 此 map 来自其他构建；下方的符号仅供参考',
+        'rep_map': '  map 文件     : {v}',
+        'rep_no_map': '(未找到)',
+        'rep_fault_offset': '  崩溃偏移     : 0x{v:X}',
+        'rep_fault_hit': '        -> {v}',
+        'rep_call_stack': '  调用栈 (应用模块，前 {v} 个):',
+        'rep_stack_line': '      #{a:02d} 0x{b:X} -> {c}',
+        'rep_no_fault_abort': '  崩溃偏移     : (无 - abort()/terminate() 路径，没有触发崩溃的指令)',
+        'rep_no_fault_haxe': '  崩溃偏移     : (此报告没有崩溃偏移 - Haxe 层崩溃，无需解析符号)',
+        'rep_no_fault_posix': '  崩溃偏移     : (原生报告缺少 Windows 崩溃偏移/调用栈 - POSIX dump 请使用 tools/symbolize_android.py)',
+
+        # Hit
+        'hit_below': '(低于此 map 中的第一个符号)',
+        'hit_stale': '(过期)',
+
+        # Summary
+        'sum_header': '%-19s %-7s %-11s %-26s %-6s %s',
+        'sum_note': "注意：带有 ~ 前缀表示该符号来自其他构建的 map (仅供参考，并非确凿证据)。",
+        'sum_sigs': '--- 签名 (异常 + 崩溃函数) ---',
+        'sum_sig_line': '  {a:4d}x  {b}',
+
+        # CLI
+        'cli_desc': 'SeiunEngine 崩溃分析：选择崩溃报告和 .map 文件，找出崩溃的函数。',
+        'cli_epilog': '不带参数运行将打开窗口 UI (tkinter)；使用 --tui 或 --no-gui 运行终端 UI。\n退出码：0 全部匹配，1 部分报告来自其他构建，2 没有要处理的内容。',
+        'help_crash': '分析此崩溃报告',
+        'help_map': '使用此链接 .map 文件 (默认：自动)',
+        'help_all': '分析崩溃目录中的全部报告',
+        'help_pick': '通过文件对话框选择报告',
+        'help_summary': '每个报告一行摘要 + 签名统计',
+        'help_json': '输出机器可读的摘要',
+        'help_keep_map': '保存当前构建的 .map 快照',
+        'help_clean': '归档旧报告',
+        'help_keep': '保留最新的 N 个报告 (默认 20)',
+        'help_prune_maps': '仅保留最新的 N 个 map 快照',
+        'help_dry_run': '--clean：不移动或删除任何内容',
+        'help_frames': '解析多少个应用栈帧 (默认 8)',
+        'help_crash_dir': '覆盖崩溃目录',
+        'help_exe': '覆盖用于构建指纹的 exe',
+        'help_tui': '终端 UI (不打开窗口)',
+        'help_no_gui': '与 --tui 相同，用于脚本',
+        'help_no_write': '不写入 <report>.triage.txt',
+        'help_no_color': '纯文本终端输出',
+        'help_lang': '界面语言 (en, zh)',
+        'loading_map': '  加载 map {v}...',
+        'snapshotted': '快照已保存: {v}',
+        'already_snapshotted': '快照已存在: {v}',
+        'archive_moved': '已移动 {v} 个项目',
+        'archive_would_move': '将移动 {v} 个项目',
+        'and_more': '  ... 以及另外 {v} 个',
+        'no_snapshots': '  {v} 中没有快照',
+        'summary_crash_dir': '崩溃目录 : {v}',
+        'summary_current': '当前构建 : {v}   ({m})',
+        'summary_reports': '报告数量 : {v}',
+        'summary_map': 'map 文件 : {v}   [{q}]',
+    }
+}
+
+def _pre_scan_lang():
+    for i, arg in enumerate(sys.argv):
+        if arg == '--lang' and i + 1 < len(sys.argv):
+            return sys.argv[i+1]
+    return None
+
+CURRENT_LANG = _pre_scan_lang()
+if not CURRENT_LANG:
+    try:
+        lang, _ = locale.getdefaultlocale()
+        CURRENT_LANG = 'zh' if lang and lang.lower().startswith('zh') else 'en'
+    except Exception:
+        CURRENT_LANG = 'en'
+
+def _(key, **kwargs):
+    """全局翻译函数"""
+    lang_dict = TRANSLATIONS.get(CURRENT_LANG, TRANSLATIONS['en'])
+    text = lang_dict.get(key, TRANSLATIONS['en'].get(key, key))
+    if kwargs:
+        try:
+            return text.format(**kwargs)
+        except Exception:
+            return text
+    return text
+
+# ============================================================================
+# 核心逻辑
+# ============================================================================
+
 TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(TOOL_DIR)
 DEFAULT_CRASH_DIR = os.path.join(REPO_ROOT, 'export', 'release', 'windows', 'bin', 'crash')
+
 def _first_existing(*paths):
     for p in paths:
         if os.path.isfile(p):
@@ -55,9 +435,6 @@ def _newest_existing(*paths):
     return max(existing, key=os.path.getmtime)
 
 
-# The symbols bundle (tools/SymbolsAfterBuild.hx) is the published copy; export/release/windows/obj
-# is the one this tree's latest link produced. A build invoked in a way that skips the postbuild hook
-# leaves the bundle older than the binary, so take whichever file is newer instead of trusting order.
 DEFAULT_MAP = _newest_existing(
     os.path.join(REPO_ROOT, 'export', 'symbols', 'windows-release', 'ApplicationMain.map'),
     os.path.join(REPO_ROOT, 'export', 'release', 'windows', 'obj', 'ApplicationMain.map'))
@@ -69,19 +446,10 @@ BASE_LINE = re.compile(r'Preferred load address is\s+([0-9a-fA-F]+)')
 NAME_DATE = re.compile(r"(\d{4})-(\d{2})-(\d{2})_(\d{2})'(\d{2})'(\d{2})")
 NAME_DATE_COMPACT = re.compile(r'(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})')
 
-
-# ----------------------------------------------------------------------------
-# build fingerprint / paths
-# ----------------------------------------------------------------------------
-
 FNV_OFFSET = 0x811C9DC5
 FNV_PRIME = 0x01000193
 
-
 def fnv1a_head_tail(path, chunk=65536):
-    # The engine build hash (source/backend/native_crash.inc, tools/fnv1a.py "file"): FNV-1a over
-    # the first 64 KB plus, for files above 128 KB, the last 64 KB. It survives the mtime rewrite
-    # that installing/copying a build does, so a report matches its exact binary anywhere.
     h = FNV_OFFSET
     size = os.path.getsize(path)
     with open(path, "rb") as fh:
@@ -95,18 +463,13 @@ def fnv1a_head_tail(path, chunk=65536):
                 h = ((h ^ b) * FNV_PRIME) & 0xFFFFFFFF
     return "%08x" % h
 
-
 def same_build(report, current):
-    # True when the report came from the binary `current` describes. The report @mtime is the
-    # install time on the reporting device, so size+mtime only matches a local build by luck;
-    # the FNV hash of the shipped bytes is exact everywhere.
     if not report or not current:
         return False
     report_hash = report.get("build_hash")
     if report_hash and current.get("hash") and report_hash.lower() == current["hash"].lower():
         return True
     return report_fingerprint(report) == current["fingerprint"]
-
 
 def exe_fingerprint(path):
     if not path or not os.path.isfile(path):
@@ -134,14 +497,12 @@ def exe_fingerprint(path):
         'fingerprint': '%dB@%ds' % (size, stamp),
     }
 
-
 def date_from_name(name):
     m = NAME_DATE.search(name) or NAME_DATE_COMPACT.search(name)
     if not m:
         return None
     g = m.groups()
     return '%s-%s-%s %s:%s:%s' % g
-
 
 def report_files(crash_dir):
     if not os.path.isdir(crash_dir):
@@ -158,13 +519,8 @@ def report_files(crash_dir):
     out.sort(key=lambda p: os.path.getmtime(p))
     return out
 
-
 def repo_defaults():
     return DEFAULT_CRASH_DIR, DEFAULT_MAP, DEFAULT_EXE
-
-# ----------------------------------------------------------------------------
-# crash reports (native SEH dump, and the Haxe CrashHandler text)
-# ----------------------------------------------------------------------------
 
 def _first(lines, pattern, group=1):
     rx = re.compile(pattern)
@@ -174,22 +530,14 @@ def _first(lines, pattern, group=1):
             return m.group(group).strip()
     return None
 
-
 def read_report(path):
     path = os.path.abspath(path)
     with open(path, 'r', encoding='utf-8', errors='replace') as fh:
         lines = fh.read().splitlines()
 
-    # Classification only ever looks at the report's own header. Reports used to
-    # paste the previous crash files verbatim inside themselves, and a full-file
-    # scan then found an embedded native dump and mislabelled the Haxe report it
-    # sat in. The embed is gone, but the header window keeps that class of bug
-    # from coming back.
     head = lines[:40]
     exc = _first(head, r'^Exception code:\s*(0x[0-9a-fA-F]+)')
     fault_text = _first(head, r'^Fault offset:\s*(0x[0-9a-fA-F]+)')
-    # The SIGABRT hook (abort()/terminate()) writes a real native backtrace but has no faulting
-    # address, so the exception fields are absent. Its kind line is the only classification signal.
     kind_text = _first(head, r'^Kind:\s*(.+)$')
     if exc or fault_text or (kind_text and 'Native crash' in kind_text):
         kind = 'native'
@@ -220,8 +568,6 @@ def read_report(path):
     frames = []
     in_bt = False
     for line in lines:
-        # Section banners ("--- Backtrace ... ---") are accepted too, so the
-        # report layout can gain headings without silently killing frame parsing.
         if re.match(r'^(---\s*)?Backtrace', line):
             in_bt = True
             continue
@@ -253,8 +599,6 @@ def read_report(path):
                 if nxt.strip():
                     haxe_stack.append(nxt.strip())
             break
-    # Release builds run without HXCPP_STACK_TRACE, so the section carries an
-    # explanatory note instead of frames - that is not a stack.
     if haxe_stack and haxe_stack[0].startswith('(empty'):
         haxe_stack = []
 
@@ -282,15 +626,10 @@ def read_report(path):
         'haxe_stack': haxe_stack,
     }
 
-
 def report_fingerprint(report):
     if report.get('build_size') is None:
         return None
     return '%dB@%ds' % (report['build_size'], report['build_stamp'])
-
-# ----------------------------------------------------------------------------
-# .map parsing (~337k lines / ~80k functions / ~2-3 s) + binary-search lookup
-# ----------------------------------------------------------------------------
 
 def name_score(name):
     if name.startswith('$') or name.startswith('__real@') or name.startswith('__xmm@') or name.startswith('__guard_'):
@@ -301,9 +640,7 @@ def name_score(name):
         return 2
     return 1
 
-
 def human_name(name):
-    '''Cheap MSVC mangling -> Namespace::Class_obj::method (same idea as tools/mapresolve.py).'''
     if not name.startswith('?'):
         return name
     m = re.match(r'^\?([^@]+)@(.*?)@@', name)
@@ -313,10 +650,7 @@ def human_name(name):
     scope.reverse()
     return '::'.join(scope + [m.group(1)])
 
-
 class MapData:
-    '''Sorted RVA list + {rva: (mangled name, .obj)} for one linker .map.'''
-
     def __init__(self, path, base, names, size, elapsed):
         self.path = path
         self.base = base
@@ -325,12 +659,11 @@ class MapData:
         self.size = size
         self.elapsed = elapsed
 
-
 def read_map(path, log=None):
     path = os.path.abspath(path)
     size = os.path.getsize(path)
     if log:
-        log('  loading map %s (%.1f MB)...' % (os.path.basename(path), size / (1024.0 * 1024.0)))
+        log(_('loading_map', v=os.path.basename(path), m=(size / (1024.0 * 1024.0))))
     started = time.time()
     base = 0
     names = {}
@@ -355,9 +688,8 @@ def read_map(path, log=None):
             names[rva] = (name, m.group(4))
             score[rva] = name_score(name)
     if not base:
-        raise ValueError('not a linker .map (no preferred load address): %s' % path)
+        raise ValueError(_('err_not_map', v=path))
     return MapData(path, base, names, size, time.time() - started)
-
 
 def resolve_offset(map_data, offset):
     import bisect
@@ -369,23 +701,17 @@ def resolve_offset(map_data, offset):
     name, obj = map_data.names[rva]
     return {'symbol': human_name(name), 'obj': obj, 'displacement': offset - rva}
 
-
 def format_hit(hit, stale=False):
     if not hit:
-        return '(below the first symbol in this map)'
+        return _('hit_below')
     text = '%s + 0x%X' % (hit['symbol'], hit['displacement'])
     if hit['obj']:
         text += '   [%s]' % hit['obj']
     if stale:
-        text += '   (STALE)'
+        text += '   ' + _('hit_stale')
     return text
 
-
 def app_backtrace_frames(report, limit=8):
-    '''SeiunEngine.exe frames from the report backtrace (innermost first).
-
-    abort()/terminate() reports carry a full backtrace but no fault offset, so the stack is the
-    only addressable evidence they have.'''
     out = []
     for frame in report.get('backtrace') or []:
         if 'SeiunEngine.exe' in frame['module']:
@@ -394,43 +720,33 @@ def app_backtrace_frames(report, limit=8):
                 break
     return out
 
-# ----------------------------------------------------------------------------
-# map selection
-# ----------------------------------------------------------------------------
-
 def maps_dir(crash_dir):
     return os.path.join(crash_dir, 'maps')
-
 
 def select_map(report, forced_map, current, crash_dir, default_map=None):
     default_map = default_map or DEFAULT_MAP
     fp = report_fingerprint(report) if report else None
     if forced_map:
         if not os.path.isfile(forced_map):
-            raise FileNotFoundError('map not found: %s' % forced_map)
+            raise FileNotFoundError(_('err_map_not_found', v=forced_map))
         path = os.path.abspath(forced_map)
         exact = bool(fp) and (os.path.splitext(os.path.basename(path))[0] == fp or same_build(report, current))
-        quality = 'chosen by you (matches the report build)' if exact else 'chosen by you (cannot verify against this report)'
+        quality = _('step_quality_chosen_exact') if exact else _('step_quality_chosen_hint')
         return {'path': path, 'exact': exact, 'quality': quality}
     if fp:
         snap = os.path.join(maps_dir(crash_dir), fp + '.map')
         if os.path.isfile(snap):
-            return {'path': snap, 'exact': True, 'quality': 'snapshot for this build'}
+            return {'path': snap, 'exact': True, 'quality': _('step_quality_snapshot')}
     if os.path.isfile(default_map):
         exact = same_build(report, current)
         if exact:
-            quality = 'current build'
+            quality = _('step_quality_current')
         elif not fp:
-            quality = 'current build (report has no build stamp)'
+            quality = _('step_quality_current_nostamp')
         else:
-            quality = 'current build (MISMATCH - this report is from another build)'
+            quality = _('step_quality_current_mismatch')
         return {'path': os.path.abspath(default_map), 'exact': exact, 'quality': quality}
     return None
-
-
-# ----------------------------------------------------------------------------
-# the triage pipeline (the CI-style steps + the report block)
-# ----------------------------------------------------------------------------
 
 def analyze(report_path, forced_map, current, crash_dir, frames=8, map_cache=None,
             default_map=None, write=True, log=None):
@@ -441,58 +757,56 @@ def analyze(report_path, forced_map, current, crash_dir, frames=8, map_cache=Non
         steps.append({'title': title, 'status': status, 'detail': detail})
 
     report = read_report(report_path)
-    step('read report', 'OK', '%s  [%s]%s' % (report['name'], report['kind'],
+    step(_('step_read_report'), 'OK', '%s  [%s]%s' % (report['name'], report['kind'],
          ('  ' + report['date']) if report['date'] else ''))
 
     fp = report_fingerprint(report)
     if fp:
-        step('report build fingerprint', 'OK', fp + ('#' + report['build_hash'] if report['build_hash'] else ''))
+        step(_('step_fingerprint'), 'OK', fp + ('#' + report['build_hash'] if report['build_hash'] else ''))
     else:
-        step('report build fingerprint', 'SKIP', 'this older report does not record it')
+        step(_('step_fingerprint'), 'SKIP', _('step_skip_no_stamp'))
 
     info = select_map(report, forced_map, current, crash_dir, default_map)
     if info:
-        step('select .map', 'OK', '%s   [%s]' % (info['path'], info['quality']))
+        step(_('step_select_map'), 'OK', '%s   [%s]' % (info['path'], info['quality']))
     else:
-        step('select .map', 'FAIL', 'none found - use -m/--map or snapshot with --keep-map')
+        step(_('step_select_map'), 'FAIL', _('step_no_map'))
 
     map_data = None
     if info:
         if info['path'] in map_cache:
             map_data = map_cache[info['path']]
-            step('load .map', 'OK', 'cached (%d functions)' % len(map_data.keys))
+            step(_('step_load_map'), 'OK', _('step_map_cached', v=len(map_data.keys)))
         else:
             map_data = read_map(info['path'], log=None)
             map_cache[info['path']] = map_data
-            step('load .map', 'OK', '%.1f MB, %d functions, %.1fs' % (
-                map_data.size / (1024.0 * 1024.0), len(map_data.keys), map_data.elapsed))
+            step(_('step_load_map'), 'OK', _('step_map_loaded', a=(map_data.size / (1024.0 * 1024.0)), b=len(map_data.keys), c=map_data.elapsed))
 
     stale = not (info and info['exact'])
     if info and info['exact']:
-        step('compare builds', 'OK', 'this map is the build that produced the report')
+        step(_('step_compare'), 'OK', _('step_build_exact'))
     elif current:
-        step('compare builds', 'STALE', 'report %s vs current %s' % (fp or '(none)', current['fingerprint']))
+        step(_('step_compare'), 'STALE', _('step_build_stale', a=(fp or '(none)'), b=current['fingerprint']))
     else:
-        step('compare builds', 'STALE', 'current exe not found')
+        step(_('step_compare'), 'STALE', _('step_build_no_cur'))
 
     if map_data and report['fault_offset'] is not None:
         hit = resolve_offset(map_data, report['fault_offset'])
-        step('resolve fault offset', 'OK', '0x%X -> %s' % (report['fault_offset'], format_hit(hit, stale)));
+        step(_('step_resolve_fault'), 'OK', _('step_fault_detail', a=report['fault_offset'], b=format_hit(hit, stale)))
     elif map_data and report['kind'] == 'native' and report['backtrace']:
         app_frames = app_backtrace_frames(report, frames)
         if app_frames:
             hit = resolve_offset(map_data, app_frames[0]['offset'])
-            step('resolve backtrace', 'OK', 'no fault offset (abort/terminate path); %d app frame(s), first: 0x%X -> %s'
-                 % (len(app_frames), app_frames[0]['offset'], format_hit(hit, stale)))
+            step(_('step_resolve_bt'), 'OK', _('step_bt_detail', a=len(app_frames), b=app_frames[0]['offset'], c=format_hit(hit, stale)))
         else:
-            step('resolve backtrace', 'SKIP', 'the backtrace has no SeiunEngine.exe frames')
+            step(_('step_resolve_bt'), 'SKIP', _('step_bt_skip'))
     elif map_data:
-        detail = 'this report has no fault offset (Haxe-level crash)'
+        detail = _('step_haxe')
         if report['kind'] == 'native':
-            detail = 'no Windows fault offset/backtrace (POSIX report? use tools/symbolize_android.py)'
-        step('resolve fault offset', 'SKIP', detail)
+            detail = _('step_posix')
+        step(_('step_resolve_fault'), 'SKIP', detail)
     else:
-        step('resolve fault offset', 'SKIP', 'no map loaded')
+        step(_('step_resolve_fault'), 'SKIP', _('step_no_map_loaded'))
 
     block = report_block(report, info, map_data, current, frames, stale)
 
@@ -503,11 +817,11 @@ def analyze(report_path, forced_map, current, crash_dir, frames=8, map_cache=Non
             with open(dest, 'w', encoding='utf-8', newline='') as fh:
                 fh.write('\n'.join(block) + '\n')
             written = dest
-            step('write triage file', 'OK', dest)
+            step(_('step_write'), 'OK', _('step_write_ok', v=dest))
         except OSError as exc:
-            step('write triage file', 'FAIL', str(exc))
+            step(_('step_write'), 'FAIL', str(exc))
     else:
-        step('write triage file', 'SKIP', 'disabled (--no-write)')
+        step(_('step_write'), 'SKIP', _('step_write_skip'))
 
     return {'report': report, 'steps': steps, 'block': block, 'stale': stale, 'written': written,
             'map': info, 'fingerprint': fp}
@@ -520,60 +834,60 @@ def report_block(report, info, map_data, current, frames, stale):
         head += '   ' + report['date']
     out.append(head)
     out.append('=' * 78)
+    
     if report['app']:
-        out.append('  app          : ' + report['app'])
+        out.append(_('rep_app', v=report['app']))
     elif report['engine']:
-        out.append('  engine       : ' + report['engine'])
+        out.append(_('rep_engine', v=report['engine']))
+        
     if report['kind'] == 'native':
         name = ' (%s)' % report['exception_name'] if report['exception_name'] else ''
-        out.append('  exception    : %s%s' % (report['exception'], name))
+        out.append(_('rep_exception', v=report['exception'], n=name))
         if report['context']:
-            out.append('  context      : ' + report['context'])
+            out.append(_('rep_context', v=report['context']))
         if report['faulting_module']:
-            out.append('  fault module : ' + os.path.basename(report['faulting_module']))
+            out.append(_('rep_fault_module', v=os.path.basename(report['faulting_module'])))
+            
     if report['error']:
-        out.append('  error        : ' + report['error'])
+        out.append(_('rep_error', v=report['error']))
     for line in report['haxe_stack']:
         out.append('      ' + line)
-    out.append('  report build : ' + (report['build_raw'] or '(not recorded in this older report)'))
-    out.append('  current exe  : ' + (current['fingerprint'] + '   (' + current['modified'] + ')' if current else '(not built)'))
+        
+    out.append(_('rep_build', v=(report['build_raw'] or _('rep_no_build'))))
+    out.append(_('rep_cur_exe', v=(current['fingerprint'] + '   (' + current['modified'] + ')' if current else _('rep_not_built'))))
+    
     if info and info['exact']:
-        out.append('  build match  : YES - this map is the build that produced the report')
+        out.append(_('rep_match_yes'))
     else:
-        out.append('  build match  : NO - the map is from another build; symbols below are hints only')
-    out.append('  map          : ' + ('%s   [%s]' % (info['path'], info['quality']) if info else '(none found)'))
+        out.append(_('rep_match_no'))
+        
+    out.append(_('rep_map', v=('%s   [%s]' % (info['path'], info['quality']) if info else _('rep_no_map'))))
 
     if map_data and report['fault_offset'] is not None:
-        out.append('  fault offset : 0x%X' % report['fault_offset'])
-        out.append('        -> ' + format_hit(resolve_offset(map_data, report['fault_offset']), stale))
+        out.append(_('rep_fault_offset', v=report['fault_offset']))
+        out.append(_('rep_fault_hit', v=format_hit(resolve_offset(map_data, report['fault_offset']), stale)))
         app_frames = [f for f in report['backtrace'] if 'SeiunEngine.exe' in f['module']][:frames]
         if app_frames:
-            out.append('  call stack (app module, first %d):' % len(app_frames))
+            out.append(_('rep_call_stack', v=len(app_frames)))
             for f in app_frames:
                 hit = resolve_offset(map_data, f['offset'])
-                out.append('      #%02d 0x%X -> %s' % (f['index'], f['offset'], format_hit(hit, stale)))
+                out.append(_('rep_stack_line', a=f['index'], b=f['offset'], c=format_hit(hit, stale)))
     elif map_data:
         if report['kind'] == 'native' and report['backtrace']:
-            # abort()/terminate(): no faulting instruction, but the captured stack is addressable.
             app_frames = app_backtrace_frames(report, frames)
-            out.append('  fault offset : (none - abort()/terminate() path, no faulting instruction)')
+            out.append(_('rep_no_fault_abort'))
             if app_frames:
-                out.append('  call stack (app module, first %d):' % len(app_frames))
+                out.append(_('rep_call_stack', v=len(app_frames)))
                 for f in app_frames:
                     hit = resolve_offset(map_data, f['offset'])
-                    out.append('      #%02d 0x%X -> %s' % (f['index'], f['offset'], format_hit(hit, stale)))
+                    out.append(_('rep_stack_line', a=f['index'], b=f['offset'], c=format_hit(hit, stale)))
         else:
-            msg = '  fault offset : (this report has no fault offset - Haxe-level crash, nothing to symbolise)'
+            msg = _('rep_no_fault_haxe')
             if report['kind'] == 'native':
-                msg = '  fault offset : (native report without a Windows fault offset/backtrace - use tools/symbolize_android.py for POSIX dumps)'
+                msg = _('rep_no_fault_posix')
             out.append(msg)
     out.append('')
     return out
-
-
-# ----------------------------------------------------------------------------
-# summary / keep-map / clean
-# ----------------------------------------------------------------------------
 
 def summary_rows(crash_dir, current, map_data):
     rows = []
@@ -604,14 +918,13 @@ def summary_rows(crash_dir, current, map_data):
         })
     return rows
 
-
 def keep_map(map_path, crash_dir, exe_path, force=False):
     src = map_path or DEFAULT_MAP
     if not os.path.isfile(src):
-        raise FileNotFoundError('map not found: %s (build the client first, or pass --map)' % src)
+        raise FileNotFoundError(_('err_map_not_found', v=src))
     current = exe_fingerprint(exe_path)
     if not current:
-        raise FileNotFoundError('exe not found: %s' % exe_path)
+        raise FileNotFoundError(_('err_exe_not_found', v=exe_path))
     out_dir = maps_dir(crash_dir)
     os.makedirs(out_dir, exist_ok=True)
     dest = os.path.join(out_dir, current['fingerprint'] + '.map')
@@ -631,7 +944,6 @@ def keep_map(map_path, crash_dir, exe_path, force=False):
         json.dump(side, fh, indent=2)
     return {'path': dest, 'skipped': False, 'fingerprint': current['fingerprint'],
             'bytes': side['mapBytes'], 'sha256': digest}
-
 
 def clean(crash_dir, keep=20, prune_maps=0, dry_run=False):
     moved = []
@@ -661,14 +973,9 @@ def clean(crash_dir, keep=20, prune_maps=0, dry_run=False):
                 moved.append(old)
     return moved
 
-# ----------------------------------------------------------------------------
-# colours + CI-style step rendering (shared by the terminal UI and the window log)
-# ----------------------------------------------------------------------------
-
 _CODES = {'reset': '\033[0m', 'dim': '\033[2m', 'bold': '\033[1m', 'red': '\033[31m',
           'green': '\033[32m', 'yellow': '\033[33m', 'cyan': '\033[36m'}
 USE_COLOR = False
-
 
 def enable_ansi():
     global USE_COLOR
@@ -689,18 +996,14 @@ def enable_ansi():
         USE_COLOR = False
     return USE_COLOR
 
-
 def col(text, name):
     if not USE_COLOR:
         return text
     return _CODES.get(name, '') + text + _CODES['reset']
 
-
 STATUS_COLOR = {'OK': 'green', 'STALE': 'yellow', 'WARN': 'yellow', 'FAIL': 'red', 'SKIP': 'dim'}
 
-
 def step_plain(steps, width=76):
-    '''[(line, status), ...] -- '[ 3/7 ] compare builds .... STALE  detail'.'''
     out = []
     total = len(steps)
     for i, item in enumerate(steps, 1):
@@ -712,9 +1015,7 @@ def step_plain(steps, width=76):
         out.append((line, item['status']))
     return out
 
-
 def step_lines(steps, width=76):
-    '''[ 3/7 ] compare builds .......... STALE  detail'''
     out = []
     for line, status in step_plain(steps, width):
         marker = status.ljust(5)
@@ -724,17 +1025,11 @@ def step_lines(steps, width=76):
         out.append(line)
     return out
 
-
 def ruler(title='', width=78):
     if not title:
         return '=' * width
     pad = width - len(title) - 3
     return '== ' + title + ' ' + '=' * max(0, pad)
-
-
-# ----------------------------------------------------------------------------
-# file dialog (Explorer / native picker); needs tkinter, degrades to None
-# ----------------------------------------------------------------------------
 
 def pick_file(title, filetypes, initialdir=None, save=False):
     try:
@@ -758,10 +1053,6 @@ def pick_file(title, filetypes, initialdir=None, save=False):
     except Exception:
         return None
 
-# ----------------------------------------------------------------------------
-# window UI (tkinter): native Explorer dialogs, mouse, CI-style log
-# ----------------------------------------------------------------------------
-
 def gui_available():
     try:
         import tkinter  # noqa: F401
@@ -769,6 +1060,9 @@ def gui_available():
     except Exception:
         return False
 
+# ============================================================================
+# GUI
+# ============================================================================
 
 def run_gui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
     import queue
@@ -781,12 +1075,12 @@ def run_gui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
     jobs = queue.Queue()
 
     root = tk.Tk()
-    root.title('SeiunEngine Crash Triage')
-    root.geometry('1040x790+60+40')   # keep the whole window on screen
+    root.title(_('gui_title'))
+    root.geometry('1040x790+60+40')
     root.minsize(880, 640)
     mono = ('Consolas', 10) if os.name == 'nt' else ('Menlo', 11)
 
-    inputs = ttk.LabelFrame(root, text=' Inputs  (you pick both files) ')
+    inputs = ttk.LabelFrame(root, text=_('gui_inputs'))
     inputs.pack(fill='x', padx=10, pady=(10, 6))
     inputs.columnconfigure(1, weight=1)
 
@@ -803,35 +1097,34 @@ def run_gui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
                 update_info()
         return path
 
-    ttk.Label(inputs, text='Crash report').grid(row=0, column=0, sticky='w', padx=6, pady=4)
+    ttk.Label(inputs, text=_('gui_crash_report')).grid(row=0, column=0, sticky='w', padx=6, pady=4)
     ttk.Entry(inputs, textvariable=crash_var).grid(row=0, column=1, sticky='ew', padx=6, pady=4)
-    ttk.Button(inputs, text='Browse...', command=lambda: browse(crash_var, 'Choose a crash report',
-        [('Crash reports', '*.txt'), ('All files', '*.*')])).grid(row=0, column=2, padx=6, pady=4)
+    ttk.Button(inputs, text=_('gui_browse'), command=lambda: browse(crash_var, _('gui_choose_report_title'),
+        [(_('gui_crash_reports'), '*.txt'), (_('gui_all_files'), '*.*')])).grid(row=0, column=2, padx=6, pady=4)
 
-    ttk.Label(inputs, text='Map file').grid(row=1, column=0, sticky='w', padx=6, pady=4)
+    ttk.Label(inputs, text=_('gui_map_file')).grid(row=1, column=0, sticky='w', padx=6, pady=4)
     ttk.Entry(inputs, textvariable=map_var).grid(row=1, column=1, sticky='ew', padx=6, pady=4)
-    ttk.Button(inputs, text='Browse...', command=lambda: browse(map_var, 'Choose a linker .map',
-        [('Map files', '*.map'), ('All files', '*.*')])).grid(row=1, column=2, padx=6, pady=4)
+    ttk.Button(inputs, text=_('gui_browse'), command=lambda: browse(map_var, _('gui_choose_map_title'),
+        [(_('gui_map_files'), '*.map'), (_('gui_all_files'), '*.*')])).grid(row=1, column=2, padx=6, pady=4)
 
     ttk.Checkbutton(inputs, variable=use_map_var,
-        text='use this .map   (unchecked = auto: snapshot for the report build, else the current one)'
-        ).grid(row=2, column=0, columnspan=3, sticky='w', padx=6, pady=(0, 2))
+        text=_('gui_use_map')).grid(row=2, column=0, columnspan=3, sticky='w', padx=6, pady=(0, 2))
     info = ttk.Label(inputs, text='', foreground='#666666')
     info.grid(row=3, column=0, columnspan=3, sticky='w', padx=6, pady=(0, 6))
 
-    mid = ttk.LabelFrame(root, text=' Reports (newest first; click = select, double-click = triage) ')
+    mid = ttk.LabelFrame(root, text=_('gui_reports'))
     mid.pack(fill='both', padx=10, pady=6)
     cols = ('date', 'name', 'kind', 'exception')
     tree = ttk.Treeview(mid, columns=cols, show='headings', height=9)
     for name, width in zip(cols, (150, 430, 80, 130)):
-        tree.heading(name, text=name)
+        tree.heading(name, text=_(f'col_{name}'))
         tree.column(name, width=width, anchor='w')
     tree.pack(side='left', fill='both', expand=True, padx=(6, 0), pady=6)
     tree_sb = ttk.Scrollbar(mid, orient='vertical', command=tree.yview)
     tree_sb.pack(side='right', fill='y', pady=6)
     tree.configure(yscrollcommand=tree_sb.set)
 
-    out_frame = ttk.LabelFrame(root, text=' Output (CI-style steps + report detail) ')
+    out_frame = ttk.LabelFrame(root, text=_('gui_output'))
     out_frame.pack(fill='both', expand=True, padx=10, pady=6)
     out = tk.Text(out_frame, wrap='none', font=mono, background='#0f1419', foreground='#d8dee9',
                   insertbackground='#d8dee9', height=16)
@@ -845,7 +1138,7 @@ def run_gui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
 
     buttons = ttk.Frame(root)
     buttons.pack(fill='x', padx=10)
-    status = tk.StringVar(value='ready')
+    status = tk.StringVar(value=_('ready'))
     ttk.Label(root, textvariable=status, anchor='w').pack(fill='x', padx=12, pady=(4, 8))
 
     def write(text, tag='plain'):
@@ -871,8 +1164,8 @@ def run_gui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
                     elif kind == 'refresh':
                         refresh_tree()
                     elif kind == 'see':
-                        out.yview(payload)   # put that line at the top of the pane
-                except Exception as exc:      # never let one bad update kill the poll loop
+                        out.yview(payload)
+                except Exception as exc:
                     write('UI error: %s' % exc, 'fail')
         except queue.Empty:
             pass
@@ -888,7 +1181,6 @@ def run_gui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
 
     def run_bg(job):
         set_busy(True)
-
         def worker():
             try:
                 job()
@@ -896,7 +1188,6 @@ def run_gui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
                 post('line', 'ERROR: %s' % exc, 'fail')
             finally:
                 post('busy', False)
-
         threading.Thread(target=worker, daemon=True).start()
 
     def refresh_tree():
@@ -909,8 +1200,8 @@ def run_gui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
                 continue
             tree.insert('', 'end', iid=path, values=(report['date'] or '', report['name'],
                         report['kind'], report['exception'] or '-'))
-        tree.yview_moveto(0)          # newest first, always show the top of the list
-        status.set('%d report(s)   |   %s' % (len(files), crash_dir))
+        tree.yview_moveto(0)
+        status.set('%d %s   |   %s' % (len(files), _('tui_reports').split(':')[0].strip(), crash_dir))
         if files and not crash_var.get():
             crash_var.set(files[0])
         update_info()
@@ -918,9 +1209,9 @@ def run_gui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
     def update_info():
         bits = []
         if current:
-            bits.append('current build: %s  (%s)' % (current['fingerprint'], current['modified']))
+            bits.append(_('gui_cur_build', v=current['fingerprint'], m=current['modified']))
         else:
-            bits.append('current build: (SeiunEngine.exe not found)')
+            bits.append(_('gui_no_cur_build'))
         report = None
         path = crash_var.get().strip()
         if path and os.path.isfile(path):
@@ -929,7 +1220,10 @@ def run_gui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
             except Exception:
                 report = None
         auto = select_map(report, None, current, crash_dir, default_map)
-        bits.append(('auto map: %s   [%s]' % (auto['path'], auto['quality'])) if auto else 'auto map: (none found)')
+        if auto:
+            bits.append(_('gui_auto_map', v=auto['path'], q=auto['quality']))
+        else:
+            bits.append(_('gui_auto_map_none'))
         info.configure(text='        '.join(bits))
 
     def chosen_map():
@@ -937,7 +1231,7 @@ def run_gui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
             return None
         path = map_var.get().strip()
         if path and not os.path.isfile(path):
-            raise FileNotFoundError('map not found: %s' % path)
+            raise FileNotFoundError(_('err_map_not_found', v=path))
         return path or None
 
     def all_reports():
@@ -965,13 +1259,12 @@ def run_gui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
             triage(paths)
 
     def triage(paths):
-        start_index = out.index('end-1c')   # where this job's output begins
-
+        start_index = out.index('end-1c')
         def job():
             forced = chosen_map()
             stale_total = 0
             for i, path in enumerate(paths):
-                post('line', ruler('triage %d/%d   %s' % (i + 1, len(paths), os.path.basename(path))), 'head')
+                post('line', ruler('%s %d/%d   %s' % (_('tui_title'), i + 1, len(paths), os.path.basename(path))), 'head')
                 result = analyze(path, forced, current, crash_dir, frames=frames, map_cache=map_cache,
                                  default_map=default_map, write=(len(paths) == 1))
                 for line, st in step_plain(result['steps']):
@@ -982,16 +1275,16 @@ def run_gui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
                     stale_total += 1
                 post('line', '', 'plain')
             if stale_total == 0:
-                post('line', 'RESULT: %d report(s), all matched the map' % len(paths), 'ok')
+                post('line', _('tui_triage_result_ok', v=len(paths)), 'ok')
             else:
-                post('line', 'RESULT: %d report(s), %d from another build (symbols are hints)' % (len(paths), stale_total), 'stale')
-            post('see', start_index)     # leave the view at this job's first line (the CI steps)
-            post('status', 'done')
+                post('line', _('tui_triage_result_stale', a=len(paths), b=stale_total), 'stale')
+            post('see', start_index)
+            post('status', _('done'))
         run_bg(job)
 
     def summary():
         def job():
-            post('line', ruler('summary'), 'head')
+            post('line', ruler(_('menu_summary')), 'head')
             info2 = select_map(None, chosen_map(), current, crash_dir, default_map)
             map_data = None
             if info2:
@@ -999,16 +1292,16 @@ def run_gui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
                     map_cache[info2['path']] = read_map(info2['path'])
                 map_data = map_cache[info2['path']]
             rows = summary_rows(crash_dir, current, map_data)
-            post('line', '%-19s %-7s %-11s %-26s %-6s %s' % ('date', 'kind', 'exception', 'state', 'build', 'faulting function'), 'plain')
+            post('line', '%-19s %-7s %-11s %-26s %-6s %s' % (_('col_date'), _('col_kind'), _('col_exception'), _('col_state'), _('col_build'), _('col_symbol')), 'plain')
             post('line', '-' * 118, 'dim')
             for row in rows:
                 post('line', '%-19s %-7s %-11s %-26s %-6s %s' % (
                     (row['date'] or '')[:18], row['kind'], row['exception'], (row['state'] or '')[:25],
-                    'match' if row['buildMatch'] else 'other', row['symbol']), 'plain')
+                    _('match') if row['buildMatch'] else _('other'), row['symbol']), 'plain')
             for line in signature_lines(rows):
                 post('line', line, 'plain')
-            post('line', "note: a ~ prefix means the symbol came from another build's map (a hint, not proof).", 'dim')
-            post('status', 'summary done')
+            post('line', _('sum_note'), 'dim')
+            post('status', _('summary_done'))
         run_bg(job)
 
     def keep():
@@ -1017,20 +1310,20 @@ def run_gui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
             source = map_var.get().strip() if use_map_var.get() else None
             result = keep_map(source, crash_dir, exe_path)
             if result['skipped']:
-                post('line', 'already snapshotted: %s' % result['path'], 'ok')
+                post('line', _('already_snapshotted', v=result['path']), 'ok')
             else:
-                post('line', 'snapshotted: %s' % result['path'], 'ok')
+                post('line', _('snapshotted', v=result['path']), 'ok')
                 post('line', 'fingerprint %s   %d B   sha256=%s' % (result['fingerprint'], result['bytes'], result['sha256']), 'plain')
-            post('status', 'keep-map done')
+            post('status', _('keep_map_done'))
         run_bg(job)
 
     def archive():
         def job():
-            post('line', ruler('archive old reports (keep the newest 20)'), 'head')
+            post('line', ruler(_('menu_archive')), 'head')
             moved = clean(crash_dir, keep=20, prune_maps=0, dry_run=False)
-            post('line', 'moved %d item(s)' % len(moved), 'ok')
+            post('line', _('archive_moved', v=len(moved)), 'ok')
             post('refresh', None)
-            post('status', 'archive done')
+            post('status', _('archive_done'))
         run_bg(job)
 
     button_widgets = []
@@ -1041,13 +1334,13 @@ def run_gui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
         button_widgets.append(widget)
         return widget
 
-    add_button('Triage selected', lambda: triage(selected_paths()))
-    add_button('Triage ALL reports', lambda: triage(all_reports()))
-    add_button('Summary', summary)
-    add_button('Snapshot current .map', keep)
-    add_button('Archive old reports', archive)
-    add_button('Clear output', lambda: clear_output())
-    add_button('Quit', root.destroy)
+    add_button(_('btn_triage_selected'), lambda: triage(selected_paths()))
+    add_button(_('btn_triage_all'), lambda: triage(all_reports()))
+    add_button(_('btn_summary'), summary)
+    add_button(_('btn_snapshot'), keep)
+    add_button(_('btn_archive'), archive)
+    add_button(_('btn_clear'), lambda: clear_output())
+    add_button(_('btn_quit'), root.destroy)
 
     def clear_output():
         out.configure(state='normal')
@@ -1056,12 +1349,12 @@ def run_gui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
 
     tree.bind('<<TreeviewSelect>>', on_select)
     tree.bind('<Double-1>', on_double)
-    refresh_tree();
-    drain();
-    write(ruler('SeiunEngine crash triage'), 'head')
-    write('Pick a crash report (Browse... or click a row), optionally pick a .map, then press a button.', 'dim')
+    refresh_tree()
+    drain()
+    write(ruler(_('tui_title')), 'head')
+    write(_('gui_pick_report_first'), 'dim')
     if not current:
-        write('note: SeiunEngine.exe was not found, so build matching cannot be checked.', 'stale')
+        write(_('gui_note_exe_missing'), 'stale')
     root.mainloop()
     return 0
 
@@ -1071,15 +1364,14 @@ def signature_lines(rows):
         symbol = row['symbol'] or ('(no symbol) ' + (row['state'] or ''))
         key = '%s  |  %s' % (row['exception'], symbol)
         counts[key] = counts.get(key, 0) + 1
-    out = ['', '--- signatures (exception + faulting function) ---']
+    out = ['', _('sum_sigs')]
     for key in sorted(counts, key=lambda k: -counts[k]):
-        out.append('  %4dx  %s' % (counts[key], key))
+        out.append(_('sum_sig_line', a=counts[key], b=key))
     return out
 
-
-# ----------------------------------------------------------------------------
-# terminal UI (ANSI; no curses on Windows)
-# ----------------------------------------------------------------------------
+# ============================================================================
+# TUI
+# ============================================================================
 
 def run_tui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
     if not USE_COLOR:
@@ -1093,28 +1385,27 @@ def run_tui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
             answer = input(prompt)
         except (EOFError, KeyboardInterrupt):
             return None
-        # tolerate a BOM / stray whitespace when input is piped from another shell
         return answer.lstrip('\ufeff').strip()
 
     def ask_map(report):
         auto = select_map(report, None, current, crash_dir, default_map)
         print()
-        print(col('Map file for this report:', 'cyan'))
+        print(col(_('tui_map_for_report'), 'cyan'))
         if auto:
-            print('  [Enter] auto  ->  %s   [%s]' % (auto['path'], auto['quality']))
+            print(_('tui_auto_map', v=auto['path'], q=auto['quality']))
         else:
-            print('  [Enter] auto  ->  (nothing found)')
-        print('  [p]           ->  pick a .map file with a file dialog')
-        print('  [path]        ->  paste the path of a .map file')
+            print(_('tui_auto_map_none'))
+        print(_('tui_pick_map_dialog'))
+        print(_('tui_paste_map_path'))
         answer = ask('> ')
         if not answer:
             return None
         if answer.lower() == 'p':
-            picked = pick_file('Choose a linker .map', [('Map files', '*.map'), ('All files', '*.*')],
+            picked = pick_file(_('gui_choose_map_title'), [(_('gui_map_files'), '*.map'), (_('gui_all_files'), '*.*')],
                                os.path.dirname(default_map))
             if picked:
                 return picked
-            print(col('  (nothing picked - using auto)', 'yellow'))
+            print(col(_('tui_nothing_picked_auto'), 'yellow'))
             return None
         return answer.strip('"')
 
@@ -1122,7 +1413,7 @@ def run_tui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
         stale = 0
         for i, path in enumerate(paths):
             print()
-            print(col(ruler('triage %d/%d   %s' % (i + 1, len(paths), os.path.basename(path))), 'cyan'))
+            print(col(ruler('%s %d/%d   %s' % (_('tui_title'), i + 1, len(paths), os.path.basename(path))), 'cyan'))
             result = analyze(path, forced_map_choice, current, crash_dir, frames=frames, map_cache=map_cache,
                              default_map=default_map, write=(len(paths) == 1))
             for line in step_lines(result['steps']):
@@ -1134,36 +1425,36 @@ def run_tui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
                 stale += 1
         print()
         if stale == 0:
-            print(col('RESULT: %d report(s), all matched the map' % len(paths), 'green'))
+            print(col(_('tui_triage_result_ok', v=len(paths)), 'green'))
         else:
-            print(col('RESULT: %d report(s), %d from another build (symbols are hints)' % (len(paths), stale), 'yellow'))
+            print(col(_('tui_triage_result_stale', a=len(paths), b=stale), 'yellow'))
         return stale
 
     while True:
         files = list(reversed(report_files(crash_dir)))
         print()
-        print(col(ruler('SeiunEngine crash triage'), 'cyan'))
-        print('  crash dir : %s' % crash_dir)
-        print('  reports   : %d' % len(files))
+        print(col(ruler(_('tui_title')), 'cyan'))
+        print(_('tui_crash_dir', v=crash_dir))
+        print(_('tui_reports', v=len(files)))
         if current:
-            print('  current   : %s   (%s)' % (current['fingerprint'], current['modified']))
+            print(_('tui_current', v=current['fingerprint'], m=current['modified']))
         else:
-            print(col('  current   : (SeiunEngine.exe not found)', 'yellow'))
+            print(col(_('tui_no_current'), 'yellow'))
         if forced:
-            print(col('  map       : %s   (chosen by you)' % forced, 'yellow'))
+            print(col(_('tui_map_chosen', v=forced), 'yellow'))
         else:
-            print('  map       : auto (snapshot for the report build, else the current one)')
+            print(_('tui_map_auto'))
         print()
-        print('  1  triage the newest report')
-        print('  2  triage a listed report (by number)')
-        print('  3  choose a crash report with a file dialog')
-        print('  4  triage every report')
-        print('  5  summary table')
-        print('  6  snapshot the current .map now (keep-map)')
-        print('  7  list .map snapshots')
-        print('  8  archive old reports (keep the newest 20)')
-        print('  9  choose a .map file to use from now on')
-        print('  h  help        q  quit')
+        print(_('menu_newest'))
+        print(_('menu_listed'))
+        print(_('menu_dialog'))
+        print(_('menu_all'))
+        print(_('menu_summary'))
+        print(_('menu_keep_map'))
+        print(_('menu_list_maps'))
+        print(_('menu_archive'))
+        print(_('menu_choose_map'))
+        print(_('menu_help_quit'))
         choice = ask('> ')
         if choice is None:
             print()
@@ -1172,11 +1463,11 @@ def run_tui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
         if choice == 'q':
             return 0
         elif choice == 'h':
-            print('A report is only exact against the .map of the build that produced it.');
-            print('Snapshot after every build (menu 6); symbols from another build are marked STALE.')
+            print(_('tui_help_1'))
+            print(_('tui_help_2'))
         elif choice == '1':
             if not files:
-                print(col('  no reports here', 'yellow'))
+                print(col(_('tui_no_reports_here'), 'yellow'))
                 continue
             report = read_report(files[0])
             picked = ask_map(report)
@@ -1185,7 +1476,7 @@ def run_tui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
             do_triage([files[0]], forced)
         elif choice == '2':
             if not files:
-                print(col('  no reports here', 'yellow'))
+                print(col(_('tui_no_reports_here'), 'yellow'))
                 continue
             for i, path in enumerate(files[:15], 1):
                 print('  %3d) %s   %s' % (i, os.path.basename(path),
@@ -1199,11 +1490,11 @@ def run_tui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
                     forced = picked
                 do_triage([target], forced)
             elif sel:
-                print(col('  out of range', 'yellow'))
+                print(col(_('tui_out_of_range'), 'yellow'))
         elif choice == '3':
-            picked = pick_file('Choose a crash report', [('Crash reports', '*.txt'), ('All files', '*.*')], crash_dir)
+            picked = pick_file(_('gui_choose_report_title'), [(_('gui_crash_reports'), '*.txt'), (_('gui_all_files'), '*.*')], crash_dir)
             if not picked:
-                print(col('  (nothing picked)', 'yellow'))
+                print(col(_('tui_nothing_picked'), 'yellow'))
                 continue
             report = read_report(picked)
             map_pick = ask_map(report)
@@ -1212,7 +1503,7 @@ def run_tui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
             do_triage([picked], forced)
         elif choice == '4':
             if not files:
-                print(col('  no reports here', 'yellow'))
+                print(col(_('tui_no_reports_here'), 'yellow'))
                 continue
             do_triage(files, forced)
         elif choice == '5':
@@ -1224,12 +1515,12 @@ def run_tui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
                 map_data = map_cache[info['path']]
             rows = summary_rows(crash_dir, current, map_data)
             print()
-            print('%-19s %-7s %-11s %-26s %-6s %s' % ('date', 'kind', 'exception', 'state', 'build', 'faulting function'))
+            print('%-19s %-7s %-11s %-26s %-6s %s' % (_('col_date'), _('col_kind'), _('col_exception'), _('col_state'), _('col_build'), _('col_symbol')))
             print('-' * 118)
             for row in rows:
                 print('%-19s %-7s %-11s %-26s %-6s %s' % (
                     (row['date'] or '')[:18], row['kind'], row['exception'], (row['state'] or '')[:25],
-                    'match' if row['buildMatch'] else 'other', row['symbol']))
+                    _('match') if row['buildMatch'] else _('other'), row['symbol']))
             for line in signature_lines(rows):
                 print(line)
         elif choice == '6':
@@ -1239,14 +1530,14 @@ def run_tui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
                 print(col('  ERROR: %s' % exc, 'red'))
                 continue
             if result['skipped']:
-                print(col('  already snapshotted: %s' % result['path'], 'green'))
+                print(col(_('already_snapshotted', v=result['path']), 'green'))
             else:
-                print(col('  snapshotted: %s' % result['path'], 'green'))
+                print(col(_('snapshotted', v=result['path']), 'green'))
                 print('  fingerprint %s   %d B   sha256=%s' % (result['fingerprint'], result['bytes'], result['sha256']))
         elif choice == '7':
             out_dir = maps_dir(crash_dir)
             if not os.path.isdir(out_dir):
-                print('  no snapshots in %s' % out_dir)
+                print(_('no_snapshots', v=out_dir))
                 continue
             for name in sorted(os.listdir(out_dir)):
                 if name.endswith('.map'):
@@ -1254,85 +1545,86 @@ def run_tui(crash_dir, exe_path, default_map, forced_map=None, frames=8):
                     print('  %-30s %12d B' % (name, os.path.getsize(full)))
         elif choice == '8':
             moved = clean(crash_dir, keep=20, prune_maps=0, dry_run=False)
-            print(col('  moved %d item(s)' % len(moved), 'green'))
+            print(col(_('archive_moved', v=len(moved)), 'green'))
         elif choice == '9':
             print()
-            print(col('Use which .map from now on?', 'cyan'))
-            print('  [Enter] auto  ->  back to auto')
-            print('  [p]           ->  pick a .map file with a file dialog')
-            print('  [path]        ->  paste the path of a .map file')
+            print(col(_('tui_use_which_map'), 'cyan'))
+            print(_('tui_auto_map_back'))
+            print(_('tui_pick_map_dialog'))
+            print(_('tui_paste_map_path'))
             answer = ask('> ')
             if answer is None:
                 return 0
             if answer == '':
                 forced = None
             elif answer.lower() == 'p':
-                picked = pick_file('Choose a linker .map', [('Map files', '*.map'), ('All files', '*.*')],
+                picked = pick_file(_('gui_choose_map_title'), [(_('gui_map_files'), '*.map'), (_('gui_all_files'), '*.*')],
                                     os.path.dirname(default_map))
                 if picked:
                     forced = picked
                 else:
-                    print(col('  (nothing picked)', 'yellow'))
+                    print(col(_('tui_nothing_picked'), 'yellow'))
             else:
                 forced = answer.strip('"')
         else:
             print(col('  ?', 'yellow'))
 
-# ----------------------------------------------------------------------------
-# command line
-# ----------------------------------------------------------------------------
+# ============================================================================
+# CLI
+# ============================================================================
 
 def print_summary(crash_dir, current, map_data, rows, map_info=None):
-    print('crash dir : %s' % crash_dir)
+    print(_('summary_crash_dir', v=crash_dir))
     if current:
-        print('current   : %s   (%s)' % (current['fingerprint'], current['modified']))
-    print('reports   : %d' % len(rows))
+        print(_('summary_current', v=current['fingerprint'], m=current['modified']))
+    print(_('summary_reports', v=len(rows)))
     if map_info:
-        print('map       : %s   [%s]' % (map_info['path'], map_info['quality']))
+        print(_('summary_map', v=map_info['path'], q=map_info['quality']))
     print()
-    print('%-19s %-7s %-11s %-26s %-6s %s' % ('date', 'kind', 'exception', 'state', 'build', 'faulting function'))
+    print('%-19s %-7s %-11s %-26s %-6s %s' % (_('col_date'), _('col_kind'), _('col_exception'), _('col_state'), _('col_build'), _('col_symbol')))
     print('-' * 118)
     for row in rows:
         print('%-19s %-7s %-11s %-26s %-6s %s' % (
             (row['date'] or '')[:18], row['kind'], row['exception'], (row['state'] or '')[:25],
-            'match' if row['buildMatch'] else 'other', row['symbol']))
+            _('match') if row['buildMatch'] else _('other'), row['symbol']))
     for line in signature_lines(rows):
         print(line)
     print()
-    print(col("note: a ~ prefix means the symbol came from another build's map (a hint, not proof).", 'dim'))
-
+    print(col(_('sum_note'), 'dim'))
 
 def build_parser():
     parser = argparse.ArgumentParser(
         prog='crash_triage.py',
-        description='SeiunEngine crash triage: pick the crash report and the .map, get the crashing function.',
+        description=_('cli_desc'),
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='With no switches this opens the window UI (tkinter); --tui or --no-gui uses the terminal UI.\n'
-               'Exit codes: 0 all matched, 1 some report is from another build, 2 nothing to do.')
-    parser.add_argument('--crash', '-c', metavar='REPORT', help='triage this crash report')
-    parser.add_argument('--map', '-m', metavar='MAP', help='use this linker .map (default: auto)')
-    parser.add_argument('--all', action='store_true', help='triage every report in the crash dir')
-    parser.add_argument('--pick', action='store_true', help='choose the report with a file dialog')
-    parser.add_argument('--summary', action='store_true', help='one line per report + signature counts')
-    parser.add_argument('--json', action='store_true', help='machine-readable summary output')
-    parser.add_argument('--keep-map', action='store_true', help="snapshot the current build's .map")
-    parser.add_argument('--clean', action='store_true', help='archive old reports')
-    parser.add_argument('--keep', type=int, default=20, metavar='N', help='keep the newest N reports (default 20)')
-    parser.add_argument('--prune-maps', type=int, default=0, metavar='N', help='keep only the newest N map snapshots')
-    parser.add_argument('--dry-run', action='store_true', help='--clean: do not move or delete anything')
-    parser.add_argument('--frames', type=int, default=8, metavar='N', help='how many app frames to symbolise (default 8)')
-    parser.add_argument('--crash-dir', metavar='DIR', help='override the crash directory')
-    parser.add_argument('--exe', metavar='EXE', help='override the exe used for the build fingerprint')
-    parser.add_argument('--tui', action='store_true', help='terminal UI (never opens a window)')
-    parser.add_argument('--no-gui', action='store_true', help='same as --tui, kept for scripting')
-    parser.add_argument('--no-write', action='store_true', help='do not write <report>.triage.txt')
-    parser.add_argument('--no-color', action='store_true', help='plain terminal output')
+        epilog=_('cli_epilog'))
+    parser.add_argument('--crash', '-c', metavar='REPORT', help=_('help_crash'))
+    parser.add_argument('--map', '-m', metavar='MAP', help=_('help_map'))
+    parser.add_argument('--all', action='store_true', help=_('help_all'))
+    parser.add_argument('--pick', action='store_true', help=_('help_pick'))
+    parser.add_argument('--summary', action='store_true', help=_('help_summary'))
+    parser.add_argument('--json', action='store_true', help=_('help_json'))
+    parser.add_argument('--keep-map', action='store_true', help=_('help_keep_map'))
+    parser.add_argument('--clean', action='store_true', help=_('help_clean'))
+    parser.add_argument('--keep', type=int, default=20, metavar='N', help=_('help_keep'))
+    parser.add_argument('--prune-maps', type=int, default=0, metavar='N', help=_('help_prune_maps'))
+    parser.add_argument('--dry-run', action='store_true', help=_('help_dry_run'))
+    parser.add_argument('--frames', type=int, default=8, metavar='N', help=_('help_frames'))
+    parser.add_argument('--crash-dir', metavar='DIR', help=_('help_crash_dir'))
+    parser.add_argument('--exe', metavar='EXE', help=_('help_exe'))
+    parser.add_argument('--tui', action='store_true', help=_('help_tui'))
+    parser.add_argument('--no-gui', action='store_true', help=_('help_no_gui'))
+    parser.add_argument('--no-write', action='store_true', help=_('help_no_write'))
+    parser.add_argument('--no-color', action='store_true', help=_('help_no_color'))
+    parser.add_argument('--lang', choices=['en', 'zh'], help=_('help_lang'))
     return parser
 
-
 def main(argv=None):
-    global USE_COLOR
+    global USE_COLOR, CURRENT_LANG
     args = build_parser().parse_args(argv)
+    
+    if args.lang:
+        CURRENT_LANG = args.lang
     if args.no_color:
         USE_COLOR = False
 
@@ -1348,21 +1640,21 @@ def main(argv=None):
             print(col('ERROR: %s' % exc, 'red'))
             return 2
         if result['skipped']:
-            print(col('already snapshotted: %s' % result['path'], 'green'))
+            print(col(_('already_snapshotted', v=result['path']), 'green'))
         else:
-            print(col('snapshotted: %s' % result['path'], 'green'))
+            print(col(_('snapshotted', v=result['path']), 'green'))
             print('fingerprint %s   %d B   sha256=%s' % (result['fingerprint'], result['bytes'], result['sha256']))
         return 0
 
     if args.clean:
         enable_ansi()
         moved = clean(crash_dir, keep=args.keep, prune_maps=args.prune_maps, dry_run=args.dry_run)
-        verb = 'would move' if args.dry_run else 'moved'
-        print(col('%s %d item(s)' % (verb, len(moved)), 'green'))
+        verb = _('archive_would_move', v=len(moved)) if args.dry_run else _('archive_moved', v=len(moved))
+        print(col(verb, 'green'))
         for item in moved[:20]:
             print('  ' + item)
         if len(moved) > 20:
-            print('  ... and %d more' % (len(moved) - 20))
+            print(_('and_more', v=(len(moved) - 20)))
         return 0
 
     if args.summary:
@@ -1370,7 +1662,7 @@ def main(argv=None):
         info = select_map(None, args.map, current, crash_dir, DEFAULT_MAP)
         map_data = None
         if info:
-            print(col('  loading map %s...' % os.path.basename(info['path']), 'dim'))
+            print(col(_('loading_map', v=os.path.basename(info['path'])), 'dim'))
             map_data = read_map(info['path'])
         rows = summary_rows(crash_dir, current, map_data)
         if args.json:
@@ -1383,24 +1675,24 @@ def main(argv=None):
         enable_ansi()
         if args.crash:
             if not os.path.isfile(args.crash):
-                print(col('report not found: %s' % args.crash, 'red'))
+                print(col(_('err_report_not_found', v=args.crash), 'red'))
                 return 2
             targets = [os.path.abspath(args.crash)]
         elif args.pick:
-            picked = pick_file('Choose a crash report', [('Crash reports', '*.txt'), ('All files', '*.*')], crash_dir)
+            picked = pick_file(_('gui_choose_report_title'), [(_('gui_crash_reports'), '*.txt'), (_('gui_all_files'), '*.*')], crash_dir)
             if not picked:
-                print(col('nothing picked', 'yellow'))
+                print(col(_('err_nothing_picked'), 'yellow'))
                 return 2
             targets = [picked]
         else:
             targets = list(reversed(report_files(crash_dir)))
         if not targets:
-            print('no crash reports in %s' % crash_dir)
+            print(_('err_no_reports', v=crash_dir))
             return 2
         stale = 0
         cache = {}
         for i, path in enumerate(targets):
-            print(ruler('triage %d/%d   %s' % (i + 1, len(targets), os.path.basename(path))))
+            print(ruler('%s %d/%d   %s' % (_('tui_title'), i + 1, len(targets), os.path.basename(path))))
             result = analyze(path, args.map, current, crash_dir, frames=args.frames, map_cache=cache,
                              default_map=DEFAULT_MAP, write=(not args.no_write and len(targets) == 1))
             for line in step_lines(result['steps']):
@@ -1421,7 +1713,5 @@ def main(argv=None):
         return run_tui(crash_dir, exe_path, DEFAULT_MAP, forced_map=args.map, frames=args.frames)
     return run_gui(crash_dir, exe_path, DEFAULT_MAP, forced_map=args.map, frames=args.frames)
 
-
 if __name__ == '__main__':
     sys.exit(main())
-
