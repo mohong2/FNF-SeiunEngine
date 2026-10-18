@@ -361,20 +361,44 @@ class Song
 		// segmented chart has no such file at all and this is what tells the two apart.
 		var chartFile:String = null;
 
+		// Packed chart (tools/chartpack): a one-file <song>.chartpack wins over JSON.  It is always
+		// streamed, however small the container is, because its notes are not JSON text.
 		#if MODS_ALLOWED
-		var moddyFile:String = Paths.modsJson(formattedFolder + '/' + formattedSong);
-		if (FileSystem.exists(moddyFile))
-			chartFile = moddyFile;
+		if (Paths.currentModDirectory != null && Paths.currentModDirectory.length > 0)
+		{
+			var modPack:String = Paths.mods(Paths.currentModDirectory + '/data/' + formattedFolder + '/' + formattedSong + ChartPack.EXT);
+			if (FileSystem.exists(modPack)) chartFile = modPack;
+		}
+		if (chartFile == null)
+		{
+			var modPack:String = Paths.mods('data/' + formattedFolder + '/' + formattedSong + ChartPack.EXT);
+			if (FileSystem.exists(modPack)) chartFile = modPack;
+		}
 		#end
+		if (chartFile == null)
+		{
+			var plainPack:String = Paths.getPreloadPath('data/' + formattedFolder + '/' + formattedSong + ChartPack.EXT);
+			if (FileSystem.exists(plainPack)) chartFile = plainPack;
+		}
 
 		if (chartFile == null)
 		{
-			var plainFile:String = Paths.json(formattedFolder + '/' + formattedSong);
-			if (FileSystem.exists(plainFile))
-				chartFile = plainFile;
+			#if MODS_ALLOWED
+			var moddyFile:String = Paths.modsJson(formattedFolder + '/' + formattedSong);
+			if (FileSystem.exists(moddyFile))
+				chartFile = moddyFile;
+			#end
+
+			if (chartFile == null)
+			{
+				var plainFile:String = Paths.json(formattedFolder + '/' + formattedSong);
+				if (FileSystem.exists(plainFile))
+					chartFile = plainFile;
+			}
 		}
 
-		var path:String = (chartFile != null && ChartStream.isLargeChart(chartFile)) ? chartFile : null;
+		var isPack:Bool = ChartPack.isPack(chartFile);
+		var path:String = (chartFile != null && (isPack || ChartStream.isLargeChart(chartFile))) ? chartFile : null;
 
 		// ── Segmented chart ──
 		// A chart whose sections live in several files (see ChartParts) is ONE chart, not one
@@ -387,8 +411,10 @@ class Song
 			path = parts[0];
 		else if (path == null)
 			return null;
-		else
+		else if (!isPack)
 			parts = [path];
+		// A numbered pack set is resolved by ChartParts; only a standalone pack is a one-file chart.
+		var packedChart:Bool = ChartPack.anyPack(parts);
 
 
 		// Skeleton cache (ChartCache): a scan reads every byte of the chart, so an unchanged chart
@@ -412,7 +438,7 @@ class Song
 			// 45 GB chart that walk is a large share of the load. ChartNative does the same walk on all
 			// cores and returns the same skeleton/ranges/note count. Every failure falls through to the
 			// Haxe path below, which stays the reference implementation.
-			if (ClientPrefs.data.nativeChartParse && parts != null && parts.length > 0)
+			if (ClientPrefs.data.nativeChartParse && !packedChart && parts != null && parts.length > 0)
 			{
 				try
 				{
@@ -566,6 +592,7 @@ class Song
 		Reflect.setField(chart, '__seiunStream', {
 			path: path,
 			paths: parts,
+			packed: packedChart,
 			ranges: scan.ranges,
 			// Flat range view for ChartNative.foldParts(); null when the native switch is off.
 			nativeRanges: (flatStart != null) ? { start: flatStart, len: flatLen, part: flatPart } : null,

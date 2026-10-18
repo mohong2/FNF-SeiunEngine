@@ -425,15 +425,81 @@ class GhostCollapser
 	/** Second half of the raw path: registers the representative built after wantsRepresentative() returned true. */
 	public function commitRepresentative(rep:PreloadedChartNote):Void
 	{
+		commitRepresentativeDensity(rep, 1);
+	}
+
+	/**
+	 * Same as commitRepresentative(), but the representative already stands for `density` notes.
+	 * Used by the packed-chart repeat path, which feeds a whole group at once.
+	 */
+	public function commitRepresentativeDensity(rep:PreloadedChartNote, density:Int):Void
+	{
 		if (rep == null) return;
-		rep.noteDensity = 1;
+		if (density < 1) density = 1;
+		rep.noteDensity = density;
 		flushDensity(pendingIdx);
 		out.append(rep);
 		anchor[pendingIdx] = out.length - 1;
-		lastDensity[pendingIdx] = 1;
+		lastDensity[pendingIdx] = density;
 		lastTime[pendingIdx] = rep.strumTime;
 		lastRate[pendingIdx] = pendingRate;
 		lastSlowRate[pendingIdx] = pendingRate;
+	}
+
+	/**
+	 * Feed `count` identical taps at once (packed charts).  Returns the densities of the new
+	 * representatives the caller must materialise; an empty array means every note merged into
+	 * the current representative.  The per-lane sequence, the MAX_REPRESENTED cap and the
+	 * resulting densities are the same as calling wantsRepresentative()/commitRepresentative()
+	 * once per note, but a 64 M-note group costs one call instead of 64 M.
+	 */
+	public function feedRepeat(strumTime:Float, lane:Int, mustPress:Bool, count:Int, multSpeed:Float = 1):Array<Int>
+	{
+		var reps:Array<Int> = [];
+		if (count <= 0) return reps;
+		fedCount = fedCount + count;
+
+		lane = Std.int(Math.abs(lane));
+		if (lane >= laneCount) lane = lane % laneCount;
+		var idx:Int = (mustPress ? 1 : 0) * laneCount + lane;
+		var rate:Float = pxPerMs * (multSpeed > 0 ? multSpeed : 1.0);
+
+		var mergeable:Bool = false;
+		if (anchor[idx] >= 0 && lastRate[idx] == rate && lastSlowRate[idx] > 0)
+		{
+			var dt:Float = strumTime - lastTime[idx];
+			if (dt >= 0)
+			{
+				if (dt <= rangeMs) mergeable = true;
+				else if (minGapPx > 0 && dt * lastSlowRate[idx] < minGapPx) mergeable = true;
+			}
+		}
+
+		if (mergeable && lastDensity[idx] > 0)
+		{
+			var space:Int = TurboDensity.MAX_REPRESENTED - Std.int(lastDensity[idx]);
+			if (space > 0)
+			{
+				var add:Int = (count < space) ? count : space;
+				lastDensity[idx] += add;
+				count -= add;
+			}
+		}
+
+		if (count > 0)
+		{
+			// The first new representative absorbs notes up to MAX_REPRESENTED, exactly like the
+			// one-note-at-a-time path (which starts it at 1 and increments on every merge).
+			while (count > 0)
+			{
+				var d:Int = (count > TurboDensity.MAX_REPRESENTED) ? TurboDensity.MAX_REPRESENTED : count;
+				reps.push(d);
+				count -= d;
+			}
+			pendingIdx = idx;
+			pendingRate = rate;
+		}
+		return reps;
 	}
 
 	/** Holds, sustain heads and sustain segments: never merged, always materialised by the caller. */

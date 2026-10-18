@@ -1,5 +1,6 @@
 package;
 
+import ChartPack.ChartPackData;
 import haxe.Int64;
 import haxe.Json;
 import haxe.io.Bytes;
@@ -74,6 +75,8 @@ class ChartRawNote
 	public var type:Dynamic = null;
 	/** Element count of the entry; Song.convert() uses length <= 3 to add a noteType. */
 	public var count:Int = 0;
+	/** Number of identical note entries this record stands for (packed charts only; 1 otherwise). */
+	public var repeat:Int = 1;
 
 	public function new() {}
 }
@@ -110,6 +113,8 @@ class ChartStream
 	/** scan() for part `part` of a segmented chart: every recorded range carries that index. */
 	static function scanPart(path:String, part:Int):ChartScanResult
 	{
+		// Packed part: the skeleton/ranges/count come from ChartPack instead of a JSON scan.
+		if (ChartPack.isPack(path)) return ChartPack.scan(path, part);
 		var cur = new Cursor(path);
 		var ranges:Array<ChartSectionRange> = [];
 		try
@@ -728,6 +733,8 @@ class ChartSectionReader
 	var openPart:Int = -1;
 	/** Last failure reason (for the caller to trace); null on success. */
 	public var lastError:String = null;
+	/** Packed parts by path; null when this chart has no .chartpack part. */
+	var packs:Map<String, ChartPackData> = null;
 
 	/**
 	 * `paths` describes the whole chart: a one-file chart just passes a single-element array.
@@ -738,6 +745,15 @@ class ChartSectionReader
 	{
 		this.paths = paths;
 		this.ranges = ranges;
+		if (paths != null)
+		{
+			for (path in paths)
+			{
+				if (!ChartPack.isPack(path)) continue;
+				if (packs == null) packs = new Map();
+				packs.set(path, ChartPack.load(path));
+			}
+		}
 	}
 
 	/** How many sections this reader can serve (one range per section). */
@@ -865,7 +881,14 @@ class ChartSectionReader
 	{
 		if (ranges == null || index < 0 || index >= ranges.length) return [];
 		var r:ChartSectionRange = ranges[index];
-		if (r == null || r.len <= 0) return [];
+		if (r == null) return [];
+		// Packed part: range.start is the section index inside that pack.
+		if (packs != null && paths != null && r.part >= 0 && r.part < paths.length)
+		{
+			var data:ChartPackData = packs.get(paths[r.part]);
+			if (data != null) return data.readNotes(Std.int(r.start));
+		}
+		if (r.len <= 0) return [];
 		if (r.len > MAX_RANGE_BYTES) return null;
 		try
 		{

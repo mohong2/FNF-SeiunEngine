@@ -34,6 +34,7 @@ import sys.io.File;
 class ChartParts
 {
 	public static inline final JSON_EXT:String = '.json';
+	public static inline final PACK_EXT:String = '.chartpack';
 	public static inline final MANIFEST_EXT:String = '.parts.json';
 
 	/** A chart counts as segmented only from this many part files up. */
@@ -172,6 +173,7 @@ class ChartParts
 	{
 		if (chartKey == null || chartKey.length == 0) return false;
 		var own:String = join(dir, chartKey + JSON_EXT);
+		if (!FileSystem.exists(own)) own = join(dir, chartKey + PACK_EXT);
 		if (!FileSystem.exists(own)) return false;
 		// The parts were built from the directory entries, so the comparison has to ignore case:
 		// Windows resolves `Amphotercity-1.json` and `amphotercity-1.json` to the same file.
@@ -218,7 +220,12 @@ class ChartParts
 			if (entry.length == 0) continue;
 			// Relative entries (subdirectories included) resolve against the manifest's own
 			// directory, so a manifest stays valid wherever the engine is launched from.
-			var full:String = isAbsolute(entry) ? entry : join(dir, entry.endsWith(JSON_EXT) ? entry : entry + JSON_EXT);
+			var full:String = isAbsolute(entry) ? entry : join(dir, entry);
+			if (!FileSystem.exists(full))
+			{
+				if (FileSystem.exists(full + JSON_EXT)) full += JSON_EXT;
+				else if (FileSystem.exists(full + PACK_EXT)) full += PACK_EXT;
+			}
 			if (!FileSystem.exists(full))
 			{
 				trace('ChartParts: "$manifestPath" lists a missing part "$full"');
@@ -247,12 +254,13 @@ class ChartParts
 	{
 		if (!FileSystem.exists(dir)) return null;
 		if (FileSystem.exists(join(dir, song + JSON_EXT))) return null;
+		if (FileSystem.exists(join(dir, song + PACK_EXT))) return null;
 
 		var entries:Array<String> = null;
 		try entries = FileSystem.readDirectory(dir) catch (e:Dynamic) return null;
 		if (entries == null) return null;
 
-		var pattern:EReg = new EReg('^' + EReg.escape(song) + '-(\\d+)\\' + JSON_EXT + '$', 'i');
+		var pattern:EReg = new EReg('^' + EReg.escape(song) + '-(\\d+)(\\' + JSON_EXT + '|\\' + PACK_EXT + ')$', 'i');
 		var found:Map<Int, String> = new Map<Int, String>();
 		var indices:Array<Int> = [];
 		for (name in entries)

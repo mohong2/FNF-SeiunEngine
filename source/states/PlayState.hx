@@ -4330,7 +4330,7 @@ class PlayState extends MusicBeatState
 		// inline read is cheaper; a failure to start silently falls back to it.
 		var chartPrefetch:ChartPrefetch = null;
 		var streamPayloadBytes:Float = 0;
-		if (!cacheHit && chartStream != null && chartStreamInfo.ranges != null)
+		if (!cacheHit && chartStream != null && chartStreamInfo.ranges != null && chartStreamInfo.packed != true)
 		{
 			var streamRanges:Array<ChartStream.ChartSectionRange> = cast chartStreamInfo.ranges;
 			var maxSectionBytes:Int = 0;
@@ -4406,6 +4406,51 @@ class PlayState extends MusicBeatState
 		}
 
 		var stepCrochet:Float = Conductor.stepCrochet;
+		// Shared tap DTO builder.  Packed charts feed a whole group through GhostCollapser.feedRepeat()
+		// and need one DTO per surviving representative; the ordinary path needs exactly one.
+		var makeChartNote = function(rawStrum:Float, noteDataIdx:Int, noteMania:Int, gottaHitNote:Bool,
+			noteType:String, isGF:Bool, isAltSuffix:String, isNoAnim:Bool, susLen:Float, isHurt:Bool,
+			stepCrochet:Float):PreloadedChartNote
+		{
+			return {
+				strumTime: rawStrum,
+				noteData: noteDataIdx,
+				mania: noteMania,
+				mustPress: gottaHitNote,
+				oppNote: playOpponent ? gottaHitNote : !gottaHitNote,
+				noteType: noteType,
+				animSuffix: isAltSuffix,
+				gfNote: isGF,
+				noAnimation: isNoAnim,
+				noMissAnimation: isNoAnim,
+				isSustainNote: false,
+				isSustainEnd: false,
+				sustainLength: susLen,
+				hitHealth: 0.023,
+				missHealth: isHurt ? 0.3 : 0.0475,
+				hitCausesMiss: isHurt,
+				ignoreNote: isHurt && gottaHitNote,
+				multSpeed: 1,
+				multAlpha: 1,
+				noteDensity: 1,
+				noteskin: '',
+				texture: '',
+				blockHit: false,
+				lowPriority: false,
+				wasHit: false,
+				offsetX: 0,
+				offsetY: 0,
+				parentST: 0,
+				parentSL: 0,
+				stepCrochet: stepCrochet,
+				noteSplashDisabled: false,
+				noteSplashTexture: null,
+				noteSplashHue: null,
+				noteSplashSat: null,
+				noteSplashBrt: null,
+				hitsoundDisabled: false
+			};
+		};
 		var isNewVer:Bool = Song.isNewVersion;
 
 		// Pre-build the Change Mania timeline: per-note key-count lookups fall from a full event scan O(E)
@@ -4579,196 +4624,186 @@ class PlayState extends MusicBeatState
 
 			for (songNotes in section.sectionNotes)
 			{
-				// Both paths meet here: songNotes is a JSON array after a full parse and a
-				// ChartRawNote on the streaming path. Only these reads differ; the generation
-				// below is shared, so a change cannot apply to just one of them.
-				var rawStrum:Float;
-				var rawData:Int;
-				var susLen:Float;
-				var noteTypeDyn:Dynamic;
-				var noteCount:Int;
+				var noteRepeat:Int = 1;
 				if (chartStream != null)
 				{
-					var rn:ChartStream.ChartRawNote = cast songNotes;
-					rawStrum = rn.strumTime;
-					rawData = Std.int(rn.data);
-					susLen = rn.sustain;
-					noteTypeDyn = rn.type;
-					noteCount = rn.count;
-					// Per-note equivalent of ChartStream.rewriteSectionNotes(): negative data is
-					// not remapped, but the note is still consumed.
-					if (streamRewrite && rawData >= 0)
+					var rn0:ChartStream.ChartRawNote = cast songNotes;
+					noteRepeat = rn0.repeat;
+					if (noteRepeat < 1) noteRepeat = 1;
+				}
+				for (_noteRepeat in 0...noteRepeat)
+				{
+					// Both paths meet here: songNotes is a JSON array after a full parse and a
+					// ChartRawNote on the streaming path. Only these reads differ; the generation
+					// below is shared, so a change cannot apply to just one of them.
+					var rawStrum:Float;
+					var rawData:Int;
+					var susLen:Float;
+					var noteTypeDyn:Dynamic;
+					var noteCount:Int;
+					if (chartStream != null)
 					{
-						var rewriteHit:Bool = (rawData < streamAmmo) ? section.mustHitSection : !section.mustHitSection;
-						rawData = (rawData % streamAmmo) + (rewriteHit ? 0 : streamAmmo);
-						if (noteCount > 3 && !Std.isOfType(noteTypeDyn, String) && noteTypeDyn != null)
-							noteTypeDyn = NoteTypeRegistry.fromIndex(Std.int(noteTypeDyn));
-						else if (noteCount <= 3) noteTypeDyn = '';
+						var rn:ChartStream.ChartRawNote = cast songNotes;
+						rawStrum = rn.strumTime;
+						rawData = Std.int(rn.data);
+						susLen = rn.sustain;
+						noteTypeDyn = rn.type;
+						noteCount = rn.count;
+						// Per-note equivalent of ChartStream.rewriteSectionNotes(): negative data is
+						// not remapped, but the note is still consumed.
+						if (streamRewrite && rawData >= 0)
+						{
+							var rewriteHit:Bool = (rawData < streamAmmo) ? section.mustHitSection : !section.mustHitSection;
+							rawData = (rawData % streamAmmo) + (rewriteHit ? 0 : streamAmmo);
+							if (noteCount > 3 && !Std.isOfType(noteTypeDyn, String) && noteTypeDyn != null)
+								noteTypeDyn = NoteTypeRegistry.fromIndex(Std.int(noteTypeDyn));
+							else if (noteCount <= 3) noteTypeDyn = '';
+						}
 					}
-				}
-				else
-				{
-					rawStrum = songNotes[0];
-					rawData = Std.int(songNotes[1]);
-					susLen = songNotes[2];
-					noteTypeDyn = songNotes[3];
-					noteCount = songNotes.length;
-				}
-				var noteMania:Int = EKData.maniaAtTimeCached(rawStrum);
-				var noteAmmo:Int = Note.ammo[noteMania];
-				var noteDataIdx:Int = rawData % noteAmmo;
-
-				var gottaHitNote:Bool = isNewVer ? (rawData < noteAmmo) : (rawData >= noteAmmo ? !mustHit : mustHit);
-				var isGFSide:Bool = gfSec && (gottaHitNote == mustHit);
-				if (playOpponent) gottaHitNote = !gottaHitNote;
-
-				// Fold/Turbo raw path first (GhostCollapser.wantsRepresentative): decide from the note's
-				// own fields whether this tap becomes a representative BEFORE resolving its type and
-				// flags, so the notes that merge are never looked up or allocated at all. The merge rules
-				// are the same ones the DTO path uses (see GhostCollapser.feed()). Holds (susLen > 0)
-				// never merge and go through pushHold() once their DTO exists.
-				var foldHold:Bool = (collapser != null) && susLen > 0;
-				if (collapser != null && !foldHold
-					&& !collapser.wantsRepresentative(rawStrum, noteDataIdx, gottaHitNote))
-				{
-					// Keep the type registration for typed notes: PlayState walks noteTypeMap to load
-					// custom_notetypes scripts, and a type that only appears on merged-away notes must
-					// still be registered. Untyped notes resolve to '' which is pre-registered above.
-					if (noteCount > 3)
-					{
-						var mergedType:String = Std.isOfType(noteTypeDyn, String)
-							? (cast noteTypeDyn : String) : NoteTypeRegistry.fromIndex(Std.int(noteTypeDyn));
-						if (!noteTypeMap.exists(mergedType)) noteTypeMap.set(mergedType, true);
-					}
-					continue;
-				}
-
-				var noteType:String = '';
-				if (noteTypeDyn == null)
-					// Exactly what NoteTypeRegistry.fromIndex(Std.int(null)) returns (defaultNoteTypes[0]),
-					// without a registry call per note.
-					noteType = '';
-				else if (!Std.isOfType(noteTypeDyn, String))
-					// 数字下标 -> 类型名（默认 6 项 + custom_notetypes 注册表），越界安全。
-					// 旧实现直接读 defaultNoteTypes[下标]，越界下标会读到 null/垃圾值。
-					noteType = NoteTypeRegistry.fromIndex(Std.int(noteTypeDyn));
-				else
-				{
-					noteType = cast noteTypeDyn;
-					// Intern the string and write it back to the DOM: strings are immutable, so
-					// this only removes duplicate objects. The streaming path has no DOM.
-					var interned:String = typeIntern.get(noteType);
-					if (interned == null)
-						typeIntern.set(noteType, noteType);
 					else
 					{
-						noteType = interned;
-						if (chartStream == null) songNotes[3] = interned;
+						rawStrum = songNotes[0];
+						rawData = Std.int(songNotes[1]);
+						susLen = songNotes[2];
+						noteTypeDyn = songNotes[3];
+						noteCount = songNotes.length;
 					}
-				}
+					var noteMania:Int = EKData.maniaAtTimeCached(rawStrum);
+					var noteAmmo:Int = Note.ammo[noteMania];
+					var noteDataIdx:Int = rawData % noteAmmo;
 
-				if (!noteTypeMap.exists(noteType))
-					noteTypeMap.set(noteType, true);
+					var gottaHitNote:Bool = isNewVer ? (rawData < noteAmmo) : (rawData >= noteAmmo ? !mustHit : mustHit);
+					var isGFSide:Bool = gfSec && (gottaHitNote == mustHit);
+					if (playOpponent) gottaHitNote = !gottaHitNote;
 
-				var isAlt:Bool = (noteType == 'Alt Animation');
-				var isHurt:Bool = (noteType == 'Hurt Note');
-				var isGF:Bool = isGFSide || noteType == 'GF Sing';
-				var isNoAnim:Bool = (noteType == 'No Animation');
-				var isAltSuffix:String = isAlt ? '-alt' : '';
+					// Fold/Turbo raw path first (GhostCollapser.wantsRepresentative): decide from the note's
+					// own fields whether this tap becomes a representative BEFORE resolving its type and
+					// flags, so the notes that merge are never looked up or allocated at all. The merge rules
+					// are the same ones the DTO path uses (see GhostCollapser.feed()). Holds (susLen > 0)
+					// never merge and go through pushHold() once their DTO exists.
+					var foldHold:Bool = (collapser != null) && susLen > 0;
+					// Packed group: feedRepeat() below consumes the whole group, so the one-note raw path
+					// must not consume its first note here.
+					var fastGroup:Bool = (collapser != null && noteRepeat > 1 && susLen <= 0);
+					if (collapser != null && !foldHold && !fastGroup
+						&& !collapser.wantsRepresentative(rawStrum, noteDataIdx, gottaHitNote))
+					{
+						// Keep the type registration for typed notes: PlayState walks noteTypeMap to load
+						// custom_notetypes scripts, and a type that only appears on merged-away notes must
+						// still be registered. Untyped notes resolve to '' which is pre-registered above.
+						if (noteCount > 3)
+						{
+							var mergedType:String = Std.isOfType(noteTypeDyn, String)
+								? (cast noteTypeDyn : String) : NoteTypeRegistry.fromIndex(Std.int(noteTypeDyn));
+							if (!noteTypeMap.exists(mergedType)) noteTypeMap.set(mergedType, true);
+						}
+						continue;
+					}
 
-				// Build PreloadedChartNote (lightweight data transfer object)
-				var swagNote:PreloadedChartNote = {
-					strumTime: rawStrum,
-					noteData: noteDataIdx,
-					mania: noteMania,
-					mustPress: gottaHitNote,
-					oppNote: playOpponent ? gottaHitNote : !gottaHitNote,
-					noteType: noteType,
-					animSuffix: isAltSuffix,
-					gfNote: isGF,
-					noAnimation: isNoAnim,
-					noMissAnimation: isNoAnim,
-					isSustainNote: false,
-					isSustainEnd: false,
-					sustainLength: susLen,
-					hitHealth: 0.023,
-					missHealth: isHurt ? 0.3 : 0.0475,
-					hitCausesMiss: isHurt,
-					ignoreNote: isHurt && gottaHitNote,
-					multSpeed: 1,
-					multAlpha: 1,
-					noteDensity: 1,
-					noteskin: '',
-					texture: '',
-					blockHit: false,
-					lowPriority: false,
-					wasHit: false,
-					offsetX: 0,
-					offsetY: 0,
-					parentST: 0,
-					parentSL: 0,
-					stepCrochet: stepCrochet,
-					noteSplashDisabled: false,
-					noteSplashTexture: null,
-					noteSplashHue: null,
-					noteSplashSat: null,
-					noteSplashBrt: null,
-					hitsoundDisabled: false
-				};
-				if (collapser != null)
-				{
-					if (foldHold) collapser.pushHold(swagNote) else collapser.commitRepresentative(swagNote);
-				}
-				else preloadedNotes.push(swagNote);
+					var noteType:String = '';
+					if (noteTypeDyn == null)
+						// Exactly what NoteTypeRegistry.fromIndex(Std.int(null)) returns (defaultNoteTypes[0]),
+						// without a registry call per note.
+						noteType = '';
+					else if (!Std.isOfType(noteTypeDyn, String))
+						// 数字下标 -> 类型名（默认 6 项 + custom_notetypes 注册表），越界安全。
+						// 旧实现直接读 defaultNoteTypes[下标]，越界下标会读到 null/垃圾值。
+						noteType = NoteTypeRegistry.fromIndex(Std.int(noteTypeDyn));
+					else
+					{
+						noteType = cast noteTypeDyn;
+						// Intern the string and write it back to the DOM: strings are immutable, so
+						// this only removes duplicate objects. The streaming path has no DOM.
+						var interned:String = typeIntern.get(noteType);
+						if (interned == null)
+							typeIntern.set(noteType, noteType);
+						else
+						{
+							noteType = interned;
+							if (chartStream == null) songNotes[3] = interned;
+						}
+					}
 
-				var susLen:Float = swagNote.sustainLength;
-				if (susLen < 1) continue;
+					if (!noteTypeMap.exists(noteType))
+						noteTypeMap.set(noteType, true);
 
-				var floorSus:Int = Math.floor(susLen / stepCrochet);
-				if (floorSus < 1) continue;
+					var isAlt:Bool = (noteType == 'Alt Animation');
+					var isHurt:Bool = (noteType == 'Hurt Note');
+					var isGF:Bool = isGFSide || noteType == 'GF Sing';
+					var isNoAnim:Bool = (noteType == 'No Animation');
+					var isAltSuffix:String = isAlt ? '-alt' : '';
 
-				var susBaseOffset:Float = stepCrochet / FlxMath.roundDecimal(songSpeed, 2);
-				for (susNote in 0...floorSus + 1)
-				{
-					var sustainNote:PreloadedChartNote = {
-						strumTime: rawStrum + (stepCrochet * susNote) + susBaseOffset,
-						noteData: noteDataIdx,
-						mania: noteMania,
-						mustPress: gottaHitNote,
-						oppNote: swagNote.oppNote,
-						noteType: noteType,
-						animSuffix: isAltSuffix,
-						gfNote: isGF,
-						noAnimation: isNoAnim,
-						noMissAnimation: isNoAnim,
-						isSustainNote: true,
-						isSustainEnd: (susNote == floorSus),
-						sustainLength: susLen,
-						parentST: rawStrum,
-						parentSL: susLen,
-						stepCrochet: stepCrochet,
-						hitHealth: 0.023,
-						missHealth: isHurt ? 0.1 : 0.0475,
-						hitCausesMiss: isHurt,
-						ignoreNote: isHurt && gottaHitNote,
-						multSpeed: 1,
-						multAlpha: 1,
-						noteDensity: 1,
-						noteskin: '',
-						texture: '',
-						blockHit: false,
-						lowPriority: false,
-						wasHit: false,
-						offsetX: 0,
-						offsetY: 0,
-						noteSplashDisabled: false,
-						noteSplashTexture: null,
-						noteSplashHue: null,
-						noteSplashSat: null,
-						noteSplashBrt: null,
-						hitsoundDisabled: false
-					};
-					if (collapser != null) collapser.pushHold(sustainNote) else preloadedNotes.push(sustainNote);
+					// Packed charts: feed the whole group at once; one DTO per surviving representative.
+					if (fastGroup)
+					{
+						var reps:Array<Int> = collapser.feedRepeat(rawStrum, noteDataIdx, gottaHitNote, noteRepeat);
+						for (d in reps)
+						{
+							var rep:PreloadedChartNote = makeChartNote(rawStrum, noteDataIdx, noteMania, gottaHitNote,
+								noteType, isGF, isAltSuffix, isNoAnim, susLen, isHurt, stepCrochet);
+							collapser.commitRepresentativeDensity(rep, d);
+						}
+						break;
+					}
+
+					// Build PreloadedChartNote (lightweight data transfer object)
+					var swagNote:PreloadedChartNote = makeChartNote(rawStrum, noteDataIdx, noteMania, gottaHitNote,
+						noteType, isGF, isAltSuffix, isNoAnim, susLen, isHurt, stepCrochet);
+					if (collapser != null)
+					{
+						if (foldHold) collapser.pushHold(swagNote) else collapser.commitRepresentative(swagNote);
+					}
+					else preloadedNotes.push(swagNote);
+
+					var susLen:Float = swagNote.sustainLength;
+					if (susLen < 1) continue;
+
+					var floorSus:Int = Math.floor(susLen / stepCrochet);
+					if (floorSus < 1) continue;
+
+					var susBaseOffset:Float = stepCrochet / FlxMath.roundDecimal(songSpeed, 2);
+					for (susNote in 0...floorSus + 1)
+					{
+						var sustainNote:PreloadedChartNote = {
+							strumTime: rawStrum + (stepCrochet * susNote) + susBaseOffset,
+							noteData: noteDataIdx,
+							mania: noteMania,
+							mustPress: gottaHitNote,
+							oppNote: swagNote.oppNote,
+							noteType: noteType,
+							animSuffix: isAltSuffix,
+							gfNote: isGF,
+							noAnimation: isNoAnim,
+							noMissAnimation: isNoAnim,
+							isSustainNote: true,
+							isSustainEnd: (susNote == floorSus),
+							sustainLength: susLen,
+							parentST: rawStrum,
+							parentSL: susLen,
+							stepCrochet: stepCrochet,
+							hitHealth: 0.023,
+							missHealth: isHurt ? 0.1 : 0.0475,
+							hitCausesMiss: isHurt,
+							ignoreNote: isHurt && gottaHitNote,
+							multSpeed: 1,
+							multAlpha: 1,
+							noteDensity: 1,
+							noteskin: '',
+							texture: '',
+							blockHit: false,
+							lowPriority: false,
+							wasHit: false,
+							offsetX: 0,
+							offsetY: 0,
+							noteSplashDisabled: false,
+							noteSplashTexture: null,
+							noteSplashHue: null,
+							noteSplashSat: null,
+							noteSplashBrt: null,
+							hitsoundDisabled: false
+						};
+						if (collapser != null) collapser.pushHold(sustainNote) else preloadedNotes.push(sustainNote);
+					}
 				}
 			}
 
