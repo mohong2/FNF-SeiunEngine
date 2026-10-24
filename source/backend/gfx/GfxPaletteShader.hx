@@ -69,6 +69,16 @@ class GfxPaletteShader extends FlxGraphicsShader
 	public function new()
 	{
 		super();
+
+		// The shader macro materializes the composed source before the base
+		// constructor runs. On a subclass that changes the fragment stage, the
+		// inherited parameter arrays can describe the base program instead of
+		// this one -- which leaves position/uv/samplers bound to stale slots.
+		// Re-assigning the source marks it dirty so OpenFL parses it again and
+		// reads every location from the program that is actually linked.
+		#if sys
+		glFragmentSource = glFragmentSource + "\n";
+		#end
 	}
 }
 #end
