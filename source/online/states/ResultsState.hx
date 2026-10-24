@@ -730,7 +730,8 @@ class ResultsState extends MusicBeatState {
 
 			// controls.ACCEPT is what the on-screen A button feeds; ENTER is covered by it too,
 			// but the key check is kept so the plain-keyboard path cannot regress.
-			if (!chatBox.focused && (!FlxG.keys.justPressed.TAB && controls.BACK #if android || FlxG.android.justReleased.BACK #end || FlxG.keys.justPressed.BACKSPACE || FlxG.keys.justPressed.ENTER || controls.ACCEPT)) {
+			// backConsumed: the chat just ate this BACK press to close itself; don't also leave.
+			if (!chatBox.focused && (!FlxG.keys.justPressed.TAB && controls.BACK #if android || (FlxG.android.justReleased.BACK && !chatBox.backConsumed) #end || FlxG.keys.justPressed.BACKSPACE || FlxG.keys.justPressed.ENTER || controls.ACCEPT)) {
 				FlxG.sound.music.stop();
 				FlxG.sound.play(Paths.sound('cancelMenu'));
 

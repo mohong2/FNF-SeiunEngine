@@ -282,7 +282,8 @@ class RequestSubstate extends MusicBeatSubstate {
 			activate(hovered >= 0 ? hovered : (curSelected >= 0 ? curSelected : 0));
 
 		// BACK is what the pad's B button drives; it takes the same cancel path ESCAPE used to.
-		if (controls.BACK) {
+		// The system back key/gesture is checked too, like every other online substate.
+		if (controls.BACK #if android || FlxG.android.justReleased.BACK #end) {
 			if (noCallback != null)
 				noCallback();
 			close();

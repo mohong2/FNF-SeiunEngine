@@ -77,21 +77,26 @@ class VerifyCodeSubstate extends MusicBeatSubstate {
 	var input:InputText;
 
     var confirmBack = false;
+    var confirmBackText:String = "";
     override function update(elapsed) {
         super.update(elapsed);
 
 		input.hasFocus = true;
 
-        if (input.text.length <= 0 && controls.BACK #if android || FlxG.android.justReleased.BACK #end) {
-            if (!confirmBack) {
+		// Double-B cancels whatever was typed. The old `text.length <= 0` gate left typed text
+		// with no cancel path at all besides backspacing everything or submitting.
+		// Typing on after arming disarms it, so one stray B cannot nuke a finished code.
+		if (controls.BACK #if android || FlxG.android.justReleased.BACK #end) {
+			if (!confirmBack || input.text != confirmBackText) {
 				confirmBack = true;
-                return;
-            }
-            close();
-        }
-		else if (input.text.length > 0) {
+				confirmBackText = input.text;
+				return;
+			}
+			close();
+		}
+		else if (input.text != confirmBackText) {
 			confirmBack = false;
-        }
+		}
 
 		// The pad's A confirms. `controls.ACCEPT` is not used here because this engine also binds
 		// it to SPACE, and a space is a character the player has to be able to type.

@@ -34,6 +34,9 @@ class ChatBox extends FlxTypedSpriteGroup<FlxSprite> {
 	var chatGroup:FlxTypedSpriteGroup<ChatMessage> = new FlxTypedSpriteGroup<ChatMessage>();
 	var typeBg:FlxSprite;
     public var typeText:InputText;
+    /** True for the one update after the Android BACK key closed the chat, so a host state
+        (ResultsState) does not also treat that same press as "leave". */
+    public var backConsumed:Bool = false;
     var typeTextHint:FlxText; // i can call it a hint or tip whatever i want
 	var targetAlpha:Float;
 	var chatHeight:Float;
@@ -161,6 +164,15 @@ class ChatBox extends FlxTypedSpriteGroup<FlxSprite> {
 		});
 		typeText.setFormat(OnlineLang.font(), 16, FlxColor.WHITE, LEFT, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 
+		// A tap outside the input row must drop the chat focus. Without this the only way out is
+		// the ESC/TAB handled in update(), which do not exist on a phone: update() re-asserts
+		// `typeText.hasFocus = focused` every frame, so the soft keyboard could never be dismissed.
+		// ENTER sending keeps the chat open because the callback path does not raise focusLost.
+		typeText.focusLost = function() {
+			if (focused)
+				focused = false;
+		};
+
 		typeTextHint.y = typeBg.y;
 		typeText.y = typeBg.y;
 
@@ -189,6 +201,17 @@ class ChatBox extends FlxTypedSpriteGroup<FlxSprite> {
 	}
 
     override function update(elapsed) {
+		#if android
+		backConsumed = false;
+		// While the soft keyboard is up its BACK press closes only the IME; the next one reaches
+		// the game and closes the chat here. Must run for every host state, so it lives in the
+		// ChatBox instead of each screen's own back handling.
+		if (focused && FlxG.android.justReleased.BACK) {
+			focused = false;
+			backConsumed = true;
+		}
+		#end
+
 		if (nextFocused != null) {
 			focused = nextFocused;
 			nextFocused = null;
