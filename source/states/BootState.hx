@@ -144,6 +144,15 @@ class BootState extends MusicBeatState
 
 		super.create();
 
+		#if sys
+		if (Sys.getEnv('FNF_GFX_CAPS') == '1') backend.gfx.GfxCaps.logOnce();
+		var paletteProbe:String = Sys.getEnv('FNF_GFX_PALETTE_TEST');
+		if (paletteProbe != null && paletteProbe.length > 0)
+		{
+			FlxG.switchState(new states.GfxPaletteProbeState(paletteProbe));
+			return;
+		}
+		#end
 		FlxG.cameras.bgColor = FlxColor.BLACK;
 		FlxG.mouse.visible = false; // TestBuildNoticeState turns the cursor back on.
 
@@ -484,6 +493,12 @@ class BootState extends MusicBeatState
 		queueAtlas('mainmenu/menu_donate');
 		#end
 		queueAtlas('mainmenu/menu_options');
+		#if sys
+		// Dedicated L2b acceptance probe: load one real atlas through the normal
+		// Paths pipeline. Unset in every normal run, so boot work is unchanged.
+		var repackProbe:String = Sys.getEnv('FNF_GFX_ATLAS_REPACK_TEST');
+		if (repackProbe != null && repackProbe.length > 0) queueAtlas(repackProbe);
+		#end
 		graphicsWorkCount = workQueue.length;
 
 		// Menu music + the three navigation blips (kept out of the purge, they are

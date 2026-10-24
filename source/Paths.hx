@@ -18,7 +18,11 @@ import sys.io.File;
 import sys.FileSystem;
 #end
 import flixel.graphics.FlxGraphic;
+import haxe.Timer;
 import backend.gfx.GfxMemory;
+import backend.gfx.GfxAtlasCrop;
+import backend.gfx.GfxAtlasRepack;
+import backend.gfx.GfxPalette;
 import openfl.display.BitmapData;
 import haxe.Json;
 
@@ -74,6 +78,25 @@ class Paths
 	 *  the smaller maxCachedAssets instead. */
 	public static var allowGraphicAutoFree:Bool = false;
 
+	/** Decode one PNG and account for the synchronous load time. */
+	static function decodeBitmapFile(path:String):BitmapData
+	{
+		var started:Float = Timer.stamp();
+		var bmp:BitmapData = BitmapData.fromFile(path);
+		if (bmp != null)
+			GfxMemory.recordDecode(path, bmp.width, bmp.height, (Timer.stamp() - started) * 1000);
+		return bmp;
+	}
+
+	static function loadSoundFile(path:String):Sound
+	{
+		var started:Float = Timer.stamp();
+		var snd:Sound = Sound.fromFile(path);
+		if (snd != null)
+			GfxMemory.recordAudioLoad(path, (Timer.stamp() - started) * 1000);
+		return snd;
+	}
+
 	/**
 	 * 从 OpenFL 资源缓存取 BitmapData 后立刻从 OpenFL 缓存移除。
 	 * FlxGraphic 自己会持有这份 BitmapData，OpenFL 再留一份引用只会让图片
@@ -88,7 +111,7 @@ class Paths
 		if (fsPath.indexOf(':') > 0 && !fsPath.startsWith('assets/'))
 			fsPath = fsPath.substring(fsPath.indexOf(':') + 1);
 		if (FileSystem.exists(fsPath))
-			bmp = BitmapData.fromFile(fsPath);
+			bmp = decodeBitmapFile(fsPath);
 		#end
 		if (bmp == null && OpenFlAssets.exists(file, IMAGE))
 			bmp = OpenFlAssets.getBitmapData(file);
@@ -523,6 +546,7 @@ class Paths
 				// lime has no native MP3 decoder on Windows/Android — decode to
 				// WAV via dr_mp3 and play from memory instead (cached per session).
 				#if cpp
+				var mp3Started:Float = Timer.stamp();
 				try
 				{
 					var wav:haxe.io.Bytes = editors.content.DrMp3Tools.decodeFileToWav(file);
@@ -530,6 +554,7 @@ class Paths
 					{
 						var buffer:lime.media.AudioBuffer = lime.media.AudioBuffer.fromBytes(lime.utils.Bytes.ofData(wav.getData()));
 						if (buffer != null) snd = Sound.fromAudioBuffer(buffer);
+						if (snd != null) GfxMemory.recordAudioLoad(file, (Timer.stamp() - mp3Started) * 1000);
 					}
 				}
 				catch (e:Dynamic) snd = null;
@@ -537,7 +562,7 @@ class Paths
 			}
 			else
 			{
-				try { snd = Sound.fromFile(file); } catch (e:Dynamic) { snd = null; }
+				try { snd = loadSoundFile(file); } catch (e:Dynamic) { snd = null; }
 			}
 
 			if (snd != null)
@@ -641,7 +666,7 @@ class Paths
 			currentTrackedAssets.remove(file); // zombie — force a fresh load
 		}
 		if (FileSystem.exists(file))
-			bitmap = BitmapData.fromFile(file);
+			bitmap = decodeBitmapFile(file);
 		else
 		#end
 		{
@@ -704,7 +729,7 @@ class Paths
 					if (FileSystem.exists(candidate))
 					{
 						file = candidate;
-						bitmap = BitmapData.fromFile(candidate);
+						bitmap = decodeBitmapFile(candidate);
 						break;
 					}
 				}
@@ -784,7 +809,7 @@ class Paths
 
 			if (bitmap == null) {
 				#if MODS_ALLOWED
-				if (FileSystem.exists(file)) bitmap = BitmapData.fromFile(file);
+				if (FileSystem.exists(file)) bitmap = decodeBitmapFile(file);
 				else
 				#end {
 					if (OpenFlAssets.exists(file, IMAGE)) bitmap = getBitmapDataOnce(file);
@@ -842,6 +867,22 @@ class Paths
 		atlasFramesCache = [];
 	}
 
+	/**
+	 * Run the lossless atlas stages in order and attach the matching restore
+	 * descriptor. L2a (whole-atlas crop) remains the fallback: L2b only replaces
+	 * the bitmap when its plan validates, otherwise the cropped image is kept.
+	 */
+	static function finishAtlas(graphic:FlxGraphic, frames:FlxAtlasFrames):Void
+	{
+		if (graphic == null || frames == null) return;
+		var cropRect = GfxAtlasCrop.apply(graphic, frames, graphic.assetsKey);
+		GfxAtlasRepack.apply(graphic, frames, graphic.assetsKey);
+		// Palette runs on the final canvas, after crop/repack, so frame rects and
+		// UVs stay exactly where L2a/L2b put them. It falls back to RGBA per image.
+		GfxPalette.apply(graphic);
+		GfxMemory.attach(graphic, graphic.assetsKey, cropRect);
+	}
+
 	static public function getSparrowAtlas(key:String, ?library:String = null, ?allowGPU:Bool = true):FlxAtlasFrames
 	{
 		var cacheKey:String = key + '::' + (library != null ? library : '');
@@ -868,7 +909,7 @@ class Paths
 				return null;
 			}
 			var frames:FlxAtlasFrames = FlxAtlasFrames.fromSparrow(imageLoaded, xmlContent);
-			GfxMemory.attach(imageLoaded, imageLoaded.assetsKey);
+			finishAtlas(imageLoaded, frames);
 			atlasFramesCache.set(cacheKey, frames);
 			return frames;
 		}
@@ -934,7 +975,7 @@ class Paths
 			try
 			{
 				var frames:FlxAtlasFrames = FlxAtlasFrames.fromTexturePackerJson(imageLoaded, json);
-				GfxMemory.attach(imageLoaded, imageLoaded.assetsKey);
+				finishAtlas(imageLoaded, frames);
 				return frames;
 			}
 			catch (e:Dynamic)
@@ -966,7 +1007,7 @@ class Paths
 		try
 		{
 			var frames:FlxAtlasFrames = FlxAtlasFrames.fromTexturePackerJson(imageLoaded, json);
-			GfxMemory.attach(imageLoaded, imageLoaded.assetsKey);
+			finishAtlas(imageLoaded, frames);
 			return frames;
 		}
 		catch (e:Dynamic)
@@ -1085,12 +1126,12 @@ class Paths
 		}
 
 		var frames:FlxAtlasFrames = FlxAtlasFrames.fromSpriteSheetPacker(imageLoaded, (txtExists ? File.getContent(modsTxt(key)) : file('images/$key.txt', library)));
-		GfxMemory.attach(imageLoaded, imageLoaded.assetsKey);
+		finishAtlas(imageLoaded, frames);
 		return frames;
 		#elseif sys
 		var imageLoaded:FlxGraphic = image(key, library);
 		var frames:FlxAtlasFrames = FlxAtlasFrames.fromSpriteSheetPacker(imageLoaded, file('images/$key.txt', library));
-		GfxMemory.attach(imageLoaded, imageLoaded.assetsKey);
+		finishAtlas(imageLoaded, frames);
 		return frames;
 		#else
 		var txtContent:String = null;
@@ -1226,7 +1267,7 @@ class Paths
 		var modKey:String = modsImages(key);
 		if(FileSystem.exists(modKey)) {
 			if(!currentTrackedAssets.exists(modKey)) {
-				var newBitmap:BitmapData = BitmapData.fromFile(modKey);
+				var newBitmap:BitmapData = decodeBitmapFile(modKey);
 				var newGraphic:FlxGraphic = FlxGraphic.fromBitmapData(newBitmap, false, modKey);
 				newGraphic.persist = true;
 				currentTrackedAssets.set(modKey, newGraphic);
@@ -1284,7 +1325,7 @@ class Paths
 		var file:String = modsSounds(path, key);
 		if(FileSystem.exists(file)) {
 			if(!currentTrackedSounds.exists(file)) {
-				currentTrackedSounds.set(file, Sound.fromFile(file));
+				currentTrackedSounds.set(file, loadSoundFile(file));
 			}
 			trackLocalAsset(key);
 			return currentTrackedSounds.get(file);
@@ -1296,7 +1337,7 @@ class Paths
 		// trace(gottenPath);
 		if(!currentTrackedSounds.exists(gottenPath))
 		#if MODS_ALLOWED
-			currentTrackedSounds.set(gottenPath, Sound.fromFile(gottenPath));
+			currentTrackedSounds.set(gottenPath, loadSoundFile(gottenPath));
 		#else
 		{
 			var folder:String = '';
@@ -1480,7 +1521,7 @@ class Paths
 		}
 		// found in the mods files
 		else if (FileSystem.exists(file))
-			return BitmapData.fromFile(file);
+			return decodeBitmapFile(file);
 		// load from assets
 		else
 		#end
