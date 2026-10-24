@@ -265,6 +265,11 @@ class Main extends Sprite
 
 		addChild(new FlxGame(gameWidth, gameHeight, initialState, zoom, updateFramerate, drawFramerate, skipSplash, startFullscreen));
 
+		// Image residency backend: release CPU pixels only after the renderer has
+		// uploaded them, and re-decode transparently on demand. Installed before
+		// the first state so the very first assets are covered.
+		backend.gfx.GfxMemory.install();
+
 		// Bottom-right build watermark (openfl stage child): above every state and substate,
 		// no flixel camera, no input. Hidden while a song is playing.
 		backend.Watermark.install();
@@ -302,27 +307,9 @@ class Main extends Sprite
 		FlxG.signals.preStateCreate.add(function(_) {
 			Paths.clearStoredMemory();
 			Paths.clearUnusedMemory();
-			// Prune invalid entries from CPU release registry after clearing memory cache
-			backend.GfxPolicy.pruneRegistry();
+			// Drop queued keys belonging to the state that just went away.
+			backend.gfx.GfxMemory.onStateSwitch();
 		});
-
-		// Handle GL context loss / restoration - automatically reload released CPU graphics upon restoration
-		try
-		{
-			var gfxWindow = FlxG.stage != null && FlxG.stage.window != null ? FlxG.stage.window : null;
-			if (gfxWindow != null)
-			{
-				gfxWindow.onRenderContextLost.add(function() {
-					backend.GfxPolicy.onContextLost();
-				});
-				gfxWindow.onRenderContextRestored.add(function(_) {
-					backend.GfxPolicy.onContextRestored();
-					// Evict graphics with dead GPU textures from LRU cache upon restoration
-					backend.GfxLru.onContextRestored();
-				});
-			}
-		}
-		catch (e:Dynamic) {}
 
 		// Poll GL errors on render frames: renderer faults end up in crash reports.
 		GlErrorWatchdog.install();

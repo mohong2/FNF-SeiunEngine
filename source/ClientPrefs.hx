@@ -155,10 +155,11 @@ import sys.io.Process;
 	public var clearChartCache:Bool = false;
 	/** Performance option: disables the hxcpp GC during a song, trading memory for frame time (off by default, prevents leaks). */
 	public var disableGC:Bool = false;
-	/** Release CPU-side copies of large textures (>=2048px) only after confirming no live sprite/atlas/script references. */
+	/**
+	 * Release CPU-side pixel buffers of large textures once the GPU has uploaded
+	 * them. Pixels are re-decoded transparently if anything reads them again.
+	 */
 	public var gfxCpuRelease:Bool = true;
-	/** Store uploaded graphics in LRU cache upon song exit, with strict cache/atlas synchronization and reference-safe eviction. */
-	public var gfxLruCache:Bool = true;
 	/** Placeholder state for the "clear image cache" action button: a button option must bind a field, but the action never reads it. */
 	public var clearImageCache:Bool = false;
 	/** Bottom-right version/build watermark. Hidden automatically while a song is playing; it never takes input. */
@@ -166,8 +167,6 @@ import sys.io.Process;
 	/** Placeholder state for the "show the note-optimisation notice again" action row: a button option must bind a field, but the action never reads it. */
 	public var showNoteOptimizationNotice:Bool = false;
 	public var scriptArgReuse:Bool = true;
-	/** Trim transparent borders and repack large sheets at runtime on the main thread, with XML/dimension validation. */
-	public var gfxRuntimeRepack:Bool = true;
 	public var splashAlpha:Float = 0.6;
 	public var autoPause:Bool = true;
 	public var gameplaySettings:Map<String, Dynamic> = [

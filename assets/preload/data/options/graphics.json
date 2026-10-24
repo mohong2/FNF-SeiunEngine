@@ -38,28 +38,10 @@
 		"defaultValue": false
 	},
 	{
-		"nameKey": "option.gfxLruCache",
-		"defaultName": "Texture Reuse Cache (LRU)",
-		"descKey": "option.gfxLruCache.desc",
-		"defaultDesc": "Keeps decoded big textures (VRAM budget ~1.5GB) after leaving a song, so replaying the same song\nskips decoding entirely. Pixel-identical; turning off flushes the cache immediately.",
-		"variable": "gfxLruCache",
-		"type": "bool",
-		"defaultValue": true
-	},
-	{
-		"nameKey": "option.gfxRuntimeRepack",
-		"defaultName": "Runtime Texture Repack",
-		"descKey": "option.gfxRuntimeRepack.desc",
-		"defaultDesc": "While preloading, trims fully transparent borders off big character sheets (>=2048px)\nin memory and packs frames tightly, shrinking VRAM and upload time.\nPixel-identical rendering; original files are never modified.",
-		"variable": "gfxRuntimeRepack",
-		"type": "bool",
-		"defaultValue": true
-	},
-	{
 		"nameKey": "option.gfxCpuRelease",
-		"defaultName": "Big Texture RAM Release",
+		"defaultName": "Texture RAM Release",
 		"descKey": "option.gfxCpuRelease.desc",
-		"defaultDesc": "During play, frees CPU-side copies of large textures (>=2048px) once they are uploaded to the GPU.\nRendering is pixel-identical; saves a lot of RAM on songs with big character sheets.",
+		"defaultDesc": "Once a large image (>=512x512) is uploaded to the GPU, its CPU pixel copy is released;\nreading pixels again transparently re-decodes it. This never destroys graphics or forces GC.\nSaves hundreds of MB of RAM on big character/stage sheets with identical rendering.",
 		"variable": "gfxCpuRelease",
 		"type": "bool",
 		"defaultValue": true
@@ -68,7 +50,7 @@
 		"nameKey": "option.clearImageCache",
 		"defaultName": "Clear Image Cache",
 		"descKey": "option.clearImageCache.desc",
-		"defaultDesc": "Press ENTER to release all unused cached images from memory, including the LRU pool.",
+		"defaultDesc": "Press ENTER to release all unused cached images from memory.\nImages still used by a sprite are never touched.",
 		"variable": "clearImageCache",
 		"type": "button",
 		"defaultValue": false,

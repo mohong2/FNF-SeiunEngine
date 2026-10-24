@@ -9,6 +9,16 @@
 
 ---
 
+### 2026年10月18日 — 图片内存后端重写
+
+- **删除旧 Gfx 后端**：移除 GfxPolicy / GfxLru / GfxRepack。旧实现持有 FlxGraphic 强引用、手动销毁仍被引用的图、强制 GC、运行时重打包图集，并在每台设备上产生不同的 C++ 崩溃路径。
+- **新的 GfxMemory 后端**：只做一件事——大图上传到 GPU 后释放 CPU 像素副本（≥512×512），需要读像素时由 OpenFL 层自动重新解码。不销毁图片、不驱逐缓存、不触碰 GC。
+- **安全兜底**：纹理丢失/GL 上下文重建时自动重新解码并上传；解码失败只返回空纹理，不会空指针；FlxGraphic 增加重复销毁保护、活引用销毁保护和 bitmap 置空。
+- **状态切换 O(n²) 清理优化**：clearStoredMemory / clearUnusedMemory / purgeUnusedGraphics 改为单遍收集 + 批量清理，长会话切状态不再因反复全表扫描冻结。
+- **设置项精简**：移除 LRU 缓存、运行时贴图密排两个不可靠选项；保留「纹理内存释放」和「清除图片缓存」，并更新说明。
+
+---
+
 ### 2026年6月19日
 
 - 修复进入 Senpai 歌曲时前段 Note 消失的问题。
@@ -492,6 +502,16 @@
 ---
 
 ## English Version
+
+---
+
+### October 18, 2026 — Image memory backend rewrite
+
+- **Removed the old Gfx backend** (GfxPolicy / GfxLru / GfxRepack). It kept hidden strong references to FlxGraphic objects, destroyed graphics that could still be referenced, forced GC, and repacked atlases at runtime; those paths produced device-specific C++ crashes.
+- **New GfxMemory backend**: after a large image (>=512x512) is uploaded, its CPU pixel buffer is released; any later pixel access is transparently re-decoded by OpenFL. It never destroys graphics, never evicts the cache, and never touches the GC.
+- **Safety nets**: context-loss/restore re-decodes and re-uploads automatically; a failed restore returns an empty texture instead of a null pointer. FlxGraphic now has double-destroy and live-reference guards and clears its bitmap on destroy.
+- **O(n^2) state-switch cleanup fixed**: clearStoredMemory / clearUnusedMemory / purgeUnusedGraphics now collect once and purge in batches.
+- **Options simplified**: removed the unreliable LRU and runtime-repack toggles; kept Texture RAM Release and Clear Image Cache with updated descriptions.
 
 ---
 

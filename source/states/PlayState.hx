@@ -7,7 +7,6 @@ import substates.PlayStateResultsSubstate;
 import script.hscript.HScript;
 import backend.CompatEngine;
 import backend.Scripts; // 这是啥子玩意儿
-import backend.GfxPolicy;
 import backend.GcState;
 import haxe.display.Display.GotoDefinitionResult;
 import flixel.graphics.FlxGraphic;
@@ -1031,8 +1030,6 @@ class PlayState extends MusicBeatState
 
 
 		//trace('Playback Rate: ' + playbackRate);
-		// Register song entry before clearing cache to allow LRU tracking
-		GfxPolicy.onPlayStateCreate(SONG != null && SONG.song != null ? SONG.song : 'unknown');
 		Paths.clearStoredMemory();
 		// The old state was destroyed by switchState, so its useCount is already zero;
 		// clear the previous song's currentTrackedAssets here so repeated restarts/song switches cannot grow the image cache.
@@ -1335,13 +1332,6 @@ class PlayState extends MusicBeatState
 		// Create stage backdrop handler and build background sprites
 		stageBackdrop = createStageHandler(curStage);
 		stageBackdrop.create();
-
-		#if android
-		// Upload/keep large stage textures early and drop their CPU copies.
-		// Opt-in only: FNF_EARLY_CPU_RELEASE=1.
-		if (Sys.getEnv("FNF_EARLY_CPU_RELEASE") == "1")
-			backend.GfxPolicy.preloadWarm();
-		#end
 
 		switch(Paths.formatToSongPath(SONG.song))
 		{
@@ -2319,10 +2309,6 @@ class PlayState extends MusicBeatState
 		initHitsound();
 
 		Paths.clearUnusedMemory();
-
-		// One-pass preload: large textures are committed to VRAM and their CPU copies released,
-		// avoiding the occasional hitch from batched uploads in the first seconds of a song.
-		GfxPolicy.preloadWarm();
 
 		#if cpp
 		// 全局堆策略 (幂等): 目标空闲 100% -> 50%, 高水位从"存活 x2"降到"存活 x1.5"。
@@ -6364,9 +6350,6 @@ class PlayState extends MusicBeatState
 					}
 				}
 
-				// Periodic scan to release CPU copies of large graphics meeting memory policy requirements
-				GfxPolicy.onPlayUpdate(elapsed);
-
 				// Sort for correct draw order (closer to strum on top).
 				// fasterNoteSort is safe for sustains too: it reorders only living, visible notes and leaves dead slots in place,
 				// so the draw order matches a full sort and dense sustain charts no longer fall back to an O(n log n) full sort.
@@ -7128,8 +7111,6 @@ class PlayState extends MusicBeatState
 			}
 		}
 		keyboardDisplay.save();
-		// Song end: perform final graphic release scan and flush memory ledger to log
-		GfxPolicy.onSongEnd();
 		if (androidControls != null) androidControls.visible = true;
 		timeBarBG.visible = false;
 		timeBar.visible = false;
@@ -10538,9 +10519,6 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 
 		// 脚本回调参数槽只服务于本次游玩, 随状态一起释放 (见 backend.Scripts)。
 		Scripts.clear();
-
-		// Fallback memory ledger flush for exit paths that skip endSong (e.g. death exit)
-		GfxPolicy.onPlayStateDestroy();
 
 		#if hxvlc
 		// Safety net: mods often create video objects from Lua/HScript and

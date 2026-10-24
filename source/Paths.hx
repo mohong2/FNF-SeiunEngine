@@ -18,6 +18,7 @@ import sys.io.File;
 import sys.FileSystem;
 #end
 import flixel.graphics.FlxGraphic;
+import backend.gfx.GfxMemory;
 import openfl.display.BitmapData;
 import haxe.Json;
 
@@ -110,65 +111,57 @@ class Paths
 	 */
 	static function isGraphicAlive(g:FlxGraphic):Bool
 	{
-		// A destroyed FlxGraphic keeps a stale (disposed) BitmapData in its
-		// `bitmap` field, but `frameCollections` is always nulled by destroy().
-		// Checking both catches every zombie reliably.
+		// A destroyed FlxGraphic has its `bitmap` field cleared by destroy()
+		// (added in this fork), and `frameCollections` is nulled too. Either
+		// check is enough; keeping both makes this robust for older graphics.
 		@:privateAccess
 		return g != null && g.frameCollections != null && g.bitmap != null;
 	}
 
-	static function purgeGraphicFromCaches(obj:FlxGraphic, ?fileKey:String):Void
+	/**
+	 * Purge a set of dead graphics: scan every cache exactly once, remove all
+	 * aliases, evict their atlas frames, then destroy each object once. The old
+	 * per-key helper made state switches O(n^2) once the bitmap cache held a few
+	 * hundred entries.
+	 */
+	static function purgeGraphicBatch(dead:Map<FlxGraphic, Bool>):Void
 	{
+		if (dead == null || Lambda.count(dead) == 0) return;
+
 		var bitmapKeys:Array<String> = [];
 		@:privateAccess
-		for (k in FlxG.bitmap._cache.keys())
-			if (FlxG.bitmap._cache.get(k) == obj) bitmapKeys.push(k);
-		for (k in bitmapKeys)
+		for (key in FlxG.bitmap._cache.keys())
 		{
-			@:privateAccess
-			FlxG.bitmap._cache.remove(k);
-			openfl.Assets.cache.removeBitmapData(k);
+			var g = FlxG.bitmap._cache.get(key);
+			if (g != null && dead.exists(g)) bitmapKeys.push(key);
+		}
+		@:privateAccess
+		for (key in bitmapKeys)
+		{
+			FlxG.bitmap._cache.remove(key);
+			openfl.Assets.cache.removeBitmapData(key);
 		}
 
-		if (fileKey != null)
+		var trackedKeys:Array<String> = [];
+		for (key in currentTrackedAssets.keys())
 		{
-			currentTrackedAssets.remove(fileKey);
+			var g = currentTrackedAssets.get(key);
+			if (g != null && dead.exists(g)) trackedKeys.push(key);
 		}
-		else
-		{
-			var fileKeys:Array<String> = [];
-			for (ck in currentTrackedAssets.keys())
-				if (currentTrackedAssets.get(ck) == obj) fileKeys.push(ck);
-			for (ck in fileKeys)
-			{
-				currentTrackedAssets.remove(ck);
-			}
-		}
-		// Safety net: never destroy a graphic a live sprite still references.
-		if (obj.useCount <= 0)
-		{
-			// The cached sparrow-atlas frames hold a reference to this graphic and
-			// are registered in its frameCollections, so destroy() nulls their
-			// frames/parent. Evict them now — otherwise getSparrowAtlas() would
-			// return a zombie husk and mods that build sprites from cached atlases
-			// (e.g. FruitNinja-style spawners) would render nothing and end up in
-			// a Lua error loop until the whole script gets silently disabled.
-			var staleAtlasKeys:Array<String> = [];
-			for (cacheKey => frames in atlasFramesCache)
-			{
-				if (frames == null || frames.parent == obj)
-					staleAtlasKeys.push(cacheKey);
-			}
-			for (k in staleAtlasKeys)
-				atlasFramesCache.remove(k);
+		for (key in trackedKeys)
+			currentTrackedAssets.remove(key);
 
-			// Try storing in LRU cache before destroying. If retained, keep VRAM copy loaded
-			// for instant reuse on song replay. Repacked graphics are exempted from size checks.
-			if (backend.GfxLru.park(obj, fileKey, backend.GfxRepack.isPacked(fileKey)))
-				return;
-
-			obj.destroy();
+		var staleAtlasKeys:Array<String> = [];
+		for (cacheKey => frames in atlasFramesCache)
+		{
+			if (frames == null || frames.parent == null || dead.exists(frames.parent))
+				staleAtlasKeys.push(cacheKey);
 		}
+		for (key in staleAtlasKeys)
+			atlasFramesCache.remove(key);
+
+		for (g in dead.keys())
+			g.destroy();
 	}
 
 	// FlxBar's cached bar graphics keep useCount 0 but are held by live FlxBar via _frontFrame;
@@ -179,27 +172,23 @@ class Paths
 	}
 
 	public static function clearUnusedMemory() {
-		// clear non local assets in the tracked assets list
-		var keysToRemove:Array<String> = [];
+		// Collect once, then purge in one pass over both caches. The old shape
+		// called purgeGraphicFromCaches() per key, and each call re-scanned the
+		// whole FlxG bitmap cache (O(n^2) on long sessions).
+		var dead:Map<FlxGraphic, Bool> = new Map();
+		var nullKeys:Array<String> = [];
 		for (key in currentTrackedAssets.keys()) {
-			// if it is not currently contained within the used local assets
-			if (!localTrackedAssets.contains(key)
-				&& !dumpExclusions.contains(key)) {
-				// Only drop graphics that no sprite is currently using.
-				// Destroying a graphic that is still referenced makes the
-				// sprite render blank until the asset is loaded again.
-				var obj = currentTrackedAssets.get(key);
-				if (obj == null || obj.useCount <= 0)
-					keysToRemove.push(key);
-			}
-		}
-		// Batch remove to avoid map modification during iteration
-		for (key in keysToRemove) {
+			if (localTrackedAssets.contains(key) || dumpExclusions.contains(key))
+				continue;
 			var obj = currentTrackedAssets.get(key);
-			if (obj != null) {
-				purgeGraphicFromCaches(obj, key);
-			}
+			if (obj == null)
+				nullKeys.push(key);
+			else if (obj.useCount <= 0)
+				dead.set(obj, true);
 		}
+		for (key in nullKeys)
+			currentTrackedAssets.remove(key);
+		purgeGraphicBatch(dead);
 		// System.gc() was here; removed. It hitched every song
 		// switch with a full sync collect. GC goes back to the default policy.
 	}
@@ -211,89 +200,60 @@ class Paths
 	 */
 	public static function purgeUnusedGraphics():Int
 	{
-		// Candidates in one pass per cache, batch removal, then park/destroy each dead object
-		// exactly once. The old shape called purgeGraphicFromCaches() per purged key, and that
-		// helper re-scans the entire FlxG.bitmap cache (and, without a fileKey, the entire
-		// tracked-assets map plus the atlas frame cache) on every call — O(n^2) once a long
-		// session has filled the caches with dead autoSize-text bitmaps, which played back as a
-		// multi-second main-thread freeze every MEMORY_PURGE_INTERVAL frames.
-		var deadKeys:Map<String, Bool> = new Map<String, Bool>();
-		var bitmapDeadKeys:Map<String, Bool> = new Map<String, Bool>();
-		var deadObjects:Map<FlxGraphic, {obj:FlxGraphic, fileKey:String}> = new Map<FlxGraphic, {obj:FlxGraphic, fileKey:String}>();
+		// Candidates are collected once, then purged by one pass over both caches.
+		// The old shape called purgeGraphicFromCaches() per key and re-scanned the
+		// whole FlxG bitmap cache (and the atlas cache) every time, which became
+		// O(n^2) on long sessions and showed up as a multi-second freeze.
+		var deadObjects:Map<FlxGraphic, Bool> = new Map();
 
 		for (key in currentTrackedAssets.keys())
 		{
 			var obj = currentTrackedAssets.get(key);
 			if (obj != null && obj.useCount <= 0)
-			{
-				deadKeys.set(key, true);
-				deadObjects.set(obj, {obj: obj, fileKey: key});
-			}
+				deadObjects.set(obj, true);
 		}
 		@:privateAccess
+		for (key in FlxG.bitmap._cache.keys())
 		{
-			for (key in FlxG.bitmap._cache.keys())
-			{
-				var obj = FlxG.bitmap._cache.get(key);
-				if (obj != null && obj.useCount <= 0 && !isFlxBarCacheKey(key))
-				{
-					bitmapDeadKeys.set(key, true);
-					if (!deadObjects.exists(obj))
-						deadObjects.set(obj, {obj: obj, fileKey: null});
-				}
-			}
-			// Batch removal passes: no cache is mutated while it is being iterated.
-			for (key in bitmapDeadKeys.keys())
-			{
-				FlxG.bitmap._cache.remove(key);
-				openfl.Assets.cache.removeBitmapData(key);
-			}
+			var obj = FlxG.bitmap._cache.get(key);
+			if (obj != null && obj.useCount <= 0 && !isFlxBarCacheKey(key))
+				deadObjects.set(obj, true);
 		}
-		for (key in deadKeys.keys())
-			currentTrackedAssets.remove(key);
 
-		var purged:Int = 0;
-		for (entry in deadObjects)
-		{
-			var obj = entry.obj;
-			// The cached sparrow-atlas frames hold a reference to this graphic and are registered in
-			// its frameCollections, so destroy() nulls their frames/parent. Evict them now —
-			// otherwise getSparrowAtlas() would return a zombie husk and mods that build sprites
-			// from cached atlases (e.g. FruitNinja-style spawners) would render nothing and end up
-			// in a Lua error loop until the whole script gets silently disabled.
-			var staleAtlasKeys:Array<String> = [];
-			for (cacheKey => frames in atlasFramesCache)
-			{
-				if (frames == null || frames.parent == obj)
-					staleAtlasKeys.push(cacheKey);
-			}
-			for (k in staleAtlasKeys)
-				atlasFramesCache.remove(k);
-
-			// Try storing in LRU cache before destroying. If retained, keep VRAM copy loaded
-			// for instant reuse on song replay. Repacked graphics are exempted from size checks.
-			if (backend.GfxLru.park(obj, entry.fileKey, backend.GfxRepack.isPacked(entry.fileKey)))
-			{
-				purged++;
-				continue;
-			}
-			obj.destroy();
-			purged++;
-		}
+		var purged:Int = Lambda.count(deadObjects);
+		purgeGraphicBatch(deadObjects);
 		return purged;
 	}
 
 	/**
-	 * User-facing "clear image cache": release every cached graphic no live
-	 * sprite is using. purgeUnusedGraphics() drops unused graphics from the
-	 * main caches (they get parked into the LRU pool), then flushUnused()
-	 * destroys the pool contents. Live graphics (useCount>0) are never touched.
-	 * @return how many graphics were destroyed and how many bytes released.
+	 * User-facing "clear image cache": destroy every cached graphic no live
+	 * sprite is using. Live graphics (useCount>0) are never touched, and this
+	 * never goes through a second hidden cache.
+	 * @return how many graphics were destroyed and how many bytes were freed.
 	 */
-	public static function clearImageCache():backend.GfxLru.GfxLruFlushResult
+	public static function clearImageCache():{count:Int, bytes:Float}
 	{
-		purgeUnusedGraphics();
-		return backend.GfxLru.flushUnused('user-clear');
+		var seen:Map<FlxGraphic, Bool> = new Map();
+		var bytes:Float = 0;
+
+		@:privateAccess
+		for (key in FlxG.bitmap._cache.keys())
+		{
+			var g = FlxG.bitmap._cache.get(key);
+			if (g == null || g.bitmap == null || g.useCount > 0 || seen.exists(g)) continue;
+			seen.set(g, true);
+			bytes += g.bitmap.width * g.bitmap.height * 4;
+		}
+		for (key in currentTrackedAssets.keys())
+		{
+			var g = currentTrackedAssets.get(key);
+			if (g == null || g.bitmap == null || g.useCount > 0 || seen.exists(g)) continue;
+			seen.set(g, true);
+			bytes += g.bitmap.width * g.bitmap.height * 4;
+		}
+
+		var count:Int = purgeUnusedGraphics();
+		return {count: count, bytes: bytes};
 	}
 
 	// define the locally tracked assets
@@ -317,19 +277,16 @@ class Paths
 	}
 
 	public static function clearStoredMemory(?cleanUnused:Bool = false) {
-		// clear anything not in the tracked assets list
-		var cacheKeys:Array<String> = [];
+		// clear anything not in the tracked assets list (single pass)
+		var dead:Map<FlxGraphic, Bool> = new Map();
 		@:privateAccess
 		for (key in FlxG.bitmap._cache.keys())
-			cacheKeys.push(key);
-		@:privateAccess
-		for (key in cacheKeys)
 		{
 			var obj = FlxG.bitmap._cache.get(key);
-			if (obj != null && obj.useCount <= 0 && !currentTrackedAssets.exists(key) && !isFlxBarCacheKey(key)) {
-				purgeGraphicFromCaches(obj);
-			}
+			if (obj != null && obj.useCount <= 0 && !currentTrackedAssets.exists(key) && !isFlxBarCacheKey(key))
+				dead.set(obj, true);
 		}
+		purgeGraphicBatch(dead);
 
 		// clear all sounds that are cached
 		for (key in currentTrackedSounds.keys()) {
@@ -683,10 +640,6 @@ class Paths
 			}
 			currentTrackedAssets.remove(file); // zombie — force a fresh load
 		}
-		// Return cached graphic from LRU cache if available to skip disk read, decoding, and GPU upload
-		var lruG:FlxGraphic = backend.GfxLru.lookup(file);
-		if (lruG != null)
-			return lruG;
 		if (FileSystem.exists(file))
 			bitmap = BitmapData.fromFile(file);
 		else
@@ -733,17 +686,6 @@ class Paths
 				}
 			}
 
-			// Check LRU resident cache before any decoding attempts
-			var lruMain:FlxGraphic = backend.GfxLru.lookup(file);
-			if (lruMain == null && altKey != null)
-			{
-				var lruAlt:FlxGraphic = backend.GfxLru.lookup(altKey);
-				if (lruAlt != null)
-					return lruAlt;
-			}
-			if (lruMain != null)
-				return lruMain;
-
 			if (bitmap == null && OpenFlAssets.exists(file, IMAGE))
 				bitmap = getBitmapDataOnce(file);
 			#if sys
@@ -759,13 +701,6 @@ class Paths
 
 				for (candidate in fsCandidates)
 				{
-					// Restore graphic directly if found in LRU candidate cache
-					var cLru:FlxGraphic = backend.GfxLru.lookup(candidate);
-					if (cLru != null)
-					{
-						file = candidate;
-						return cLru;
-					}
 					if (FileSystem.exists(candidate))
 					{
 						file = candidate;
@@ -859,16 +794,14 @@ class Paths
 
 			trackLocalAsset(file);
 
-			// NOTE: The old "cache on GPU" path uploaded bitmaps to a Stage3D
-			// RectangleTexture and then disposed the CPU bitmap, wrapping the
-			// texture with BitmapData.fromTexture(). That broke image rendering
-			// with the standard OpenFL/Flixel renderer (blank images until the
-			// graphic got re-loaded a few times). We always use the plain
-			// CPU-side FlxGraphic cache now — it is reliable and safe.
+			// The graphic always starts as a normal CPU-backed bitmap. GfxMemory
+			// installs a reload callback and, once the renderer has uploaded it,
+			// releases the CPU pixels without ever replacing the bitmap object.
 			var newGraphic: FlxGraphic = FlxGraphic.fromBitmapData(bitmap, false, file);
 			newGraphic.persist = !allowGraphicAutoFree;
 			newGraphic.destroyOnNoUse = allowGraphicAutoFree;
 			currentTrackedAssets.set(file, newGraphic);
+			GfxMemory.attach(newGraphic, file);
 			return newGraphic;
 		}
 	static public function getTextFromFile(key:String, ?ignoreMods:Bool = false):String
@@ -929,18 +862,13 @@ class Paths
 		try
 		{
 			var xmlContent:String = getSparrowXml(key, library);
-			// Use packed XML generated from repacked bitmap if repacked cache hits
-			xmlContent = backend.GfxRepack.applyPackedXml(xmlContent, imageLoaded);
 			if (xmlContent == null)
 			{
 				TraceManager.error('trace.paths.atlasError', 'Failed to find sparrow XML for {}', [key]);
 				return null;
 			}
 			var frames:FlxAtlasFrames = FlxAtlasFrames.fromSparrow(imageLoaded, xmlContent);
-			#if android
-			// Frames need only the GPU texture; drop the CPU sheet immediately.
-			backend.GfxPolicy.releaseNow(imageLoaded.key, imageLoaded);
-			#end
+			GfxMemory.attach(imageLoaded, imageLoaded.assetsKey);
 			atlasFramesCache.set(cacheKey, frames);
 			return frames;
 		}
@@ -1006,9 +934,7 @@ class Paths
 			try
 			{
 				var frames:FlxAtlasFrames = FlxAtlasFrames.fromTexturePackerJson(imageLoaded, json);
-				#if android
-				backend.GfxPolicy.releaseNow(imageLoaded.key, imageLoaded);
-				#end
+				GfxMemory.attach(imageLoaded, imageLoaded.assetsKey);
 				return frames;
 			}
 			catch (e:Dynamic)
@@ -1040,9 +966,7 @@ class Paths
 		try
 		{
 			var frames:FlxAtlasFrames = FlxAtlasFrames.fromTexturePackerJson(imageLoaded, json);
-			#if android
-			backend.GfxPolicy.releaseNow(imageLoaded.key, imageLoaded);
-			#end
+			GfxMemory.attach(imageLoaded, imageLoaded.assetsKey);
 			return frames;
 		}
 		catch (e:Dynamic)
@@ -1161,16 +1085,12 @@ class Paths
 		}
 
 		var frames:FlxAtlasFrames = FlxAtlasFrames.fromSpriteSheetPacker(imageLoaded, (txtExists ? File.getContent(modsTxt(key)) : file('images/$key.txt', library)));
-		#if android
-		backend.GfxPolicy.releaseNow(imageLoaded.key, imageLoaded);
-		#end
+		GfxMemory.attach(imageLoaded, imageLoaded.assetsKey);
 		return frames;
 		#elseif sys
 		var imageLoaded:FlxGraphic = image(key, library);
 		var frames:FlxAtlasFrames = FlxAtlasFrames.fromSpriteSheetPacker(imageLoaded, file('images/$key.txt', library));
-		#if android
-		backend.GfxPolicy.releaseNow(imageLoaded.key, imageLoaded);
-		#end
+		GfxMemory.attach(imageLoaded, imageLoaded.assetsKey);
 		return frames;
 		#else
 		var txtContent:String = null;
@@ -1306,17 +1226,11 @@ class Paths
 		var modKey:String = modsImages(key);
 		if(FileSystem.exists(modKey)) {
 			if(!currentTrackedAssets.exists(modKey)) {
-				// Reuse from LRU resident cache if hit
-				var lruMod:FlxGraphic = backend.GfxLru.lookup(modKey);
-				if (lruMod != null)
-					return lruMod;
 				var newBitmap:BitmapData = BitmapData.fromFile(modKey);
 				var newGraphic:FlxGraphic = FlxGraphic.fromBitmapData(newBitmap, false, modKey);
 				newGraphic.persist = true;
 				currentTrackedAssets.set(modKey, newGraphic);
-				#if android
-				backend.GfxPolicy.releaseNow(modKey, newGraphic);
-				#end
+				GfxMemory.attach(newGraphic, modKey);
 			}
 			trackLocalAsset(modKey);
 			return currentTrackedAssets.get(modKey);
@@ -1327,16 +1241,10 @@ class Paths
 		//trace(path);
 		if (OpenFlAssets.exists(path, IMAGE)) {
 			if(!currentTrackedAssets.exists(path)) {
-				// Reuse from LRU resident cache if hit
-				var lruPath:FlxGraphic = backend.GfxLru.lookup(path);
-				if (lruPath != null)
-					return lruPath;
 				var newGraphic:FlxGraphic = FlxG.bitmap.add(path, false, path);
 				newGraphic.persist = true;
 				currentTrackedAssets.set(path, newGraphic);
-				#if android
-				backend.GfxPolicy.releaseNow(path, newGraphic);
-				#end
+				GfxMemory.attach(newGraphic, path);
 			}
 			trackLocalAsset(path);
 			return currentTrackedAssets.get(path);
@@ -1618,6 +1526,7 @@ class Paths
 		newGraphic.persist = true;
 		newGraphic.destroyOnNoUse = false;
 		currentTrackedAssets.set(file, newGraphic);
+		GfxMemory.attach(newGraphic, file);
 		return newGraphic;
 	}
 	#end

@@ -304,11 +304,8 @@ class SystemDiag
 		}, out, '(graphics cache unavailable)');
 
 		safeLines(() -> {
-			return 'GfxPolicy: released(live)=' + Std.string(GfxPolicy.releasedBytesLive)
-				+ ' bytes, released(total)=' + Std.string(GfxPolicy.releasedCountTotal)
-				+ ' count, restores=' + Std.string(GfxPolicy.restoredCountTotal)
-				+ ', LRU live=' + Std.string(GfxLru.liveEntries()) + ' entries';
-		}, out, '(gfx policy unavailable)');
+			return backend.gfx.GfxMemory.statsLine();
+		}, out, '(gfx memory unavailable)');
 
 		// Which screen / song the crash happened on.
 		safeLines(() -> {
@@ -463,7 +460,8 @@ class SystemDiag
 			var gfxFlags:String = '';
 			try {
 				gfxFlags = ' | cpuRelease=' + Std.string(ClientPrefs.data.gfxCpuRelease)
-					+ ' lowQuality=' + Std.string(ClientPrefs.data.lowQuality);
+					+ ' lowQuality=' + Std.string(ClientPrefs.data.lowQuality)
+					+ ' | ' + backend.gfx.GfxMemory.statsLine();
 			} catch (e:Dynamic) {}
 			NativeCrash.setRuntimeContext('state=' + stateName + ' | song=' + song + ' | glErr=' + GlErrorWatchdog.snapshot() + gfxFlags);
 			NativeCrash.setRecentLogs(TraceManager.getRecentCrashText());
