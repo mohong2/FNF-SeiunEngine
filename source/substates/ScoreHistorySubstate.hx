@@ -43,6 +43,8 @@ class ScoreHistorySubstate extends MusicBeatSubstate
 
 	/** Dedicated static screen-space camera for correct mouse hit testing. */
 	var substateCam:flixel.FlxCamera;
+	/** Viewport camera that crops the score rows to the list panel. */
+	var listCam:flixel.FlxCamera;
 	var backdropCam:flixel.FlxCamera;
 	var prevCamFilters:Array<openfl.filters.BitmapFilter> = null;
 
@@ -157,6 +159,19 @@ class ScoreHistorySubstate extends MusicBeatSubstate
 		selector = new FlxSprite().makeGraphic(360, 52, FlxColor.fromRGBFloat(0/255, 200/255, 220/255, 0.18));
 		selector.visible = false;
 		add(selector);
+
+		// The list holds more rows than fit in the panel. FlxText.clipRect is not a
+		// usable scroll window on the tile renderer (a non-zero clipRect.y shifts the
+		// text down instead of cropping it), so crop the row layers with a viewport
+		// camera. The rows keep their normal screen coordinates; the camera only
+		// limits what is drawn to the list area.
+		listCam = UIScreen.createViewportCamera(dateListBG.x, listStartY - 3, Std.int(dateListBG.width),
+			Std.int(listVisibleHeight + 3));
+		rowBGGroup.cameras = [listCam];
+		dateListGroup.cameras = [listCam];
+		rowSubTexts.cameras = [listCam];
+		rowIconGroup.cameras = [listCam];
+		selector.cameras = [listCam];
 
 		// graphNote: 800x140 inside 820x160 panel (10px padding)
 		graphNote = new FlxSprite(450, 420).makeGraphic(800, 140, FlxColor.TRANSPARENT);
@@ -1131,6 +1146,9 @@ class ScoreHistorySubstate extends MusicBeatSubstate
 		var left:Float = dateListBG.x + 8;
 		var right:Float = dateListBG.x + dateListBG.width - 8;
 		if (mx < left || mx > right) return -1;
+		// Rows outside the viewport are cropped by listCam; do not let the padding
+		// above/below the list (or an off-screen row) react to clicks.
+		if (my < listStartY - 3 || my > listStartY + listVisibleHeight) return -1;
 
 		for (i in 0...dateListGroup.members.length)
 		{
@@ -1277,6 +1295,9 @@ class ScoreHistorySubstate extends MusicBeatSubstate
 	override function destroy():Void
 	{
 		restoreBackdrop();
+		if (listCam != null && FlxG.cameras.list.indexOf(listCam) != -1)
+			FlxG.cameras.remove(listCam, true);
+		listCam = null;
 		if (substateCam != null)
 		{
 			FlxG.cameras.remove(substateCam, true);

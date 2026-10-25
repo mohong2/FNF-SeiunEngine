@@ -1580,7 +1580,7 @@ class FunkinLua {
 				else
 					result = 0;
 			}
-			return result;
+			return Int64Util.toScript(result);
 		});
 		Lua_helper.add_callback(lua, "setProperty", function(variable:String, value:Dynamic, allowMaps:Bool = false, ?allowInstances:Bool = false) {
 			// 1.0.4: allowInstances —— 允许把 instanceArg() 生成的字符串还原成对象。
@@ -1654,13 +1654,13 @@ class FunkinLua {
 						? Reflect.getProperty(row, Std.string(variable))
 						: getGroupStuff(row, variable);
 					if(rowResult == null) Lua.pushnil(lua);
-					return rowResult;
+					return Int64Util.toScript(rowResult);
 				}
 				if(Std.isOfType(realObject, FlxTypedGroup))
 				{
 					var result104:Dynamic = getGroupStuff(realObject.members[index], variable);
 					if(result104 == null) Lua.pushnil(lua);
-					return result104;
+					return Int64Util.toScript(result104);
 				}
 
 				var leArray104:Dynamic = realObject[index];
@@ -1672,7 +1672,7 @@ class FunkinLua {
 						result104 = getGroupStuff(leArray104, variable);
 
 					if(result104 == null) Lua.pushnil(lua);
-					return result104;
+					return Int64Util.toScript(result104);
 				}
 				luaTrace("getPropertyFromGroup: Object #" + index + " from group: " + obj + " doesn't exist!", false, false, FlxColor.RED);
 				Lua.pushnil(lua);
@@ -1696,7 +1696,7 @@ class FunkinLua {
 					? Reflect.getProperty(row, Std.string(variable))
 					: getGroupStuff(row, variable);
 				if(rowResult == null) return 0;
-				return rowResult;
+				return Int64Util.toScript(rowResult);
 			}
 
 			if(Std.isOfType(realObject, FlxTypedGroup))
@@ -1705,7 +1705,7 @@ class FunkinLua {
 					return 0;
 				var result:Dynamic = getGroupStuff(realObject.members[index], variable);
 				if(result == null) return 0;
-				return result;
+				return Int64Util.toScript(result);
 			}
 
 			var leArray:Dynamic = realObject[index];
@@ -1717,7 +1717,7 @@ class FunkinLua {
 					result = getGroupStuff(leArray, variable);
 
 				if(result == null) return 0;
-				return result;
+				return Int64Util.toScript(result);
 			}
 			luaTrace("getPropertyFromGroup: Object #" + index + " from group: " + obj + " doesn't exist!", false, false, FlxColor.RED);
 			return 0;
@@ -2687,7 +2687,7 @@ class FunkinLua {
 		});
 		Lua_helper.add_callback(lua, "getVar", function(varName:String) {
 			var vars = getStateVars();
-			return (vars != null) ? vars.get(varName) : null;
+			return Int64Util.toScript((vars != null) ? vars.get(varName) : null);
 		});
 		Lua_helper.add_callback(lua, "removeVar", function(varName:String) {
 			var vars = getStateVars();
@@ -4818,21 +4818,23 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 				if (target == null) return null; // 对象不存在时安全返回，避免空指针中断脚本
 				target = target[j];
 			}
-			return target;
+			return Int64Util.toScript(target);
 		}
 		// 1.0.4 / 0.7.3 / 0.6.3 的 getVarInArray 都有这一段: allowMaps = true 时把 Map 当成
 		// 字典查一个 key。本引擎移植时漏掉了它, 于是
 		//   getPropertyFromClass('backend.ClientPrefs', 'keyBinds.note_left', true)
 		// 会拿 ClientPrefs.keyBinds 这个 Map 去 Reflect.getProperty, 永远得到 null ——
 		// SonicTheFunkChinese 的键位设置页因此整页显示 "- - -"。
+		// Int64 counters are boxed once they pass 2^31 (or go negative); Lua's Convert.toLua
+		// would push nil for those, so hand Lua a number everywhere a value leaves the engine.
 		if(allowMaps && isMap(instance))
-			return instance.get(variable);
+			return Int64Util.toScript(instance.get(variable));
 
 		if(stateVars != null && stateVars.exists(variable))
 		{
 			var retVal:Dynamic = stateVars.get(variable);
 			if(retVal != null)
-				return retVal;
+				return Int64Util.toScript(retVal);
 		}
 
 		// unspawnNotes 等 ChartNotes 列式存储: 数字段是行下标, Reflect 取不到, 要走 store。
@@ -4842,7 +4844,7 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 			if(rowIdx != null) return (cast instance : ChartNotes.ChartNotesData).get(rowIdx);
 		}
 
-		return Reflect.getProperty(instance, variable);
+		return Int64Util.toScript(Reflect.getProperty(instance, variable));
 	}
 	static function parseInstances(args:Array<Dynamic>)
 	{
@@ -4929,7 +4931,7 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 		}
 
 		//trace('end: $obj');
-		return Reflect.callMethod(obj, funcToRun, parsed);
+		return Int64Util.toScript(Reflect.callMethod(obj, funcToRun, parsed));
 	}
 
 	/** 是否是 instanceArg() 生成的引用字符串（'##PSYCHLUA_STRINGTOOBJ::...'）。 */
@@ -5214,7 +5216,7 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 	}
 
 	function getGroupStuff(leArray:Dynamic, variable:String):Dynamic {
-		return ratingForScripts(leArray, variable, getGroupStuffRaw(leArray, variable));
+		return Int64Util.toScript(ratingForScripts(leArray, variable, getGroupStuffRaw(leArray, variable)));
 	}
 
 	function getGroupStuffRaw(leArray:Dynamic, variable:String) {

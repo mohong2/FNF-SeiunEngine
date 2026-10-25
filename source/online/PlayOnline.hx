@@ -264,7 +264,7 @@ class PlayOnline {
 			ps.setOnScripts('scoreOP', op.player.score);
 			ps.setOnScripts('missesOP', op.player.misses);
 			ps.setOnScripts('hitsOP', Int64Util.toFloat(op.calcHits())); // may be inaccurate to hits
-			ps.setOnScripts('comboOP', op.combo);
+			ps.setOnScripts('comboOP', Int64Util.toFloat(op.combo));
 
 			var ret:Dynamic = ps.callOnScripts('onRecalculateRatingPlayer', Scripts.fill1(Scripts.get(1), sid), true);
 			if (ret != FunkinLua.Function_Stop) {

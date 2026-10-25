@@ -195,6 +195,7 @@ class TitleState extends MusicBeatState
 		TraceManager.syncWithPrefs();
 		#end
 
+		showMouseCursor = false;
 		super.create();
 
 		#if sys

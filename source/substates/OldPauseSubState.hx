@@ -42,9 +42,15 @@ class OldPauseSubState extends MusicBeatSubstate
 	/** One-shot guard for the close path: a local click and the network "resumeGame" can race. */
 	var closing:Bool = false;
 
+	/** PlayState hides the cursor; pause (old and new UI) is a menu and restores it. */
+	var prevMouseVisible:Bool = false;
+
 	public function new(x:Float, y:Float)
 	{
 		super();
+
+		prevMouseVisible = FlxG.mouse.visible;
+		FlxG.mouse.visible = true;
 
 		if(CoolUtil.difficulties.length < 2) menuItemsOG.remove('Change Difficulty');
 
@@ -344,6 +350,7 @@ class OldPauseSubState extends MusicBeatSubstate
 
 	override function destroy()
 	{
+		FlxG.mouse.visible = prevMouseVisible;
 		if(pauseMusic != null) pauseMusic.destroy();
 		super.destroy();
 	}

@@ -142,6 +142,7 @@ class BootState extends MusicBeatState
 		FlxTransitionableState.skipNextTransIn = true;
 		FlxTransitionableState.skipNextTransOut = true;
 
+		showMouseCursor = false;
 		super.create();
 
 		#if sys

@@ -49,15 +49,29 @@ class Highscore
         try
         {
             var map:Map<String, Dynamic> = cast source;
+            // Per-entry guard: one malformed legacy value must not abort the loop and then lose
+            // every other score through the anonymous-object fallback below.
             for (key in map.keys())
-                target.set(key, Int64Util.fromDynamic(map.get(key)));
+            {
+                try
+                {
+                    target.set(key, Int64Util.fromDynamic(map.get(key)));
+                }
+                catch (e:Dynamic) {}
+            }
             return;
         }
         catch (e:Dynamic) {}
 
         // Very old backups may store the map as an anonymous object instead of a haxe Map.
         for (key in Reflect.fields(source))
-            target.set(key, Int64Util.fromDynamic(Reflect.field(source, key)));
+        {
+            try
+            {
+                target.set(key, Int64Util.fromDynamic(Reflect.field(source, key)));
+            }
+            catch (e:Dynamic) {}
+        }
     }
 
     public static function resetSong(song:String, diff:Int = 0):Void

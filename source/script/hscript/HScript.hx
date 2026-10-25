@@ -1555,7 +1555,17 @@ class PlayStateInterp extends hscript.Interp
 		}
 	}
 
+	/**
+	 * Int64 counters (songScore/combo/maxcombo/sicks/... once they exceed 2^31 or go negative)
+	 * come back from hxcpp reflection as a boxed cpp.Int64. HScript then treats them as objects:
+	 * `combo + 1` concatenates strings instead of adding. Convert every value that enters the
+	 * interpreter to the number a script expects.
+	 */
 	override function resolve(id:String):Dynamic
+		return Int64Util.toScript(resolveRaw(id));
+
+	/** Same field resolution as before; split out so resolve() can convert the result. */
+	function resolveRaw(id:String):Dynamic
 	{
 		// 1) 局部变量
 		if (locals.exists(id))
@@ -1593,5 +1603,13 @@ class PlayStateInterp extends hscript.Interp
 		error(EUnknownVariable(id));
 		return null;
 	}
+
+	/** Property reads: `PlayState.instance.combo`, `note.strumTime`, sourceClass.state, ... */
+	override function get(o:Dynamic, f:String):Dynamic
+		return Int64Util.toScript(super.get(o, f));
+
+	/** Method call results: `Highscore.getScore(...)`, `getProperty(...)`, ... */
+	override function call(o:Dynamic, f:Dynamic, args:Array<Dynamic>):Dynamic
+		return Int64Util.toScript(super.call(o, f, args));
 }
 #end

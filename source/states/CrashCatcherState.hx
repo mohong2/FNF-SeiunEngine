@@ -8,10 +8,10 @@ import flixel.util.FlxTimer;
 import flixel.tweens.FlxTween;
 import flixel.tweens.FlxEase;
 import flixel.math.FlxMath;
-import flixel.math.FlxRect;
 import flixel.util.FlxSpriteUtil;
 import backend.MusicBeatState;
 import backend.SystemDiag;
+import backend.UIScreen;
 import mohong.TraceManager;
 #if sys
 import sys.io.File;
@@ -69,6 +69,8 @@ class CrashCatcherState extends MusicBeatState
 	var errorScrollOffset:Float = 0;
 	var errorMaxScroll:Float = 0;
 	var errorViewH:Float = 0;
+	var errorCam:flixel.FlxCamera;
+	var stackCam:flixel.FlxCamera;
 
 	// -- Button selection --
 	var selectedButton:Int = 0; // 0 = return, 1 = save, 2 = copy
@@ -246,14 +248,23 @@ class CrashCatcherState extends MusicBeatState
 		stackText.alpha = 0;
 		add(stackText);
 
-		if (stackText.height > stackViewH)
-			maxScroll = stackText.height - stackViewH;
-		stackText.clipRect = FlxRect.get(0, 0, stackText.fieldWidth, stackViewH);
+		// The text keeps its position; a viewport camera crops it to the panel and
+		// scrolls the content underneath. Do not use FlxText.clipRect for this:
+		// on the tile renderer a non-zero clipRect.y shifts the text down by that
+		// amount (it does not scroll it), which is what used to drag the report
+		// off the screen.
+		stackText.updateHitbox();
+		maxScroll = Math.max(0, stackText.height - stackViewH);
+		stackCam = UIScreen.createViewportCamera(panelMargin + 16, lowerY + 34,
+			Std.int(panelWidth - 32), Std.int(stackViewH));
+		stackText.cameras = [stackCam];
 
 		errorViewH = upperAreaH - 46;
-		if (errorText.height > errorViewH)
-			errorMaxScroll = errorText.height - errorViewH;
-		errorText.clipRect = FlxRect.get(0, 0, errorText.fieldWidth, errorViewH);
+		errorText.updateHitbox();
+		errorMaxScroll = Math.max(0, errorText.height - errorViewH);
+		errorCam = UIScreen.createViewportCamera(panelMargin + 16, upperY + 40,
+			Std.int(panelWidth - 32), Std.int(errorViewH));
+		errorText.cameras = [errorCam];
 
 		// -- Crash file path info --
 		var infoTxt = "";
@@ -421,8 +432,6 @@ class CrashCatcherState extends MusicBeatState
 			{
 				errorScrollOffset -= wheel * 30;
 				errorScrollOffset = FlxMath.bound(errorScrollOffset, 0, errorMaxScroll);
-				var er = errorText.clipRect;
-				if (er != null) { er.y = errorScrollOffset; errorText.clipRect = er; }
 			}
 		}
 		if (FlxG.mouse.overlaps(stackPanel))
@@ -432,10 +441,14 @@ class CrashCatcherState extends MusicBeatState
 			{
 				scrollOffset -= wheel * 30;
 				scrollOffset = FlxMath.bound(scrollOffset, 0, maxScroll);
-				var sr = stackText.clipRect;
-				if (sr != null) { sr.y = scrollOffset; stackText.clipRect = sr; }
 			}
 		}
+
+		// Keep the viewport fixed and move the text content beneath it.
+		if (errorCam != null)
+			errorCam.scroll.y = errorCam.y + errorScrollOffset;
+		if (stackCam != null)
+			stackCam.scroll.y = stackCam.y + scrollOffset;
 		#end
 
 		super.update(elapsed);
@@ -819,6 +832,20 @@ class CrashCatcherState extends MusicBeatState
 			FlxTween.tween(savedConfirmTxt, {alpha: 0}, 3, {startDelay: 2});
 			btnSaveTxt.alpha = 1;
 		}
+	}
+
+	// ================ Cleanup ================
+	override function destroy():Void
+	{
+		// FlxG.switchState() resets the camera list before destroying the state, so
+		// these entries may already be gone; only remove what is still registered.
+		if (errorCam != null && FlxG.cameras.list.indexOf(errorCam) != -1)
+			FlxG.cameras.remove(errorCam, true);
+		if (stackCam != null && FlxG.cameras.list.indexOf(stackCam) != -1)
+			FlxG.cameras.remove(stackCam, true);
+		errorCam = null;
+		stackCam = null;
+		super.destroy();
 	}
 
 	// ================ Easter egg messages ================

@@ -55,6 +55,17 @@ class MusicBeatState extends FlxUIState
 
 	public var scriptName:String = null;
 
+	/**
+	 * Whether entering this state should make the system mouse cursor visible.
+	 *
+	 * Menus and their substates are mouse-driven, so they opt in by default. A
+	 * gameplay state (PlayState) sets this to false before `super.create()`, and
+	 * states that intentionally hide the cursor (boot/title) hide it themselves.
+	 * Substates are handled separately because they must restore their parent's
+	 * cursor state when they close.
+	 */
+	public var showMouseCursor:Bool = true;
+
 	public function new(?scriptName:String) {
 		super();
 		this.scriptName = scriptName;
@@ -181,6 +192,13 @@ class MusicBeatState extends FlxUIState
 
 	override function create() {
 		camBeat = FlxG.camera;
+
+		// Every screen that does not explicitly opt out gets a usable cursor. This
+		// is what makes StoryMenu (reached from game over / pause), the crash
+		// catcher, options and the rest of the menus work after PlayState has hidden
+		// the cursor for gameplay.
+		FlxG.mouse.visible = showMouseCursor;
+
 		Language.load();
 		var skip:Bool = FlxTransitionableState.skipNextTransOut;
 		super.create();

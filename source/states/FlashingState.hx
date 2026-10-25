@@ -12,6 +12,7 @@ class FlashingState extends MusicBeatState
 	override function create()
 	{
 		instance = this;
+		showMouseCursor = false;
 		super.create();
 
 		#if LUA_ALLOWED

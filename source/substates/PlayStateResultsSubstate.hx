@@ -74,6 +74,10 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 	var prevPersistentUpdate:Bool = true;
 	var prevCamFilters:Array<openfl.filters.BitmapFilter> = null;
 
+	/** Results are mouse-driven; restore PlayState's hidden cursor when they close. */
+	var prevMouseVisible:Bool = false;
+	var mouseCaptured:Bool = false;
+
 	var heroPanel:FlxSprite;
 	var heroTextGroup:FlxTypedGroup<FlxText>;
 	var scoreText:FlxText;
@@ -136,6 +140,10 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 			close();
 			return;
 		}
+
+		prevMouseVisible = FlxG.mouse.visible;
+		FlxG.mouse.visible = true;
+		mouseCaptured = true;
 
 		// [FIX] Freeze the gameplay update while results are shown so the camera
 		// can no longer keep panning/zooming behind the substate. Restored on close/destroy.
@@ -1253,6 +1261,9 @@ return Std.string(v);
 
 	override function destroy():Void
 	{
+		// PlayState hides the cursor for gameplay; the results UI is clickable.
+		if (mouseCaptured)
+			FlxG.mouse.visible = prevMouseVisible;
 		restoreBackdrop();
 		if (substateCam != null)
 		{

@@ -414,9 +414,17 @@ class BackupUtil
 				var src:Dynamic = Reflect.field(data, fieldName);
 				if (src == null) return;
 				target.clear();
+				// The live FlxSave payload must stay string-encoded: haxe.Serializer does not
+				// round-trip Int64 (see Highscore.saveIntMap). Writing the Int64 map back here
+				// made the next launch's save contain boxed cpp.Int64 values again.
+				var stored:Map<String, String> = new Map();
 				for (key in Reflect.fields(src))
-					target.set(key, Int64Util.fromDynamic(Reflect.field(src, key)));
-				Reflect.setField(flixel.FlxG.save.data, fieldName, target);
+				{
+					var value:haxe.Int64 = Int64Util.fromDynamic(Reflect.field(src, key));
+					target.set(key, value);
+					stored.set(key, Int64Util.toSaveString(value));
+				}
+				Reflect.setField(flixel.FlxG.save.data, fieldName, stored);
 			}
 			function restoreFloatMap(fieldName:String, target:Map<String, Float>)
 			{

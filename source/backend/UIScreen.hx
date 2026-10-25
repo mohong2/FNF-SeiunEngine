@@ -27,6 +27,26 @@ class UIScreen
 		return cam;
 	}
 
+	/**
+	 * Creates a screen-space camera whose viewport crops everything assigned to it.
+	 *
+	 * This is the reliable way to clip a scrolling text block: `FlxSprite.clipRect`
+	 * offsets the visible content by `clipRect.y` on the tile renderer, so using it
+	 * as a scroll window drags the text out of the panel instead of scrolling it.
+	 * A camera viewport keeps its world position fixed and moves the content under it.
+	 *
+	 * The camera's `x`/`y` are its top-left corner. `scroll` is aligned with that
+	 * corner so children can keep using normal screen coordinates.
+	 */
+	public static function createViewportCamera(x:Float, y:Float, width:Int, height:Int):FlxCamera
+	{
+		var cam = new FlxCamera(Std.int(x), Std.int(y), width, height);
+		cam.bgColor.alpha = 0;
+		cam.scroll.set(cam.x, cam.y);
+		FlxG.cameras.add(cam, false);
+		return cam;
+	}
+
 	public static function applyBlur(cam:FlxCamera, radius:Float = 9):Void
 	{
 		if (cam == null || !ClientPrefs.data.shaders) return;

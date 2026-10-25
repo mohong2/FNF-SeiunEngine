@@ -465,8 +465,8 @@ class PlayState extends MusicBeatState
 	 *
 	 * Int64: one chart can pass 2^31 raw taps at the chart sizes this store targets, and the value
 	 * is also what fills the second 8-byte slot of the ChartCache header -- which is already
-	 * Int64, so an Int here would wrap first. The field is private and never exposed to
-	 * Lua/HScript, so a script reading it through getPropertyFromClass gets a boxed Int64.
+	 * Int64, so an Int here would wrap first. The field is private and not part of the script
+	 * surface; a script that reaches it anyway gets a number through Int64Util.toScript.
 	 */
 	private var _turboRawTapCount:haxe.Int64 = 0;
 	/** Per-lane cos/sin cache: per-note per-frame trig becomes once per lane per frame (the direction is a lane constant anyway). */
@@ -514,6 +514,13 @@ class PlayState extends MusicBeatState
 	public var postMusicTime:Float = 0;
 	/** Strum time of the very last note, used to delay song end until it plays out. */
 	public var lastChartNoteTime:Float = 0;
+	/**
+	 * The music reported completion and every note had spawned; finishSong() is due at the top of
+	 * the next update. Deferred instead of running inside the audio-complete callback, which Lime
+	 * invokes from its haxe.Timer (outside openfl's guarded event dispatch, and therefore outside
+	 * CRASH_HANDLER -- see onMusicComplete).
+	 */
+	private var _finishSongPending:Bool = false;
 
 	private var strumLine:FlxSprite;
 
@@ -1010,6 +1017,9 @@ class PlayState extends MusicBeatState
 		// 而 PlayState 以前从没关掉过，于是自定义鼠标的模组会在游戏里同时看到两个光标。
 		// 0.6.3/0.7.3/1.0.4 的 PlayState 都不会显示它（那些版本的菜单也不打开它），
 		// 所以这里统一关掉就等于恢复三个版本的原生观感；模组仍可在 onCreate 里自己打开。
+		// 基类 MusicBeatState.create() 会为菜单打开光标，所以这里在 super.create()
+		// 之前先声明本状态不需要光标，否则它会在 super.create() 里又被打开。
+		showMouseCursor = false;
 		FlxG.mouse.visible = false;
 
 		// 见 MusicBeatState.handlesOwnBeatCallbacks: PlayState 是本引擎唯一在 callOnScripts 里
@@ -5757,6 +5767,16 @@ class PlayState extends MusicBeatState
 			_splashBudgetLeft = 999999;
 		}
 
+		// The music finished (see onMusicComplete): run the end-of-song path here, inside the
+		// guarded update dispatch, instead of from Lime's audio timer. Everything after this
+		// point already assumes the song is over once finishSong() opens the results substate.
+		if (_finishSongPending)
+		{
+			_finishSongPending = false;
+			finishSong();
+			return;
+		}
+
 		#if ONLINE_ALLOWED
 		/*
 			 * In-game FP-counter toggle on `FlxG.keys.justPressed.F7`, next to the other
@@ -7030,8 +7050,20 @@ class PlayState extends MusicBeatState
 		// already be destroyed (FlxSound.destroy nulls _transform), and finishSong() writes its
 		// volume -- a null write at +0x30 (crash/native_crash_20260925_154824.txt).
 		if (instance != this) return;
+
+		// Never finish the song inside this callback, even when every note has already spawned.
+		//
+		// Lime delivers SOUND_COMPLETE from NativeAudioSource's haxe.Timer, which runs inside
+		// NativeApplication.updateTimer() - outside openfl's guarded event dispatch. An exception
+		// thrown from here therefore never reaches UncaughtErrorEvent / Main.onCrash: it unwinds to
+		// hxcpp's WinMain, which shows a bare "Error / <message>" MessageBox, prints the stack to a
+		// nonexistent console and exits. Finishing a real playthrough used to throw there (haxe.Json
+		// on the Int64 score details), so the crash looked unrecoverable and left no report.
+		//
+		// update() runs the same work under Stage.__dispatchEvent, where CRASH_HANDLER sees it,
+		// and the musicEnded branch below already defers the "chart outlasts its audio" case.
 		if (notesAddedCount >= unspawnNotes.length)
-			finishSong();
+			_finishSongPending = true;
 		else
 			musicEnded = true;
 	}

@@ -8,6 +8,7 @@ import sys.FileSystem;
 #end
 import flixel.FlxG;
 import flixel.util.FlxSave;
+import mohong.TraceManager;
 import SUtil;
 
 using StringTools;
@@ -331,11 +332,29 @@ class Allscore
 			songSpeed: entry.songSpeed,
 			playbackRate: entry.playbackRate,
 			songSpeedType: entry.songSpeedType,
-			details: entry.details,
+			// Int64 must not reach haxe.Json: cpp.Int64 is a native class, JsonPrinter reflects
+			// it as an object with no fields and throws "Null Object Reference". details still
+			// carries the Int64 gameplay counters (score/hits/misses/maxCombo), so copy them as
+			// numbers - the exact shape older score files already have (see Int64Util.jsonSafe).
+			details: Int64Util.jsonSafeArray(entry.details),
 			replayData: entry.replayData
 		};
 
-		var json:String = Json.stringify(jsonObj, "\t");
+		var json:String;
+		try
+		{
+			json = Json.stringify(jsonObj, "\t");
+		}
+		catch (e:Dynamic)
+		{
+			// A value haxe.Json cannot reflect (cpp.Int64 and other native classes) used to
+			// abort the whole end-of-song path before the file was written. Details are already
+			// sanitised above, so this is the slow path for a future field: retry with a fully
+			// sanitised copy instead of losing the run. If it still fails, the exception now
+			// surfaces through the guarded update()/CRASH_HANDLER instead of hxcpp's MessageBox.
+			TraceManager.error('trace.errScoreWrite', 'Score JSON failed, retrying sanitised: {}', [e]);
+			json = Json.stringify(Int64Util.jsonSafe(jsonObj), "\t");
+		}
 		var srcBytes:Bytes = Bytes.ofString(json, UTF8);
 		var encBytes:Bytes = xorBytes(srcBytes);
 		File.saveBytes(filePath, encBytes);

@@ -38,7 +38,17 @@ class JsonSafe {
 
 	/** Dispatch copied from haxe.format.JsonPrinter.write(). */
 	static function write(buf:StringBuf, v:Dynamic):Void {
-		switch (Type.typeof(v)) {
+		// haxe.Int64 is a native cpp class; Type.getInstanceFields()/Reflect.fields() return null
+		// for it and the loops below would throw "Null Object Reference". Emit it as a JSON
+		// number (the same text JsonPrinter emits for an Int) instead of killing the request.
+		// Only boxed values need this: Int64.isInt64() is also true for plain Ints/Floats on
+		// hxcpp, and those must keep the normal TInt/TFloat formatting below.
+		var valueType = Type.typeof(v);
+		if (valueType != TInt && valueType != TFloat && haxe.Int64.isInt64(v)) {
+			buf.add(haxe.Int64.toStr(cast v));
+			return;
+		}
+		switch (valueType) {
 			case TUnknown:
 				buf.add('"???"');
 			case TObject:
@@ -98,6 +108,7 @@ class JsonSafe {
 
 	/** Object/class body; function-valued fields are skipped exactly like JsonPrinter does. */
 	static function writeFields(buf:StringBuf, v:Dynamic, fields:Array<String>):Void {
+		if (fields == null) fields = []; // native classes have no reflected fields; never iterate null
 		buf.add('{');
 		var empty = true;
 		for (f in fields) {
