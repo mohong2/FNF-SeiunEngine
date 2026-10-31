@@ -893,6 +893,17 @@ class PlayState extends MusicBeatState
 	public var timeTxt:FlxText;
 	/** timeTxt 上一次写出的秒数 (-1 = 下一帧重画一次, 例如时间条类型刚切回来)。 */
 	private var _timeTxtSeconds:Int = -1;
+	#if hudtext_profile
+	/** Test-only: HUDTEXT_NOHEALTH=1 pins health, so a no-input run can keep missing notes
+	 *  (that is the manual-play text path) without dying after a few seconds. */
+	static var _hudNoHealth:Null<Bool> = null;
+	/** Test-only: HUDTEXT_DRIVE=1 rebuilds the real score line on a fixed frame cadence
+	 *  (HUDTEXT_DRIVE_EVERY, default 6). Manual play only misses here, and a miss never calls
+	 *  updateScore() in this engine, so without a driver the measured line rebuilds once a run. */
+	static var _hudDrive:Null<Bool> = null;
+	static var _hudDriveEvery:Int = 6;
+	static var _hudDriveTick:Int = 0;
+	#end
 	public var scoreTxtTween:FlxTween;
 
 	public static var campaignScore:haxe.Int64 = 0;
@@ -5762,6 +5773,38 @@ class PlayState extends MusicBeatState
 
 	override public function update(elapsed:Float)
 	{
+		#if hudtext_profile
+		if (_hudNoHealth == null)
+		{
+			var __nh:String = null;
+			try __nh = Sys.getEnv('HUDTEXT_NOHEALTH') catch (e:Dynamic) {}
+			_hudNoHealth = (__nh == '1');
+		}
+		if (_hudNoHealth) health = 2;
+		if (_hudDrive == null)
+		{
+			var __dv:String = null;
+			try __dv = Sys.getEnv('HUDTEXT_DRIVE') catch (e:Dynamic) {}
+			_hudDrive = (__dv == '1');
+			var __de:String = null;
+			try __de = Sys.getEnv('HUDTEXT_DRIVE_EVERY') catch (e:Dynamic) {}
+			var __n:Null<Int> = (__de == null) ? null : Std.parseInt(__de);
+			_hudDriveEvery = (__n == null || __n < 1) ? 6 : __n;
+		}
+		if (_hudDrive)
+		{
+			_hudDriveTick++;
+			if (_hudDriveTick % _hudDriveEvery == 0)
+			{
+				// The real line, through the real writer: one full String build, one TextField
+				// layout and one outlined FlxText rebuild, exactly as a hit would do it.
+				songMisses = haxe.Int64.ofInt(_hudDriveTick);
+				var __dt0:Float = haxe.Timer.stamp();
+				applyScoreText();
+				flixel.text.HudTextProf.noteApply(haxe.Timer.stamp() - __dt0);
+			}
+		}
+		#end
 		// With perfMode off the budget is unlimited: popups/splashes go straight back to stock per-hit display with no living cap.
 		if (ClientPrefs.data.perfMode)
 		{

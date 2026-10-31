@@ -317,6 +317,46 @@ class Main extends Sprite
 
 		addChild(new FlxGame(gameWidth, gameHeight, initialState, zoom, updateFramerate, drawFramerate, skipSplash, startFullscreen));
 
+		#if hudtext_profile
+		// hudtext_profile test knobs (the define is off in every shipped build). Read from the
+		// environment so a measurement run never needs the user's save file touched.
+		var __hw:String = null;
+		try __hw = Sys.getEnv('HUDTEXT_WIN') catch (e:Dynamic) {}
+		if (__hw != null && __hw.indexOf('x') > 0)
+		{
+			var __bits:Array<String> = __hw.split('x');
+			var __ww:Int = Std.parseInt(__bits[0]);
+			var __wh:Int = Std.parseInt(__bits[1]);
+			if (__ww > 0 && __wh > 0)
+			{
+				// Measure a virtual window size instead of resizing the OS one: a real resize is
+				// clamped by the desktop and its RESIZE event would race this code. FlxGame measures
+				// the real stage in create(), so wait for the first frame and measure once after it.
+				var __stage = Lib.current.stage;
+				function __applyVirtualWindow(e:openfl.events.Event):Void
+				{
+					if (__stage != null)
+						__stage.removeEventListener(openfl.events.Event.ENTER_FRAME, __applyVirtualWindow);
+					FlxG.scaleMode.onMeasure(__ww, __wh);
+					if (FlxG.game != null)
+					{
+						FlxG.game.x = 0;
+						FlxG.game.y = 0;
+					}
+					Sys.println('[hudtext] virtual window ' + __ww + 'x' + __wh + ' scale=' + FlxG.scaleMode.scale.x);
+				}
+				__stage.addEventListener(openfl.events.Event.ENTER_FRAME, __applyVirtualWindow);
+			}
+		}
+		var __bp:String = null;
+		try __bp = Sys.getEnv('HUDTEXT_BOTPLAY') catch (e:Dynamic) {}
+		if (__bp == '1' && ClientPrefs.data.gameplaySettings != null)
+		{
+			ClientPrefs.data.gameplaySettings.set('botplay', true);
+			Sys.println('[hudtext] botplay forced on');
+		}
+		#end
+
 		// Image residency backend: release CPU pixels only after the renderer has
 		// uploaded them, and re-decode transparently on demand. Installed before
 		// the first state so the very first assets are covered.
