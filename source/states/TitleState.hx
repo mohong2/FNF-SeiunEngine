@@ -152,6 +152,9 @@ class TitleState extends MusicBeatState
 		// picks up the user's saved language preference. On mobile CopyState already
 		// loaded them (it needs autoExtractAssets/storageType), so this is a no-op there.
 		ClientPrefs.ensureLoaded();
+		// Prefs (and with them backgroundDim) are in memory now; if the window opened
+		// unfocused, apply the attenuation before the first audible frame.
+		backend.AudioDim.refresh();
 
 		#if sys
 		// Prefs are in memory now, so the storage root can finally be resolved against the

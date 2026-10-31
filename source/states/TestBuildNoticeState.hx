@@ -83,6 +83,9 @@ class TestBuildNoticeState extends MusicBeatState
 		#if sys
 		SUtil.applyStorageDirectory();
 		#end
+		// Prefs are in memory now: apply the saved background-dim state before the game starts
+		// making noise (the window may even have opened unfocused).
+		backend.AudioDim.refresh();
 		#end
 
 		// No fade substate on the boot path.

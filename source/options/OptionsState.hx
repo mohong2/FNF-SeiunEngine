@@ -1650,14 +1650,8 @@ class OptionsState extends MusicBeatState
 
 	function onChangeBackgroundDim()
 	{
-		if (!ClientPrefs.data.backgroundDim)
-		{
-			if (Main.originalVolume >= 0)
-			{
-				FlxG.sound.volume = Main.originalVolume;
-				Main.originalVolume = -1;
-			}
-		}
+		// backend.AudioDim only changes the attenuation multiplier, so there is no volume value
+		// to restore here; disabling the option simply re-evaluates the multiplier back to 1.
 		Main.setupBackgroundDim();
 	}
 	#end

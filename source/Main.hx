@@ -74,6 +74,10 @@ class Main extends Sprite
 	public static var oldFpsVar:OldFPS;
 	public static var useOldFPS:Bool = false;
 	public static var useOldPause:Null<Bool> = null;
+	/**
+	 * @deprecated Kept only so old scripts still compile. Background dim no longer writes
+	 * `FlxG.sound.volume`; see backend.AudioDim.
+	 */
 	public static var originalVolume:Float = -1;
 	#if ONLINE_ALLOWED
 	// Constants the online client slice needs; this engine's Main.hx declares them here.
@@ -90,7 +94,6 @@ class Main extends Sprite
 	public static final NETWORK_PROTOCOL:Float = 1;
 	public static var repoHost:String = '';
 	#end
-	static var backgroundDimInitialized:Bool = false;
 	// Windows 关闭动画状态（仅 Windows 目标使用）
 	static var allowWindowClose:Bool = false;
 	static var closeAnimStarted:Bool = false;
@@ -254,6 +257,10 @@ class Main extends Sprite
 
 	private function setupGame():Void
 	{
+		// Install the background-dim focus handling before FlxGame registers its own
+		// ACTIVATE handler, so the attenuation is already reset when flixel resumes sounds.
+		setupBackgroundDim();
+
 		var stageWidth:Int = Lib.current.stage.stageWidth;
 		var stageHeight:Int = Lib.current.stage.stageHeight;
 
@@ -491,8 +498,6 @@ class Main extends Sprite
 		#if CRASH_HANDLER
 		Lib.current.loaderInfo.uncaughtErrorEvents.addEventListener(UncaughtErrorEvent.UNCAUGHT_ERROR, onCrash);
 		#end
-
-		setupBackgroundDim();
 
 		// ── Window close interceptor (X button) ──
 		setupWindowCloseHandler();
@@ -827,45 +832,19 @@ class Main extends Sprite
 		#end
 	}
 
+	/**
+	 * Installs the desktop background-dim focus handling and re-evaluates it.
+	 *
+	 * Kept as the single entry point used by the boot path and the options menu; the state
+	 * itself lives in backend.AudioDim. That module attenuates FlxSound output with a
+	 * multiplier instead of writing FlxG.sound.volume, so the player's volume (and what
+	 * flixel's sound tray persists) is never overwritten by a focus change.
+	 */
 	public static function setupBackgroundDim():Void
 	{
-		#if desktop
-		if (!backgroundDimInitialized)
-		{
-			backgroundDimInitialized = true;
-			var stage = Lib.current.stage;
-			if (stage != null)
-			{
-				stage.addEventListener(Event.DEACTIVATE, onStageDeactivate);
-				stage.addEventListener(Event.ACTIVATE, onStageActivate);
-			}
-		}
-		#end
+		backend.AudioDim.install();
+		backend.AudioDim.refresh();
 	}
-
-	#if desktop
-	static function onStageDeactivate(_):Void
-	{
-		if (ClientPrefs.data.backgroundDim)
-		{
-			if (originalVolume < 0)
-				originalVolume = FlxG.sound.volume;
-			FlxG.sound.volume = 0.2;
-		}
-	}
-
-	static function onStageActivate(_):Void
-	{
-		if (ClientPrefs.data.backgroundDim)
-		{
-			if (originalVolume >= 0)
-			{
-				FlxG.sound.volume = originalVolume;
-				originalVolume = -1;
-			}
-		}
-	}
-	#end
 
 	// Code was entirely made by sqirra-rng for their fnf engine named "Izzy Engine", big props to them!!!
 	// very cool person for real they don't get enough credit for their work

@@ -9,6 +9,15 @@
 
 ---
 
+### 2026年10月31日 — 后台减弱（Background Dim）音量逻辑修复
+
+- **不再改写主音量**：后台减弱改为在 `FlxSound.updateTransform()` 上叠加 0.25 的衰减系数（新增 `backend/AudioDim.hx`），`FlxG.sound.volume` 始终是玩家设置的音量。旧实现直接把主音量写成 0.2；flixel 的音量托盘隐藏时会把 `FlxG.sound.volume` 写入存档，因此「失焦时托盘正好收起」会把 0.2 持久化成玩家的音量，之后前台一直很小声。
+- **后台只会更小声**：旧实现使用固定值 0.2，玩家音量本来低于 0.2 时切到后台反而会变大声；衰减系数只会让后台更小（例如 0.1 → 0.025）。
+- **恢复不再依赖开关状态**：窗口重新获得焦点时无条件把系数复位为 1，关闭「后台减弱」或错过来焦事件都不会把游戏卡在低音量。
+- **与音量托盘解耦**：托盘显示和保存的始终是玩家真实音量，不再把后台衰减值写进存档。
+
+---
+
 ### 2026年10月18日 — 图片内存后端重写
 
 - **删除旧 Gfx 后端**：移除 GfxPolicy / GfxLru / GfxRepack。旧实现持有 FlxGraphic 强引用、手动销毁仍被引用的图、强制 GC、运行时重打包图集，并在每台设备上产生不同的 C++ 崩溃路径。
@@ -502,6 +511,15 @@
 ---
 
 ## English Version
+
+---
+
+### October 31, 2026 — Background Dim volume logic fixed
+
+- **The master volume is no longer rewritten**: background dimming is now a 0.25 multiplier applied in `FlxSound.updateTransform()` (new `backend/AudioDim.hx`), while `FlxG.sound.volume` always stays at the player's value. The old code wrote 0.2 to the master volume; flixel's sound tray persists `FlxG.sound.volume` to the save file when it hides, so losing focus while the tray was still up saved 0.2 as the player's volume and left the foreground quiet from then on.
+- **The background can only get quieter**: the old absolute 0.2 made the background LOUDER for anyone already at or below 0.2; the multiplier only attenuates (for example 0.1 -> 0.025).
+- **Restore is unconditional**: regaining focus always resets the multiplier to 1, so disabling the option or a missed focus event can no longer leave the game stuck quiet.
+- **Sound tray decoupled**: the tray now always displays and persists the real player volume, never the attenuated value.
 
 ---
 
