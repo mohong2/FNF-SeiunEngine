@@ -274,17 +274,12 @@ class LoadingState extends MusicBeatState
 		var weekDir:String = StageData.forceNextDirectory;
 		StageData.forceNextDirectory = null;
 
-		#if ONLINE_ALLOWED
-		// A song that comes from a mod must use the mod directory, otherwise assets are
-		// redirected to assets/weekX (log: "Re-derived asset folder from SONG: week7").
-		// Only weekDir's initial value changes; the original logic below is untouched.
-		if ((weekDir == null || weekDir.length <= 0) && Std.isOfType(target, PlayState) && PlayState.SONG != null
-			&& backend.Mods.currentModDirectory != null && backend.Mods.currentModDirectory != '')
-			weekDir = backend.Mods.currentModDirectory;
-		#end
-
 		// When restarting/changing difficulty in pause menu, re-derive week directory from SONG
 		// to prevent falling back to 'shared' and failing to load week-specific assets.
+		// This must run before the mod-directory fallback: Erect stages live in a mod folder but
+		// declare the base week (e.g. limoErect -> "directory": "week4"). Using the mod name as
+		// the asset library here makes their base-week images (limo/limoDancer, gore/*) resolve
+		// to placeholders after a restart.
 		if ((weekDir == null || weekDir.length <= 0) && Std.isOfType(target, PlayState) && PlayState.SONG != null)
 		{
 			StageData.loadDirectory(PlayState.SONG);
@@ -293,6 +288,15 @@ class LoadingState extends MusicBeatState
 			TraceManager.info('trace.loading.rederiveFolder',
 				'Re-derived asset folder from SONG: {}', [weekDir != null ? weekDir : 'shared']);
 		}
+
+		#if ONLINE_ALLOWED
+		// A song that comes from a mod with no stage directory still uses the mod folder.
+		// Mod images are checked first by Paths.image(), so a stage JSON pointing at weekX
+		// does not hide the mod's own overrides.
+		if ((weekDir == null || weekDir.length <= 0) && Std.isOfType(target, PlayState) && PlayState.SONG != null
+			&& backend.Mods.currentModDirectory != null && backend.Mods.currentModDirectory != '')
+			weekDir = backend.Mods.currentModDirectory;
+		#end
 
 		if(weekDir != null && weekDir.length > 0 && weekDir != '') directory = weekDir;
 

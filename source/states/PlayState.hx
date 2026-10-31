@@ -2324,6 +2324,20 @@ class PlayState extends MusicBeatState
 
 		Paths.clearUnusedMemory();
 
+		// Load-time residency commit. This is the last point where every graphic
+		// loaded for the song is complete (atlas crop/repack/palette included) and
+		// still inside the blocking create(), i.e. behind the transition.
+		//
+		// It must run BEFORE the full GC below so the freed buffers are already
+		// garbage when the load boundary collects; the state boundary then schedules
+		// one deferred collection a couple of frames later, once the first draw has
+		// released its staging references. That collection reclaims the hundreds of
+		// megabytes before the FPS overlay's next sample. Leaving this to the
+		// post-create signal put the commit after the GC, and the buffers were then
+		// collected seconds into the song - the visible "2 GB settles to a few
+		// hundred MB" drain.
+		backend.gfx.GfxMemory.commitAll('play-create');
+
 		#if cpp
 		// 全局堆策略 (幂等): 目标空闲 100% -> 50%, 高水位从"存活 x2"降到"存活 x1.5"。
 		GcState.applyHeapPolicy();

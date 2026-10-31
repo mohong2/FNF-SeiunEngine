@@ -1,0 +1,19 @@
+﻿Seiun ChartPack GUI — 便携版
+============================
+
+双击 chartpack-ui.exe 即可使用，已内置 node.exe，不需要安装 Node.js。
+
+功能：
+  * 输入类型下拉框：单个 JSON / 文件夹 / ZIP 压缩包
+  * 直接对 ZIP 内部打包，不解压到磁盘
+  * 右上角语言：跟随系统 / 简体中文 / English，立即切换
+  * 实时显示每个文件的原始大小、输出大小、压缩比、用时、速度、音符数
+  * 支持并发、tick/float 自动模式、覆盖已有 pack
+  * 找不到 Node.js 时会提示安装或选择 node.exe
+
+内置的 node.exe 来自 Node.js（MIT License，https://nodejs.org/）。
+
+注意：
+  * “打包后删除源 JSON”只会删除文件夹模式下的源文件，默认不勾选。
+  * 覆盖已有 .chartpack 需要勾选“覆盖已有 pack”。
+  * 分段谱面请把 <song>.parts.json 一起放到 data/<song>/。

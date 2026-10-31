@@ -19,6 +19,10 @@ class ChartLoadProbe
 {
 	public static var enabled:Bool = false;
 
+	/** SEIUN_CHART_PROBE_STAY=1 keeps the process alive after the result, so a test
+	 *  can inspect the first gameplay frames (memory, GPU upload, screenshots). */
+	static var stayAlive:Bool = false;
+
 	static var tSwitch:Float = 0;
 	static var tCreate:Float = 0;
 	static var tSongLoad:Float = 0;
@@ -44,6 +48,7 @@ class ChartLoadProbe
 			var out:String = null;
 			try out = Sys.getEnv('SEIUN_CHART_PROBE_OUT') catch (e:Dynamic) {}
 			if (out != null && out.length > 0) outPath = out;
+			try stayAlive = Sys.getEnv('SEIUN_CHART_PROBE_STAY') == '1' catch (e:Dynamic) {}
 
 			if (modFolder.length > 0) Paths.currentModDirectory = modFolder;
 			ClientPrefs.data.chartCache = useCache;
@@ -96,7 +101,7 @@ class ChartLoadProbe
 			'nativeUsed=' + nativeUsed,
 			'nativeFold=' + round3(nativeFoldMs / 1000),
 		]);
-		Sys.exit(0);
+		if (!stayAlive) Sys.exit(0);
 	}
 
 	static function round3(v:Float):String

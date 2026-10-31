@@ -572,6 +572,20 @@ class BootState extends MusicBeatState
 			TraceManager.warn('trace.boot.preloadFailed', 'Precache item failed: {}', [e]);
 		}
 
+		// The item just loaded is complete (atlas crop/repack/palette included), so
+		// this is the first safe point to settle it: palette decision, GPU upload and
+		// CPU release happen now, while the loading screen owns the frame. Without
+		// this, every preloaded graphic stays CPU-resident until it is first drawn
+		// on the title/menu, and the heap visibly drains there instead.
+		//
+		// Android keeps the single end-of-boot commit below: per-asset uploads right
+		// after decode are the shape that black-screened some Android drivers in the
+		// old backend, while one batched commit at the loading screen's end is the
+		// path the old preload warm-up used everywhere.
+		#if !android
+		backend.gfx.GfxMemory.commitPending('boot');
+		#end
+
 		var p:Float = workQueue.length > 0 ? workIndex / workQueue.length : 1;
 		bar.setProgress(rangeStart + (rangeEnd - rangeStart) * p);
 		bar.setTask(workIndex <= graphicsWorkCount
@@ -592,6 +606,9 @@ class BootState extends MusicBeatState
 			return;
 		phase = PHASE_FINISH;
 		finishClock = 0;
+		// Safety net for graphics that were cached before the preload queue started
+		// (or joined it after the last item). The loading screen still owns the frame.
+		backend.gfx.GfxMemory.commitAll('boot-finish');
 		bar.setTask(Language.get('BootState.task.ready', 'Ready'));
 
 		// Start the menu music now so it fades in under the flourish and keeps playing

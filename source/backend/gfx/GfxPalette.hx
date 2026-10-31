@@ -127,6 +127,48 @@ class GfxPalette
 	}
 
 	/**
+	 * Apply every queued graphic now, ignoring the per-frame budget.
+	 *
+	 * Load-time commits call this before forcing the texture: a palette decision
+	 * can only be made while the bitmap still has CPU pixels and no texture, so
+	 * once the load phase ends there is no second chance for the images the
+	 * per-frame queue never reached. Returns how many graphics were converted.
+	 */
+	public static function flushQueue():Int
+	{
+		if (!isEnabled() || !queue.keys().hasNext()) return 0;
+		var context:Context3D = FlxG.stage != null ? FlxG.stage.context3D : null;
+		if (context == null) return 0;
+
+		var applied:Int = 0;
+		var pendingList:Array<FlxGraphic> = [];
+		for (graphic in queue.keys()) pendingList.push(graphic);
+		for (graphic in pendingList)
+		{
+			if (graphic == null) continue;
+			if (graphic.bitmap == null || graphic.gfxPalettePlan != null)
+			{
+				queue.remove(graphic);
+				continue;
+			}
+			lastError = '';
+			try
+			{
+				if (apply(graphic) != null) applied++;
+			}
+			catch (e:Dynamic)
+			{
+				lastError = 'exception';
+				fail(graphic, Std.string(e));
+			}
+			// Only a missing context is retryable; every other outcome is final for
+			// this bitmap (texture already exists, too many colours, driver reject).
+			if (lastError != 'no_context') queue.remove(graphic);
+		}
+		return applied;
+	}
+
+	/**
 	 * Apply pending plain-image graphics before the draw that would upload them.
 	 * Atlases are applied synchronously from Paths.finishAtlas(), so this queue
 	 * only carries normal images and late loads.
@@ -345,9 +387,16 @@ class GfxPalette
 	 * mapping table is updated so the index pass still resolves every pixel to
 	 * the same bytes. Returns null when the image has more than 256 colours.
 	 */
-	static function buildPalette(data:UInt8Array, width:Int, height:Int):PaletteBuild
+	static function buildPalette(source:UInt8Array, width:Int, height:Int):PaletteBuild
 	{
 		var count:Int = width * height;
+		if (source == null || source.length != count * 4) return null;
+
+		// UInt8Array indexing goes through ArrayBufferIO (a native call per byte).
+		// The same buffer as haxe.io.Bytes is an inline array access on cpp, and
+		// getInt32 reads the four BGRA bytes this hash needs in one expression.
+		// Pixel-for-pixel identical, several times faster on multi-megapixel sheets.
+		var data:Bytes = source.toBytes();
 		if (data == null || data.length != count * 4) return null;
 
 		var mask:Int = 2047;
@@ -366,7 +415,8 @@ class GfxPalette
 		while (i < count)
 		{
 			var base:Int = i * 4;
-			var key:Int = data[base] | (data[base + 1] << 8) | (data[base + 2] << 16) | (data[base + 3] << 24);
+			// Little-endian BGRA bytes -> the same 32-bit key the byte form built.
+			var key:Int = data.getInt32(base);
 			var slot:Int = ((key * 0x9E3779B1) >>> 13) & mask;
 			var value:Int = -1;
 			while (true)
@@ -379,10 +429,10 @@ class GfxPalette
 					values[slot] = colors;
 					keys[slot] = key;
 					var p:Int = colors * 4;
-					palette.set(p, data[base]);
-					palette.set(p + 1, data[base + 1]);
-					palette.set(p + 2, data[base + 2]);
-					palette.set(p + 3, data[base + 3]);
+					palette.set(p, data.get(base));
+					palette.set(p + 1, data.get(base + 1));
+					palette.set(p + 2, data.get(base + 2));
+					palette.set(p + 3, data.get(base + 3));
 					colors++;
 					break;
 				}

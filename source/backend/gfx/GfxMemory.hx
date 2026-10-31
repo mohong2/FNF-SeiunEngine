@@ -6,6 +6,7 @@ import flixel.FlxG;
 import flixel.FlxState;
 import flixel.graphics.FlxGraphic;
 import haxe.Timer;
+import lime.graphics.opengl.GL;
 import openfl.display.BitmapData;
 import openfl.display3D.Context3D;
 import openfl.geom.Rectangle;
@@ -24,8 +25,11 @@ import Paths;
  * Design rules (learned from the old GfxLru/GfxPolicy backend):
  *  - no private strong-reference cache of FlxGraphic objects;
  *  - no manual FlxGraphic.destroy() and no cache eviction from here;
- *  - no forced GC, no GC disable/enable, no native-thread publishing;
- *  - all work happens on the main thread after a draw, never inside create().
+ *  - no forced GC during play; a single deferred collection may run a couple
+ *    of frames after a load commit to reclaim the buffers that commit released;
+ *  - lazy work happens after a draw; load-time commits happen only at explicit
+ *    load boundaries (a boot preload item / the end of a state create), never
+ *    from inside a Paths loader where the bitmap may still be post-processed.
  *
  * Graphics created by the engine (text canvases, generated bars, ...) have no
  * reload source and are never touched.
@@ -39,6 +43,14 @@ private typedef GfxStatEntry = {
 	textured:Bool,
 	opaque:Bool,
 	palette:Bool
+};
+
+private typedef CommitStats = {
+	var uploaded:Int;
+	var dropped:Int;
+	var failed:Int;
+	var skipped:Int;
+	var bytes:Float;
 };
 
 class GfxMemory
@@ -64,6 +76,36 @@ class GfxMemory
 	 * winning, so the sweep stays out of the way.
 	 */
 	public static var sweepAboveBytes:Float = 96 * 1024 * 1024;
+
+	/**
+	 * Eager commit at load boundaries.
+	 *
+	 * Loading already pays the decode cost behind a loading bar / transition; the
+	 * GPU upload and CPU release belong there too. Leaving them to the lazy
+	 * after-draw queue means the first gameplay frames visibly drain hundreds of
+	 * megabytes (and hitch while they do it). A commit is only run where the
+	 * loader has finished post-processing a graphic, so it cannot race the atlas
+	 * crop/repack/palette stages.
+	 *
+	 * FNF_GFX_COMMIT=0 turns it off (bisecting / comparison runs).
+	 */
+	public static var commitEnabled(default, null):Bool = true;
+
+	/** Bytes uploaded and CPU copies released by load-time commits. */
+	public static var committedCountTotal:Int = 0;
+	public static var committedBytesTotal:Float = 0;
+	public static var commitMsTotal:Float = 0;
+
+	static var commitChecked:Bool = false;
+	/** Draw frame at which a load commit's freed buffers are collected; -1 = none. */
+	static var collectAtFrame:Int = -1;
+	static var maxTextureSize:Int = -1;
+	static var timelineChecked:Bool = false;
+	static var timelineEnabled:Bool = false;
+	static var timelineFrames:Int = 0;
+
+	static inline var COMMIT_DONE:Int = 0;
+	static inline var COMMIT_RETRY:Int = 1;
 
 	public static var releasedCountTotal:Int = 0;
 	public static var releasedBytesTotal:Float = 0;
@@ -100,6 +142,36 @@ class GfxMemory
 	static inline function get_enabled():Bool
 	{
 		return ClientPrefs.data.gfxCpuRelease;
+	}
+
+	static function commitOn():Bool
+	{
+		if (!commitChecked)
+		{
+			commitChecked = true;
+			#if sys
+			var raw:String = Sys.getEnv('FNF_GFX_COMMIT');
+			if (raw == '0') commitEnabled = false;
+			#end
+		}
+		return commitEnabled;
+	}
+
+	/** Largest rectangle texture the driver accepts, 0 when it cannot be queried. */
+	static function gpuMaxTextureSize(ctx:Context3D):Int
+	{
+		if (maxTextureSize >= 0) return maxTextureSize;
+		maxTextureSize = 0;
+		try
+		{
+			if (ctx != null)
+			{
+				var gl = @:privateAccess ctx.gl;
+				if (gl != null) maxTextureSize = cast gl.getParameter(GL.MAX_TEXTURE_SIZE);
+			}
+		}
+		catch (e:Dynamic) {}
+		return maxTextureSize;
 	}
 
 	/** Opt-out switch for bisecting the RGB texture path: FNF_GFX_RGB=0. */
@@ -324,6 +396,256 @@ class GfxMemory
 		return drop(bmp);
 	}
 
+	/**
+	 * Commit every loaded graphic now: apply the palette decision, upload the
+	 * texture and release the CPU pixels. Called at load boundaries (after a
+	 * boot preload item, after a state's create) where the loader has already
+	 * finished crop/repack/palette, so it can never race those stages.
+	 *
+	 * Returns false when there is no GL context (the lazy queue then keeps the
+	 * graphics for the normal after-draw path).
+	 */
+	public static function commitAll(reason:String = 'load'):Bool
+	{
+		if (!enabled || !commitOn()) return false;
+		var ctx:Context3D = FlxG.stage != null ? FlxG.stage.context3D : null;
+		if (ctx == null) return false;
+
+		var started:Float = Timer.stamp();
+		var paletted:Int = 0;
+		try paletted = GfxPalette.flushQueue() catch (e:Dynamic)
+		{
+			TraceManager.warn('trace.gfx.commitPalette', 'GfxPalette flush failed: {}', [Std.string(e)]);
+		}
+
+		var stats:CommitStats = {uploaded: 0, dropped: 0, failed: 0, skipped: 0, bytes: 0};
+		var seen:Map<FlxGraphic, Bool> = new Map();
+		@:privateAccess
+		for (key in FlxG.bitmap._cache.keys())
+			commitGraphic(key, FlxG.bitmap._cache.get(key), ctx, seen, stats);
+		for (key in Paths.currentTrackedAssets.keys())
+			commitGraphic(key, Paths.currentTrackedAssets.get(key), ctx, seen, stats);
+
+		// Keep only the keys whose upload failed: everything else was either
+		// committed or is not eligible, and keeping those would only make
+		// processPending revisit them every frame.
+		var retry:Map<String, Int> = new Map();
+		for (key in pending.keys())
+		{
+			var graphic:FlxGraphic = FlxG.bitmap.get(key);
+			if (graphic == null) graphic = Paths.currentTrackedAssets.get(key);
+			if (graphic == null || graphic.bitmap == null) continue;
+			var bmp:BitmapData = graphic.bitmap;
+			if (!bmp.cpuReleased && bmp.hasCPU && bmp.restorable && eligible(bmp) && !bmp.hasTexture(ctx))
+				retry.set(key, 0);
+		}
+		pending = retry;
+
+		var elapsed:Float = (Timer.stamp() - started) * 1000;
+		commitMsTotal += elapsed;
+		committedCountTotal += stats.dropped;
+		committedBytesTotal += stats.bytes;
+		if (stats.dropped > 0 && collectAtFrame < 0)
+		{
+			#if cpp
+			// Collect a couple of draw frames after the load boundary: the first
+			// draw still holds decoded staging references, and by then the
+			// transition covers the frame while the FPS overlay (100 ms sampling)
+			// has not seen the pre-commit heap value. Scheduling it here also covers
+			// the boot finish, which does not go through a state switch.
+			collectAtFrame = frameCounter + gcDelayFrames();
+			#end
+		}
+		var line:String = 'reason=' + reason
+			+ ' palette=' + Std.string(paletted)
+			+ ' uploads=' + Std.string(stats.uploaded)
+			+ ' drops=' + Std.string(stats.dropped)
+			+ ' freedMB=' + mb(stats.bytes)
+			+ ' failed=' + Std.string(stats.failed)
+			+ ' skipped=' + Std.string(stats.skipped)
+			+ ' ms=' + round1(elapsed)
+			+ ' cpuResidentMB=' + mb(residentBytes());
+		if (paletted > 0 || stats.uploaded > 0 || stats.dropped > 0 || stats.failed > 0)
+		{
+			TraceManager.info('trace.gfx.commit', 'GfxCommit ' + line);
+			#if sys
+			if (traceTimelineEnabled()) Sys.println('[GfxCommit] ' + line);
+			#end
+		}
+		return true;
+	}
+
+	/**
+	 * Commit only the images queued since the last call. Used by the boot
+	 * preloader, which loads one asset per frame: each item is uploaded and its
+	 * CPU copy released before the next item starts, so the loading bar shows
+	 * real progress instead of a two-second drain after it.
+	 */
+	public static function commitPending(reason:String = 'load'):Void
+	{
+		if (!enabled || !commitOn() || !pending.keys().hasNext()) return;
+		var ctx:Context3D = FlxG.stage != null ? FlxG.stage.context3D : null;
+		if (ctx == null) return;
+
+		var started:Float = Timer.stamp();
+		try GfxPalette.flushQueue() catch (e:Dynamic) {}
+		var stats:CommitStats = {uploaded: 0, dropped: 0, failed: 0, skipped: 0, bytes: 0};
+		var seen:Map<FlxGraphic, Bool> = new Map();
+		var remove:Array<String> = [];
+		for (key in pending.keys())
+		{
+			var graphic:FlxGraphic = FlxG.bitmap.get(key);
+			if (graphic == null) graphic = Paths.currentTrackedAssets.get(key);
+			if (graphic == null)
+			{
+				remove.push(key);
+				continue;
+			}
+			if (commitGraphic(key, graphic, ctx, seen, stats) == COMMIT_DONE) remove.push(key);
+		}
+		for (key in remove) pending.remove(key);
+
+		var elapsed:Float = (Timer.stamp() - started) * 1000;
+		if (stats.dropped > 0 || stats.failed > 0)
+		{
+			commitMsTotal += elapsed;
+			committedCountTotal += stats.dropped;
+			committedBytesTotal += stats.bytes;
+			var line:String = 'reason=' + reason
+				+ ' uploads=' + Std.string(stats.uploaded)
+				+ ' drops=' + Std.string(stats.dropped)
+				+ ' freedMB=' + mb(stats.bytes)
+				+ ' failed=' + Std.string(stats.failed)
+				+ ' ms=' + round1(elapsed)
+				+ ' cpuResidentMB=' + mb(residentBytes());
+			TraceManager.info('trace.gfx.commit', 'GfxCommit ' + line);
+			#if sys
+			if (traceTimelineEnabled()) Sys.println('[GfxCommit] ' + line);
+			#end
+		}
+	}
+
+	static function commitGraphic(key:String, graphic:FlxGraphic, ctx:Context3D, seen:Map<FlxGraphic, Bool>, stats:CommitStats):Int
+	{
+		if (graphic == null || graphic.bitmap == null) return COMMIT_DONE;
+		if (seen.exists(graphic)) return COMMIT_DONE;
+		seen.set(graphic, true);
+
+		var bmp:BitmapData = graphic.bitmap;
+		if (bmp.cpuReleased) return COMMIT_DONE;
+		if (!bmp.hasCPU || !bmp.restorable || !eligible(bmp)) return COMMIT_DONE;
+
+		var limit:Int = gpuMaxTextureSize(ctx);
+		if (limit > 0 && (bmp.width > limit || bmp.height > limit))
+		{
+			stats.skipped++;
+			return COMMIT_DONE;
+		}
+
+		if (!bmp.hasTexture(ctx))
+		{
+			try bmp.getTexture(ctx, false) catch (e:Dynamic)
+			{
+				stats.failed++;
+				return COMMIT_RETRY;
+			}
+			if (bmp.hasTexture(ctx)) stats.uploaded++;
+		}
+
+		if (!bmp.hasTexture(ctx))
+		{
+			stats.failed++;
+			return COMMIT_RETRY;
+		}
+
+		if (drop(bmp))
+		{
+			stats.dropped++;
+			stats.bytes += bmp.paletteApplied ? bmp.width * bmp.height * 3 : bmp.width * bmp.height * 4;
+		}
+		else
+		{
+			stats.failed++;
+		}
+		return COMMIT_DONE;
+	}
+
+	/** RGBA bytes still held by readable CPU copies across the bitmap cache. */
+	static function residentBytes():Float
+	{
+		var total:Float = 0;
+		var seen:Map<FlxGraphic, Bool> = new Map();
+		@:privateAccess
+		for (key in FlxG.bitmap._cache.keys())
+		{
+			var graphic = FlxG.bitmap._cache.get(key);
+			if (graphic == null || graphic.bitmap == null || seen.exists(graphic)) continue;
+			seen.set(graphic, true);
+			if (graphic.bitmap.hasCPU) total += graphic.bitmap.width * graphic.bitmap.height * 4;
+		}
+		return total;
+	}
+
+	/** Frames after a load commit before the reclaiming collection (FNF_GFX_GC_DELAY). */
+	static function gcDelayFrames():Int
+	{
+		#if sys
+		var raw:String = Sys.getEnv('FNF_GFX_GC_DELAY');
+		if (raw != null && raw.length > 0)
+		{
+			var parsed:Null<Int> = Std.parseInt(raw);
+			if (parsed != null && parsed >= 0) return parsed;
+		}
+		#end
+		return 2;
+	}
+
+	static function traceTimelineEnabled():Bool
+	{
+		if (!timelineChecked)
+		{
+			timelineChecked = true;
+			#if sys
+			timelineEnabled = Sys.getEnv('FNF_GFX_TRACE') == '1';
+			#end
+		}
+		return timelineEnabled;
+	}
+
+	/** One diagnostic line every 60 draw frames; only with FNF_GFX_TRACE=1. */
+	static function traceTimeline():Void
+	{
+		if (!traceTimelineEnabled()) return;
+		if ((++timelineFrames % 60) != 0) return;
+
+		var ctx:Context3D = FlxG.stage != null ? FlxG.stage.context3D : null;
+		var dropped:Float = 0;
+		var droppedCount:Int = 0;
+		var textured:Int = 0;
+		var seen:Map<FlxGraphic, Bool> = new Map();
+		@:privateAccess
+		for (key in FlxG.bitmap._cache.keys())
+		{
+			var graphic = FlxG.bitmap._cache.get(key);
+			if (graphic == null || graphic.bitmap == null || seen.exists(graphic)) continue;
+			seen.set(graphic, true);
+			if (graphic.bitmap.cpuReleased)
+			{
+				dropped += graphic.bitmap.storedBytes;
+				droppedCount++;
+			}
+			if (ctx != null && graphic.bitmap.hasTexture(ctx)) textured++;
+		}
+		Sys.println('[GfxTimeline] f=' + Std.string(frameCounter)
+			+ ' residentMB=' + mb(residentBytes())
+			+ ' releasedMB=' + mb(dropped)
+			+ ' released=' + Std.string(droppedCount)
+			+ ' textured=' + Std.string(textured)
+			+ ' pending=' + Std.string(pendingCount())
+			+ ' heapMB=' + mb(openfl.system.System.totalMemory));
+	}
+
+
 	static function cropBitmap(source:BitmapData, region:Rectangle):BitmapData
 	{
 		return GfxAtlasCrop.cropRaw(source, region);
@@ -406,7 +728,25 @@ class GfxMemory
 	static function onPostStateSwitch():Void
 	{
 		stateLoadMs = (Timer.stamp() - stateCreateStartedAt) * 1000;
+		// Every state's create() runs before its first draw. Committing here means
+		// the palette decision, texture upload and CPU release all happen while the
+		// transition/loading screen still owns the frame, so gameplay starts at its
+		// steady-state memory instead of draining it visibly for the first seconds.
+		if (commitOn() && isCommitState(stateName))
+		{
+			try commitAll('state:' + stateName) catch (e:Dynamic)
+			{
+				TraceManager.warn('trace.gfx.commitState', 'GfxCommit {} failed: {}', [stateName, Std.string(e)]);
+			}
+		}
 		emitState('load', 0);
+	}
+
+	/** Crash recovery must not allocate textures or walk every graphic. */
+	static function isCommitState(name:String):Bool
+	{
+		if (name == null) return true;
+		return name.indexOf('CrashCatcherState') < 0 && name.indexOf('GfxPaletteProbeState') < 0;
 	}
 
 	static inline function typeName(value:Dynamic):String
@@ -566,9 +906,26 @@ class GfxMemory
 		{
 			sweepCounter = 0;
 			// Only release CPU copies once holding them actually costs something.
-			if (liveBytes() >= sweepAboveBytes)
+			// liveBytes() counts *released* bytes, which is not the policy input;
+			// residentBytes() is the RGBA still held by readable copies.
+			if (residentBytes() >= sweepAboveBytes)
 				try sweepCache() catch (e:Dynamic) {}
 		}
+
+		#if cpp
+		if (collectAtFrame >= 0 && frameCounter >= collectAtFrame)
+		{
+			collectAtFrame = -1;
+			var traceGc:Bool = traceTimelineEnabled();
+			if (traceGc) Sys.println('[GfxGC] deferred f=' + Std.string(frameCounter) + ' before heapMB=' + mb(openfl.system.System.totalMemory));
+			var gcStarted:Float = Timer.stamp();
+			try backend.GcState.collect() catch (e:Dynamic) {}
+			if (traceGc) Sys.println('[GfxGC] deferred f=' + Std.string(frameCounter) + ' after heapMB=' + mb(openfl.system.System.totalMemory)
+				+ ' ms=' + round1((Timer.stamp() - gcStarted) * 1000));
+		}
+		#end
+
+		try traceTimeline() catch (e:Dynamic) {}
 	}
 
 	static function processPending():Void
@@ -686,7 +1043,9 @@ class GfxMemory
 	public static function statsLine():String
 	{
 		return 'GfxMemory: cpuDropped=' + Std.string(liveCount())
-			+ ' (~' + mb(liveBytes()) + ' MB RAM->VRAM), released=' + Std.string(releasedCountTotal)
+			+ ' (~' + mb(liveBytes()) + ' MB RAM->VRAM), resident=' + mb(residentBytes())
+			+ ' MB, committed=' + Std.string(committedCountTotal) + ' (~' + mb(committedBytesTotal) + ' MB in ' + round1(commitMsTotal) + ' ms)'
+			+ ', released=' + Std.string(releasedCountTotal)
 			+ ' (~' + mb(releasedBytesTotal) + ' MB total), restored=' + Std.string(restoredCountTotal)
 			+ ', restoreFail=' + Std.string(restoreFailTotal) + ', pending=' + Std.string(pendingCount());
 	}
