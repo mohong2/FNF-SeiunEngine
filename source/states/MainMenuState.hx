@@ -72,14 +72,9 @@ class MainMenuState extends SeiunMenuState
 	var pendingModIndex:Int = -1;
 	var pendingModRestart:Bool = false;
 	static function get_seiunengineVersion():String {
-		try {
-			var meta = Application.current.meta;
-			if (meta != null) {
-				var v:Dynamic = meta.get('version');
-				if (v != null && Std.string(v).length > 0) return Std.string(v);
-			}
-		} catch (e:Dynamic) {}
-		return '0.2.2preonline2';
+		// One source of truth: BuildInfo reads the packaged metadata and falls back to the
+		// compile-time Project.xml version. The old literal here drifted every release.
+		return BuildInfo.appVersion();
 	}
 
 	override function create()

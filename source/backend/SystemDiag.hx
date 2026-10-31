@@ -127,6 +127,9 @@ class SystemDiag
 	static function engineLines(out:Array<String>):Void
 	{
 		out.push('Engine: SeiunEngine v' + safeString(() -> MainMenuState.seiunengineVersion, '?'));
+		// Version + commit + branch + timestamps in one line. BuildInfo is filled at compile
+		// time, so a support report identifies the exact source state even without .git.
+		out.push('Build: ' + safeString(() -> BuildInfo.describe(), '?'));
 		out.push('Psych Engine Base: ' + MainMenuState.psychEngineVersion);
 		out.push('FNF Game Version: ' + MainMenuState.fnfGameVersion);
 		out.push('HaxeFlixel: ' + safeString(() -> Std.string(FlxG.VERSION), '?'));
@@ -359,7 +362,7 @@ class SystemDiag
 	 *
 	 * This used to paste the newest five files verbatim (up to 3000 characters
 	 * each), so every new report carried a copy of the previous ones: 20+ KB of
-	 * nested reports that were genuinely painful to read, and crash_triage.py
+	 * nested reports that were genuinely painful to read, and crash.py
 	 * could trip over an embedded old report and misclassify the file it sat in.
 	 * This report already describes THIS crash completely; the older files are
 	 * listed, not reproduced.
@@ -465,9 +468,49 @@ class SystemDiag
 			} catch (e:Dynamic) {}
 			NativeCrash.setRuntimeContext('state=' + stateName + ' | song=' + song + ' | glErr=' + GlErrorWatchdog.snapshot() + gfxFlags);
 			NativeCrash.setRecentLogs(TraceManager.getRecentCrashText());
+			// OS + GPU/driver identity for the native reports (cached after the first
+			// call: these strings cannot change for a process).
+			NativeCrash.setEnvInfo(nativeEnvSummary());
 		}
 		catch (e:Dynamic) {}
 		#end
+	}
+
+	/** Cached "OS=... | GL vendor/renderer/version | driverInfo" line for the native reporters. */
+	static var envSummaryCache:String = '';
+
+	/**
+	 * Compact, process-stable OS / GPU / driver identity.
+	 *
+	 * The C++ reporter can query the OS itself, but not the GL renderer - it may be
+	 * exactly what failed. These strings are only reachable while the engine is
+	 * healthy, so they are pushed into the fixed-size C buffer by the heartbeat
+	 * (see feedNativeCrash) and read back from every native report.
+	 */
+	public static function nativeEnvSummary():String
+	{
+		if (envSummaryCache.length > 0) return envSummaryCache;
+		var parts:Array<String> = [];
+		try { parts.push('os=' + lime.system.System.platformLabel + ' ' + lime.system.System.platformVersion + ' (' + lime.system.System.platformName + ')'); } catch (e:Dynamic) {}
+		try
+		{
+			captureGlInfo();
+			if (glVendor.length > 0 || glRenderer.length > 0)
+				parts.push('glVendor=' + glVendor + ' | glRenderer=' + glRenderer + ' | glVersion=' + glVersion);
+		}
+		catch (e:Dynamic) {}
+		try
+		{
+			var c3d = FlxG.stage.context3D;
+			if (c3d != null && c3d.driverInfo != null)
+			{
+				var info:String = c3d.driverInfo.split('\n').join(' ').split('\r').join(' ');
+				parts.push('driverInfo=' + info);
+			}
+		}
+		catch (e:Dynamic) {}
+		envSummaryCache = parts.join(' | ');
+		return envSummaryCache;
 	}
 
 	public static function writeHeartbeat():Void

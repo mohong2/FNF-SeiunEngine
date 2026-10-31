@@ -37,7 +37,7 @@ class NodeContainer implements Container {
   
   
   public function run(handler:Handler) 
-    return Future.async(function (cb) {
+    return Future.irreversible(function (cb) {
       var failures = Signal.trigger();
       
       var server = switch kind {
@@ -81,9 +81,9 @@ class NodeContainer implements Container {
             if (hard)
               trace('Warning: hard shutdown not implemented');
               
-            return Future.async(function (cb) {
+            return Future.irreversible(function (cb) {
               server.close(function () cb(true));
-            });
+            }).eager();
           },
           failures: failures,//TODO: these need to be triggered
         }));
@@ -96,7 +96,7 @@ class NodeContainer implements Container {
       
       server.on('request', handler.toNodeHandler());
       server.on('error', function(e) cb(Failed(e)));
-    });
+    }).eager();
 }
 
 private enum ServerKindBase {

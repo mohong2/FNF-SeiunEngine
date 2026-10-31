@@ -24,7 +24,7 @@ class FirebaseFunctionsContainer implements Container {
 	}
 	
 	public function run(handler:Handler):Future<ContainerResult> {
-		return Future.async(function(cb) {	
+		return Future.irreversible(function(cb) {	
 			Reflect.setField(
 				js.Node.exports,
 				name,
@@ -44,7 +44,7 @@ class FirebaseFunctionsContainer implements Container {
 			
 			// firebase function will kill this node process when the request is done
 			js.Node.process.on('exit', cb.bind(Shutdown));
-		});
+		}).eager();
 		
 	}
 }

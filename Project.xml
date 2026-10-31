@@ -73,12 +73,16 @@
 	<define name="DARKMODE" if="desktop" />
 	<define name="CRASH_HANDLER"/>
 
-	<!-- 检查开关(默认常开, 本地/CI/发布都是): 空指针/非法指针直接抛 Haxe 异常, logcat 里带
-	     .hx 文件+行号(tag: Exception/HXCPP)。-D hxcpp_nosafe 关掉; -D hxcpp_gc_check 加 GC 指针校验。
-	     符号开关(默认关, 省步骤): -D hxcpp_symbols 才做嵌入行号表/未剥离 .so/postbuild 刷新;
-	     tools/build_*_symbols.ps1 与 CI 的符号构建自动带它(检查仍然开着)。
-	     ⚠ 两个开关都必须小写 hxcpp_ 开头: hxcpp 的 obj 缓存只认含小写 hxcpp 的选项行,
-	       大写 HXCPP_* 改了它不重编 -> 会链出半新半旧的二进制。 -->
+	<!-- Safety checks: always on (local, CI and release builds). A null or invalid
+	     pointer throws a Haxe exception whose logcat trace carries the .hx file and
+	     line (tag: Exception/HXCPP). Disable with -D hxcpp_nosafe, add GC validation
+	     with -D hxcpp_gc_check.
+	     Symbols need no switch at all any more: one `haxelib run lime build` is
+	     enough, because the <postbuild> below files the linker's
+	     ApplicationMain.map/.pdb under export/symbols/<platform>-<mode>/.
+	     NOTE: flag names must start with lowercase hxcpp_. hxcpp's object cache only
+	     diffs option lines containing it; renaming to HXCPP_* changes nothing and
+	     links a half-new binary. -->
 	<define name="hxcpp_safe" unless="hxcpp_nosafe" />
 	<section if="hxcpp_safe">
 		<haxedef name="HXCPP_CHECK_POINTER" />
@@ -98,7 +102,9 @@
 	<define name="PRELOAD_ALL" unless="web" />
 	<define name="NO_PRELOAD_ALL" unless="PRELOAD_ALL"/>
 	
-	<library name="videos"        preload="true" />
+	<section if="VIDEOS_ALLOWED">
+		<library name="videos"    preload="true" />
+	</section>
 	<section if="PRELOAD_ALL">
 		<library name="songs"         preload="true" />
 		<library name="shared"        preload="true" />
@@ -156,15 +162,27 @@
 	-->
 	<assets path="assets/fonts"/>
 	<assets path="assets/lang"/>
-	<!-- 崩溃行号表(仅 -D hxcpp_symbols 时嵌入): 表会改变二进制地址, 必须与"同一次构建"配套 -->
-	<section if="hxcpp_symbols">
-		<assets path="assets/linemap" rename="assets/linemap" include="*.bin" embed="true"/>
-	</section>
+	<!-- The embedded line table (assets/linemap/<abi>.bin) is no longer produced by a
+	     build: it needs generate-then-relink, i.e. a second pass, and a plain
+	     `lime build` has to stay a single pass. Symbolisation is offline instead:
+	         python tools\crash.py report <report>   -> function names from export/symbols/<platform>-<mode>/
+	     An inline [src/File.cpp:123] still is possible - run python tools\crash.py linemap, drop
+	     the .bin into assets/linemap/ and re-add the line below:
+	     <assets path="assets/linemap" rename="assets/linemap" include="*.bin" embed="true"/> -->
 
-	<!-- 只有符号构建才跑 postbuild(它要解析 DWARF 再 adb push, 很慢) -->
-	<section if="hxcpp_symbols">
-		<postbuild haxe="tools.SymbolsAfterBuild" />
-	</section>
+	<!-- Revision stamping needs no hook: source/BuildStampMacro.hx asks git while Haxe
+	     compiles and inlines the answer into BuildInfo. There is deliberately no prebuild
+	     rewriting a checked-in source file - that only worked when the lime hook ran, made
+	     every build dirty, and could leave the watermark one revision behind. -->
+
+	<!-- Symbol publishing, after linking. The linker always writes
+	     ApplicationMain.map; it used to be filed under export/symbols/ only when the
+	     build carried -D hxcpp_symbols, so most builds left a stale map behind and a
+	     crash report's offsets were resolved against it (each frame "resolved",
+	     all of them wrong). Publishing is a rename, not a copy.
+	     Output: export/symbols/<platform>-<mode>/{ApplicationMain.map, build-info.txt, build.json}
+	     Check:  python tools\crash.py status -->
+	<postbuild haxe="tools.SymbolsAfterBuild" />
 
 	<!-- _______________________________ Libraries ______________________________ -->
 
@@ -183,7 +201,8 @@
 	<haxelib name="linc_luajit" if="LUA_ALLOWED"/>
 	<haxelib name="hxvlc" if="desktop || android || ios"/>
 	<haxelib name="faxe" if='switch'/>
-	<haxelib name="tjson"/>
+	<!-- tjson 1.4.0 自带 Haxe 4.3 弃用警告；源码已复制到 source/_online_libs/tjson
+	     并修掉 haxe.Utf8 / Std.is，见 _online_libs/README.md。 -->
 	<!-- 0.7.3/1.0.4 模组兼容：FlxAnimate 精灵（makeFlxAnimateSprite 等 Lua API） -->
 	<!-- 0.7.3/1.0.4 mod compat: FlxAnimate sprites (makeFlxAnimateSprite etc.) -->
 	<haxelib name="flxanimate" version="4.0.0"/>
@@ -239,9 +258,13 @@
 	<haxedef name="HXCPP_CPP11" if="cpp" />
 	<!-- HXCPP_GC_GENERATIONAL 你太坏了。-->
 	<!-- HXCPP_ALIGN_ALLOC 如果你想获得一大堆警告就开着 -->
-	<!-- 符号构建才保留未剥离 .so 供行号表生成 -->
+	<!-- Android release: keep an unstripped .so. Without it the NDK strips the library
+	     right after linking and a field report only says "pc <offset>
+	     libApplicationMain.so" with nothing to resolve against. Unconditional: a plain
+	     `lime build` has to stay resolvable. Costs one extra ~85 MB file per release
+	     link, which the <postbuild> moves to export/symbols/android-release/. -->
 	<section if="android" unless="debug">
-		<haxedef name="HXCPP_DEBUG_LINK_AND_STRIP" if="hxcpp_symbols" />
+		<haxedef name="HXCPP_DEBUG_LINK_AND_STRIP" />
 	</section>
 	<!--GC你老牧师了你知道吗-->
 

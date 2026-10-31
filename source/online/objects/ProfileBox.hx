@@ -153,7 +153,17 @@ class ProfileBox extends FlxSpriteGroup {
 	
 	var tempMask:FlxSprite;
 
+    var _bgDepth:Int = 0;
+
     public function drawBG() {
+		// drawBG -> fitAvatar -> updatePositions -> drawBG is a real cycle: updatePositions redraws
+		// whenever the card height changes, and each level re-measures the text. It converges in
+		// practice, but a height oscillating by one pixel would recurse until the stack died.
+		if (_bgDepth >= 4)
+			return;
+		_bgDepth++;
+		// Haxe has no try/finally, so the counter is released at the end of the body (which has no
+		// early returns). An exception here would leave it elevated, which only tightens the cap.
 		// Haxe 4.2.5 has no safe-navigation or `??`; the null-safe field reads are expanded below,
 		// with 230 as the default hue.
 		var profileHue:Float = 230;
@@ -187,6 +197,7 @@ class ProfileBox extends FlxSpriteGroup {
 
 		fitAvatar();
         updatePositions();
+		_bgDepth--;
     }
 
 	public var avatarMaxSize:Int = 80;
@@ -229,11 +240,17 @@ class ProfileBox extends FlxSpriteGroup {
 		}
 
 		maxTextSize = bg.width - (text.x - x) - 20;
-		text.fieldWidth = maxTextSize;
+		// FlxText.set_fieldWidth sets _regen even when the value is unchanged, and a regen mints a
+		// new BitmapData + FlxGraphic in FlxG.bitmap. updatePlayerText() -> updatePositions() runs on
+		// every ping/status/name change of every player, so assigning unconditionally churned a
+		// texture pair per player per update for pixels that never changed.
+		if (text.fieldWidth != maxTextSize)
+			text.fieldWidth = maxTextSize;
 		//text.scale.x = Math.min(1, maxTextSizeDesc / text.width);
 
 		maxTextSizeDesc = bg.width - (desc.x - x) - 20;
-		desc.fieldWidth = maxTextSizeDesc;
+		if (desc.fieldWidth != maxTextSizeDesc)
+			desc.fieldWidth = maxTextSizeDesc;
 		//desc.scale.x = Math.min(1, maxTextSizeDesc / desc.width);
 
 		if (autoCardHeight) {
@@ -248,8 +265,16 @@ class ProfileBox extends FlxSpriteGroup {
     override function update(elapsed) {
         super.update(elapsed);
 
-		bg.alpha = FlxG.mouse.overlaps(this, camera) ? 1 : 0.8;
-		if (FlxG.mouse.overlaps(this, camera) && FlxG.mouse.justPressed) {
+		// Hover only needs a hit test when the pointer moved or a click happened. Doing it every
+		// frame re-tests every member of this group (and allocates a closure) for nothing.
+		var pointerMoved:Bool = FlxG.mouse.screenX != _lastMouseX || FlxG.mouse.screenY != _lastMouseY;
+		if (pointerMoved || FlxG.mouse.justPressed) {
+			_lastMouseX = FlxG.mouse.screenX;
+			_lastMouseY = FlxG.mouse.screenY;
+			_hovered = FlxG.mouse.overlaps(this, camera);
+		}
+		bg.alpha = _hovered ? 1 : 0.8;
+		if (_hovered && FlxG.mouse.justPressed) {
 			if (user != null && verified)
 				// This engine has no sidebar, so the full profile screen is opened instead of
 				// the sidebar's profile tab.
@@ -259,7 +284,11 @@ class ProfileBox extends FlxSpriteGroup {
         }
     }
 
-    var destroyed:Bool = false;
+    var _hovered:Bool = false;
+	var _lastMouseX:Float = -99999;
+	var _lastMouseY:Float = -99999;
+
+	var destroyed:Bool = false;
     override function destroy() {
 		destroyed = true;
         super.destroy();

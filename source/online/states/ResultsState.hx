@@ -633,15 +633,23 @@ class ResultsState extends MusicBeatState {
 		if (GameClient.isConnected()) {
 			GameClient.send("status", "Viewing results");
 
-			GameClient.room.onMessage("charPlay", function(_message:Array<Dynamic>) {
+			// registerStateMessage (not room.onMessage): the handler outlives this state otherwise.
+			// It used to be installed directly on the persistent room, so after the first results
+			// screen the destroyed state -- its characters, chat box and textures -- stayed reachable
+			// from the live room and kept receiving every remote animation for the rest of the session.
+			GameClient.registerStateMessage(this, "charPlay", function(_message:Array<Dynamic>) {
 				var sid:String = _message[0];
 				var message:Array<Dynamic> = _message[1];
 
 				Waiter.put(() -> {
-					if (message == null || message[0] == null)
+					if (destroyed || message == null || message[0] == null)
 						return;
 
-					characters.get(sid).character.playAnim(message[0], true);
+					var lobbyChar:LobbyCharacter = characters.get(sid);
+					if (lobbyChar == null || lobbyChar.character == null)
+						return;
+
+					lobbyChar.character.playAnim(message[0], true);
 				});
 			});
 		}
@@ -706,11 +714,19 @@ class ResultsState extends MusicBeatState {
 	override function update(elapsed) {
         super.update(elapsed);
 
-		cam.scroll.set(
-			FlxMath.lerp(cam.scroll.x, camScrollOrigin[0] + (FlxG.mouse.screenX - FlxG.width / 2) * 0.2, elapsed * 2), 
-			FlxMath.lerp(cam.scroll.y, camScrollOrigin[1] + (FlxG.mouse.screenY - FlxG.height / 2) * 0.05, elapsed * 2)
-		);
-		camZoomedHUD.scroll.set(cam.scroll.x, cam.scroll.y);
+		// The parallax used to write both camera scrolls every frame, at sub-pixel precision, up to
+		// 360 times a second -- which makes every sprite in the scene re-sample itself on every
+		// single frame. Snap the target to whole pixels and only move the cameras when that pixel
+		// actually changes, so a still pointer costs nothing at all.
+		var targetX:Float = camScrollOrigin[0] + (FlxG.mouse.screenX - FlxG.width / 2) * 0.2;
+		var targetY:Float = camScrollOrigin[1] + (FlxG.mouse.screenY - FlxG.height / 2) * 0.05;
+		var nx:Float = Math.round(FlxMath.lerp(cam.scroll.x, targetX, elapsed * 2));
+		var ny:Float = Math.round(FlxMath.lerp(cam.scroll.y, targetY, elapsed * 2));
+		if (nx != cam.scroll.x || ny != cam.scroll.y)
+		{
+			cam.scroll.set(nx, ny);
+			camZoomedHUD.scroll.set(nx, ny);
+		}
 
 		#if lumod
 		if (FlxG.keys.justPressed.F12) {
@@ -757,4 +773,16 @@ class ResultsState extends MusicBeatState {
 				back.animation.play('black');
         }
     }
+
+	/**
+	 * Online lobbies and the online results screen are the only long-lived states without a
+	 * per-song teardown, so this state must release what it put on shared objects itself: its
+	 * room handlers (see registerMessages) and the per-sid table that keeps every
+	 * LobbyCharacter -- and through it a whole Character -- alive.
+	 */
+	override function destroy() {
+		GameClient.disposeStateHandlers(this);
+		characters.clear();
+		super.destroy();
+	}
 }

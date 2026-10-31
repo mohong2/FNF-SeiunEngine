@@ -34,7 +34,7 @@ import sys.io.FileSeek;
  *   setAppInfo()       - engine version string
  *   setRuntimeContext()- current state/song, refreshed periodically
  *   setRecentLogs()    - TraceManager tail, refreshed periodically
- *   setLinemap()       - address->file:line table (see tools/gen_linemap.py)
+ *   setLinemap()       - address->file:line table (see tools/crash.py linemap)
  */
 #if cpp
 @:cppInclude('./native_crash.inc')
@@ -199,7 +199,7 @@ class NativeCrash
 	 * crash time). Sources, in priority order:
 	 *   1. <storage>/linemap/<abi>.bin      (adb push, no APK changes)
 	 *   2. embedded asset assets/linemap/<abi>.bin (resident in Project.xml)
-	 * Generated from the unstripped .so by tools/gen_linemap.py.
+	 * Generated from the unstripped .so by tools/crash.py linemap.
 	 */
 	public static function loadLinemap(storageDir:String, libName:String = 'libApplicationMain'):Void
 	{
@@ -335,4 +335,100 @@ class NativeCrash
 		return null;
 		#end
 	}
+
+	/**
+	 * Feed the OS / GPU / driver identity into the native reporter (see
+	 * seiun_set_env_info in native_crash.inc). Refreshed by SystemDiag's heartbeat:
+	 * the C++ layer can query the OS itself, but not a renderer the engine may
+	 * have failed to create.
+	 */
+	public static function setEnvInfo(info:String):Void
+	{
+		#if cpp
+		if (info == null || info.length == 0) return;
+		try { untyped __cpp__('::seiun_set_env_info({0}.__CStr())', info); } catch (e:Dynamic) {}
+		#end
+	}
+
+	/**
+	 * C++-side diagnostics block: OS, GPU/driver, GetLastError, the lime module
+	 * probe (missing / wrong-bitness / unloadable ndll, with the real Win32 error)
+	 * and the loaded module list. Appended verbatim to the Haxe crash dump, so
+	 * both reporters produce reports with the same sections.
+	 */
+	public static function collectDiag():String
+	{
+		#if cpp
+		try
+		{
+			var buf:Bytes = Bytes.alloc(32768);
+			var written:Int = untyped __cpp__('::seiun_collect_diag((char*){0}->Pointer(), (size_t){1})', buf.getData(), buf.length);
+			if (written > 0) return buf.getString(0, written);
+		}
+		catch (e:Dynamic) {}
+		#end
+		return '';
+	}
+
+	/**
+	 * "What / why / how to fix it" for one failure, from the table in
+	 * native_crash.inc (seiun_explain_fatal). Shared with the C++ funnel so the
+	 * player reads the same explanation whichever layer caught the error.
+	 */
+	public static function explainFatal(kind:String, message:String):String
+	{
+		#if cpp
+		try
+		{
+			var buf:Bytes = Bytes.alloc(8192);
+			var k:String = (kind == null || kind.length == 0) ? 'fatal' : kind;
+			var m:String = (message == null) ? '' : message;
+			var written:Int = untyped __cpp__('::seiun_explain_fatal_to((char*){0}->Pointer(), (size_t){1}, {2}.__CStr(), {3}.__CStr())',
+				buf.getData(), buf.length, k, m);
+			if (written > 0) return buf.getString(0, written);
+		}
+		catch (e:Dynamic) {}
+		#end
+		return '';
+	}
+
+	/**
+	 * Native UTF-16 dialog (Windows: MessageBoxW/TaskDialog). The only way to
+	 * reach the player when lime itself is unusable - which is exactly when a
+	 * Haxe-side dialog cannot exist. Blocking; call it on the main thread.
+	 */
+	public static function showDialog(title:String, message:String):Void
+	{
+		#if cpp
+		try
+		{
+			var t:String = (title == null) ? 'SeiunEngine' : title;
+			var m:String = (message == null) ? '' : message;
+			untyped __cpp__('::seiun_show_dialog_utf8({0}.__CStr(), {1}.__CStr())', t, m);
+		}
+		catch (e:Dynamic) {}
+		#end
+	}
+
+	/**
+	 * The whole C++ fatal funnel, callable from Haxe: writes
+	 * crash/SeiunEngine_fatal_<kind>_<time>.txt, leaves the pending marker and
+	 * shows the report dialog. Reserved for failures where the Haxe layer is
+	 * already unusable; normal Haxe errors go through Main.reportCrash() instead
+	 * (richer dump, recovery screen).
+	 */
+	public static function reportFatal(kind:String, message:String, ?detail:String):Void
+	{
+		#if cpp
+		try
+		{
+			var k:String = (kind == null || kind.length == 0) ? 'fatal' : kind;
+			var m:String = (message == null) ? '' : message;
+			var d:String = (detail == null) ? '' : detail;
+			untyped __cpp__('::seiun_fatal_report({0}.__CStr(), {1}.__CStr(), {2}.__CStr())', k, m, d);
+		}
+		catch (e:Dynamic) {}
+		#end
+	}
+
 }

@@ -5,11 +5,16 @@ import Discord.DiscordClient;
 #end
 import flash.text.TextField;
 import flixel.addons.display.FlxGridOverlay;
+import flixel.graphics.FlxGraphic;
+import openfl.display.BitmapData;
 #if MODS_ALLOWED
 import sys.FileSystem;
 import sys.io.File;
 #end
 import lime.utils.Assets;
+import backend.GitHubContributor;
+import backend.GitHubCredits;
+import backend.GitHubCreditsResult;
 
 import FlxTextMenuItem;
 
@@ -44,6 +49,23 @@ class CreditsState extends MusicBeatState
 	var thanksDescText:FlxText;
 	var thanksDescBox:AttachedSprite;
 	var thanksStuff:Array<Array<String>> = [];
+
+	/** The static list (engine + mods) before the live GitHub block is spliced in. */
+	var baseCreditsStuff:Array<Array<String>> = [];
+	/** Current GitHub block, header/entries/trailing spacer; empty while loading or failed. */
+	var githubSection:Array<Array<String>> = [];
+	/** profile URL -> contributor, so rebuilds can attach live avatars. */
+	var githubByLink:Map<String, GitHubContributor> = new Map();
+	/** Decoded avatars survive a menu rebuild instead of hitting the network twice. */
+	var avatarBitmaps:Map<String, BitmapData> = new Map();
+	/** Deduplicates the cache update followed by the live update. */
+	var githubSignature:String = '';
+	/** False after destroy; async GitHub/avatar callbacks must not touch the state. */
+	var stateAlive:Bool = true;
+
+	static inline var GITHUB_ICON_SIZE:Int = 150;
+	static inline var GITHUB_ANCHOR:String = 'Online UI / Protocol Reference';
+	static var GITHUB_COLORS:Array<String> = ['6E8BFF', '7C5CFF', '5D9CEC', '87CEEB', 'FF8FB1', '7F5FA5', '5ABD4B', 'F48FB1', 'FFB74D', '4DD0E1'];
 
 	override function create()
 	{
@@ -133,42 +155,11 @@ class CreditsState extends MusicBeatState
 		for(i in pisspoop){
 			creditsStuff.push(i);
 		}
-	
-		var savedModDir:String = Paths.currentModDirectory;
-		for (i in 0...creditsStuff.length)
-		{
-			var isSelectable:Bool = !unselectableCheck(i);
-			var optionText:FlxTextMenuItem = new FlxTextMenuItem(FlxG.width / 2, 300, creditsStuff[i][0], 48);
-			optionText.isMenuItem = true;
-			optionText.targetY = i;
-			optionText.changeX = false;
-			optionText.bold = !isSelectable;
-			optionText.snapToPosition();
-			grpOptions.add(optionText);
 
-			if(isSelectable) {
-				if(creditsStuff[i][5] != null)
-				{
-					Paths.currentModDirectory = creditsStuff[i][5];
-				}
-
-				var icon:AttachedSprite = new AttachedSprite('credits/' + creditsStuff[i][1]);
-				icon.xAdd = optionText.width + 10;
-				icon.sprTracker = optionText;
-	
-				// using a FlxGroup is too much fuss!
-				iconArray.push(icon);
-				add(icon);
-				Paths.currentModDirectory = savedModDir;
-
-				if(curSelected == -1) curSelected = i;
-			}
-			else
-			{
-				optionText.alignment = CENTER;
-				optionText.screenCenter(X);
-			}
-		}
+		// Keep the static list intact: the GitHub block is spliced in later, possibly more
+		// than once (disk cache first, live data second), and rebuilding must not duplicate
+		// it. Entries are never mutated in place, only added/removed as objects.
+		baseCreditsStuff = creditsStuff.copy();
 		
 		descBox = new AttachedSprite();
 		descBox.makeGraphic(1, 1, FlxColor.BLACK);
@@ -187,9 +178,11 @@ class CreditsState extends MusicBeatState
 
 		buildThanksView();
 
+		rebuildCreditsMenu(false);
 		bg.color = getCurrentBGColor();
 		intendedColor = bg.color;
-		changeSelection();
+		changeSelection(0, false);
+
 		#if (TOUCH_CONTROLS || desktop)
 		addVirtualPad(UP_DOWN, A_B_C);
 		#end
@@ -201,6 +194,10 @@ class CreditsState extends MusicBeatState
 		setOnLuas('state', this);
 		callOnLuas('onCreatePost', []);
 		#end
+
+		// Last: the cached snapshot (or the offline asset) can arrive synchronously and
+		// would otherwise rebuild the menu before descText exists.
+		startGitHubCredits();
 	}
 
 	function buildThanksView()
@@ -255,6 +252,269 @@ class CreditsState extends MusicBeatState
 		thanksDescBox.sprTracker = thanksDescText;
 
 		changeThanksSelection(0, false);
+	}
+
+	// ---------------------------------------------------------------- GitHub contributors
+
+	/**
+	 * Kick off the live contributor load. GitHubCredits answers from its disk cache first
+	 * and from the network second, so this can update the list twice; applyGitHubResult
+	 * ignores a repeat of the same list and rebuilds the menu only when something changed.
+	 */
+	function startGitHubCredits():Void
+	{
+		GitHubCredits.load(function(result:GitHubCreditsResult)
+		{
+			if (!stateAlive) return;
+			applyGitHubResult(result);
+		});
+	}
+
+	function applyGitHubResult(result:GitHubCreditsResult):Void
+	{
+		if (result == null) return;
+
+		var list:Array<GitHubContributor> = result.contributors != null ? result.contributors : [];
+		var signature:String = (result.online ? '1' : '0') + (result.fromCache ? '1' : '0') + (result.error != null ? '1' : '0') + '|';
+		for (c in list) signature += c.login + ':' + c.contributions + ';';
+		if (signature == githubSignature) return;
+		githubSignature = signature;
+
+		githubByLink = new Map();
+		githubSection = [];
+
+		if (list.length > 0)
+		{
+			var title:String = Language.get('credits.github.section', 'GitHub Contributors');
+			if (!result.online)
+			{
+				var tag:String = result.error != null
+					? Language.get('credits.github.offlineTag', 'offline')
+					: Language.get('credits.github.cachedTag', 'cached');
+				title += ' · ' + tag;
+			}
+
+			githubSection.push([title]);
+			for (c in list)
+			{
+				var entry:Array<String> = [
+					displayContributorName(c),
+					GitHubCredits.bundledAvatarKey(c.login),
+					contributorDescription(c),
+					c.profileUrl,
+					contributorColor(c.login)
+				];
+				githubSection.push(entry);
+				githubByLink.set(c.profileUrl, c);
+			}
+			githubSection.push(['']);
+		}
+
+		rebuildWithGitHub();
+	}
+
+	/** Merge the current GitHub block into the immutable static list and rebuild the menu. */
+	function rebuildWithGitHub():Void
+	{
+		var merged:Array<Array<String>> = baseCreditsStuff.copy();
+		if (githubSection.length > 0)
+		{
+			var at:Int = githubAnchor(merged);
+			for (i in 0...githubSection.length)
+				merged.insert(at + i, githubSection[i]);
+		}
+
+		creditsStuff = merged;
+		rebuildCreditsMenu(true);
+		if (creditsStuff.length > 0 && curSelected >= 0)
+			changeSelection(0, false);
+	}
+
+	/** Insert before the online-UI section so the live list stays near the top. */
+	function githubAnchor(list:Array<Array<String>>):Int
+	{
+		for (i in 0...list.length)
+		{
+			var entry:Array<String> = list[i];
+			if (entry == null || entry.length == 0) continue;
+			if (entry[0] == GITHUB_ANCHOR) return i;
+		}
+		return list.length;
+	}
+
+	function displayContributorName(c:GitHubContributor):String
+	{
+		return (c.name != null && c.name.length > 0) ? c.name : c.login;
+	}
+
+	function contributorDescription(c:GitHubContributor):String
+	{
+		var text:String = Language.get('credits.github.contribution', 'GitHub contributions: {n}')
+			.replace('{n}', Std.string(c.contributions));
+		if (displayContributorName(c) != c.login)
+			return '@' + c.login + '\n' + text;
+		return text;
+	}
+
+	/** Stable pastel per login so the background does not flicker between rebuilds. */
+	function contributorColor(login:String):String
+	{
+		var hash:Int = 0;
+		for (i in 0...login.length)
+			hash = (hash ^ (StringTools.fastCodeAt(login, i) + i)) & 0x7FFFFFFF;
+		return GITHUB_COLORS[hash % GITHUB_COLORS.length];
+	}
+
+	/**
+	 * Rebuild every menu text/icon from `creditsStuff`. Called once at create and again
+	 * whenever the GitHub block changes; the old selection is kept by name+link when the
+	 * entry still exists.
+	 */
+	function rebuildCreditsMenu(preserveSelection:Bool):Void
+	{
+		var oldName:String = null;
+		var oldLink:String = null;
+		if (preserveSelection && curSelected >= 0 && curSelected < creditsStuff.length)
+		{
+			var oldEntry:Array<String> = creditsStuff[curSelected];
+			if (oldEntry != null)
+			{
+				oldName = oldEntry[0];
+				oldLink = oldEntry[3];
+			}
+		}
+
+		if (grpOptions != null)
+		{
+			for (item in grpOptions.members.copy())
+				grpOptions.remove(item, true);
+		}
+		for (icon in iconArray)
+		{
+			if (icon != null) remove(icon, true);
+		}
+		iconArray = [];
+
+		var savedModDir:String = Paths.currentModDirectory;
+		for (i in 0...creditsStuff.length)
+		{
+			var entry:Array<String> = creditsStuff[i];
+			if (entry == null || entry.length == 0) continue;
+
+			var isSelectable:Bool = !unselectableCheck(i);
+			var optionText:FlxTextMenuItem = new FlxTextMenuItem(FlxG.width / 2, 300, entry[0], 48);
+			optionText.isMenuItem = true;
+			optionText.targetY = i;
+			optionText.changeX = false;
+			optionText.bold = !isSelectable;
+			optionText.snapToPosition();
+			grpOptions.add(optionText);
+
+			if (isSelectable)
+			{
+				var iconKey:String = (entry[1] != null && entry[1].length > 0) ? entry[1] : 'none';
+				var link:String = entry.length > 3 ? entry[3] : null;
+				var contributor:GitHubContributor = link != null ? githubByLink.get(link) : null;
+
+				if (contributor != null)
+					iconKey = GitHubCredits.bundledAvatarKey(contributor.login);
+
+				var modDir:String = entry.length > 5 ? entry[5] : null;
+				if (modDir != null)
+					Paths.currentModDirectory = modDir;
+
+				var icon:AttachedSprite = new AttachedSprite('credits/' + iconKey);
+				icon.xAdd = optionText.width + 10;
+				icon.sprTracker = optionText;
+
+				iconArray.push(icon);
+				add(icon);
+				Paths.currentModDirectory = savedModDir;
+
+				if (contributor != null)
+					startContributorAvatar(icon, contributor);
+			}
+			else
+			{
+				optionText.alignment = CENTER;
+				optionText.screenCenter(X);
+			}
+		}
+		Paths.currentModDirectory = savedModDir;
+
+		var target:Int = -1;
+		if (preserveSelection && oldName != null)
+		{
+			for (i in 0...creditsStuff.length)
+			{
+				var entry:Array<String> = creditsStuff[i];
+				if (entry == null || unselectableCheck(i)) continue;
+				if (entry[0] == oldName && entry[3] == oldLink)
+				{
+					target = i;
+					break;
+				}
+			}
+		}
+		if (target < 0) target = firstSelectableIndex();
+		curSelected = target;
+	}
+
+	function firstSelectableIndex():Int
+	{
+		for (i in 0...creditsStuff.length)
+			if (!unselectableCheck(i)) return i;
+		return creditsStuff.length > 0 ? 0 : -1;
+	}
+
+	/** Replace the bundled/generic icon with the live avatar as soon as bytes arrive. */
+	function startContributorAvatar(icon:AttachedSprite, contributor:GitHubContributor):Void
+	{
+		if (icon == null || contributor == null) return;
+
+		var cached:BitmapData = avatarBitmaps.get(contributor.login);
+		if (cached != null)
+		{
+			applyAvatar(icon, cached);
+			return;
+		}
+
+		GitHubCredits.loadAvatar(contributor, function(bytes)
+		{
+			if (!stateAlive || icon == null || !icon.exists) return;
+
+			var bitmap:BitmapData = decodeAvatar(bytes);
+			if (bitmap == null) return;
+
+			avatarBitmaps.set(contributor.login, bitmap);
+			applyAvatar(icon, bitmap);
+		}, function() {});
+	}
+
+	function decodeAvatar(bytes:haxe.io.Bytes):BitmapData
+	{
+		if (bytes == null || bytes.length == 0) return null;
+		try
+		{
+			return BitmapData.fromBytes(bytes);
+		}
+		catch (e:Dynamic)
+		{
+			return null;
+		}
+	}
+
+	function applyAvatar(icon:AttachedSprite, bitmap:BitmapData):Void
+	{
+		if (icon == null || !icon.exists || bitmap == null) return;
+		try
+		{
+			var graphic:FlxGraphic = FlxGraphic.fromBitmapData(bitmap, false, null, false);
+			icon.loadGraphic(graphic);
+			icon.setGraphicSize(GITHUB_ICON_SIZE, GITHUB_ICON_SIZE);
+			icon.updateHitbox();
+		}
+		catch (e:Dynamic) {}
 	}
 
 	function openThanks()
@@ -423,16 +683,25 @@ class CreditsState extends MusicBeatState
 	}
 
 	var moveTween:FlxTween = null;
-	function changeSelection(change:Int = 0)
+	function changeSelection(change:Int = 0, playSound:Bool = true)
 	{
-		FlxG.sound.play(Paths.sound('scrollMenu'), 0.4);
+		if (creditsStuff.length == 0) return;
+
+		if (playSound)
+			FlxG.sound.play(Paths.sound('scrollMenu'), 0.4);
+
+		// The loop normally walks over section headers. The counter is a safety net: a
+		// rebuild can briefly leave curSelected pointing at a header, and change=0 would
+		// then spin forever.
+		var tries:Int = 0;
 		do {
 			curSelected += change;
 			if (curSelected < 0)
 				curSelected = creditsStuff.length - 1;
 			if (curSelected >= creditsStuff.length)
 				curSelected = 0;
-		} while(unselectableCheck(curSelected));
+			tries++;
+		} while(unselectableCheck(curSelected) && tries <= creditsStuff.length);
 
 		var newColor:Int =  getCurrentBGColor();
 		if(newColor != intendedColor) {
@@ -462,7 +731,8 @@ class CreditsState extends MusicBeatState
 			}
 		}
 
-		descText.text = creditsStuff[curSelected][2];
+		var desc:String = creditsStuff[curSelected][2];
+		descText.text = desc == null ? '' : desc;
 		descText.y = FlxG.height - descText.height + offsetThing - 60;
 
 		if(moveTween != null) moveTween.cancel();
@@ -498,17 +768,23 @@ class CreditsState extends MusicBeatState
 	#end
 
 	function getCurrentBGColor() {
-		var bgColor:String = creditsStuff[curSelected][4];
+		if (curSelected < 0 || curSelected >= creditsStuff.length) return 0xFF000000;
+		var entry:Array<String> = creditsStuff[curSelected];
+		if (entry == null || entry.length < 5 || entry[4] == null) return 0xFF000000;
+
+		var bgColor:String = entry[4];
 		if(!bgColor.startsWith('0x')) {
 			bgColor = '0xFF' + bgColor;
 		}
-		return Std.parseInt(bgColor);
+		var parsed:Null<Int> = Std.parseInt(bgColor);
+		return parsed == null ? 0xFF000000 : parsed;
 	}
 
 	private function unselectableCheck(num:Int):Bool {
-		return creditsStuff[num].length <= 1;
+		return num < 0 || num >= creditsStuff.length || creditsStuff[num] == null || creditsStuff[num].length <= 1;
 	}
 	override function destroy() {
+		stateAlive = false;
 		instance = null;
 		super.destroy();
 	}

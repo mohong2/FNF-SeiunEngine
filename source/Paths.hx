@@ -254,6 +254,20 @@ class Paths
 	 * never goes through a second hidden cache.
 	 * @return how many graphics were destroyed and how many bytes were freed.
 	 */
+	/**
+	 * Entry count of FlxG's bitmap cache. Used by the periodic cache guard (backend.MusicBeatState)
+	 * and by the runtime probe; O(n) over the cache, so call it at most a few times per second.
+	 */
+	public static function bitmapCacheCount():Int
+	{
+		@:privateAccess
+		if (FlxG.bitmap._cache == null) return 0;
+		var n:Int = 0;
+		@:privateAccess
+		for (key in FlxG.bitmap._cache.keys()) n++;
+		return n;
+	}
+
 	public static function clearImageCache():{count:Int, bytes:Float}
 	{
 		var seen:Map<FlxGraphic, Bool> = new Map();

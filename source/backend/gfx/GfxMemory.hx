@@ -55,6 +55,16 @@ class GfxMemory
 	/** Re-scan the cache every N rendered frames for context-restored images. */
 	public static var sweepIntervalFrames:Int = 120;
 
+	/**
+	 * CPU bytes parked in VRAM before the sweep starts releasing anything.
+	 *
+	 * Releasing a copy that the running code is about to read again costs a full
+	 * image decode, and the same scene gets read every frame, so an unconditional
+	 * sweep turns into a drop/decode loop. Below this mark there is nothing worth
+	 * winning, so the sweep stays out of the way.
+	 */
+	public static var sweepAboveBytes:Float = 96 * 1024 * 1024;
+
 	public static var releasedCountTotal:Int = 0;
 	public static var releasedBytesTotal:Float = 0;
 	public static var restoredCountTotal:Int = 0;
@@ -178,6 +188,10 @@ class GfxMemory
 				stateRestoreMs += (Timer.stamp() - started) * 1000;
 				stateRestoreCount++;
 				restoredCountTotal++;
+				// A graphic that had to be decoded again is in active use: keep its CPU
+				// copy for a while instead of letting the next sweep drop it straight
+				// back into the decode path.
+				if (graphic.key != null) restoredAt.set(graphic.key, Timer.stamp());
 				restoredBytesTotal += size;
 				#if sys
 				if (Sys.getEnv('FNF_GFX_TRACE') == '1')
@@ -256,6 +270,21 @@ class GfxMemory
 		if (elapsedMs > 0) stateAudioMs += elapsedMs;
 	}
 
+	/** Keys whose CPU copy was rebuilt recently, with the timestamp of the rebuild. */
+	static var restoredAt:Map<String, Float> = new Map();
+
+	/**
+	 * A graphic that had to be decoded again is being read from the CPU by the
+	 * running code, so releasing it only buys a drop followed by an immediate
+	 * re-decode - the exact loop that produced multi-megabyte frame spikes. Those
+	 * keys stay CPU-resident for the rest of the session; the sweep keeps working
+	 * on everything that is genuinely idle.
+	 */
+	static function isReadBackGraphic(key:String):Bool
+	{
+		return restoredAt.exists(key);
+	}
+
 	/** Queue one key for release after the next draws have uploaded it. */
 	public static function note(key:String):Void
 	{
@@ -267,7 +296,8 @@ class GfxMemory
 	public static function onStateSwitch():Void
 	{
 		pending = new Map();
-		sweepCounter = 0;
+		// Keep the sweep cadence: resetting the counter made every state switch drop
+		// the whole cache again, which is what started the decode loop.
 		GfxPalette.clearQueue();
 	}
 
@@ -535,7 +565,9 @@ class GfxMemory
 		if (sweepCounter >= sweepIntervalFrames)
 		{
 			sweepCounter = 0;
-			try sweepCache() catch (e:Dynamic) {}
+			// Only release CPU copies once holding them actually costs something.
+			if (liveBytes() >= sweepAboveBytes)
+				try sweepCache() catch (e:Dynamic) {}
 		}
 	}
 
@@ -610,6 +642,7 @@ class GfxMemory
 			if (graphic == null || graphic.bitmap == null) continue;
 			var bmp = graphic.bitmap;
 			if (bmp.cpuReleased || !bmp.hasCPU || !bmp.restorable || !eligible(bmp)) continue;
+			if (isReadBackGraphic(key)) continue;
 			if (bmp.hasTexture(ctx)) note(key);
 		}
 	}

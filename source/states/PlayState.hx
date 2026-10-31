@@ -763,7 +763,11 @@ class PlayState extends MusicBeatState
 	public var instakillOnMiss:Bool = false;
 	public var cpuControlled(default, set):Bool = false;
 	inline function set_cpuControlled(value:Bool):Bool {
-		if (ClientPrefs.data.turboMode) value = true; // Turbo forces botplay on
+		// Reads the session flag, not the preference: online play forces `turboModeActive` off
+		// (create()) because Turbo settles notes without noteHit and breaks the shared room state,
+		// while the persisted preference stays on. Reading the preference here re-enabled botplay
+		// for the whole online song -- the one guard the session flag could not cover.
+		if (turboModeActive) value = true; // Turbo forces botplay on
 		#if ONLINE_ALLOWED
 		// set_cpuControlled() tells the room when this client turns botplay on (`send` is a no-op
 		// while disconnected, and `!cpuControlled` mirrors the early return for an already-

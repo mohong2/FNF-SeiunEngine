@@ -24,10 +24,10 @@ class JavaFileSource extends Generator<Chunk, Error> {
 		this.pos = pos;
 		this.size = size;
 		
-		super(Future.async(function(cb) {
+		super(Future.irreversible(function(cb) {
 			var buffer = ByteBuffer.allocate(size);
 			channel.read(buffer, pos, buffer, new ReadHandler(cb, this));
-		}));
+		}).eager());
 	}
 	
 	static inline public function wrap(name, stream, size) 

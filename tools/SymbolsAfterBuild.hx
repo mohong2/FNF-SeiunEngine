@@ -4,6 +4,7 @@ import haxe.io.Bytes;
 import sys.FileSystem;
 import sys.io.File;
 import sys.io.FileSeek;
+import sys.io.Process;
 
 /** One reported artifact. */
 typedef Row =
@@ -57,6 +58,9 @@ class SymbolsAfterBuild
 	static var ANDROID_ABIS = ["arm64-v8a", "armeabi-v7a", "x86_64", "x86", "riscv64"];
 
 	static var root:String;
+
+	/** Revision the compile-time BuildStampMacro baked into the binary (re-read from git here). */
+	static var STAMP = {commit: "unknown", version: "unknown", dirty: false};
 	static var plat:String;
 	static var mode:String;
 	static var buildTime:Float = 0;
@@ -98,6 +102,7 @@ class SymbolsAfterBuild
 			Sys.println(TAG + " no Project.xml above " + Sys.getCwd() + " - skipping");
 			return;
 		}
+		readStamp(root);
 
 		var d = detect();
 		plat = argPlat != null ? argPlat : d.plat;
@@ -118,9 +123,56 @@ class SymbolsAfterBuild
 		var rows = collect(outDir);
 		emit(rows);
 		writeInfo(rows);
+		writeManifest(rows);
 	}
 
 	// -------------------------------------------------------------- locating
+	/**
+	 * The same facts source/BuildStampMacro.hx bakes into the binary: HEAD, Project.xml's
+	 * version, and whether tracked files differ. Read from git here instead of scraping
+	 * BuildInfo.hx, because that file now contains macro calls rather than literals.
+	 */
+	static function readStamp(projectRoot:String):Void
+	{
+		var commit:String = git(projectRoot, ["rev-parse", "--short", "HEAD"]);
+		STAMP.commit = commit == "" ? "unknown" : commit;
+
+		var version:String = projectVersion(projectRoot);
+		STAMP.version = version == "" ? "unknown" : version;
+
+		// --untracked-files=no matches BuildStampMacro: scratch files are not build identity.
+		STAMP.dirty = git(projectRoot, ["status", "--porcelain", "--untracked-files=no"]).length > 0;
+	}
+
+	/** <app ... version="..."> out of Project.xml, or "" when it cannot be read. */
+	static function projectVersion(projectRoot:String):String
+	{
+		try
+		{
+			var xml:String = File.getContent(projectRoot + "/Project.xml");
+			var re:EReg = ~/<app\b[^>]*\bversion="([^"]*)"/;
+			if (re.match(xml)) return re.matched(1);
+		}
+		catch (e:Dynamic) {}
+		return "";
+	}
+
+	/** stdout of a git subcommand, or "" when git is missing or the call fails. */
+	static function git(projectRoot:String, args:Array<String>):String
+	{
+		try
+		{
+			var process:Process = new Process("git", ["-C", projectRoot].concat(args));
+			var out:String = process.stdout.readAll().toString();
+			process.stderr.readAll();
+			var code:Int = process.exitCode();
+			process.close();
+			if (code != 0) return "";
+			return StringTools.trim(out.split("\r").join(""));
+		}
+		catch (e:Dynamic) return "";
+	}
+
 	static function findRoot(start:String):String
 	{
 		var d = start;
@@ -726,7 +778,9 @@ class SymbolsAfterBuild
 		}
 		for (s in info) Sys.println(TAG + "   note: " + s);
 		if (plat == "android") Sys.println(TAG + "   resolve: ndk-stack -sym export/" + mode + "/android/obj -dump <report.txt>");
-		if (plat == "windows") Sys.println(TAG + "   resolve: python tools/crash_triage.py --crash <report.txt>");
+		Sys.println(TAG + "   build  : " + STAMP.commit + (STAMP.dirty ? " (dirty tree)" : "") + "  " + STAMP.version);
+		if (plat == "windows") Sys.println(TAG + "   check  : python tools\\crash.py status");
+		if (plat == "windows") Sys.println(TAG + "   resolve: python tools\\crash.py report <report.txt>");
 		Sys.println(TAG + " " + dashes());
 	}
 
@@ -750,6 +804,7 @@ class SymbolsAfterBuild
 		if (!FileSystem.exists(dir)) FileSystem.createDirectory(dir);
 		var b = new StringBuf();
 		b.add("# SeiunEngine symbol bundle - " + plat + " " + mode + "\n");
+		b.add("# build   : " + STAMP.commit + (STAMP.dirty ? " (dirty tree)" : "") + "  " + STAMP.version + "\n");
 		b.add("# Written by tools/SymbolsAfterBuild.hx on every lime build.\n");
 		b.add("# Match a crash report's 'Build:' line against the fingerprints below.\n");
 		b.add("# size and #hash are stable; @mtime is the install time on the\n");
@@ -764,5 +819,108 @@ class SymbolsAfterBuild
 		var p = dir + "/build-info.txt";
 		File.saveContent(p, b.toString());
 		Sys.println(TAG + "   info: " + rel(p));
+	}
+
+	/**
+	 * Machine-readable twin of build-info.txt.
+	 *
+	 * tools/crash.py reads this to answer "are these symbols from THIS binary?"
+	 * without guessing from modification times: the PE TimeDateStamp + file size
+	 * recorded here are the same two values a crash report prints
+	 * (Build: <size>B@<stamp>s), so the comparison is exact.
+	 */
+	static function writeManifest(rows:Array<Row>):Void
+	{
+		var dir = symbolDir();
+		if (!FileSystem.exists(dir)) FileSystem.createDirectory(dir);
+
+		var exe:Row = null;
+		for (r in rows)
+		{
+			if (r.role != "exe" && r.role != "app" && r.role != "apk") continue;
+			var shipped = r.path.indexOf("/bin/") >= 0 || StringTools.endsWith(r.path.toLowerCase(), ".apk");
+			if (exe == null || (shipped && exe.path.indexOf("/bin/") < 0)) exe = r;
+		}
+
+		var exeSize:Float = exe != null ? size(exe.path) : 0;
+		var stamp:Float = (exe != null && plat == "windows") ? peStamp(exe.path) : -1;
+
+		var b = new StringBuf();
+		b.add("{\n");
+		b.add("  \"schema\": 1,\n");
+		b.add("  \"platform\": " + jstr(plat) + ",\n");
+		b.add("  \"mode\": " + jstr(mode) + ",\n");
+		b.add("  \"builtAt\": " + jstr(Date.now().toString()) + ",\n");
+		b.add("  \"git\": {\"commit\": " + jstr(STAMP.commit) + ", \"dirty\": "
+			+ (STAMP.dirty ? "true" : "false") + ", \"version\": " + jstr(STAMP.version) + "},\n");
+		if (exe == null)
+		{
+			b.add("  \"exe\": null,\n");
+		}
+		else
+		{
+			b.add("  \"exe\": {\n");
+			b.add("    \"path\": " + jstr(rel(exe.path)) + ",\n");
+			b.add("    \"size\": " + Std.int(exeSize) + ",\n");
+			b.add("    \"peStamp\": " + (stamp < 0 ? "null" : Std.string(Std.int(stamp))) + ",\n");
+			b.add("    \"peStampHex\": " + (stamp < 0 ? "null" : jstr("0x" + hex8(stamp))) + ",\n");
+			b.add("    \"fp\": " + jstr(exe.fp) + "\n");
+			b.add("  },\n");
+		}
+		b.add("  \"artifacts\": [");
+		var first = true;
+		for (r in rows)
+		{
+			if (!isFile(r.path)) continue;
+			if (!first) b.add(",");
+			first = false;
+			b.add("\n    {\"role\": " + jstr(r.role) + ", \"path\": " + jstr(rel(r.path))
+				+ ", \"size\": " + Std.int(size(r.path)) + ", \"fp\": " + jstr(r.fp) + "}");
+		}
+		b.add("\n  ],\n");
+		b.add("  \"notes\": [");
+		var nfirst = true;
+		for (s in info)
+		{
+			if (!nfirst) b.add(", ");
+			nfirst = false;
+			b.add(jstr(s));
+		}
+		b.add("]\n}\n");
+		var json = dir + "/build.json";
+		File.saveContent(json, b.toString());
+		Sys.println(TAG + " manifest: " + rel(json));
+	}
+
+	static function jstr(s:String):String
+	{
+		return haxe.Json.stringify(s == null ? "" : s);
+	}
+
+	/** COFF TimeDateStamp of a PE image (the same value a report calls 'stamp'), or -1. */
+	static function peStamp(path:String):Float
+	{
+		var f = null;
+		try
+		{
+			f = File.read(path, true);
+			var stamp:Float = -1;
+			f.seek(0x3C, FileSeek.SeekBegin);
+			var off = u32(f.read(4), 0);
+			f.seek(Std.int(off), FileSeek.SeekBegin);
+			var sig = f.read(4);
+			if (sig.get(0) == 80 && sig.get(1) == 69)
+			{
+				f.seek(Std.int(off) + 8, FileSeek.SeekBegin);
+				stamp = u32(f.read(4), 0);
+			}
+			f.close();
+			return stamp;
+		}
+		catch (e:Dynamic)
+		{
+			if (f != null) try f.close() catch (_:Dynamic) {};
+			return -1;
+		}
 	}
 }

@@ -1,0 +1,23 @@
+{
+  "repository": "mohong2/FNF-SeiunEngine",
+  "generatedAt": "2026-10-31",
+  "note": "Offline snapshot used when GitHub is unreachable; refresh with tools/gen_contributors.py.",
+  "contributors": [
+    {
+      "login": "mohong2",
+      "name": "",
+      "id": 150683765,
+      "avatarUrl": "https://avatars.githubusercontent.com/u/150683765?v=4",
+      "profileUrl": "https://github.com/mohong2",
+      "contributions": 276
+    },
+    {
+      "login": "azmlpoh",
+      "name": "",
+      "id": 178987150,
+      "avatarUrl": "https://avatars.githubusercontent.com/u/178987150?v=4",
+      "profileUrl": "https://github.com/azmlpoh",
+      "contributions": 2
+    }
+  ]
+}

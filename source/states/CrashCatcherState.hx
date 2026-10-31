@@ -804,7 +804,9 @@ class CrashCatcherState extends MusicBeatState
 			report += "Please report this error to the GitHub page: https://github.com/mohong2/FNF-SeiunEngine\n";
 			report += "SeiunEngine by mo_hong\n";
 
-			File.saveContent(path, report);
+			// UTF-8 BOM, matching every other report writer: readers then decode the
+			// Chinese text instead of guessing the ANSI code page.
+			File.saveContent(path, '\uFEFF' + report);
 
 			btnSaveTxt.alpha = 1; // Restore button text
 

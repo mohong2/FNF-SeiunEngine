@@ -125,6 +125,8 @@ class AlertMessage extends Sprite implements IMousable {
 }
 
 class Alert extends Sprite {
+	/** Throttle for coalescing per-frame hover dispatch (see the MOUSE_MOVE listener). */
+	static var _lastHoverDispatch:Float = 0;
 	static var instance:Alert;
 	static var trashedObjects:Array<AlertMessage> = [];
 
@@ -141,9 +143,13 @@ class Alert extends Sprite {
 
 	function init(?e:Event) {
 		stage.addEventListener(MouseEvent.MOUSE_MOVE, (e:MouseEvent) -> {
-			for (child in __children) {
-				if (child is IMousable)
-					(cast child).mouseMove(e);
+			var now:Float = haxe.Timer.stamp();
+			if (now - _lastHoverDispatch >= 0.016) {
+				_lastHoverDispatch = now;
+				for (child in __children) {
+					if (child is IMousable)
+						(cast child).mouseMove(e);
+				}
 			}
 		});
 		stage.addEventListener(MouseEvent.MOUSE_DOWN, (e:MouseEvent) -> {

@@ -17,10 +17,10 @@ class WrappedReadable {
     this.name = name;
     this.native = native;
     this.chunkSize = chunkSize;
-    end = Future.async(function (cb) {
+    end = Future.irreversible(function (cb) {
       native.once('end', function () cb(Success(null)));
       native.once('error', function (e:{ code:String, message:String }) cb(Failure(new Error('${e.code} - Failed reading from $name because ${e.message}'))));      
-    })
+    }).eager()
     .eager(); // async laziness fix for tink_core v2
     if (onEnd != null)
       end.handle(function () 
@@ -29,7 +29,7 @@ class WrappedReadable {
   }
 
   public function read():Promise<Null<Chunk>>
-    return Future.async(function (cb) {
+    return Future.irreversible(function (cb) {
       function attempt() {
         try 
           switch native.read(chunkSize) {
@@ -51,5 +51,5 @@ class WrappedReadable {
                     
       attempt();
       //end.handle(cb);
-    }).first(end);
+    }).eager().first(end);
 }

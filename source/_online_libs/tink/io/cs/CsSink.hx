@@ -21,12 +21,12 @@ class CsSink extends SinkBase<Error, Noise> {
 	
 	override public function consume<EIn>(source:Stream<Chunk, EIn>, options:PipeOptions):Future<PipeResult<EIn, Error, Noise>> {
 		var ret = source.forEach(function (c:Chunk) {
-			return Future.async(function(cb) {
+			return Future.irreversible(function(cb) {
 				stream.BeginWrite(c.toBytes().getData(), 0, c.length, new AsyncCallback(function(ar) {
 					stream.EndWrite(ar);
 					cb((Resume:Handled<Error>));
 				}), null);
-			});
+			}).eager();
 		});
 			
 		if (options.end)

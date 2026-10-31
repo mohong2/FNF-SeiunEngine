@@ -1255,7 +1255,7 @@ return Std.string(v);
 	{
 		if (backdropGame != null)
 			backdropGame.persistentUpdate = prevPersistentUpdate;
-		if (backdropCam != null && FlxG.cameras.list.indexOf(backdropCam) != -1)
+		if (backdropCam != null)
 			backdropCam.filters = prevCamFilters;
 	}
 

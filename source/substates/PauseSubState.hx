@@ -779,7 +779,10 @@ class PauseSubState extends MusicBeatSubstate
 
 	function restoreBackdrop():Void
 	{
-		if (backdropCam != null && FlxG.cameras.list.indexOf(backdropCam) != -1)
+		// Restore unconditionally: a state switch removes the camera from FlxG.cameras before
+		// this substate is destroyed, and the old guard then left the blur filter on the camera
+		// for the rest of the session.
+		if (backdropCam != null)
 			backdropCam.filters = prevCamFilters;
 	}
 

@@ -16,7 +16,7 @@ class StdClient implements ClientObject {
     this.worker = worker.ensure();
   }
   public function request(req:OutgoingRequest):Promise<IncomingResponse> 
-    return Future.async(function (cb) {
+    return Future.irreversible(function (cb) {
             
       var r = new haxe.Http(req.header.url);
       
@@ -67,5 +67,5 @@ class StdClient implements ClientObject {
             send(true);  
         });
       }
-    });
+    }).eager();
 }

@@ -201,10 +201,10 @@ jobs:
 
           Match them to the report via the report's `Build:` line and the
           `build-info.txt` of the matching zip. Offline fallback for desktop:
-          `python tools/mapresolve.py ApplicationMain.map <fault offset>`.
+          `python tools/crash.py resolve ApplicationMain.map <fault offset>`.
 
           The Windows `ApplicationMain.map` is verified against the published exe before it
-          ships (`python tools/verify_map.py SeiunEngine.exe ApplicationMain.map`), so a
+          ships (`python tools/crash.py verify-map SeiunEngine.exe ApplicationMain.map`), so a
           resolved frame is exact and not merely plausible. Re-check any pair yourself
           before trusting it - a map from a different link resolves every frame to the
           wrong function.

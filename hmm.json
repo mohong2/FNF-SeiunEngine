@@ -20,8 +20,9 @@
     },
     {
       "name": "flixel-addons",
-      "type": "haxelib",
-      "version": "2.11.0"
+      "type": "git",
+      "url": "https://github.com/mohong2/flixel-addons.git",
+      "ref": "seiunengine"
     },
     {
       "name": "flixel-tools",
@@ -35,8 +36,9 @@
     },
     {
       "name": "flixel-ui",
-      "type": "haxelib",
-      "version": "2.4.0"
+      "type": "git",
+      "url": "https://github.com/mohong2/flixel-ui.git",
+      "ref": "seiunengine"
     },
     {
       "name": "hxcpp",
@@ -61,11 +63,6 @@
       "type": "git",
       "url": "https://github.com/mohong2/hxvlc.git",
       "ref": "master"
-    },
-    {
-      "name": "tjson",
-      "type": "haxelib",
-      "version": "1.4.0"
     },
     {
       "name": "hxp",

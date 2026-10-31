@@ -29,7 +29,7 @@ macros, so renaming a package would require editing the macro strings as well.
 
 ## Sources and versions
 
-Versions are taken from the upstream project's `hmm.json`:
+Versions are taken from the upstream project's `hmm.json`, except where noted:
 
 | Directory | Library | Version | Upstream |
 |---|---|---|---|
@@ -40,9 +40,10 @@ Versions are taken from the upstream project's `hmm.json`:
 | `hxjsonast/` | hxjsonast | 1.1.0 | |
 | `htmlparser/` | HtmlParser | 3.4.0 | |
 | `httpstatus/` | http-status | 1.4.0 | transitive dependency of tink_http |
+| `tjson/` | tjson | 1.4.0 | https://github.com/martamius/TJSON (offline mod-JSON parser; see below) |
 | `org/msgpack/` | msgpack-haxe | - | transitive dependency of colyseus; msgpack encode/decode for `ROOM_DATA` |
 
-File count: **220 `.hx`** files plus one reference file (`.hx.txt`).
+File count: **221 `.hx`** files plus one reference file (`.hx.txt`).
 Pure Haxe: native-code counts (`.ndll` / `.dll` / `.lib` / `.a` / `.so` / `.dylib` / `.h` / `.cpp`) are 0.
 
 ## Known issue: Haxe 4.3 `??` syntax in the libraries
@@ -89,6 +90,42 @@ Copy-Item -Force `
 **Why the deviation is safe:** `haxe/net` does not exist in the Haxe standard library
 (`C:\HaxeToolkit\haxe\std\haxe\net` is absent), so nothing in the stdlib is shadowed. The
 upstream project keeps the same pinned copy under `source/haxe/net/impl/` as well.
+
+## Vendored engine dependency: `tjson/TJSON.hx`
+
+`tjson` is not part of the online client. It is the tolerant JSON parser the engine uses
+for Psych 1.0.4 mod data (`pack.json`, stage JSON, `data/settings.json`, ...), where
+trailing commas, `//` / `/* */` comments and single quotes must be accepted. The haxelib
+release 1.4.0 predates Haxe 4.3 and warns on two deprecated APIs, so its single source file
+is vendored here - this directory is already a separate classpath root, which a root
+package like `tjson` needs - and `Project.xml` no longer references the haxelib.
+
+Deviations from upstream 1.4.0, both deprecation-only and behaviour-preserving:
+
+| Area | Upstream | Here |
+|---|---|---|
+| `\uXXXX` decoding | `new haxe.Utf8()` + `addChar` + `toString()` | `String.fromCharCode(hexValue)` |
+| encoder type checks | `Std.is(...)` | `Std.isOfType(...)` |
+
+The BSD license and upstream URL are recorded in the file header. To revert, copy
+`TJSON.hx` from haxelib 1.4.0, restore `<haxelib name="tjson"/>` in `Project.xml` and
+delete this file.
+
+## Local deviation: tink `Future.async` call sites
+
+tink_core 2.1.1 deprecated `Future.async` in favour of `Future.irreversible` / `new Future`,
+but the sibling tink libraries still called it, so every build emitted `WDeprecated` warnings.
+All call sites were rewritten in place, preserving the original laziness:
+
+| Original | Replacement |
+|---|---|
+| `Future.async(init)` | `Future.irreversible(init).eager()` |
+| `Future.async(init, true)` | `Future.irreversible(init)` |
+
+The only files still containing `Future.async` are the PHP-only
+`http/clients/PhpClient.hx` and `http/containers/PhpContainer.hx`, which are never compiled
+for this engine's targets (their `#if php` branches make the call sites impractical to
+rewrite mechanically).
 
 ## Not vendored
 

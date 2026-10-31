@@ -23,7 +23,7 @@ class JsClient implements ClientObject {
   }
   
   public function request(req:OutgoingRequest):Promise<IncomingResponse> {
-    return Future.async(function(cb) {
+    return Future.irreversible(function(cb) {
       var http = getHttp();
       // if(req.header.url.scheme == null) cb(Failure(Helper.missingSchemeError()));
       http.open(req.header.method, req.header.url);
@@ -63,7 +63,7 @@ class JsClient implements ClientObject {
         http.send();
       else
         req.body.all().handle(function(chunk) http.send(new Int8Array(chunk.toBytes().getData())));
-    });
+    }).eager();
   }
   
   #if ie6

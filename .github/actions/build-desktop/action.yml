@@ -212,8 +212,8 @@ runs:
             echo "::error::$MAP is missing - crash reports would not be symbolizable"
             exit 1
           fi
-          if ! python tools/verify_map.py "$EXE" "$MAP" --quiet; then
-            python tools/verify_map.py "$EXE" "$MAP" || true
+          if ! python tools/crash.py verify-map "$EXE" "$MAP" --quiet; then
+            python tools/crash.py verify-map "$EXE" "$MAP" || true
             echo "::error::the published ApplicationMain.map does not belong to the published exe"
             exit 1
           fi
@@ -234,7 +234,7 @@ runs:
           exit 0
         fi
 
-        # Shim so `python tools/mapresolve.py <map> <offset>` works with the
+        # Shim so `python tools/crash.py resolve <map> <offset>` works with the
         # published layout (the CI collector is named after the target).
         if [ -f "$OUT/symbols/ApplicationMain.map" ]; then
           cat > "$OUT/symbols/README.txt" <<'EOF'
@@ -243,10 +243,9 @@ runs:
 
         These files map a crash report's "Fault offset" back to a real function.
 
-        Windows builds additionally ship windows-x64.bin (the crash linemap that is
-        embedded in the published exe) and build-info.txt - see
-        tools/build_windows_symbols.ps1. With those, the backtrace inside the report
-        already carries cpp file:line, and the .map below is only a fallback.
+        Every build also writes build-info.txt and build.json next to the map: the
+        exe size and PE TimeDateStamp recorded there are what a crash report prints,
+        so "does this map belong to this build" is a comparison, not a guess.
 
         How to use
         ----------
@@ -254,32 +253,30 @@ runs:
         2. Confirm the map belongs to this build - it is checked automatically at
            release time, and you can re-check any pair yourself:
 
-             python tools/verify_map.py SeiunEngine.exe ApplicationMain.map
+             python tools/crash.py verify-map SeiunEngine.exe ApplicationMain.map
 
            It compares the map's recorded Timestamp and image base with the exe's
            PE header and the .text extent of both. A mismatch means every frame
            would resolve to the wrong function - get the right bundle instead.
         3. Resolve the offsets (the report may contain several, from the backtrace):
 
-             python tools/mapresolve.py ApplicationMain.map 0x1340289 0x133429A
+             python tools/crash.py resolve ApplicationMain.map 0x1340289 0x133429A
 
            or point it straight at a crash directory:
 
-             python tools/mapresolve.py --crash-dir <crash dir> ApplicationMain.map
+             python tools/crash.py resolve --crash-dir <crash dir> ApplicationMain.map
 
         4. Read the nearest preceding function and the +0x offset. Frames whose
            offset is implausibly large (hundreds of KB) are not reliable: release
            builds do not list every function in the map.
 
         The native "Symbols:" line in the report refers to dbghelp pairing the exe
-        with a PDB; release builds do not ship one, so it says SymType=0. That is
-        expected and no longer matters: the [file:line] annotations come from the
-        embedded linemap. Use the .map only for frames the linemap does not cover.
+        with a PDB; release builds do not ship one, so it says SymType=0. Resolve
+        with the .map instead - tools/crash.py does it for you:
 
-        A real .pdb is intentionally NEVER published (it is ~50 MB). The linemap is
-        generated from a PDB during the build (tools/build_windows_symbols.ps1,
-        tools/gen_linemap_msvc.py) and that PDB stays in obj/ - the published exe
-        carries the compressed address->line table instead.
+            python tools/crash.py report crash/native_crash_*.txt
+
+        A .pdb is intentionally NEVER published (it is ~50 MB).
         EOF
           echo "wrote $OUT/symbols/README.txt"
         fi

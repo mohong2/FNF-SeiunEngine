@@ -108,9 +108,11 @@ Alternatively, trigger the **Build** workflow manually in GitHub Actions, pick a
 
 ## Dependencies
 
-All library dependencies are managed in [`hmm.json`](hmm.json). Seven of them are the author's own forks:
+All library dependencies are managed in [`hmm.json`](hmm.json). Nine of them are the author's own forks:
 
 - flixel
+- flixel-addons
+- flixel-ui
 - hxvlc
 - extension-androidtools
 - linc_luajit-rewriten

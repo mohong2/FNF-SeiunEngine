@@ -22,10 +22,10 @@ class JavaSocketSource extends Generator<Chunk, Error> {
 		this.channel = channel;
 		this.size = size;
 		
-		super(Future.async(function(cb) {
+		super(Future.irreversible(function(cb) {
 			var buffer = ByteBuffer.allocate(size);
 			channel.read(buffer, buffer, new ReadHandler(cb, this));
-		}));
+		}).eager());
 	}
 	
 	static inline public function wrap(name, stream, size) 

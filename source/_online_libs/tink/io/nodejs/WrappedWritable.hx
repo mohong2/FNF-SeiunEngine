@@ -17,12 +17,12 @@ class WrappedWritable {
     this.name = name;
     this.native = native;
     
-    this.ended = Future.async(function (cb) {
+    this.ended = Future.irreversible(function (cb) {
       native.once('end', function () cb(Success(false)));
       native.once('finish', function () cb(Success(false)));
       native.once('close', function () cb(Success(false)));
       native.on('error', function (e:{ code:String, message:String }) cb(Failure(new Error('${e.code}: ${e.message}'))));            
-    });
+    }).eager();
     
   }
   
@@ -40,7 +40,7 @@ class WrappedWritable {
   }
   
   public function write(chunk:Chunk):Promise<Bool> 
-    return Future.async(function (cb) {
+    return Future.irreversible(function (cb) {
       if(chunk.length == 0) {
         cb(Success(true));
         return;
@@ -49,5 +49,5 @@ class WrappedWritable {
         if (Buffer.isBuffer(untyped chunk.buffer)) untyped chunk.buffer;
         else Buffer.hxFromBytes(chunk.toBytes());//TODO: the above branch is ugly and this one is wasteful
       native.write(buf, cb.bind(Success(true)));
-    }).first(ended);
+    }).eager().first(ended);
 }

@@ -12,7 +12,7 @@ class InputSource extends Generator<Chunk, Error> {
 
     var free = buf.length - offset;
 
-    super(Future.async(function (cb) {
+    super(Future.irreversible(function (cb) {
       worker.work(function () {
         return try {
           var read = target.readBytes(buf, offset, free);
@@ -58,6 +58,6 @@ class InputSource extends Generator<Chunk, Error> {
         }
         cb(step);
       });
-    } #if !tink_core_2 , true #end));
+    }));
   }
 }

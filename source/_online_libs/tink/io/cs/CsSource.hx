@@ -15,7 +15,7 @@ class CsSource extends Generator<Chunk, Error> {
 		this.name = name;
 		
 		var buffer = new cs.NativeArray(size);
-		super(Future.async(function(cb) {
+		super(Future.irreversible(function(cb) {
 			stream.BeginRead(buffer, 0, size, new AsyncCallback(function(ar) {
 				cb(switch stream.EndRead(ar) {
 					case 0: End;
@@ -24,7 +24,7 @@ class CsSource extends Generator<Chunk, Error> {
 						Link(chunk.slice(0, read), new CsSource(name, stream, size));
 				});
 			}), null);
-		}));
+		}).eager());
 	}
 	
 	static inline public function wrap(name, stream, size) 

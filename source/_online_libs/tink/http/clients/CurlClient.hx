@@ -56,7 +56,7 @@ class CurlClient implements ClientObject {
       var process = js.node.ChildProcess.spawn('curl', args);
       var sink = Sink.ofNodeStream('stdin', process.stdin);
       body.pipeTo(sink, {end: true}).eager();
-      return Future.async(function(cb) process.once('exit', function(code, signal) cb(code)))
+      return Future.irreversible(function(cb) process.once('exit', function(code, signal) cb(code))).eager()
         .next(function(code) return switch code {
           case 0: Source.ofNodeStream('stdout', process.stdout);
           case v: Source.ofNodeStream('stderr', process.stderr).all().next(function(stderr) return new Error(v, stderr.toString()));

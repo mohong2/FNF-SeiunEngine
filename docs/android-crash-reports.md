@@ -45,7 +45,7 @@ adb pull /storage/emulated/0/Android/data/com.mohong.Seiunengine/files/crash/ ./
 powershell -ExecutionPolicy Bypass -File tools\build_android_symbols.ps1
 ```
 
-脚本按顺序做三件事并自我校验:① `-DHXCPP_DEBUG_LINK_AND_STRIP` 出未剥离的 .so;② `tools\gen_linemap.bat release` 生成 linemap;③ 再构建一次把它嵌进 APK;④ 用第③步的 .so 重新生成一张表与嵌入的对比,证明地址一致。产物在 `export\release\android\`:`symbols\`(未剥离 .so + `<abi>.bin` + `build-info.txt`)与 `symbols-<abi>.zip`。
+脚本按顺序做三件事并自我校验:① `-DHXCPP_DEBUG_LINK_AND_STRIP` 出未剥离的 .so;② `python tools\crash.py linemap --android release` 生成 linemap;③ 再构建一次把它嵌进 APK;④ 用第③步的 .so 重新生成一张表与嵌入的对比,证明地址一致。产物在 `export\release\android\`:`symbols\`(未剥离 .so + `<abi>.bin` + `build-info.txt`)与 `symbols-<abi>.zip`。
 
 > linemap 现在是 `Project.xml` 里的**常驻资产**(不再受 `CRASH_LINEMAP` 门控,那个 define 已是空操作)。
 > **仍然必须两次构建**:第一次构建时 `assets/linemap/*.bin` 还不存在(或还是旧表),第二次才把它嵌进去。
@@ -61,7 +61,7 @@ powershell -ExecutionPolicy Bypass -File tools\build_android_symbols.ps1
 
 2. **生成 linemap**:
    ```bat
-   tools\gen_linemap.bat release
+   python tools\crash.py linemap --android release
    ```
    生成 `assets\linemap\arm64-v8a.bin` 和 `armeabi-v7a.bin`(实测约 0.8~0.9MB,只含地址→`文件:行` 的紧凑表)。
 
@@ -90,7 +90,7 @@ Build: abi=arm64-v8a | so=libApplicationMain.so | size=46123456B@1790405812s#fae
 - `size` + `#hash` 由运行中的 so 自身算出,**稳定**;`@mtime` 是设备上的安装时间,会变,不用管。
 - `linemap=...` 是本进程实际加载的那张表(字节数与整表哈希),证明报告里的 `[file:line]` 出自哪张表。
 - 与发布包配套的 `build-info.txt`(在 release 的 `crash-symbols/` 里)列出的就是同样的片段:对上 `so ... size=...B#hash` 即可确认符号包是否匹配该 APK。
-- 本地可用 `python tools\fnv1a.py file <文件>` / `whole <文件>` 复算同一哈希。
+- 本地可用 `python tools\crash.py resolve <文件>` / `whole <文件>` 复算同一哈希。
 
 ### 注意
 
@@ -120,7 +120,7 @@ llvm-symbolizer --obj=export/release/android/obj/libApplicationMain-64.so 0x00b0
 | Haxe 封装/linemap 加载 | `source/backend/NativeCrash.hx` |
 | 上下文/日志注入(每 5 秒) | `source/backend/SystemDiag.hx` (`feedNativeCrash`) |
 | 日志尾部导出 | `source/mohong/TraceManager.hx` (`getRecentCrashText`) |
-| linemap 生成工具(安卓) | `tools/gen_linemap.py`、`tools/gen_linemap.bat` |
+| linemap 生成工具(安卓) | `python tools\crash.py linemap` |
 | 一键构建 APK + 配套符号 | `tools/build_android_symbols.ps1` |
-| 构建指纹哈希(与 C++/Haxe 同算法) | `tools/fnv1a.py` |
+| 构建指纹哈希(与 C++/Haxe 同算法) | `python tools\crash.py` 内 `hash_head_tail` |
 | 崩溃恢复界面 | `source/states/CrashCatcherState.hx` |

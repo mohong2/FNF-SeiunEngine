@@ -509,5 +509,9 @@
     "trace.storage.applied": "存储根目录 {}(类型 {},版本 {})",
     "trace.storage.nonRootWarning": "存储根目录 {}(类型 {}) 不是公共根目录;已显示警告。",
     "trace.storage.rootWarningDismissed": "玩家已关闭存储根目录警告。",
-    "trace.video.startFailed": "VideoSpriteManager 启动视频失败: {} - {}"
+    "trace.video.startFailed": "VideoSpriteManager 启动视频失败: {} - {}",
+    "credits.github.section": "GitHub 贡献者",
+    "credits.github.cachedTag": "缓存",
+    "credits.github.offlineTag": "离线",
+    "credits.github.contribution": "GitHub 贡献 {n} 次"
 }

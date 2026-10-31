@@ -35,7 +35,7 @@ class FlashSocketClient implements ClientObject {
     return secure ? new SecureSocket() : new Socket();
   
   public function request(req:OutgoingRequest):Promise<IncomingResponse> {
-    return Future.async(function(cb) {
+    return Future.irreversible(function(cb) {
       
       switch req.header.byName('connection') {
         case Success((_:String).toLowerCase() => 'close'): // ok
@@ -93,6 +93,6 @@ class FlashSocketClient implements ClientObject {
       } catch(e:Dynamic) {
         cb(Failure(Error.withData('Failed to connect to ${req.header.url}', e)));
       }
-    });
+    }).eager();
   }
 }

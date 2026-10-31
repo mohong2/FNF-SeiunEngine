@@ -108,9 +108,11 @@ lime build ios -arm64
 
 ## 依赖
 
-所有库依赖都管理在 [`hmm.json`](hmm.json) 中。其中七个是作者自己的 fork：
+所有库依赖都管理在 [`hmm.json`](hmm.json) 中。其中九个是作者自己的 fork：
 
 - flixel
+- flixel-addons
+- flixel-ui
 - hxvlc
 - extension-androidtools
 - linc_luajit-rewriten

@@ -100,10 +100,44 @@ class Main extends Sprite
 	{
 		// Install native crash hooks first, so even early startup faults leave a log with memory pointers.
 		NativeCrash.install();
+		// HTML5 has no ndll and no crash directory: the degraded path is window.onerror /
+		// unhandledrejection -> console + localStorage + an overlay over the canvas.
+		backend.Html5Fatal.install();
 		// 脚本诊断日志（logs/script_log.txt）：记录每个被加载的脚本、被扫描的脚本目录、
 		// 每次脚本报错，以及 onCreate / onCreatePost 分发给了谁。排查"模组脚本没生效"必备。
 		backend.ScriptLog.begin();
 
+		// Funnel 3 of the crash architecture: a Haxe exception that escapes main()
+		// itself. Everything below this point - the engine sprite, the online
+		// overlays, the window setup - is inside ONE try, so a failure there can no
+		// longer fall through to hxcpp's C++ handler (which has no Haxe context left).
+		// Report + dialog + exit; this function never throws.
+		// Compile-time test lever (see backend/CrashTestHooks.hx): only exists in
+		// builds made with -D seiun_test_hooks, so the shipping build has no path
+		// to a deliberate fault here.
+		backend.CrashTestHooks.sehProbe();
+
+		try
+		{
+			backend.CrashTestHooks.mainThrow();
+			boot();
+		}
+		catch (e:Dynamic)
+		{
+			reportCrash(e, null, 'startup');
+		}
+	}
+
+	/**
+	 * The boot sequence main() used to contain.
+	 *
+	 * Split out so every failure inside it lands in one place. Note the separate
+	 * handler around "new Main()": if the engine sprite cannot even be constructed
+	 * there is no FlxG to recover into, and the message must say "engine init"
+	 * rather than pretending the game was running.
+	 */
+	static function boot():Void
+	{
 		#if mac
 		// macOS: .app 由 Finder 双击启动时，进程工作目录是根目录 "/"，
 		// 会导致 assets/、mods/、lang/ 等所有相对路径读取失败。
@@ -112,30 +146,41 @@ class Main extends Sprite
 		if (sys.FileSystem.exists(resourcesDir))
 			Sys.setCwd(resourcesDir);
 		#end
-		Lib.current.addChild(new Main());
-#if ONLINE_ALLOWED
-			// The LoadingScreen overlay must exist before anything calls LoadingScreen.toggle(),
-			// otherwise instance stays null and the toggle writes through a null pointer -- the
-			// native ACCESS_VIOLATION seen when opening the Online "Find" screen
-			// (LoadingScreen.toggle +0x29, write fault, RAX=0).
-			// Adding it after Main keeps the overlay on top of the game sprite, which is what
-			// moving the game sprite to index 0 would achieve; the overlay is a sibling on
-			// Lib.current, so draw order is what puts it above.
+
+		try
+		{
+			Lib.current.addChild(new Main());
+		}
+		catch (e:Dynamic)
+		{
+			// No engine object means no stage, no FlxG, no recovery screen: report
+			// with a startup-specific explanation and stop here.
+			reportCrash(e, null, 'engine_init');
+			return;
+		}
+		#if ONLINE_ALLOWED
+		// The LoadingScreen overlay must exist before anything calls LoadingScreen.toggle(),
+		// otherwise instance stays null and the toggle writes through a null pointer --
+		// the native ACCESS_VIOLATION seen when opening the Online "Find" screen
+		// (LoadingScreen.toggle +0x29, write fault, RAX=0).
+		// Adding it after Main keeps the overlay on top of the game sprite, which is what
+		// moving the game sprite to index 0 would achieve: the overlay is a sibling on
+		// Lib.current, so draw order is what puts it above.
 		Lib.current.addChild(new online.gui.LoadingScreen());
-			// The network sidebar shell. It also lives on Lib.current, so it
+		// The network sidebar shell. It also lives on Lib.current, so it
 		// outlives state changes and draws over the game; the Alert overlay stays above it.
 		Lib.current.addChild(new online.gui.sidebar.SideUI());
-			// The Alert overlay must also be created. Without it Alert.instance stays null and
-			// every Alert.alert() writes through null (Alert.alert calls instance.addChild).
-			// Crash map-located to ?alert@Alert_obj@@ +0x143, called from an OnlineOptionsState
-			// closure (online/gui/Alert.hx:159).
+		// The Alert overlay must also be created. Without it Alert.instance stays null and
+		// every Alert.alert() writes through null (Alert.alert calls instance.addChild).
+		// Crash map-located to ?alert@Alert_obj@@ +0x143, called from an OnlineOptionsState
+		// closure (online/gui/Alert.hx:159).
 		Lib.current.addChild(new online.gui.Alert());
-#end
+		#end
 		#if desktop
 		applyWindowMode();
 		Windows.enableDarkMode();
 		#end
-	}  
+	}
 		#if desktop
 		/**
 		 * Normalises the boot window. The *saved* mode cannot be applied from here: main()
@@ -825,100 +870,211 @@ class Main extends Sprite
 	// Code was entirely made by sqirra-rng for their fnf engine named "Izzy Engine", big props to them!!!
 	// very cool person for real they don't get enough credit for their work
 	#if CRASH_HANDLER
+	/**
+	 * Runtime uncaught error (UncaughtErrorEvent). Thin wrapper: the reporting
+	 * itself lives in reportCrash() so a startup failure produces the exact same
+	 * dump, directory and file naming as a mid-game crash.
+	 */
 	function onCrash(e:UncaughtErrorEvent):Void
 	{
-		var errMsg:String = "";
-		var stackLines:String = "";
-		var path:String;
-		var callStack:Array<StackItem> = CallStack.exceptionStack(true);
-		var dateNow:String = Date.now().toString();
+		// We own the aftermath (recovery screen or a native box + exit), so stop the
+		// default "print the stack and kill the process" handling first.
+		try { e.preventDefault(); } catch (x:Dynamic) {}
+		var error:Dynamic = null;
+		try { error = e.error; } catch (x:Dynamic) {}
+		reportCrash(error, null, 'uncaught');
+	}
+	#end
 
-		dateNow = dateNow.replace(" ", "_");
-		dateNow = dateNow.replace(":", "'");
+	/**
+	 * The one Haxe-side crash reporter, used by:
+	 *   - onCrash()          (runtime uncaught error, origin "uncaught")
+	 *   - main()/boot()      (startup failure,    origin "startup"/"engine_init")
+	 *
+	 * What it does, in the order that matters when the process is already sick:
+	 *   1. snapshot the GL error state (the renderer may not answer later),
+	 *   2. build the SystemDiag dump (engine/OS/window/renderer/logs),
+	 *   3. append the C++ diagnostics block (OS, GPU/driver, GetLastError, lime
+	 *      module probe, loaded modules), the shared diagnosis text and the origin,
+	 *   4. write crash/SeiunEngine_<date>.txt (UTF-8 + BOM, same prefix as always),
+	 *   5. hand over to the recovery screen when the engine still exists, otherwise
+	 *      show a native UTF-16 dialog with the report path and exit.
+	 *
+	 * Every step is individually guarded: a failure while reporting must not lose
+	 * the report that was already produced, and this function must never throw.
+	 */
+	public static function reportCrash(error:Dynamic, ?stackLines:String, ?origin:String = 'uncaught'):Void
+	{
+		var message:String = '';
+		try { message = Std.string(error); } catch (x:Dynamic) { message = '(unprintable exception)'; }
+		if (message == null || message.length == 0) message = '(empty exception)';
+		if (stackLines == null || stackLines.length == 0) stackLines = collectCrashStack();
 
-		path = "./crash/" + "SeiunEngine_" + dateNow + ".txt";
+		var path:String = crashReportPath();
 
-		for (stackItem in callStack)
-		{
-			switch (stackItem)
-			{
-				case FilePos(s, file, line, column):
-					stackLines += file + " (line " + line + ")\n";
-				default:
-					#if sys
-					Sys.println(stackItem);
-					#end
-					// keep non-FilePos entries too, otherwise the report stack may end up empty
-					stackLines += Std.string(stackItem) + "\n";
-			}
-		}
-
-		// Fall back to the current call stack when exceptionStack is unavailable on cpp.
-		if (stackLines == null || stackLines.length == 0)
-			stackLines = CallStack.toString(CallStack.callStack());
-
-		// Capture the GL error state at the crash moment (main thread).
-		GlErrorWatchdog.pollNow(true);
-
-		// Full dump: error + stack + system/renderer info + recent logs.
-		var fullMsg:String = SystemDiag.buildCrashDump(Std.string(e.error), stackLines, CrashCatcherState.crashCount + 1);
-		fullMsg += "\nPlease report this error to the GitHub page: https://github.com/mohong2/FNF-SeiunEngine\n\n> SeiunEngine by mo_hong · Crash Handler written by: sqirra-rng ";
-
-		#if sys
-		if (!FileSystem.exists("./crash/"))
-			FileSystem.createDirectory("./crash/");
-
-		File.saveContent(path, fullMsg + "\n");
-
-		Sys.println(fullMsg);
-		Sys.println("Crash dump saved in " + Path.normalize(path));
+		#if js
+		// No crash/ directory in a browser: console + localStorage + overlay.
+		backend.Html5Fatal.report(origin, message, stackLines);
 		#end
 
-		// Store crash info for the in-game crash catcher
-		CrashCatcherState.lastCrashMessage = Std.string(e.error);
+		// Capture the GL error state at the crash moment (main thread).
+		try { GlErrorWatchdog.pollNow(true); } catch (x:Dynamic) {}
+
+		var fullMsg:String = '';
+		try
+		{
+			fullMsg = SystemDiag.buildCrashDump(message, stackLines, CrashCatcherState.crashCount + 1);
+		}
+		catch (x:Dynamic)
+		{
+			fullMsg = '=== SeiunEngine Crash Report ===\n'
+				+ 'Error: ' + message + '\n'
+				+ '(the full system dump could not be built: ' + Std.string(x) + ')\n'
+				+ 'Stack:\n' + stackLines + '\n';
+		}
+
+		// Same sections as the C++ reporter: OS / GPU+driver / last Win32 error /
+		// lime module probe / loaded modules. Without this a "Could not load module
+		// lime@lime_init" report says nothing about *why* it could not.
+		try { fullMsg += NativeCrash.collectDiag(); } catch (x:Dynamic) {}
+
+		// The diagnosis table is shared with the C++ funnel (native_crash.inc).
+		var advice:String = '';
+		try { advice = NativeCrash.explainFatal(origin, message); } catch (x:Dynamic) {}
+		if (advice.length > 0) fullMsg += '\n--- Diagnosis ---\n' + advice;
+
+		fullMsg += '\n--- Report ---\nOrigin: ' + origin + '\nFile: ' + path + '\n';
+		fullMsg += '\nPlease report this error to the GitHub page: https://github.com/mohong2/FNF-SeiunEngine\n\n> SeiunEngine by mo_hong · Crash Handler written by: sqirra-rng ';
+
+		writeCrashReport(path, fullMsg);
+
+		// Store crash info for the in-game crash catcher.
+		CrashCatcherState.lastCrashMessage = message;
 		CrashCatcherState.lastCrashStack = stackLines;
 		CrashCatcherState.lastCrashPath = path;
 		CrashCatcherState.crashCount++;
 
-
-		// Show a native dialog first to notify the user before entering recovery UI
 		var dialogTitle:String = Language.get("CrashCatcher.dialog.title", "Game Crashed!");
 		var githubUrl:String = Language.get("CrashCatcher.reportURL", "https://github.com/mohong2/FNF-SeiunEngine/issues");
 		var dialogMsg:String = Language.get("CrashCatcher.dialog.message",
 			"The game has encountered an error and needs to recover.\n\nError: {error}\n\nCrash dump saved to: {path}\n\nPlease report this on GitHub:\n{url}\n\nClick OK to enter recovery screen.");
-		dialogMsg = dialogMsg.replace("{error}", Std.string(e.error));
+		dialogMsg = dialogMsg.replace("{error}", message);
 		dialogMsg = dialogMsg.replace("{path}", path);
 		dialogMsg = dialogMsg.replace("{url}", githubUrl);
-		backend.Dialog.show(dialogTitle, dialogMsg, 'Error');
+		if (advice.length > 0) dialogMsg += "\n\n" + advice;
 
-		// Try to switch to the crash catcher state via FlxG (queued, safe)
+		// Before Language.load() there are no lang files in memory, so the keys
+		// above fall back to English. A crash that early is exactly the one a
+		// Chinese-speaking player is most likely to hit (missing DLL, wrong
+		// bitness), so use fixed bilingual text until the tables exist.
+		if (Language.generation == 0)
+		{
+			dialogTitle = "SeiunEngine 崩溃 / Crashed";
+			dialogMsg = "游戏发生致命错误，需要退出。\nThe game has hit a fatal error and must exit.\n\n"
+				+ "错误 / Error: " + message + "\n\n"
+				+ "崩溃报告已保存到 / Report saved to:\n" + path + "\n\n"
+				+ "请把这份报告发给开发者 / Please send this report to the developers:\n" + githubUrl;
+			if (advice.length > 0) dialogMsg += "\n\n" + advice;
+		}
+
+		// Recovery screen: only possible when the engine really exists. A startup
+		// failure has no FlxG yet, and pretending otherwise used to throw inside the
+		// handler (the "crash while reporting a crash" loop).
 		var switched:Bool = false;
-		try {
-			if (FlxG.game != null && !Std.isOfType(FlxG.state, CrashCatcherState))
+		try
+		{
+			if (FlxG.game != null && FlxG.state != null && !Std.isOfType(FlxG.state, CrashCatcherState))
 			{
-				e.preventDefault();
+				backend.Dialog.show(dialogTitle, dialogMsg, 'Error');
 				FlxG.switchState(new CrashCatcherState());
 				switched = true;
 			}
-		} catch(ex:Dynamic) {
-			// FlxG not available — will fall through to native dialog
 		}
+		catch (x:Dynamic) {}
 
-		if (!switched)
+		if (switched) return;
+
+		// No engine to recover into: a native UTF-16 box (Chinese works, unlike the
+		// old MessageBoxA path) is the last surface left, and then the process ends.
+		try
 		{
-			// Fallback: show another native dialog and exit
-			var fallbackTitle:String = Language.get("CrashCatcher.dialog.fallbackTitle", "Fatal Error");
-			var fallbackMsg:String = Language.get("CrashCatcher.dialog.fallbackMessage", "Could not enter recovery mode.\nThe game will now close.");
-			backend.Dialog.show(fallbackTitle, fallbackMsg, 'Error');
-			#if cpp
-			DiscordClient.shutdown();
-			#end
-			#if sys
-			Sys.exit(1);
-			#end
+			// dialogTitle is localised when the language tables exist and bilingual
+			// when they do not, which is exactly what this last surface needs.
+			NativeCrash.showDialog(dialogTitle, dialogMsg);
 		}
+		catch (x:Dynamic) {}
+		#if cpp
+		try { Discord.DiscordClient.shutdown(); } catch (x:Dynamic) {}
+		#end
+		#if sys
+		Sys.exit(1);
+		#end
 	}
-	#end
+
+	/** crash/SeiunEngine_<date>.txt - the naming the engine has always used. */
+	static function crashReportPath():String
+	{
+		var dateNow:String = Date.now().toString();
+		dateNow = dateNow.replace(" ", "_");
+		dateNow = dateNow.replace(":", "'");
+		return "./crash/" + "SeiunEngine_" + dateNow + ".txt";
+	}
+
+	/** Haxe stack for the report; falls back to the live call stack on cpp. */
+	static function collectCrashStack():String
+	{
+		var stackLines:String = "";
+		try
+		{
+			for (stackItem in haxe.CallStack.exceptionStack(true))
+			{
+				switch (stackItem)
+				{
+					case haxe.CallStack.StackItem.FilePos(s, file, line, column):
+						stackLines += file + " (line " + line + ")\n";
+					default:
+						#if sys
+						Sys.println(stackItem);
+						#end
+						// keep non-FilePos entries too, otherwise the report stack may end up empty
+						stackLines += Std.string(stackItem) + "\n";
+				}
+			}
+		}
+		catch (x:Dynamic) {}
+
+		// Fall back to the current call stack when exceptionStack is unavailable on cpp.
+		if (stackLines == null || stackLines.length == 0)
+		{
+			try { stackLines = haxe.CallStack.toString(haxe.CallStack.callStack()); } catch (x:Dynamic) {}
+		}
+		return stackLines == null ? '' : stackLines;
+	}
+
+	/**
+	 * Writes the dump with a UTF-8 BOM: every reader (Notepad included) then
+	 * decodes the Chinese text correctly instead of guessing the ANSI code page.
+	 * Never throws - a failed write must not stop the dialog from appearing.
+	 */
+	static function writeCrashReport(path:String, content:String):Bool
+	{
+		#if sys
+		try
+		{
+			if (!FileSystem.exists("./crash/"))
+				FileSystem.createDirectory("./crash/");
+			sys.io.File.saveContent(path, '\uFEFF' + content + "\n");
+			Sys.println(content);
+			Sys.println("Crash dump saved in " + haxe.io.Path.normalize(path));
+			return true;
+		}
+		catch (x:Dynamic)
+		{
+			try { Sys.println("Could not write the crash dump to " + path + ": " + Std.string(x)); } catch (y:Dynamic) {}
+		}
+		#end
+		return false;
+	}
 
 	#if (desktop && MODS_ALLOWED)
 	/** Set window icon from the active mod's pack.json using ModConfig. */

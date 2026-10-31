@@ -14,7 +14,7 @@ class BlobSource extends Generator<Chunk, Error> {
   function new(name:String, blob:Blob, pos:Int, chunkSize:Int) {
     this.name = name;
     
-    super(Future.async(function (cb) {
+    super(Future.irreversible(function (cb) {
       if(pos >= blob.size) {
         cb(End);
       } else {
@@ -29,7 +29,7 @@ class BlobSource extends Generator<Chunk, Error> {
         reader.onerror = function(e:JsError) cb(Fail(Error.ofJsError(e)));
         reader.readAsArrayBuffer(blob.slice(pos, end));
       }
-    } #if !tink_core_2 , true #end));
+    }));
   }
   
   static inline public function wrap(name, blob, chunkSize)

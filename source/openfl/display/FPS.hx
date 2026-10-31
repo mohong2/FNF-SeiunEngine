@@ -13,6 +13,7 @@ import openfl.text.TextFormat;
 import openfl.text.TextFormatAlign;
 import openfl.geom.Matrix;
 import states.MainMenuState;
+import states.PlayState;
 import backend.DeviceInfo;
 import backend.GcState;
 import backend.NativeMem;
@@ -288,7 +289,7 @@ class FPS extends Sprite
 		else
 			ramPre.visible = ramNum.visible = false;
 
-		x = badge(turboBadge, ClientPrefs.data.turboMode, "TURBO", 0xFFD24A, fn, x, y0 + 2);
+		x = badge(turboBadge, turboActive(), "TURBO", 0xFFD24A, fn, x, y0 + 2);
 		badge(noGcBadge, gcOff(), "NO GC", 0xFF6666, fn, x, y0 + 2);
 
 		setFmt(verText, fn, 9, C_DIM, 0,
@@ -296,6 +297,19 @@ class FPS extends Sprite
 			P, y0 + fpsNum.height + 1);
 	}
 
+
+	/**
+	 * Turbo as it is *actually* running: online play forces it off for the session while the
+	 * preference stays on, and a badge that reads the preference would claim a mode the engine
+	 * is not in (the reason the online note optimisations looked enabled while they were off).
+	 */
+	static function turboActive():Bool
+	{
+		var ps = PlayState.instance;
+		if (ps != null)
+			return ps.turboModeActive;
+		return ClientPrefs.data.turboMode;
+	}
 
 	function debug(fn:String, c:Int, heap:Float, ram:Float, sampled:Bool):Void
 	{
@@ -306,7 +320,7 @@ class FPS extends Sprite
 		setFmt(fpsLbl, fn, 12, C_SOFT, 0, "FPS", fpsNum.x + fpsNum.width + 8, r1y + 3);
 
 		var bx = fpsLbl.x + fpsLbl.width + 10;
-		bx = badge(turboBadge, ClientPrefs.data.turboMode, "TURBO", 0xFFD24A, fn, bx, r1y + 6);
+		bx = badge(turboBadge, turboActive(), "TURBO", 0xFFD24A, fn, bx, r1y + 6);
 		badge(noGcBadge, gcOff(), "NO GC", 0xFF6666, fn, bx, r1y + 6);
 
 		setFmt(fpsMinMax, fn, 9, C_DIM, 0,

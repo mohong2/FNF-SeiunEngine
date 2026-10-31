@@ -505,5 +505,9 @@
     "notesubstate_downex1": "下 EX1",
     "notesubstate_upex1": "上 EX1",
     "notesubstate_rightex1": "右 EX1",
-    "notesubstate_hsb": "色相    飽和度  亮度"
+    "notesubstate_hsb": "色相    飽和度  亮度",
+    "credits.github.section": "GitHub 貢獻者",
+    "credits.github.cachedTag": "快取",
+    "credits.github.offlineTag": "離線",
+    "credits.github.contribution": "GitHub 貢獻 {n} 次"
 }

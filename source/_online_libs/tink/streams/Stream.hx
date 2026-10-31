@@ -405,7 +405,7 @@ class StreamBase<Item, Quality> implements StreamObject<Item, Quality> {
       else new IdealizeStream(this, rescue);
 
   public function reduce<Safety, Result>(initial:Result, reducer:Reducer<Item, Safety, Result>):Future<Reduction<Item, Safety, Quality, Result>>
-    return Future.async(function (cb:Reduction<Item, Safety, Quality, Result>->Void) {
+    return Future.irreversible(function (cb:Reduction<Item, Safety, Quality, Result>->Void) {
       forEach(function (item)
         return reducer.apply(initial, item).map(
           function (o):Handled<Safety> return switch o {
@@ -418,7 +418,7 @@ class StreamBase<Item, Quality> implements StreamObject<Item, Quality> {
         case Halted(_): throw "assert";
         case Clogged(e, rest): cb(Crashed(e, rest));
       });
-    });
+    }).eager();
 
   public function forEach<Safety>(handler:Handler<Item, Safety>):Future<Conclusion<Item, Safety, Quality>>
     return throw 'not implemented';
@@ -445,7 +445,7 @@ class IdealizeStream<Item, Quality> extends IdealStreamBase<Item> {
 
   override public function forEach<Safety>(handler:Handler<Item, Safety>):Future<Conclusion<Item, Safety, Noise>>
     return
-      Future.async(function (cb:Conclusion<Item, Safety, Noise>->Void)
+      Future.irreversible(function (cb:Conclusion<Item, Safety, Noise>->Void)
         target.forEach(handler).handle(function (end) switch end {
           case Depleted:
             cb(Depleted);
@@ -456,7 +456,7 @@ class IdealizeStream<Item, Quality> extends IdealStreamBase<Item> {
           case Failed(e):
             rescue(e).idealize(rescue).forEach(handler).handle(cb);
         })
-      );
+      ).eager();
 
 }
 
@@ -590,7 +590,7 @@ private class CompoundStream<Item, Quality> extends StreamBase<Item, Quality> {
       p.decompose(into);
 
   override public function forEach<Safety>(handler:Handler<Item, Safety>):Future<Conclusion<Item, Safety, Quality>>
-    return Future.async(consumeParts.bind(cast parts, handler, _));
+    return Future.irreversible(consumeParts.bind(cast parts, handler, _)).eager();
 
   static function consumeParts<Item, Quality, Safety>(parts:Parts<Item, Quality>, handler:Handler<Item, Safety>, cb:Conclusion<Item, Safety, Quality>->Void)
     if (parts.length == 0)
@@ -647,9 +647,9 @@ class FutureStream<Item, Quality> extends StreamBase<Item, Quality> {
     return f.flatMap(function(s) return s.next());
 
   override public function forEach<Safety>(handler:Handler<Item, Safety>) {
-    return Future.async(function (cb) {
+    return Future.irreversible(function (cb) {
       f.handle(function (s) s.forEach(handler).handle(cb));
-    });
+    }).eager();
   }
 }
 
@@ -668,7 +668,7 @@ class BlendStream<Item, Quality> extends Generator<Item, Quality> {
     var n1 = wait(a);
     var n2 = wait(b);
 
-    super(Future.async(function(cb) {
+    super(Future.irreversible(function(cb) {
       n1.first(n2).handle(function(o) switch o {
         case Link(item, rest):
           cb(Link(item, new BlendStream(rest, first == a ? b : a)));
@@ -677,7 +677,7 @@ class BlendStream<Item, Quality> extends Generator<Item, Quality> {
         case Fail(e):
           cb(Fail(e));
       });
-    }));
+    }).eager());
 
   }
 }
@@ -693,7 +693,7 @@ class Generator<Item, Quality> extends StreamBase<Item, Quality> {
     return upcoming;
 
   override public function forEach<Safety>(handler:Handler<Item, Safety>)
-    return Future.async(function (cb:Conclusion<Item, Safety, Quality>->Void)
+    return Future.irreversible(function (cb:Conclusion<Item, Safety, Quality>->Void)
       upcoming.handle(function (e) switch e {
         case Link(v, then):
           handler.apply(v).handle(function (s) switch s {
@@ -711,10 +711,10 @@ class Generator<Item, Quality> extends StreamBase<Item, Quality> {
         case End:
           cb(Depleted);
       })
-    );
+    ).eager();
 
   static public function stream<I, Q>(step:(Step<I, Q>->Void)->Void) {
-    return new Generator(Future.async(step));
+    return new Generator(Future.irreversible(step).eager());
   }
 
 }

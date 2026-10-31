@@ -14,6 +14,8 @@ import openfl.Lib;
 import openfl.display.Shape;
 
 class SideUI extends WSprite {
+	/** Throttle for coalescing per-frame hover dispatch (see the MOUSE_MOVE listener). */
+	static var _lastHoverDispatch:Float = 0;
 	public static var instance:SideUI;
 
 	public var active(default, set):Bool;
@@ -173,15 +175,19 @@ class SideUI extends WSprite {
 			}
 		});
 		stage.addEventListener(MouseEvent.MOUSE_MOVE, (e:MouseEvent) -> {
-			cursor.x = e.stageX;
-			cursor.y = e.stageY;
-
-			if (LoadingScreen.loading)
-				return;
-
-			if (active) {
-				onChangedTab();
-				curTab.mouseMove(e);
+			// Hovering is a per-frame concern: coalesce OS move events to one dispatch per frame
+			// instead of walking the whole tab tree for every event the system delivers.
+			var now:Float = haxe.Timer.stamp();
+			if (now - _lastHoverDispatch >= 0.016) {
+				_lastHoverDispatch = now;
+				if (active) {
+					cursor.x = e.stageX; // invisible while closed
+					cursor.y = e.stageY;
+					if (!LoadingScreen.loading) {
+						onChangedTab();
+						curTab.mouseMove(e);
+					}
+				}
 			}
 		});
 		stage.addEventListener(MouseEvent.MOUSE_DOWN, (e:MouseEvent) -> {

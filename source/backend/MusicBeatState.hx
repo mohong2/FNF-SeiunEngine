@@ -191,6 +191,7 @@ class MusicBeatState extends FlxUIState
 	// ==================== CREATE ====================
 
 	override function create() {
+		clearLeftoverBlur();
 		camBeat = FlxG.camera;
 
 		// Every screen that does not explicitly opt out gets a usable cursor. This
@@ -264,8 +265,32 @@ class MusicBeatState extends FlxUIState
 
 	// ==================== UPDATE ====================
 
+	/** Bitmap-cache guard, see cacheGuardTick(). */
+	static inline var CACHE_GUARD_ENTRIES:Int = 512;
+	static var _cacheGuardFrames:Int = 0;
+
+	/**
+	 * Menus (lobby, online results, options, mods) have no memory sweep of their own, while
+	 * PlayState sweeps every 900 frames. Anything that re-rasterises a FlxText or re-makes a
+	 * sprite graphic in those states therefore leaves dead entries in FlxG's bitmap cache that
+	 * nothing ever collects: the cache grows until the process is short of memory, and each GC
+	 * that lands on it is a frame hitch. This is the same sweep PlayState uses, for every other
+	 * state, and only once the cache is clearly oversized so normal menus pay one counter tick.
+	 */
+	static function cacheGuardTick():Void
+	{
+		if (++_cacheGuardFrames < 120) return;
+		_cacheGuardFrames = 0;
+		// PlayState owns its own sweep and its cache legitimately holds preloaded chart assets.
+		if (PlayState.instance != null) return;
+		if (Paths.bitmapCacheCount() < CACHE_GUARD_ENTRIES) return;
+		Paths.purgeUnusedGraphics();
+	}
+
 	override function update(elapsed:Float)
 	{
+		cacheGuardTick();
+
 		// 桌面端：驱动拖放安装/下载任务（任意状态下都可拖 zip/链接进窗口）
 		ModInstaller.update(elapsed);
 
@@ -345,7 +370,29 @@ class MusicBeatState extends FlxUIState
 
 	// ==================== STATE SWITCHING ====================
 
+
+	/**
+	 * Removes blur filters left behind by a results / pause / score-history screen whose restore
+	 * ran after its camera had already left FlxG.cameras (state switch or camera reset). Without
+	 * this the blur stays on the game camera for the rest of the session, and every later frame
+	 * pays for a full-screen Gaussian pass -- the per-second hitch this fork showed after the
+	 * first online results screen.
+	 */
+	public static function clearLeftoverBlur():Void {
+		if (FlxG.cameras == null || FlxG.cameras.list == null) return;
+		for (cam in FlxG.cameras.list) {
+			if (cam == null || cam.filters == null) continue;
+			for (f in cam.filters) {
+				if (f is openfl.filters.BlurFilter) {
+					backend.UIScreen.clearBlur(cam);
+					break;
+				}
+			}
+		}
+	}
+
 	public static function switchState(nextState:FlxState) {
+		clearLeftoverBlur();
 		#if MODS_ALLOWED
 		nextState = states.ModState.resolveState(nextState);
 		#end

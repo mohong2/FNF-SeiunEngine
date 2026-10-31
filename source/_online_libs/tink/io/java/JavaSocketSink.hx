@@ -27,7 +27,7 @@ class JavaSocketSink extends SinkBase<Error, Noise> {
 	
 	override public function consume<EIn>(source:Stream<Chunk, EIn>, options:PipeOptions):Future<PipeResult<EIn, Error, Noise>> {
 		var ret = source.forEach(function (c:Chunk) {
-			return Future.async(function(cb:Callback<Handled<Error>>) {
+			return Future.irreversible(function(cb:Callback<Handled<Error>>) {
 				if(c.length == 0) {
 					cb.invoke(Resume);
 				} else {
@@ -42,7 +42,7 @@ class JavaSocketSink extends SinkBase<Error, Noise> {
 					
 					channel.write(ctx.buffer, ctx, handler);
 				}
-			});
+			}).eager();
 		});
 			
 		if (options.end)

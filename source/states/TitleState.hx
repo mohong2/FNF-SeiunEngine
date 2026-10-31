@@ -304,8 +304,9 @@ class TitleState extends MusicBeatState
 	#if CHECK_FOR_UPDATES
 	function checkForUpdate():Void
 	{
-		var owner:String = "mohong2";
-		var repo:String = "FNF-SeiunEngine";
+		// Single source of truth for the project's own repository.
+		var owner:String = GitHubAPI.OWNER;
+		var repo:String = GitHubAPI.REPO;
 
 		var onError = function(error:String)
 		{

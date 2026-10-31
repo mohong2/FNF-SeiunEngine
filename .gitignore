@@ -48,6 +48,10 @@ seiun_online_profile.json
 # Sidecar cache of huge streamed charts (ChartCache): runtime data, regenerated on demand.
 chart_cache/
 
+# Credits screen cache (GitHub contributor JSON + avatars): runtime data, regenerated
+# from the network; the offline snapshot lives in assets/preload/data/ instead.
+/credits/
+
 # Python bytecode caches (tools/*.py)
 __pycache__/
 *.pyc
