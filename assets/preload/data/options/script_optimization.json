@@ -25,14 +25,5 @@
 		"variable": "stockBpmStruct",
 		"type": "bool",
 		"defaultValue": false
-	},
-	{
-		"nameKey": "option.stockHudTextRewrite",
-		"defaultName": "Stock HUD Text Rewrite",
-		"descKey": "option.stockHudTextRewrite.desc",
-		"defaultDesc": "OFF (default): the side HUD labels and the time text are only rewritten when their\nvalue or second changed (saves 9 strings per frame; the visible result is identical).\nON = stock behaviour: rewrite every frame, so text a script writes there is overwritten\nagain on the very next frame.",
-		"variable": "stockHudTextRewrite",
-		"type": "bool",
-		"defaultValue": false
 	}
 ]

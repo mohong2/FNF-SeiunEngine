@@ -325,30 +325,13 @@ class PlayState extends MusicBeatState
 	/** Scan cursor for empty notes.members slots: turns appending notes from O(n) (indexOf + getFirstNull) into amortised O(1). */
 	private var _noteSlotCursor:Int = 0;
 
-	// ── hit presentation merging (the core dense-chart optimization): score text / rating popup / ms text refresh at most once per frame ──
-	/** Without scripts updateScore() only sets a dirty flag; flushScoreText() rebuilds the text once at frame end. */
-	var _scoreTextDirty:Bool = false;
-	var _scoreZoomDirty:Bool = false;
-	/** ms judgement text (kadems) merged per frame: only the last hit difference of the frame is kept. */
-	var _msTextDirty:Bool = false;
-	var _pendingMsText:String = null;
-	var _pendingMsColor:FlxColor = 0xFFFFFFFF;
-	/** Rating popup merging: dense frames show only the newest popup (sparse frames keep the stock per-hit popup). */
-	var _popupPending:Bool = false;
-	var _pendingRatingImage:String = null;
-	/** The first POPUP_IMMEDIATE_HITS hits of a frame keep the stock per-hit popup (normal charts are unaffected). */
-	static inline var POPUP_IMMEDIATE_HITS:Int = 8;
-	var _popupImmediateBudget:Int = POPUP_IMMEDIATE_HITS;
 	/**
-	 * Time credit for the popup/splash budgets. POPUP_IMMEDIATE_HITS / SPLASH_FRAME_BUDGET are
-	 * 60 Hz design rates (8 popups and 16 splashes per 1/60 s, i.e. per frame on the target fps);
-	 * resetting them per *rendered* frame makes the rate scale with the fps cap instead - at a
-	 * 360 fps cap that was 6x the intended popup rate, thousands of alive popup sprites and, with
-	 * disableGC on, that much more unreclaimed heap. The credit accumulates elapsed * 60 * budget
-	 * and is spent in whole units, so 60 fps behaves exactly as before and higher fps pays the
-	 * same per-second rate. Capped at the per-frame maximum so a post-freeze frame cannot burst.
+	 * Time credit for the splash budget. SPLASH_FRAME_BUDGET is a 60 Hz design rate (16 splashes
+	 * per 1/60 s); resetting it per *rendered* frame makes the rate scale with the fps cap instead,
+	 * so at a 360 fps cap that was 6x the intended rate. The credit accumulates elapsed * 60 *
+	 * SPLASH_FRAME_BUDGET and is spent in whole units, so 60 fps behaves exactly as before and a
+	 * higher fps pays the same per-second rate. Capped so a post-freeze frame cannot burst.
 	 */
-	var _popupBudgetCredit:Float = 0;
 	/** Per-frame splash spawn budget and living cap (pooling cannot grow without bound during manual combo storms). */
 	static inline var SPLASH_FRAME_BUDGET:Int = 16;
 	public static inline var MAX_SPLASH_ALIVE:Int = 256;
@@ -452,7 +435,6 @@ class PlayState extends MusicBeatState
 	private var _onlinePrevStockSort:Bool = false;
 	private var _onlinePrevEventDrain:Bool = false;
 	private var _onlinePrevBpmStruct:Bool = false;
-	private var _onlinePrevHudText:Bool = false;
 	private var _onlinePrevScriptArgReuse:Bool = true;
 	private var _onlineNoteOptsOff:Bool = false;
 	#end
@@ -577,30 +559,6 @@ class PlayState extends MusicBeatState
 	 */
 	var _npsClock:Float = 0;
 	/**
-	 * Botplay score line refresh floor (ms of real time) plus the stamp of the last rebuild.
-	 *
-	 * The line carries live counters, so it changes every frame -- but a 60 Hz counter is
-	 * unreadable, and outside botplay every hit rebuilt the string (String build + up to two
-	 * TextField layouts, thousands of them per frame on a dense chart). Botplay now only marks the
-	 * text dirty per hit and rebuilds the line at most once per frame, no faster than this interval.
-	 */
-	static inline var BOTPLAY_HUD_MIN_MS:Float = 50;
-	var _botplayHudTicks:Float = -1e9;
-	/**
-	 * perfMode cache for the botplay line's compact-form decision (see applyScoreText): the total
-	 * character length of the last measured full line, its decision, and when it was measured.
-	 */
-	var _botplayLenFp:Int = -1;
-	var _botplayCompact:Bool = false;
-	var _botplayMeasureTicks:Float = -1e9;
-	/**
-	 * Side HUD refresh floor (ms of real time), used only with perfMode on: under botplay/Turbo the
-	 * eight counters change every frame, so the value-change skip never fires and each changed
-	 * label pays a String build + TextField layout + glyph redraw per frame. Throttled to the same
-	 * 20 Hz the botplay score line uses; perfMode off keeps the exact per-value-change behaviour.
-	 */
-	static inline var SIDEHUD_HUD_MIN_MS:Float = 50;
-	/**
 	 * Private, monotone copy of the opponent-side hit count. The NPS window reads this instead of
 	 * `opCombo`, because scripts can write the public field (H-Slice parity) and an upward write
 	 * would otherwise be indistinguishable from a burst of real hits. Only addOpponentHit() bumps it.
@@ -647,41 +605,15 @@ class PlayState extends MusicBeatState
 	private var miss:FlxText;
 	/** 侧边 HUD 前缀构建时对应的 Language.generation (-1 = 尚未构建)。 */
 	private var _sideHudLangGen:Int = -1;
-	/** 侧边 HUD 缓存的 Language.get() 前缀, 下标与 _sideHudValues 一一对应。 */
+	/** 侧边 HUD 缓存的 Language.get() 前缀, 下标与下面的标签一一对应。 */
 	private var _sideHudPrefix:Array<String> = null;
-	/** 侧边 HUD 上一次写出的值: notehitlol, combo, maxcombo, marvelouses, sicks, goods, bads, shits, songMisses。 */
-	private var _sideHudValues:Array<Dynamic> = null;
-	/** 侧边 HUD 在 perfMode 下的最低重写间隔 (毫秒), 见 updateSideHud()。 */
-	private var _sideHudTicks:Float = -1e9;
-
-	// ── Hit-presentation queue (see flushHitPresentation) ────────────────────────────────
-	/** Earliest tick (FlxG.game.ticks) at which the next rebuild of each kind may run. */
-	private var _nextPopupTicks:Float = -1e9;
-	private var _nextMsTicks:Float = -1e9;
-	private var _nextScoreTicks:Float = -1e9;
 
 	/**
-	 * 侧边 HUD 的八个标签都是"语言前缀 + 计数", 原实现每帧重算。FlxText 内部有内容相等守卫, 字形不会
-	 * 重绘, 但 8 次拼接每帧照样产生 8 个字符串。
-	 *
-	 * 这里把前缀缓存到 Language.generation 变化为止, 并且只在某个输入真的变了时才重写对应标签, 所以命中/
-	 * 失误仍然落在发生的那一帧, 其余帧一个字符串都不产生。每帧都重写 (脚本写进去的文本下一帧会被覆盖
-	 * 回去) 走 ClientPrefs.stockHudTextRewrite。
-	 *
-	 * Botplay/Turbo 下这些计数每帧都在涨, 按值跳过永远不命中 —— 每帧 3-5 个标签各自付一次字符串
-	 * 拼接 + TextField 排版 + 字形重绘。perfMode 开启时 (且未强制 stockHudTextRewrite) 与 botplay
-	 * 分数行一样按 SIDEHUD_HUD_MIN_MS 节流: 计数面板的读数以 20 Hz 刷新, 每帧的排版成本变为 1/3。
-	 * 按值更新的精确语义在 perfMode 关闭时保持原样。
+	 * 侧边 HUD 的八个标签都是"语言前缀 + 计数"。前缀按 Language.generation 缓存 (切语言后重建),
+	 * 其余每帧照原样重写: 命中/失误的计数改动就落在发生的那一帧, 脚本写进去的文本下一帧同样被
+	 * 覆盖, 与原版一致。FlxText 内部有内容相等守卫, 没变的标签既不重排也不重绘字形。
 	 */
 	function updateSideHud():Void {
-		var forceRewrite:Bool = ClientPrefs.data.stockHudTextRewrite;
-		if (!forceRewrite && ClientPrefs.data.perfMode)
-		{
-			var hudTicks:Float = FlxG.game.ticks;
-			if (hudTicks - _sideHudTicks < SIDEHUD_HUD_MIN_MS)
-				return;
-			_sideHudTicks = hudTicks;
-		}
 		if (_sideHudPrefix == null || _sideHudLangGen != Language.generation)
 		{
 			_sideHudLangGen = Language.generation;
@@ -695,52 +627,16 @@ class PlayState extends MusicBeatState
 				Language.get("shitsText", "Shits:"),
 				Language.get("missesText", "Misses:")
 			];
-			_sideHudValues = null; // force one full repaint with the new language
 		}
-		if (_sideHudValues == null)
-			_sideHudValues = [null, null, null, null, null, null, null, null, null];
 
-		if (forceRewrite || _sideHudValues[0] != Int64Util.toFloat(notehitlol))
-		{
-			_sideHudValues[0] = Int64Util.toFloat(notehitlol);
-			tnh.text = _sideHudPrefix[0] + notehitlol;
-		}
-		if (forceRewrite || _sideHudValues[1] != Int64Util.toFloat(combo) || _sideHudValues[2] != Int64Util.toFloat(maxcombo))
-		{
-			_sideHudValues[1] = Int64Util.toFloat(combo);
-			_sideHudValues[2] = Int64Util.toFloat(maxcombo);
-			cm.text = _sideHudPrefix[1] + combo + '($maxcombo)';
-		}
-		if (marv != null && (forceRewrite || _sideHudValues[3] != Int64Util.toFloat(marvelouses)))
-		{
-			_sideHudValues[3] = Int64Util.toFloat(marvelouses);
-			marv.text = _sideHudPrefix[2] + marvelouses;
-		}
-		if (forceRewrite || _sideHudValues[4] != Int64Util.toFloat(sicks))
-		{
-			_sideHudValues[4] = Int64Util.toFloat(sicks);
-			sick.text = _sideHudPrefix[3] + sicks;
-		}
-		if (forceRewrite || _sideHudValues[5] != Int64Util.toFloat(goods))
-		{
-			_sideHudValues[5] = Int64Util.toFloat(goods);
-			good.text = _sideHudPrefix[4] + goods;
-		}
-		if (forceRewrite || _sideHudValues[6] != Int64Util.toFloat(bads))
-		{
-			_sideHudValues[6] = Int64Util.toFloat(bads);
-			bad.text = _sideHudPrefix[5] + bads;
-		}
-		if (forceRewrite || _sideHudValues[7] != Int64Util.toFloat(shits))
-		{
-			_sideHudValues[7] = Int64Util.toFloat(shits);
-			shit.text = _sideHudPrefix[6] + shits;
-		}
-		if (forceRewrite || _sideHudValues[8] != Int64Util.toFloat(songMisses))
-		{
-			_sideHudValues[8] = Int64Util.toFloat(songMisses);
-			miss.text = _sideHudPrefix[7] + songMisses;
-		}
+		tnh.text = _sideHudPrefix[0] + notehitlol;
+		cm.text = _sideHudPrefix[1] + combo + '($maxcombo)';
+		if (marv != null) marv.text = _sideHudPrefix[2] + marvelouses;
+		sick.text = _sideHudPrefix[3] + sicks;
+		good.text = _sideHudPrefix[4] + goods;
+		bad.text = _sideHudPrefix[5] + bads;
+		shit.text = _sideHudPrefix[6] + shits;
+		miss.text = _sideHudPrefix[7] + songMisses;
 	}
 	private static final tnhx:Int = -10;
 	private static final cmoffset:Int = -4;
@@ -891,8 +787,6 @@ class PlayState extends MusicBeatState
 	public var songMisses:haxe.Int64 = 0;
 	public var scoreTxt:FlxText;
 	public var timeTxt:FlxText;
-	/** timeTxt 上一次写出的秒数 (-1 = 下一帧重画一次, 例如时间条类型刚切回来)。 */
-	private var _timeTxtSeconds:Int = -1;
 	#if hudtext_profile
 	/** Test-only: HUDTEXT_NOHEALTH=1 pins health, so a no-input run can keep missing notes
 	 *  (that is the manual-play text path) without dying after a few seconds. */
@@ -903,6 +797,13 @@ class PlayState extends MusicBeatState
 	static var _hudDrive:Null<Bool> = null;
 	static var _hudDriveEvery:Int = 6;
 	static var _hudDriveTick:Int = 0;
+	/**
+	 * Test-only negative control (HUDTEXT_THROTTLE_TEST=<ms>): re-introduces exactly the throttle the
+	 * stock restore removed, so the end-of-frame assertion (`stale=`) can be shown to have teeth.
+	 * 0 = off; never set in a normal run.
+	 */
+	static var _hudThrottleMs:Float = 0;
+	var _hudThrottleLast:Float = -1e9;
 	#end
 	public var scoreTxtTween:FlxTween;
 
@@ -1114,7 +1015,7 @@ class PlayState extends MusicBeatState
 		// Single-player uses the persisted setting again after leaving the online session.
 		if (turboModeActive && online.GameClient.isConnected()) turboModeActive = false;
 		// Online: silence every runtime Note/script optimisation (perfMode / bulkSkip / stockNoteSort /
-		// stockEventDrain / stockBpmStruct / stockHudTextRewrite / limitNotes / scriptArgReuse). They either bypass the only two reporting points
+		// stockEventDrain / stockBpmStruct / limitNotes / scriptArgReuse). They either bypass the only two reporting points
 		// (goodNoteHit / noteMiss) through the data-level settle in bulkSettleNote(), or drop notes
 		// before they can ever be reported (limitNotes), so the room would see the local player
 		// standing still while combo and health keep growing.
@@ -1135,17 +1036,15 @@ class PlayState extends MusicBeatState
 			_onlinePrevStockSort = ClientPrefs.data.stockNoteSort;
 			_onlinePrevEventDrain = ClientPrefs.data.stockEventDrain;
 			_onlinePrevBpmStruct = ClientPrefs.data.stockBpmStruct;
-			_onlinePrevHudText = ClientPrefs.data.stockHudTextRewrite;
 			_onlinePrevScriptArgReuse = ClientPrefs.data.scriptArgReuse;
 			_onlineNoteOptsOff = true;
 			ClientPrefs.data.perfMode = false;
 			ClientPrefs.data.bulkSkip = false;
 			ClientPrefs.data.stockNoteSort = true;
-			// 脚本可见语义同样回到原版: eventNotes 的内容、getBPMFromSeconds 返回对象的身份、
-			// 引擎对 HUD 文本的覆盖时机, 在房间内各客户端之间因此完全一致。
+			// 脚本可见语义同样回到原版: eventNotes 的内容与 getBPMFromSeconds 返回对象的身份,
+			// 在房间内各客户端之间因此完全一致。
 			ClientPrefs.data.stockEventDrain = true;
 			ClientPrefs.data.stockBpmStruct = true;
-			ClientPrefs.data.stockHudTextRewrite = true;
 			// Silencing the preference is enough for the script path: scriptAllocOpt is read from it
 			// later in create() and pushes the value into the global backend.Scripts.reuseEnabled.
 			ClientPrefs.data.scriptArgReuse = false;
@@ -3543,7 +3442,7 @@ class PlayState extends MusicBeatState
 		#if ONLINE_ALLOWED
 		// updateScore() recomputes songPoints, reports it to the room when it changed, then hands the
 		// whole HUD to updateScoreSID() and returns. Implemented as the leading guarded branch (this
-		// engine builds its own score text through buildScoreText()/flushHitPresentation(), so the
+		// engine builds its own score text through buildScoreText(), so the
 		// online path bypasses that). With GameClient disconnected the original body below runs.
 		if (online.GameClient.isConnected()) {
 			var points:Float = FlxMath.roundDecimal(
@@ -3569,44 +3468,17 @@ class PlayState extends MusicBeatState
 			if (preResult == LuaUtils.Function_Stop || preResult == FunkinLua.Function_Stop)
 				return;
 
-			// Same deferred rebuild as the no-script path below: with scripts loaded (most modded
-			// charts) the old code rebuilt the line inline on every hit, which kept the hitch.
-			_scoreTextDirty = true;
-			if (!miss && ClientPrefs.data.scoreZoom && !cpuControlled)
-				_scoreZoomDirty = true;
-			if (ClientPrefs.data.stockHudTextRewrite)
-			{
-				_scoreTextDirty = false;
-				applyScoreText();
-				if (_scoreZoomDirty)
-				{
-					_scoreZoomDirty = false;
-					bounceScoreTxt();
-				}
-			}
+			// 原版语义: 命中这一帧分数行就已经是新值, 后面的 onUpdateScore 读到的也是新值。
+			applyScoreText();
+			if (ClientPrefs.data.scoreZoom && !miss && !cpuControlled)
+				bounceScoreTxt();
 			callOnScripts('onUpdateScore', Scripts.fill1(Scripts.get(1), miss));
 			return;
 		}
 
-		// Manual play: only mark the line dirty. flushHitPresentation() rebuilds it on a later
-		// frame, one HUD rebuild per frame at most (see the queue there): a single 1280px outlined
-		// text regen costs ~0.7 ms even at 1x rasterization and a 360 fps frame budget is 2.78 ms,
-		// so rebuilding it inline on the hit frame is exactly the hitch this defers.
-		// stockHudTextRewrite keeps the old immediate rebuild: that pref exists for scripts that
-		// read/rewrite scoreTxt and expect the hit frame to already show the new value.
-		_scoreTextDirty = true;
-		if (!miss && ClientPrefs.data.scoreZoom && !cpuControlled)
-			_scoreZoomDirty = true;
-		if (ClientPrefs.data.stockHudTextRewrite)
-		{
-			_scoreTextDirty = false;
-			applyScoreText();
-			if (_scoreZoomDirty)
-			{
-				_scoreZoomDirty = false;
-				bounceScoreTxt();
-			}
-		}
+		applyScoreText();
+		if (ClientPrefs.data.scoreZoom && !miss && !cpuControlled)
+			bounceScoreTxt();
 	}
 
 	/** Builds the score HUD text (the pure part of updateScore). */
@@ -3712,58 +3584,29 @@ class PlayState extends MusicBeatState
 
 	/**
 	 * Writes the score line into scoreTxt. In botplay the readout has to stay one centered line, so the
-	 * full form is measured first and the compact form used when it would wrap (scoreTxt's fieldWidth
+	 * full form is measured and the compact form used when it would wrap (scoreTxt's fieldWidth
 	 * is FlxG.width, which turns wordWrap on).
 	 */
 	function applyScoreText():Void
 	{
 		if (!cpuControlled)
 		{
+			#if hudtext_profile
+			if (_hudThrottleMs > 0)
+			{
+				var __now:Float = FlxG.game.ticks;
+				if (__now - _hudThrottleLast < _hudThrottleMs) return;
+				_hudThrottleLast = __now;
+			}
+			#end
 			scoreTxt.text = buildScoreText();
 			return;
 		}
 
-		// Hidden HUD (hideHud, or a mod that switched scoreTxt off): there is nothing to draw, so
-		// skip the string build. The dirty flag is raised again every frame while botplay runs, so
-		// the line catches up as soon as it is visible again.
-		if (!scoreTxt.visible)
-			return;
-
-		// Botplay line: at most one rebuild per BOTPLAY_HUD_MIN_MS. Its counters change every frame,
-		// but nobody reads a 60 Hz counter and each rebuild costs a String build plus a TextField
-		// layout (the full form is measured on the field, then possibly replaced by the compact one).
-		// A skipped rebuild leaves the text dirty; flushHitPresentation() runs every frame.
-		var ticks:Float = FlxG.game.ticks;
-		if (ticks - _botplayHudTicks < BOTPLAY_HUD_MIN_MS)
-		{
-			_scoreTextDirty = true;
-			return;
-		}
-		_botplayHudTicks = ticks;
-
 		scoreTxt.wordWrap = false;
-		// With perfMode on, the compact-form decision is reused while the line keeps the same total
-		// character length: the HUD counter font renders digits at a fixed advance, so equal length
-		// means equal width and re-measuring an identical-length line (a TextField layout per
-		// rebuild) is pure waste. The decision is re-measured whenever the length changes and at
-		// least every 500 ms, so even a proportional font can only be briefly wrong about fit.
-		// perfMode off keeps the original measure-every-rebuild behaviour.
-		var full:String = buildBotplayScoreText();
-		if (ClientPrefs.data.perfMode && full.length == _botplayLenFp && ticks - _botplayMeasureTicks < 500)
-		{
-			scoreTxt.text = _botplayCompact ? buildBotplayScoreText(true) : full;
-			return;
-		}
-		_botplayLenFp = full.length;
-		_botplayMeasureTicks = ticks;
-		scoreTxt.text = full;
+		scoreTxt.text = buildBotplayScoreText();
 		if (scoreTxt.textField.textWidth > FlxG.width)
-		{
-			_botplayCompact = true;
 			scoreTxt.text = buildBotplayScoreText(true);
-		}
-		else
-			_botplayCompact = false;
 	}
 
 	/**
@@ -3893,64 +3736,6 @@ class PlayState extends MusicBeatState
 	//何意味
 
 
-	/**
-	 * One hit-presentation rebuild per frame, highest-feedback first.
-	 *
-	 * Every entry here re-rasterizes an outlined FlxText (a 1280px score line costs ~0.7 ms at 1x
-	 * rasterization, the small ms readout ~0.4 ms) or rebuilds the popup sprites, and a 360 fps
-	 * frame only has 2.78 ms in total. Running all of them on the hit frame made that frame miss
-	 * its deadline, which an external frame-rate overlay sees as "360 -> 340 fps". Deferring all
-	 * but one to the following frames keeps every frame inside the budget; each deferred rebuild
-	 * is one frame (~3 ms) late, which is not perceivable.
-	 *
-	 * PRESENT_MIN_MS also bounds the cost at very high note densities: the pending flags coalesce,
-	 * so a 500 NPS chart costs the same per frame as a 30 NPS one.
-	 */
-	static inline var PRESENT_MIN_MS:Float = 33;
-
-	function flushHitPresentation():Void
-	{
-		var ticks:Float = FlxG.game.ticks;
-
-		// 1) judgement popup: gameplay feedback, keeps the frame the judgement happened on.
-		if (_popupPending && ticks >= _nextPopupTicks)
-		{
-			_popupPending = false;
-			_nextPopupTicks = ticks + PRESENT_MIN_MS;
-			showComboNum = (combo >= 10);
-			showRatingPopup(ratingPopup, _pendingRatingImage, combo, FlxG.width * 0.35, showRating, showComboNum);
-			return;
-		}
-
-		// 2) ms readout: smaller text, still direct feedback.
-		if (_msTextDirty && ticks >= _nextMsTicks)
-		{
-			_msTextDirty = false;
-			_nextMsTicks = ticks + PRESENT_MIN_MS;
-			msTxtKade.color = _pendingMsColor;
-			msTxtKade.text = _pendingMsText;
-			msTxtKade.alpha = 1;
-			if (msScaleTween != null) msScaleTween.cancel();
-			msTxtKade.scale.set(1.15, 1.15);
-			msScaleTween = FlxTween.tween(msTxtKade.scale, {x: 1, y: 1}, 0.15, {ease: FlxEase.backOut});
-			if (msTween != null) msTween.cancel();
-			msTween = FlxTween.tween(msTxtKade, {alpha: 0}, 0.5, {ease: FlxEase.quintIn});
-			return;
-		}
-
-		// 3) score / accuracy line: the most expensive rebuild and the least time-critical one.
-		if (_scoreTextDirty && ticks >= _nextScoreTicks)
-		{
-			_scoreTextDirty = false;
-			_nextScoreTicks = ticks + PRESENT_MIN_MS;
-			applyScoreText();
-			if (_scoreZoomDirty)
-			{
-				_scoreZoomDirty = false;
-				bounceScoreTxt();
-			}
-		}
-	}
 
 	public function setSongTime(time:Float)
 	{
@@ -5774,6 +5559,7 @@ class PlayState extends MusicBeatState
 	override public function update(elapsed:Float)
 	{
 		#if hudtext_profile
+		flixel.text.HudTextProf.beginFrame();
 		if (_hudNoHealth == null)
 		{
 			var __nh:String = null;
@@ -5791,6 +5577,12 @@ class PlayState extends MusicBeatState
 			var __n:Null<Int> = (__de == null) ? null : Std.parseInt(__de);
 			_hudDriveEvery = (__n == null || __n < 1) ? 6 : __n;
 		}
+		if (_hudThrottleMs == 0)
+		{
+			var __tm:String = null;
+			try __tm = Sys.getEnv('HUDTEXT_THROTTLE_TEST') catch (e:Dynamic) {}
+			if (__tm != null && __tm.length > 0) _hudThrottleMs = Std.parseFloat(__tm);
+		}
 		if (_hudDrive)
 		{
 			_hudDriveTick++;
@@ -5805,17 +5597,12 @@ class PlayState extends MusicBeatState
 			}
 		}
 		#end
-		// With perfMode off the budget is unlimited: popups/splashes go straight back to stock per-hit display with no living cap.
+		// With perfMode off the splash budget is unlimited: splashes go back to the stock per-hit
+		// display with no living cap.
 		if (ClientPrefs.data.perfMode)
 		{
-			// Time-scaled budgets (see _popupBudgetCredit): identical to the per-frame reset at
+			// Time-scaled budget (see _splashBudgetCredit): identical to the per-frame reset at
 			// 60 fps, but the per-second rate no longer scales with the fps cap.
-			_popupBudgetCredit += elapsed * 60 * POPUP_IMMEDIATE_HITS;
-			if (_popupBudgetCredit > POPUP_IMMEDIATE_HITS) _popupBudgetCredit = POPUP_IMMEDIATE_HITS;
-			var popupBudget:Int = Std.int(_popupBudgetCredit);
-			_popupBudgetCredit -= popupBudget;
-			_popupImmediateBudget = popupBudget;
-
 			_splashBudgetCredit += elapsed * 60 * SPLASH_FRAME_BUDGET;
 			if (_splashBudgetCredit > SPLASH_FRAME_BUDGET) _splashBudgetCredit = SPLASH_FRAME_BUDGET;
 			var splashBudget:Int = Std.int(_splashBudgetCredit);
@@ -5823,10 +5610,7 @@ class PlayState extends MusicBeatState
 			_splashBudgetLeft = splashBudget;
 		}
 		else
-		{
-			_popupImmediateBudget = 999999;
 			_splashBudgetLeft = 999999;
-		}
 
 		// The music finished (see onMusicComplete): run the end-of-song path here, inside the
 		// guarded update dispatch, instead of from Lime's audio timer. Everything after this
@@ -5855,8 +5639,7 @@ class PlayState extends MusicBeatState
 		{
 			ClientPrefs.data.showFP = !ClientPrefs.data.showFP;
 			ClientPrefs.saveSettings();
-			_scoreTextDirty = true;
-			_scoreZoomDirty = true;
+			applyScoreText();
 		}
 
 		// Ctrl+P lets a client take over the opponent side, which is also the escape hatch that
@@ -6003,13 +5786,10 @@ class PlayState extends MusicBeatState
 		}
 		if(botplayTxt != null && cpuControlled && !botplayUsed) botplayUsed = true;
 
-		// Botplay/Turbo readout: keep the 1 s NPS window current and the score line live (outside
-		// botplay scoreTxt is only rebuilt per hit). flushHitPresentation() runs later in this update.
+		// Botplay/Turbo readout: keep the 1 s NPS window current; the score line itself is rebuilt
+		// on the hit frame that changes it (updateScore).
 		if (cpuControlled)
-		{
 			updateBotplayReadout(elapsed);
-			_scoreTextDirty = true;
-		}
 		if(replayTxt.visible) {
 			replaySine += 180 * elapsed;
 			replayTxt.alpha = 1 - Math.sin((Math.PI * replaySine) / 180);
@@ -6116,19 +5896,8 @@ class PlayState extends MusicBeatState
 					var secondsTotal:Int = Math.floor(songCalc / 1000);
 					if(secondsTotal < 0) secondsTotal = 0;
 
-					if(ClientPrefs.data.timeBarType != 'Song Name')
-					{
-						// formatTime() 每帧都造一个新字符串, 而显示内容只跟秒数有关, 因此只在秒数变化时写。
-						// 下面的 -1 归零保证 "Song Name" 切回时间读数时立刻重画一次; 每帧重写 (脚本写进去
-						// 的文本会被覆盖) 走 ClientPrefs.stockHudTextRewrite。
-						if (ClientPrefs.data.stockHudTextRewrite || _timeTxtSeconds != secondsTotal)
-						{
-							_timeTxtSeconds = secondsTotal;
-							timeTxt.text = FlxStringUtil.formatTime(secondsTotal, false);
-						}
-					}
-					else
-						_timeTxtSeconds = -1;
+			if(ClientPrefs.data.timeBarType != 'Song Name')
+				timeTxt.text = FlxStringUtil.formatTime(secondsTotal, false);
 				}
 			}
 
@@ -6488,9 +6257,16 @@ class PlayState extends MusicBeatState
 		}
 		#end
 
-		// Refresh the presentation once at frame end (score text / ms text / merged popup), then update the watch counters.
-		// Before onUpdatePost, so scripts reading the score/text in this frame's callbacks see the final values.
-		flushHitPresentation();
+
+		#if hudtext_profile
+		// 断言 (原版语义): 帧末的分数行必须已经是本帧的最新值。任何节流/合并回归都会在这里计数,
+		// stale 必须为 0。脚本可以改写 scoreTxt, 所以只在没有脚本时检查。
+		if (!cpuControlled && startedCountdown && !paused && scoreTxt != null && !hasActiveScripts())
+		{
+			if (scoreTxt.text != buildScoreText())
+				flixel.text.HudTextProf.noteStale();
+		}
+		#end
 
 		// One sweep for the three globals (same instant, same per-script order).
 		setOnScripts3('cameraX', camFollowPos.x, 'cameraY', camFollowPos.y, 'botPlay', cpuControlled);
@@ -7518,10 +7294,8 @@ class PlayState extends MusicBeatState
 			RecalculateRating(false);
 		}
 
-		// Always go through the presentation queue: at most one popup rebuild per frame, so the
-		// hit frame never carries both the popup and a HUD text regen (see flushHitPresentation).
-		_popupPending = true;
-		_pendingRatingImage = daRating.image;
+		showComboNum = (combo >= 10);
+		showRatingPopup(ratingPopup, daRating.image, combo, FlxG.width * 0.35, showRating, showComboNum);
 	}
 
 	public var strumsBlocked:Array<Bool> = [];
@@ -8922,7 +8696,6 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		// settled in the data layer, so without this the combo never moves on dense charts. Only
 		// taps count (no sustain tails) and none of the score / hit stats / judgement / rating are
 		// touched; the popup draws the combo only, never the judgement icon.
-		// opponent paths, with the popup still bounded by the per-frame POPUP_IMMEDIATE_HITS budget.
 		// Both the counter and the popup live in addOpponentHit, the shared entry for all three.
 		// Called for every tap, not only under Turbo: the same entry feeds the score text's
 		// opponent-side note count; the combo/popup part inside stays Turbo-only.
@@ -9757,13 +9530,9 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 	 * The popup hangs off addOpponentHit together with the count because the count has three
 	 * paths; attaching the popup to only one (opponentNoteHit) leaves the other two (data-layer /
 	 * materialised batch) raising the number with no popup.
-	 * Per-frame POPUP_IMMEDIATE_HITS budget: with thousands of opponent hits per Turbo frame,
-	 * over-budget hits are neither drawn nor queued (the _popupPending queue adds icons).
 	 */
 	function popUpComboOnly():Void
 	{
-		if (_popupImmediateBudget <= 0) return;
-		_popupImmediateBudget--;
 		showComboNum = (combo >= 10);
 		showRatingPopup(ratingPopup, '', combo, FlxG.width * 0.35, false, showComboNum);
 	}
@@ -10007,25 +9776,24 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 			// removed or the length changed: the tail element filled the current slot, so re-check the same index
 		}
 
-		if (hitCount > 0)
-		{
-			if (SONG.needsVoices && vocals.volume != 1) vocals.volume = 1;
-			if (vocalsPlayer.volume != 1) vocalsPlayer.volume = 1;
-			if (opponentVocals.volume != 1) opponentVocals.volume = 1;
-			_popupPending = true;
-			var r:Rating = (ratingsData.length > 0) ? ratingsData[0] : null;
-			_pendingRatingImage = (r != null) ? r.image : 'sick';
-			RecalculateRating(false);
-		}
-		if (hurtCount > 0)
-		{
-			vocals.volume = 0; vocalsPlayer.volume = 0;
-			_msTextDirty = true;
-			_pendingMsText = 'Miss';
-			_pendingMsColor = 0xFF0000;
-			RecalculateRating(true);
-			if (instakillOnMiss) doDeathCheck(true);
-		}
+	if (hitCount > 0)
+	{
+		if (SONG.needsVoices && vocals.volume != 1) vocals.volume = 1;
+		if (vocalsPlayer.volume != 1) vocalsPlayer.volume = 1;
+		if (opponentVocals.volume != 1) opponentVocals.volume = 1;
+		var r:Rating = (ratingsData.length > 0) ? ratingsData[0] : null;
+		showComboNum = (combo >= 10);
+		showRatingPopup(ratingPopup, (r != null) ? r.image : 'sick', combo, FlxG.width * 0.35, showRating, showComboNum);
+		RecalculateRating(false);
+	}
+	if (hurtCount > 0)
+	{
+		vocals.volume = 0; vocalsPlayer.volume = 0;
+		msTxtKade.color = 0xFF0000;
+		msTxtKade.text = 'Miss';
+		RecalculateRating(true);
+		if (instakillOnMiss) doDeathCheck(true);
+	}
 	}
 
 	/**
@@ -10071,19 +9839,18 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 			if (opponentVocals.volume != 1) opponentVocals.volume = 1;
 		}
 
-		if (bulkHurtCount > 0)
-		{
-			vocals.volume = 0; vocalsPlayer.volume = 0;
-			_msTextDirty = true;
-			_pendingMsText = 'Miss';
-			_pendingMsColor = 0xFF0000;
-		}
+	if (bulkHurtCount > 0)
+	{
+		vocals.volume = 0; vocalsPlayer.volume = 0;
+		msTxtKade.color = 0xFF0000;
+		msTxtKade.text = 'Miss';
+	}
 
 		if (drainedHit > 0)
 		{
-			_popupPending = true;
+			showComboNum = (combo >= 10);
 			var r:Rating = (ratingsData.length > 0) ? ratingsData[0] : null;
-			_pendingRatingImage = (r != null) ? r.image : 'sick';
+			showRatingPopup(ratingPopup, (r != null) ? r.image : 'sick', combo, FlxG.width * 0.35, showRating, showComboNum);
 		}
 
 		if (drainedHit > 0 || skippedHit > 0)
@@ -10236,45 +10003,19 @@ if (!cpuControlled) {
 	var rOffset:Float = ClientPrefs.data.ratingOffset;
 	var diff:Float = (recordedJ != null) ? recordedJ.hitDiff : (strumTime - songPos + rOffset);
 
-	// ms text merged per frame: only the last hit difference of the frame is kept, and
-	// flushHitPresentation() rebuilds the text and its tween pair once at frame end. The original
-	// set the text (rebuilding the whole glyph bitmap) and allocated two tweens on every hit.
-	// stockHudTextRewrite keeps the old per-hit direct write for script compatibility.
-	if (ClientPrefs.data.stockHudTextRewrite)
-	{
-		if (rating == 'marvelous') msTxtKade.color = 0xFFFFD700;
-		else if (rating == 'sick') msTxtKade.color = 0x00FFFF;
-		else if (rating == 'good') msTxtKade.color = 0x006400;
-		else if (rating == 'bad') msTxtKade.color = 0xEEFF00;
-		else msTxtKade.color = 0xFF0000;
-		msTxtKade.text = Std.string(FlxMath.roundDecimal(-diff, 3)) + "ms";
-		msTxtKade.alpha = 1;
-		if (msScaleTween != null) msScaleTween.cancel();
-		msTxtKade.scale.set(1.15, 1.15);
-		msScaleTween = FlxTween.tween(msTxtKade.scale, {x: 1, y: 1}, 0.15, {ease: FlxEase.backOut});
-		if (msTween != null) msTween.cancel();
-		msTween = FlxTween.tween(msTxtKade, {alpha: 0}, 0.5, {ease: FlxEase.quintIn});
-	}
-	else
-	{
-	_msTextDirty = true;
-	// 局部变量复用: 原写法在同一行里多构造了一个中间字符串, 密集命中时是额外垃圾。
-	var roundedMs:Float = FlxMath.roundDecimal(-diff, 3);
-	_pendingMsText = (roundedMs == Std.int(roundedMs))
-		? (Std.string(Std.int(roundedMs)) + "ms")
-		: (Std.string(roundedMs) + "ms");
-	if (rating == 'marvelous') {
-		_pendingMsColor = 0xFFFFD700;
-	} else if (rating == 'sick') {
-		_pendingMsColor = 0x00FFFF;
-	} else if (rating == 'good') {
-		_pendingMsColor = 0x006400;
-	} else if (rating == 'bad') {
-		_pendingMsColor = 0xEEFF00;
-	} else if (rating == 'shit') {
-		_pendingMsColor = 0xFF0000;
-	}
-	}
+	// 原版语义: 每次命中直接写 ms 行, 并在同一帧起两个 tween (命中这一帧就是新值)。
+	if (rating == 'marvelous') msTxtKade.color = 0xFFFFD700;
+	else if (rating == 'sick') msTxtKade.color = 0x00FFFF;
+	else if (rating == 'good') msTxtKade.color = 0x006400;
+	else if (rating == 'bad') msTxtKade.color = 0xEEFF00;
+	else msTxtKade.color = 0xFF0000;
+	msTxtKade.text = Std.string(FlxMath.roundDecimal(-diff, 3)) + "ms";
+	msTxtKade.alpha = 1;
+	if (msScaleTween != null) msScaleTween.cancel();
+	msTxtKade.scale.set(1.15, 1.15);
+	msScaleTween = FlxTween.tween(msTxtKade.scale, {x: 1, y: 1}, 0.15, {ease: FlxEase.backOut});
+	if (msTween != null) msTween.cancel();
+	msTween = FlxTween.tween(msTxtKade, {alpha: 0}, 0.5, {ease: FlxEase.quintIn});
 } else {
 	sustainNotescore = 0;
 }
@@ -10719,7 +10460,6 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 			ClientPrefs.data.stockNoteSort = _onlinePrevStockSort;
 			ClientPrefs.data.stockEventDrain = _onlinePrevEventDrain;
 			ClientPrefs.data.stockBpmStruct = _onlinePrevBpmStruct;
-			ClientPrefs.data.stockHudTextRewrite = _onlinePrevHudText;
 			ClientPrefs.data.scriptArgReuse = _onlinePrevScriptArgReuse;
 			// backend.Scripts.reuseEnabled is a global static read by menus and scripts outside this
 			// state, so it has to mirror the restored preference instead of staying silenced.
@@ -11476,7 +11216,7 @@ function calculateResetTime():Float {
 	 *   * FlxText.camera = camOther (flixel 5) -> cameras = [camOther] (flixel 4.11).
 	 *   * The updateScore() FP block is folded into the guarded branch added in
 	 *     updateScore() itself (this engine builds its score text through
-	 *     buildScoreText()/flushHitPresentation(), not by assigning scoreTxt.text inline).
+	 *     buildScoreText(), not by assigning scoreTxt.text inline).
 	 *   * resetRPC(true) (Discord RPC) is not called here: this engine has no equivalent.
 	 *   * PlayStatePlayer is declared after PlayState rather than inline.
 	 *

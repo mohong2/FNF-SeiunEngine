@@ -317,8 +317,6 @@
     "option.stockEventDrain.desc": "关闭(默认): 已触发的事件留在 eventNotes 里由游标跳过, 一首歌的排干成本从 O(N^2) 降到 O(N)。\n开启 = 原版 Array.shift(): 已触发事件真正离开数组, 脚本读/改 eventNotes 得到的内容与旧版逐元素一致。",
     "option.stockBpmStruct": "原版 BPM 查询对象 (脚本兼容)",
     "option.stockBpmStruct.desc": "关闭(默认): 没有 BPM 变化生效时 Conductor.getBPMFromSeconds() 复用同一个对象, 每次调用零分配。\n开启 = 原版行为: 每次调用新建对象, HScript 跨两次调用持有结果时互不影响。二分查找两种模式都启用。",
-    "option.stockHudTextRewrite": "原版 HUD 文本重写 (脚本兼容)",
-    "option.stockHudTextRewrite.desc": "关闭(默认): 侧边 HUD 与时间条只在数值/秒数变化时重写 (每帧少 9 个字符串, 显示结果一致)。\n开启 = 原版行为: 每帧都重写, 脚本写进去的文本下一帧就被覆盖回去。",
     "option.bulkSkip": "批量跳过过期音符",
     "option.bulkSkip.desc": "批量跳过已过期音符，避免“生成后立即 Miss”的回收风暴。\n有 Lua/HScript、回放或联机时自动关闭。",
     "option.fastSort": "快速音符排序",
