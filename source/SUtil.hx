@@ -434,6 +434,19 @@ class SUtil
 			CoolUtil.traceMsg('trace.storage.cwdFailed', 'Could not use {} as the working directory ({})', [root, e]);
 		}
 
+		// Verify the process really moved: if the sandbox refuses the chdir, every
+		// relative read runs against a different root than the engine assumes.
+		try
+		{
+			var actual:String = Sys.getCwd();
+			if (actual != null && actual.length > 0 && !samePath(actual, root))
+			{
+				mohong.TraceManager.warn('trace.storage.cwdMismatch',
+					'Working directory is {} but the storage root is {}', [actual, root]);
+			}
+		}
+		catch (e:Dynamic) {}
+
 		backend.NativeCrash.setCrashDir(root + 'crash/');
 		#if (android || windows)
 		backend.NativeCrash.loadLinemap(root, linemapLib);
@@ -443,6 +456,25 @@ class SUtil
 			[root, ClientPrefs.data.storageType, storageRevision]);
 
 		return root;
+	}
+
+	/**
+	 * Compares two directory spellings after normalising separators, a trailing
+	 * slash and case (the Apple file systems are case-insensitive by default).
+	 * Unlike the android-only normalizeStoragePath(), this exists on every target.
+	 */
+	static function samePath(a:String, b:String):Bool
+	{
+		return normalizePathForCompare(a) == normalizePathForCompare(b);
+	}
+
+	static function normalizePathForCompare(path:String):String
+	{
+		if (path == null) return '';
+		var out:String = path.split('\\').join('/');
+		while (out.length > 1 && StringTools.endsWith(out, '/'))
+			out = out.substr(0, out.length - 1);
+		return out.toLowerCase();
 	}
 
 	#if android

@@ -514,6 +514,13 @@ class Main extends Sprite
 
 		Lib.current.stage.align = "tl";
 		Lib.current.stage.scaleMode = StageScaleMode.NO_SCALE;
+
+		// Device-pixel aware scaling (see backend/RenderScale.hx). Must come after
+		// the stage scale mode above: setting that fires a RESIZE which applies the
+		// stock RatioScaleMode one last time.
+		backend.RenderScale.install();
+		TraceManager.info('trace.render.scaleMode', 'Render scale: {}', [backend.RenderScale.describe()]);
+
 		if(fpsVar != null) {
 			fpsVar.visible = ClientPrefs.data.showFPS && !useOldFPS;
 			oldFpsVar.visible = ClientPrefs.data.showFPS && useOldFPS;

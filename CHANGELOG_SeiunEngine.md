@@ -9,6 +9,14 @@
 
 ---
 
+### 2026年11月7日 — iOS / macOS 渲染与字体修复（含 SDL3）
+
+- **新增 `backend/RenderScale.hx`**：缩放模式改读真实的「舞台单位 ↔ 设备像素」映射（`Context3D` 后台缓冲 + 舞台 `__displayMatrix`）再摆放画布。旧 `RatioScaleMode` 用一种空间算偏移、画在另一种空间里，iOS/macOS 上画布右移约 `offset × 像素比`、左侧黑边、画面被裁；舞台与 drawable 不一致时按可见区域布局（日志 `trace.render.inconsistent`），一致时与旧版逐像素相同。`RenderScale.setFillScreen(true)` 可切「铺满裁切」。
+- **字体解包**：`CopyState.getFileBytes()` 对 `.ttf/.otf` 不再走 `ByteArray.fromFile()`（iOS 工作目录是待写入的 Documents，解包前文件不存在，字体被整批记为失败），改为与其他资源一样读内置资源；完整性检查新增 `assets/fonts/vcr.ttf`，缺字体就重新解包。
+- **字体兜底**：新增 `backend/FontRegistry.hx`，工作目录没有字体时按绝对路径在应用包/资源目录找到文件，`Font.fromFile()` 注册后返回家族名；`Paths.font()` / `languageFont()` / `optionsfont()` 接入，日志记录命中路径。
+- **iOS 换用 SDL3**：`Project.xml` 的 `lime-sdl3` 定义扩到 `ios || tvos`，lime 的 `Build.xml` 默认给 iOS/tvOS 编 SDL3 并补齐缺失源码；iOS 不再定义 `SDL_MAIN_HANDLED`（SDL3 把 `main()` 移进 `SDL_main_impl.h`，屏蔽会链不上 `_main`），帧循环改由 display link 驱动、不再首帧 `SDL_WaitEvent` 阻塞，隐藏 home indicator。
+- **其他**：SDL3 后端把 `DISPLAY_SCALE_CHANGED` 转发为 resize（Retina↔非 Retina、iPad 显示缩放后立即重排）；iOS 架构与系统版本进入设备信息/崩溃报告；`applyStorageDirectory()` 校验 `Sys.getCwd()` 并记 `trace.storage.cwdMismatch`；启动日志和崩溃转储都带一行 `Render scale: …`。
+
 ### 2026年10月31日 — 后台减弱（Background Dim）音量逻辑修复
 
 - **不再改写主音量**：后台减弱改为在 `FlxSound.updateTransform()` 上叠加 0.25 的衰减系数（新增 `backend/AudioDim.hx`），`FlxG.sound.volume` 始终是玩家设置的音量。旧实现直接把主音量写成 0.2；flixel 的音量托盘隐藏时会把 `FlxG.sound.volume` 写入存档，因此「失焦时托盘正好收起」会把 0.2 持久化成玩家的音量，之后前台一直很小声。
@@ -513,6 +521,14 @@
 ## English Version
 
 ---
+
+### November 7, 2026 — iOS / macOS rendering and fonts (SDL3 included)
+
+- **New `backend/RenderScale.hx`**: the scale mode now reads the real "stage unit to device pixel" mapping (`Context3D` back buffer plus the stage's `__displayMatrix`) and lays the canvas out from it. `RatioScaleMode` computed the letterbox offset in one space and applied it in another, so on iOS/macOS the canvas moved right by `offset * pixelRatio`, the left side stayed black and the scene was clipped; a mismatch now lays the game out inside the visible rectangle (logging `trace.render.inconsistent`), and a consistent stage renders exactly as before. `RenderScale.setFillScreen(true)` switches to "cover".
+- **Font extraction**: `CopyState.getFileBytes()` no longer reads `.ttf`/`.otf` with `ByteArray.fromFile()` (on iOS the working directory is the Documents folder the pass is about to fill, so every font failed): fonts now come from the bundled asset system like every other file, and the readiness probes include `assets/fonts/vcr.ttf` so a missing font re-runs the copy pass.
+- **Font fallback**: new `backend/FontRegistry.hx` finds the bundled file by absolute path when the working directory has none, loads it with `Font.fromFile()` and returns the family name; `Paths.font()` / `languageFont()` / `optionsfont()` use it and log the path that matched.
+- **SDL3 on iOS**: the `lime-sdl3` define covers `ios || tvos`, lime's `Build.xml` builds SDL3 for iOS/tvOS by default with the missing iOS sources added; iOS no longer defines `SDL_MAIN_HANDLED` (SDL3 moved `main()` into `SDL_main_impl.h`; hiding it leaves `_main` undefined), the frame loop is display-link driven without the first-tick `SDL_WaitEvent` stall, and the home indicator is hidden.
+- **Also**: the SDL3 backend forwards `DISPLAY_SCALE_CHANGED` as a resize (Retina/non-Retina moves and iPad display zoom re-lay out immediately); iOS reports its architecture and OS version in the device info and crash reports; `applyStorageDirectory()` verifies `Sys.getCwd()` and logs `trace.storage.cwdMismatch`; the boot log and the crash dump carry a `Render scale: ...` line.
 
 ### October 31, 2026 — Background Dim volume logic fixed
 

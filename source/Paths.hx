@@ -1063,7 +1063,7 @@ class Paths
 	inline static public function languageFont()
 	{
 		var language_ttf:String = Language.get("ttf", "vcr");
-		return 'assets/fonts/$language_ttf.ttf';
+		return backend.FontRegistry.resolve('$language_ttf.ttf', 'assets/fonts/$language_ttf.ttf');
 	}
 
 	static public function font(key:String)
@@ -1085,13 +1085,16 @@ class Paths
 		var file:String = mods('fonts/' + key);
 		if(FileSystem.exists(file)) return file;
 		#end
-		return 'assets/fonts/$key';
+
+		// FontRegistry only steps in when the file is missing from the working
+		// directory; otherwise it returns this path unchanged.
+		return backend.FontRegistry.resolve(key, 'assets/fonts/$key');
 	}
 
 	inline static public function optionsfont()
 	{
 		var options_ttf:String = Language.get("option.ttf", "vcr");
-		return 'assets/fonts/$options_ttf.ttf';
+		return backend.FontRegistry.resolve('$options_ttf.ttf', 'assets/fonts/$options_ttf.ttf');
 	}
 	inline static public function locale(key:String, ?library:String)
 	{

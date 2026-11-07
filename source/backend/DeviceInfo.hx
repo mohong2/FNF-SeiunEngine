@@ -36,7 +36,9 @@ class DeviceInfo
 		#elseif android
 		_osName = 'Android ' + android.os.Build.VERSION.RELEASE;
 		#elseif ios
-		_osName = 'iOS';
+		var ver:String = '';
+		try { ver = lime.system.System.platformVersion; } catch (e:Dynamic) {}
+		_osName = (ver != null && ver.length > 0) ? 'iOS ' + ver : 'iOS';
 		#elseif js
 		_osName = 'Web Browser';
 		#else
@@ -54,6 +56,10 @@ class DeviceInfo
 		_arch = (arch != null && arch.length > 0) ? arch : 'x64';
 		#elseif js
 		_arch = 'Web';
+		#elseif ios
+		// No process to spawn on the sandboxed phone targets (`sys.io.Process` is
+		// unavailable), which is why iOS used to report "unknown".
+		_arch = #if HXCPP_ARM64 "ARM64" #elseif HXCPP_ARM7 "ARMv7" #else "x64" #end;
 		#else
 		var m = '';
 		try { m = runCapture('uname', ['-m']); } catch (e:Dynamic) {}

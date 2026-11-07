@@ -86,10 +86,15 @@ class CopyState extends BootState
 	/** Retry attempts before the player is allowed to continue with missing assets. */
 	static final MAX_RETRIES:Int = 2;
 
-	/** Relative files that must exist and be non-empty for the build to be usable. */
+	/**
+	 * Relative files that must exist and be non-empty for the build to be usable.
+	 * The font probe makes a missing `.ttf` count as "not ready", so the copy pass
+	 * runs again instead of the game booting with fallback fonts.
+	 */
 	static final CRITICAL_PROBES:Array<String> = [
 		'assets/data/options/categories.json',
-		'assets/lang/English/Online.json'
+		'assets/lang/English/Online.json',
+		'assets/fonts/vcr.ttf'
 	];
 	/** Relative directories that must exist. */
 	static final CRITICAL_PROBE_DIRS:Array<String> = ['assets/images'];
@@ -818,29 +823,53 @@ class CopyState extends BootState
 		}
 	}
 
+	/**
+	 * Bytes of a bundled file, for the extraction pass.
+	 *
+	 * The bundled copy comes first: before the first extraction it is the only
+	 * source. Fonts used to be read with `ByteArray.fromFile()` instead, which
+	 * looks in the working directory - on iOS that is the Documents folder the pass
+	 * is about to write into, so every font failed and the game booted without them.
+	 *
+	 * Order: openfl asset -> lime asset -> file already on disk -> the same file
+	 * through its library-qualified key.
+	 */
 	function getFileBytes(file:String):ByteArray
 	{
-		switch (Path.extension(file).toLowerCase())
+		var bytes:ByteArray = null;
+
+		// 1. Bundled copy through openfl/lime (works on iOS before any extraction).
+		try { bytes = OpenFLAssets.getBytes(file); } catch (e:Dynamic) {}
+		if (bytes == null || bytes.length == 0)
 		{
-			case 'otf' | 'ttf':
-				return ByteArray.fromFile(file);
-			default:
-				try
-				{
-					return OpenFLAssets.getBytes(file);
-				}
-				catch (e:Dynamic)
-				{
-					try
-					{
-						return LimeAssets.getBytes(file);
-					}
-					catch (e2:Dynamic)
-					{
-						return OpenFLAssets.getBytes(getCopyFile(file));
-					}
-				}
+			try { bytes = LimeAssets.getBytes(file); } catch (e:Dynamic) {}
 		}
+
+		// 2. Already extracted into the working directory.
+		if (bytes == null || bytes.length == 0)
+		{
+			try
+			{
+				if (FileSystem.exists(file))
+					bytes = ByteArray.fromFile(file);
+			}
+			catch (e:Dynamic) {}
+		}
+
+		// 3. Last resort: the same file through its library-qualified key.
+		if (bytes == null || bytes.length == 0)
+		{
+			var resolved:String = getCopyFile(file);
+			if (resolved != file)
+			{
+				try { bytes = OpenFLAssets.getBytes(resolved); } catch (e:Dynamic) {}
+			}
+		}
+
+		if (bytes == null || bytes.length == 0)
+			throw 'could not read the bundled bytes of ' + file;
+
+		return bytes;
 	}
 
 	static function getCopyFile(file:String):String

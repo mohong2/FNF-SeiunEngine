@@ -216,6 +216,9 @@ class SystemDiag
 			return 'Stage: ' + Std.string(stage.stageWidth) + 'x' + Std.string(stage.stageHeight)
 				+ ' scaleMode=' + Std.string(stage.scaleMode);
 		}, out, '(no stage)');
+
+		// The stage->drawable mapping behind the frame on screen (see RenderScale).
+		safeLines(() -> 'Render scale: ' + backend.RenderScale.describe(), out, '(render scale unavailable)');
 	}
 
 	static function rendererLines(out:Array<String>):Void

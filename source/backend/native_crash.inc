@@ -388,6 +388,17 @@ const char* seiun_get_cpu_abi(void)
 	return "windows-x64";
 #elif defined(_WIN32)
 	return "windows-x86";
+#elif defined(__APPLE__)
+	// Apple platforms: the ABI selects the per-arch library and symbols artifact.
+	#if defined(__aarch64__) || defined(__arm64__)
+		return "apple-arm64";
+	#elif defined(__x86_64__)
+		return "apple-x86_64";
+	#elif defined(__arm__)
+		return "apple-armv7";
+	#else
+		return "apple-unknown";
+	#endif
 #else
 	return "unknown";
 #endif
