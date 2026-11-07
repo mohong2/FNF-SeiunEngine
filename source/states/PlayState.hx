@@ -789,24 +789,6 @@ class PlayState extends MusicBeatState
 	public var songMisses:haxe.Int64 = 0;
 	public var scoreTxt:FlxText;
 	public var timeTxt:FlxText;
-	#if hudtext_profile
-	/** Test-only: HUDTEXT_NOHEALTH=1 pins health, so a no-input run can keep missing notes
-	 *  (that is the manual-play text path) without dying after a few seconds. */
-	static var _hudNoHealth:Null<Bool> = null;
-	/** Test-only: HUDTEXT_DRIVE=1 rebuilds the real score line on a fixed frame cadence
-	 *  (HUDTEXT_DRIVE_EVERY, default 6). Manual play only misses here, and a miss never calls
-	 *  updateScore() in this engine, so without a driver the measured line rebuilds once a run. */
-	static var _hudDrive:Null<Bool> = null;
-	static var _hudDriveEvery:Int = 6;
-	static var _hudDriveTick:Int = 0;
-	/**
-	 * Test-only negative control (HUDTEXT_THROTTLE_TEST=<ms>): re-introduces exactly the throttle the
-	 * stock restore removed, so the end-of-frame assertion (`stale=`) can be shown to have teeth.
-	 * 0 = off; never set in a normal run.
-	 */
-	static var _hudThrottleMs:Float = 0;
-	var _hudThrottleLast:Float = -1e9;
-	#end
 	public var scoreTxtTween:FlxTween;
 
 	public static var campaignScore:haxe.Int64 = 0;
@@ -3593,14 +3575,6 @@ class PlayState extends MusicBeatState
 	{
 		if (!cpuControlled)
 		{
-			#if hudtext_profile
-			if (_hudThrottleMs > 0)
-			{
-				var __now:Float = FlxG.game.ticks;
-				if (__now - _hudThrottleLast < _hudThrottleMs) return;
-				_hudThrottleLast = __now;
-			}
-			#end
 			scoreTxt.text = buildScoreText();
 			return;
 		}
@@ -5560,45 +5534,6 @@ class PlayState extends MusicBeatState
 
 	override public function update(elapsed:Float)
 	{
-		#if hudtext_profile
-		flixel.text.HudTextProf.beginFrame();
-		if (_hudNoHealth == null)
-		{
-			var __nh:String = null;
-			try __nh = Sys.getEnv('HUDTEXT_NOHEALTH') catch (e:Dynamic) {}
-			_hudNoHealth = (__nh == '1');
-		}
-		if (_hudNoHealth) health = 2;
-		if (_hudDrive == null)
-		{
-			var __dv:String = null;
-			try __dv = Sys.getEnv('HUDTEXT_DRIVE') catch (e:Dynamic) {}
-			_hudDrive = (__dv == '1');
-			var __de:String = null;
-			try __de = Sys.getEnv('HUDTEXT_DRIVE_EVERY') catch (e:Dynamic) {}
-			var __n:Null<Int> = (__de == null) ? null : Std.parseInt(__de);
-			_hudDriveEvery = (__n == null || __n < 1) ? 6 : __n;
-		}
-		if (_hudThrottleMs == 0)
-		{
-			var __tm:String = null;
-			try __tm = Sys.getEnv('HUDTEXT_THROTTLE_TEST') catch (e:Dynamic) {}
-			if (__tm != null && __tm.length > 0) _hudThrottleMs = Std.parseFloat(__tm);
-		}
-		if (_hudDrive)
-		{
-			_hudDriveTick++;
-			if (_hudDriveTick % _hudDriveEvery == 0)
-			{
-				// The real line, through the real writer: one full String build, one TextField
-				// layout and one outlined FlxText rebuild, exactly as a hit would do it.
-				songMisses = haxe.Int64.ofInt(_hudDriveTick);
-				var __dt0:Float = haxe.Timer.stamp();
-				applyScoreText();
-				flixel.text.HudTextProf.noteApply(haxe.Timer.stamp() - __dt0);
-			}
-		}
-		#end
 		// With perfMode off the splash budget is unlimited: splashes go back to the stock per-hit
 		// display with no living cap.
 		if (ClientPrefs.data.perfMode)
@@ -6260,15 +6195,6 @@ class PlayState extends MusicBeatState
 		#end
 
 
-		#if hudtext_profile
-		// 断言 (原版语义): 帧末的分数行必须已经是本帧的最新值。任何节流/合并回归都会在这里计数,
-		// stale 必须为 0。脚本可以改写 scoreTxt, 所以只在没有脚本时检查。
-		if (!cpuControlled && startedCountdown && !paused && scoreTxt != null && !hasActiveScripts())
-		{
-			if (scoreTxt.text != buildScoreText())
-				flixel.text.HudTextProf.noteStale();
-		}
-		#end
 
 		// One sweep for the three globals (same instant, same per-script order).
 		setOnScripts3('cameraX', camFollowPos.x, 'cameraY', camFollowPos.y, 'botPlay', cpuControlled);
