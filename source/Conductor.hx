@@ -32,13 +32,18 @@ class Conductor
 
 	public static function judgeNote(note:Note, diff:Float=0):Rating // die
 	{
-		if (PlayState.instance == null || PlayState.instance.ratingsData == null)
+		if (PlayState.instance == null)
 			return new Rating('bad'); // defensive fallback outside gameplay
 
-		var data:Array<Rating> = PlayState.instance.ratingsData; //shortening cuz fuck u
+		var data:Array<Rating> = PlayState.instance.judgementPriority;
+		if (data == null || data.length == 0) 
+			data = PlayState.instance.ratingsData;
+		if (data == null || data.length == 0)
+			return new Rating('bad');
+
 	 if (ClientPrefs.getGameplaySetting('botplay', false))
     {
-        return data[0];
+        return data[0]; 
     }
 	
 		for(i in 0...data.length-1) //skips last window (Shit)

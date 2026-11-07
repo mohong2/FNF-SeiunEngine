@@ -907,8 +907,8 @@ return Std.string(v);
 	{
 		// Marvelous is a first-class bucket when the preset enables it, so it has to be part of the note
 		// total: with it missing, an all-marvelous run (Turbo botplay on a dense chart judges every hit as
-		// ratingsData[0]) has sicks/goods/bads/shits/misses all 0 -> totalNotes 0 -> the icon was the
-		// big FALSE placeholder instead of the rank the accuracy earned.
+		// the best tier, judgementPriority[0]) has sicks/goods/bads/shits/misses all 0 -> totalNotes 0 ->
+		// the icon was the big FALSE placeholder instead of the rank the accuracy earned.
 		var totalNotes:haxe.Int64 = marvelouses + sicks + goods + bads + shits + misses;
 		if (totalNotes <= 0) return "FALSE";
 		if (ratingPercent >= 1.0) return "phi";

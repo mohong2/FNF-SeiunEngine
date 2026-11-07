@@ -585,7 +585,9 @@ class PlayState extends MusicBeatState
 
 	public var keyboardDisplay:KeyboardDisplay;
 
+
 	public var ratingsData:Array<Rating> = [];
+	public var judgementPriority:Array<Rating> = [];
 	public var marvelouses:haxe.Int64 = 0;
 	public var sicks:haxe.Int64 = 0;
 	public var goods:haxe.Int64 = 0;
@@ -7201,18 +7203,10 @@ class PlayState extends MusicBeatState
 	private function buildRatingsData():Void
 	{
 		ratingsData = [];
+		judgementPriority = [];
 
 		// Judgement windows come from judgementTimings and are synced into the Psych window fields
 		Ratings.syncWindows();
-
-		if (ClientPrefs.data.marvelousRatings)
-		{
-			var rating:Rating = new Rating('marvelous');
-			rating.ratingMod = 1;
-			rating.score = 400;
-			rating.noteSplash = true;
-			ratingsData.push(rating);
-		}
 
 		ratingsData.push(new Rating('sick')); //default rating
 
@@ -7233,6 +7227,20 @@ class PlayState extends MusicBeatState
 		rating.score = 0;
 		rating.noteSplash = false;
 		ratingsData.push(rating);
+
+		var marvelous:Rating = null;
+		if (ClientPrefs.data.marvelousRatings)
+		{
+			marvelous = new Rating('marvelous');
+			marvelous.ratingMod = 1;
+			marvelous.score = 400;
+			marvelous.noteSplash = true;
+			ratingsData.push(marvelous);
+		}
+
+		if (marvelous != null) judgementPriority.push(marvelous);
+		for (r in ratingsData)
+			if (r.name != 'marvelous') judgementPriority.push(r);
 	}
 
 	private function popUpScore(note:Note = null, ?time:Float = -999999):Void
@@ -9591,7 +9599,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 				totalPlayed += den;
 				songHits += den;
 				notehitlol += den; // HUD total hit count shares the totalPlayed source
-				totalNotesHit += den; // botplay judgement is always ratingsData[0] with ratingMod=1
+				totalNotesHit += den; // botplay judgement is always the best tier (judgementPriority[0]) with ratingMod=1
 				if (ClientPrefs.data.marvelousRatings)
 					marvelouses += den;
 				else
@@ -9738,7 +9746,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 							totalPlayed += den;
 							songHits += den;
 							notehitlol += den; // HUD total hit count shares the same source
-							totalNotesHit += den; // botplay judgement is always ratingsData[0] with ratingMod=1
+							totalNotesHit += den; // botplay judgement is always the best tier (judgementPriority[0]) with ratingMod=1
 							if (ClientPrefs.data.marvelousRatings)
 								marvelouses += den;
 							else
@@ -9781,7 +9789,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		if (SONG.needsVoices && vocals.volume != 1) vocals.volume = 1;
 		if (vocalsPlayer.volume != 1) vocalsPlayer.volume = 1;
 		if (opponentVocals.volume != 1) opponentVocals.volume = 1;
-		var r:Rating = (ratingsData.length > 0) ? ratingsData[0] : null;
+		var r:Rating = (judgementPriority.length > 0) ? judgementPriority[0] : null; // 弹窗图标 = 最高档
 		showComboNum = (combo >= 10);
 		showRatingPopup(ratingPopup, (r != null) ? r.image : 'sick', combo, FlxG.width * 0.35, showRating, showComboNum);
 		RecalculateRating(false);
@@ -9849,7 +9857,7 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 		if (drainedHit > 0)
 		{
 			showComboNum = (combo >= 10);
-			var r:Rating = (ratingsData.length > 0) ? ratingsData[0] : null;
+			var r:Rating = (judgementPriority.length > 0) ? judgementPriority[0] : null; // 弹窗图标 = 最高档
 			showRatingPopup(ratingPopup, (r != null) ? r.image : 'sick', combo, FlxG.width * 0.35, showRating, showComboNum);
 		}
 
@@ -11520,6 +11528,10 @@ function calculateResetTime():Float {
  * PlayState.ratingStuff / ratingsData tables the local player uses, so a remote player's row
  * is scored exactly like the local one. Only the rating tier is recomputed here; nothing is
  * sent back to the server.
+ *
+ * ratingsData indices here are the Psych ones: 0=sick, 1=good, 2=bad, 3=shit. The extra
+ * 'marvelous' tier is appended at index 4 and is deliberately not indexed by number.
+ * (The Player schema has no marvelous counter either, so remote rows cannot include it.)
  *
  * Declared after PlayState and guarded, so the class disappears with the macro.
  */

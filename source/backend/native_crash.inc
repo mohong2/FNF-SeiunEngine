@@ -66,6 +66,13 @@
 #  include <unistd.h>
 #  include <stdint.h>
 #  include <dlfcn.h>
+// MAX_PATH is a Windows constant, but the crash reporter sizes stack buffers
+// from it on every platform (a Chinese install path plus a long file name still
+// has to fit). POSIX libcs do not define it, so supply the same value here
+// rather than guarding every use with #ifdef _WIN32.
+#  ifndef MAX_PATH
+#    define MAX_PATH 260
+#  endif
 #  if defined(__APPLE__)
 #    include <TargetConditionals.h>
 #  endif
@@ -2462,6 +2469,26 @@ static int seiun_phdr_cb(struct dl_phdr_info* info, size_t size, void* data)
 	args->count++;
 	return 0;
 }
+
+// dl_iterate_phdr is exported by libc on every Android since 4.0, but the NDK's
+// <link.h> only declares it for __ANDROID_API__ >= 21 on 32-bit ARM, and lime
+// builds with APP_PLATFORM=android-16 (project/lib/sdl3/.../Application.mk), so
+// a direct call does not compile for armeabi-v7a. Look the symbol up at run time
+// there instead - the same idea as the __android_log_print probe above: API 21+
+// devices get the real module list, older ones report it as unavailable.
+#if defined(__ANDROID__)
+typedef int (*SeiunPhdrCb)(struct dl_phdr_info*, size_t, void*);
+typedef int (*SeiunIteratePhdrFn)(SeiunPhdrCb, void*);
+
+static int seiun_iterate_phdr(SeiunPhdrCb cb, void* data)
+{
+	SeiunIteratePhdrFn fn = (SeiunIteratePhdrFn)dlsym(RTLD_DEFAULT, "dl_iterate_phdr");
+	return (fn != NULL) ? fn(cb, data) : 0;
+}
+#  define SEIUN_ITERATE_PHDR(cb, data) seiun_iterate_phdr((cb), (data))
+#else
+#  define SEIUN_ITERATE_PHDR(cb, data) dl_iterate_phdr((cb), (data))
+#endif
 #endif
 
 static void seiun_append_modules(char* buf, size_t cap, int* len)
@@ -2502,7 +2529,9 @@ static void seiun_append_modules(char* buf, size_t cap, int* len)
 		args.cap = cap;
 		args.len = len;
 		args.count = 0;
-		dl_iterate_phdr(seiun_phdr_cb, &args);
+		SEIUN_ITERATE_PHDR(seiun_phdr_cb, &args);
+		if (args.count == 0)
+			seiun_append(buf, cap, len, "  (module list unavailable on this device)\n");
 	}
 #elif defined(__APPLE__)
 	{
