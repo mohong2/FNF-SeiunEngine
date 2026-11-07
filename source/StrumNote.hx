@@ -3,6 +3,7 @@ package;
 import flixel.FlxG;
 import flixel.FlxSprite;
 import flixel.graphics.frames.FlxAtlasFrames;
+import flixel.system.FlxAssets.FlxShader;
 import openfl.utils.AssetType;
 import shaders.RGBPalette;
 import shaders.RGBPalette.RGBShaderReference;
@@ -93,13 +94,18 @@ class StrumNote extends FlxSprite
 		if(PlayState.SONG != null && PlayState.SONG.arrowSkin != null && PlayState.SONG.arrowSkin.length > 1)
 			skin = PlayState.SONG.arrowSkin;
 		// Multi-key: always use the stock ColorSwap so the shader stays active; custom skins are not tinted automatically.
+		// Neutral colours attach no shader at all: flixel splits a batch on shader *identity*, so one
+		// ColorSwap instance per strum turned eight identical arrows into eight draw calls even though
+		// the shader was an identity transform. The shader is built and attached by refreshSwapShader()
+		// only once the lane colour is actually non-neutral (press/confirm), exactly like Note does.
 		colorSwap = new ColorSwap();
-		shader = colorSwap.shader;
+		colorSwap.onChange = refreshSwapShader;
 		// 0.7.3/1.0.4 compatibility: the RGB reference is lazy. Static animations keep the original
 		// texture; it takes over only once a script changes rgbShader (falling back to colorSwap).
 		rgbShader = new RGBShaderReference(this, Note.initializeGlobalRGBShader(leData));
-		rgbShader.fallbackShader = colorSwap.shader;
+		rgbShader.fallbackColorSwap = colorSwap;
 		rgbShader.enabled = false;
+		shader = null;
 		// In the editor / test environment (PlayState.instance == null) the chart's disableNoteRGB
 		// always applies; the player's noteRGBMode only matters during real gameplay.
 		var chartDisabled:Bool = (PlayState.SONG != null && PlayState.SONG.disableNoteRGB);
@@ -170,7 +176,7 @@ class StrumNote extends FlxSprite
 		if (rgbShader != null)
 		{
 			rgbShader.whiteAtlas = useRgbColor;
-			rgbShader.fallbackShader = colorSwap != null ? colorSwap.shader : null;
+			rgbShader.fallbackColorSwap = colorSwap;
 			rgbShader.enabled = useRgbColor;
 		}
 
@@ -229,6 +235,29 @@ class StrumNote extends FlxSprite
 				centerOrigin();
 			}
 		}
+		refreshSwapShader();
+	}
+
+	/**
+	 * Attaches the ColorSwap program only while the lane colour is non-neutral.
+	 *
+	 * An identity ColorSwap still puts every strum in its own draw item (flixel batches on the
+	 * shader instance, not on its uniforms), which is why the eight idle strums used to cost eight
+	 * draws. Dropping the shader while neutral lets the idle strums - and the falling notes, which
+	 * never attach one - share a single batch.
+	 */
+	function refreshSwapShader():Void
+	{
+		if (colorSwap == null) return;
+		// The RGB palette owns the sprite's shader while it is active (0.7.3 white atlases).
+		if (rgbShader != null && rgbShader.enabled && !rgbShader.forceDisabled && ClientPrefs.data.shaders) return;
+		if (rgbShader != null && rgbShader.whiteAtlas)
+		{
+			if (shader != null) shader = null;
+			return;
+		}
+		var target:FlxShader = colorSwap.isNeutral() ? null : colorSwap.shader;
+		if (shader != target) shader = target;
 	}
 
 	/** Applies the lane colour to ColorSwap (same as Note). */
