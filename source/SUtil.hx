@@ -149,6 +149,10 @@ class SUtil
 		} catch (e:Dynamic) {}
 		#elseif ios
 		daPath = LimeSystem.documentsDirectory;
+		#elseif windows
+		// Portable install: data lives next to the executable, not in whatever
+		// directory the process happened to inherit (shortcut, cmd, launcher).
+		daPath = LimeSystem.applicationDirectory;
 		#else
 		daPath = Sys.getCwd();
 		#end
