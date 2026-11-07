@@ -882,10 +882,14 @@ class Main extends Sprite
 	 *   1. snapshot the GL error state (the renderer may not answer later),
 	 *   2. build the SystemDiag dump (engine/OS/window/renderer/logs),
 	 *   3. append the C++ diagnostics block (OS, GPU/driver, GetLastError, lime
-	 *      module probe, loaded modules), the shared diagnosis text and the origin,
+	 *      module probe, loaded modules) and the origin,
 	 *   4. write crash/SeiunEngine_<date>.txt (UTF-8 + BOM, same prefix as always),
 	 *   5. hand over to the recovery screen when the engine still exists, otherwise
 	 *      show a native UTF-16 dialog with the report path and exit.
+	 *
+	 * The dump is facts only: engine state, native diagnostics, origin. It carries
+	 * no what/why/fix paragraph on purpose - no fixed table covers every failure,
+	 * and a wrong guess is worse than none.
 	 *
 	 * Every step is individually guarded: a failure while reporting must not lose
 	 * the report that was already produced, and this function must never throw.
@@ -925,11 +929,6 @@ class Main extends Sprite
 		// lime@lime_init" report says nothing about *why* it could not.
 		try { fullMsg += NativeCrash.collectDiag(); } catch (x:Dynamic) {}
 
-		// The diagnosis table is shared with the C++ funnel (native_crash.inc).
-		var advice:String = '';
-		try { advice = NativeCrash.explainFatal(origin, message); } catch (x:Dynamic) {}
-		if (advice.length > 0) fullMsg += '\n--- Diagnosis ---\n' + advice;
-
 		fullMsg += '\n--- Report ---\nOrigin: ' + origin + '\nFile: ' + path + '\n';
 		fullMsg += '\nPlease report this error to the GitHub page: https://github.com/mohong2/FNF-SeiunEngine\n\n> SeiunEngine by mo_hong · Crash Handler written by: sqirra-rng ';
 
@@ -948,7 +947,6 @@ class Main extends Sprite
 		dialogMsg = dialogMsg.replace("{error}", message);
 		dialogMsg = dialogMsg.replace("{path}", path);
 		dialogMsg = dialogMsg.replace("{url}", githubUrl);
-		if (advice.length > 0) dialogMsg += "\n\n" + advice;
 
 		// Before Language.load() there are no lang files in memory, so the keys
 		// above fall back to English. A crash that early is exactly the one a
@@ -961,7 +959,6 @@ class Main extends Sprite
 				+ "错误 / Error: " + message + "\n\n"
 				+ "崩溃报告已保存到 / Report saved to:\n" + path + "\n\n"
 				+ "请把这份报告发给开发者 / Please send this report to the developers:\n" + githubUrl;
-			if (advice.length > 0) dialogMsg += "\n\n" + advice;
 		}
 
 		// Recovery screen: only possible when the engine really exists. A startup

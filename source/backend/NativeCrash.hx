@@ -371,28 +371,6 @@ class NativeCrash
 	}
 
 	/**
-	 * "What / why / how to fix it" for one failure, from the table in
-	 * native_crash.inc (seiun_explain_fatal). Shared with the C++ funnel so the
-	 * player reads the same explanation whichever layer caught the error.
-	 */
-	public static function explainFatal(kind:String, message:String):String
-	{
-		#if cpp
-		try
-		{
-			var buf:Bytes = Bytes.alloc(8192);
-			var k:String = (kind == null || kind.length == 0) ? 'fatal' : kind;
-			var m:String = (message == null) ? '' : message;
-			var written:Int = untyped __cpp__('::seiun_explain_fatal_to((char*){0}->Pointer(), (size_t){1}, {2}.__CStr(), {3}.__CStr())',
-				buf.getData(), buf.length, k, m);
-			if (written > 0) return buf.getString(0, written);
-		}
-		catch (e:Dynamic) {}
-		#end
-		return '';
-	}
-
-	/**
 	 * Native UTF-16 dialog (Windows: MessageBoxW/TaskDialog). The only way to
 	 * reach the player when lime itself is unusable - which is exactly when a
 	 * Haxe-side dialog cannot exist. Blocking; call it on the main thread.

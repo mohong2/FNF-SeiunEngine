@@ -2033,23 +2033,6 @@ static int seiun_ci_contains(const char* hay, const char* needle)
 	return 0;
 }
 
-// Copies the first quoted token out of msg ("... ID of \"videos\"" -> videos).
-static void seiun_quoted_token(const char* msg, char* out, size_t cap)
-{
-	out[0] = 0;
-	if (msg == NULL) return;
-	const char* a = strchr(msg, '"');
-	if (a == NULL) a = strchr(msg, '\'');
-	if (a == NULL) return;
-	const char* b = strchr(a + 1, *a);
-	if (b == NULL) return;
-	size_t l = (size_t)(b - a - 1);
-	if (l == 0) return;
-	if (l >= cap) l = cap - 1;
-	memcpy(out, a + 1, l);
-	out[l] = 0;
-}
-
 // FormatMessage() keeps the "%1" placeholders when the caller supplies no insert
 // list, which is how "error 193: %1 is not a valid Win32 application" ends up in
 // a report. Drop them and the spaces they leave behind.
@@ -2558,141 +2541,6 @@ static void seiun_append_modules(char* buf, size_t cap, int* len)
 #endif
 }
 
-// ── the one explanation table ───────────────────────────────────────────────
-
-/**
- * Turns a raw exception string into "what happened / why / how to fix it".
- *
- * Both languages are printed on purpose: the dialog is the only thing a player
- * sees, and a report may be opened by someone whose system language differs from
- * the game's. Only the failure modes that really are actionable get an entry;
- * everything else falls through to the generic text (never an empty explanation).
- */
-static void seiun_explain_fatal(const char* kind, const char* msg, char* out, size_t cap)
-{
-	out[0] = 0;
-	int len = 0;
-	const char* text = msg != NULL ? msg : "";
-	const char* k = kind != NULL ? kind : "";
-
-	if (seiun_ci_contains(text, "no asset library with an id of") || seiun_ci_contains(k, "asset"))
-	{
-		char id[96];
-		seiun_quoted_token(text, id, sizeof(id));
-		seiun_append(out, cap, &len,
-			"【缺少资源库 / Missing asset library%s%s】\n"
-			"What : 引擎要求加载资源库%s，但这次构建里没有它。\n"
-			"        The engine asked for an asset library that this build does not contain.\n"
-			"Why  : project.xml 里 <library name=\"...\" preload=\"true\"/> 与对应的\n"
-			"        <assets path=\"assets/...\" library=\"...\"/> 落在了不同的构建条件里。\n"
-			"        最常见的是 videos：它需要 VIDEOS_ALLOWED（32 位构建默认关闭），\n"
-			"        而 <library> 却写在条件之外，于是预加载清单里有库、包体里没有资源。\n"
-			"        资源目录为空（没有任何文件）时 Lime 同样不会生成该库。\n"
-			"Fix  : 打开 project.xml，把该 <library> 放进同一个 <section if=\"...\"> 内，\n"
-			"        或改成 preload=\"false\"；并确认对应资源目录里至少有一个文件\n"
-			"        （例如 assets/videos/put-your-videos-here.txt）。\n",
-			id[0] ? ": " : "", id[0] ? id : "",
-			id[0] ? "（ID 见下）" : "");
-		if (id[0])
-			seiun_append(out, cap, &len, "Library ID: \"%s\"\n", id);
-	}
-	else if (seiun_ci_contains(text, "could not load module") ||
-		seiun_ci_contains(text, "lime.ndll") || seiun_ci_contains(text, "liblime") ||
-		seiun_ci_contains(k, "lime_load") || seiun_ci_contains(k, "native_module"))
-	{
-		seiun_append(out, cap, &len,
-			"【无法加载 lime 原生模块 / Cannot load the lime native module】\n"
-			"What : hxcpp 在启动时 dlopen/LoadLibrary 了 lime 的 ndll，这一步失败了，\n"
-			"        所以整个引擎（窗口、图形、声音）都不存在。\n"
-			"        hxcpp could not load lime's native library, so no window/GL/audio exists.\n"
-			"Why  : 1) lime.ndll 缺失或不在 exe 同目录；\n"
-			"         2) 位数不对：64 位 exe 配了 32 位 ndll（Windows 错误码 193）；\n"
-			"         3) 依赖缺失（VC++ 运行库、SDL3、OpenAL 等 DLL）；\n"
-			"         4) 被安全软件/杀毒隔离。\n"
-			"Fix  : 确认 exe 同目录下有 x64 的 lime.ndll（Linux: liblime.so，\n"
-			"        macOS: lime.ndll），并与 exe 同一次构建产生：\n"
-			"        haxelib run lime rebuild windows -64 -D lime-sdl3\n"
-			"        下面的 \"lime module probe\" 会给出文件大小、位数和真实的系统错误码。\n");
-	}
-	else if (seiun_ci_contains(text, "0xc000007b") || seiun_ci_contains(text, "bad image") ||
-		seiun_ci_contains(text, "error 193"))
-	{
-		seiun_append(out, cap, &len,
-			"【位数不匹配 / Wrong bitness】\n"
-			"What : 某个 DLL/ndll 的位数与进程不一致（0xc000007b / error 193）。\n"
-			"Fix  : 全链路都用 64 位产物：lime.ndll 必须来自\n"
-			"        haxelib run lime rebuild windows -64 -D lime-sdl3\n");
-	}
-	else if (seiun_ci_contains(text, "sdl") && (seiun_ci_contains(text, "init") ||
-		seiun_ci_contains(text, "window") || seiun_ci_contains(text, "renderer")))
-	{
-		seiun_append(out, cap, &len,
-			"【SDL 初始化失败 / SDL could not start】\n"
-			"What : SDL 无法创建视频/渲染环境（报错原文在 Detail 里，即 SDL_GetError()）。\n"
-			"Why  : 显卡驱动过旧或损坏、远程桌面/虚拟机没有 3D 加速、\n"
-			"        独显被禁用、RDP 会话里没有 GL、或 SDL3 的 DLL 版本不匹配。\n"
-			"Fix  : 更新显卡驱动；退出远程桌面在本机运行；\n"
-			"        或在启动参数里换成软件渲染/窗口化后再试。\n");
-	}
-	else if (seiun_ci_contains(k, "launch") || seiun_ci_contains(k, "startup"))
-	{
-		seiun_append(out, cap, &len,
-			"【启动阶段异常 / Exception while starting】\n"
-			"What : Main.main() 的启动 try 捕获到异常，此时窗口/引擎状态可能还不存在，\n"
-			"        所以没有游戏内恢复界面，只能报告后退出。\n"
-			"        The exception escaped the boot sequence, before the engine was usable.\n"
-			"Why  : 资源缺失或被改动（assets/、pack.json）、模组脚本在加载时抛错、\n"
-			"        存档/配置文件损坏、显卡或音频初始化失败、权限不足导致无法写文件。\n"
-			"Fix  : 1) 看报告里的 Stack Trace，第一行 .hx 文件名+行号就是出错位置；\n"
-			"       2) 把 mods/ 清空（或只留默认内容）再启动一次；\n"
-			"       3) 删除 crash/ 之外的用户配置（如 settings/）后重试，确认不是配置损坏；\n"
-			"       4) 上面的环境信息（OS/GPU）会说明是否与驱动有关。\n");
-	}
-	else if (seiun_ci_contains(k, "engine_init") || seiun_ci_contains(k, "init_fail"))
-	{
-		seiun_append(out, cap, &len,
-			"【引擎初始化失败 / Engine failed to initialise】\n"
-			"What : new Main() 抛出异常，游戏对象没有建立起来。\n"
-			"        Constructing the engine sprite failed, so no game object exists.\n"
-			"Why  : 关键资源（字体/音效/图标）缺失或损坏、FlxG 初始化失败、\n"
-			"        模组替换了核心资源、显存不足、OpenGL 上下文无法创建。\n"
-			"Fix  : 确认 assets/ 完整（不要只拷贝 exe）；清空 mods/ 再试；\n"
-			"        更新显卡驱动；报告里的 GL 错误与模块列表可用于进一步定位。\n");
-	}
-	else if (seiun_ci_contains(text, "out of memory") || seiun_ci_contains(text, "bad_alloc"))
-	{
-		seiun_append(out, cap, &len,
-			"【内存不足 / Out of memory】\n"
-			"What : 进程无法再分配内存，引擎无法继续。\n"
-			"Fix  : 关闭其他程序；如果这是某首歌/某个模组触发的，先把该模组移出 mods/。\n");
-	}
-	else
-	{
-		seiun_append(out, cap, &len,
-			"【未分类的致命错误 / Unclassified fatal error】\n"
-			"What : 一个没有被任何已知规则匹配到的错误，原始信息见上面的 Message。\n"
-			"         报错带有 .hx 文件与行号时，那里就是 Haxe 侧抛出异常的位置。\n"
-			"Fix  : 把这份报告（含 Detail 与 Loaded modules）发给开发者；\n"
-			"        若最近装过模组/脚本，先清空 mods/ 再试一次以排除模组因素。\n");
-	}
-}
-
-/**
- * Haxe-facing wrapper around seiun_explain_fatal(): writes the explanation into
- * a caller-provided buffer and returns its length.
- *
- * The Haxe reporter (Main.reportCrash) and this file must tell the player the
- * same story for the same failure, so the table lives here once and both layers
- * read it. Returns 0 when the buffer is unusable.
- */
-extern "C" int seiun_explain_fatal_to(char* out, size_t cap, const char* kind, const char* msg)
-{
-	if (out == NULL || cap < 2)
-		return 0;
-	seiun_explain_fatal(kind, msg, out, cap);
-	return (int)strlen(out);
-}
-
 // ── dialog: one implementation per OS ───────────────────────────────────────
 
 // UTF-8 BOM, shared by every writer in this file.
@@ -2914,6 +2762,9 @@ extern "C" int seiun_collect_diag(char* out, size_t cap)
  * dialog and returns (the caller decides how to exit: hxcpp's WinMain returns
  * -1, Haxe calls Sys.exit(1)).
  *
+ * Facts only: the report has no what/why/fix paragraph. A fixed table cannot
+ * cover every failure, and a wrong guess is worse than none.
+ *
  * @param kind   short machine tag, also part of the file name ("haxe_uncaught")
  * @param msg    one line, shown in the dialog ("Could not load module lime@...")
  * @param detail optional multi-line text (exception stack, SDL error, ...)
@@ -2950,13 +2801,6 @@ extern "C" void seiun_fatal_report(const char* kind, const char* msg, const char
 
 	seiun_append_report_header(body, cap, &len, k);
 	seiun_append(body, cap, &len, "Message: %s\n", m);
-
-	// Explanation: what/why/fix, in both languages.
-	{
-		char explain[4096];
-		seiun_explain_fatal(k, m, explain, sizeof(explain));
-		seiun_append(body, cap, &len, "\n--- Diagnosis ---\n%s", explain);
-	}
 
 	seiun_append(body, cap, &len, "\n--- Environment ---\n");
 	{
@@ -3017,16 +2861,12 @@ extern "C" void seiun_fatal_report(const char* kind, const char* msg, const char
 	fprintf(stderr, "%s\n", body);
 #endif
 
-	// 5. the dialog: short, human, with the report path and who to send it to.
+	// 5. the dialog: the failure, where the report went and who to send it to. No
+	// advice: what to do about a crash is not knowable here, and a wrong guess
+	// reads worse than none.
 	{
 		char title[256];
 		char msgBox[4096];
-		char explain[1024];
-		seiun_explain_fatal(k, m, explain, sizeof(explain));
-		// Only the first paragraph of the explanation: a MessageBox is not a log.
-		char* nl = strchr(explain, '\n');
-		char* nl2 = nl ? strchr(nl + 1, '\n') : NULL;
-		if (nl != NULL && nl2 != NULL) *(nl2 + 1) = 0;
 
 		int isBoot = seiun_ci_contains(k, "boot") || seiun_ci_contains(k, "lime") ||
 			seiun_ci_contains(k, "startup");
@@ -3036,10 +2876,10 @@ extern "C" void seiun_fatal_report(const char* kind, const char* msg, const char
 
 		int msgLen = 0;
 		seiun_append(msgBox, sizeof(msgBox), &msgLen,
-			"%.900s\n\n%.1200s\n\n崩溃报告已保存到 / Report saved to:\n%s\n\n"
+			"%.1200s\n\n崩溃报告已保存到 / Report saved to:\n%s\n\n"
 			"请把这份报告发给开发者 / Please send this report to the developers.\n"
 			"https://github.com/mohong2/FNF-SeiunEngine/issues\n",
-			m, explain, seiun_fatal_path);
+			m, seiun_fatal_path);
 		seiun_show_dialog_platform(title, msgBox, seiun_dir[0] ? seiun_dir : "crash");
 	}
 }
