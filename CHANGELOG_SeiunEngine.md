@@ -1,38 +1,11 @@
 # SeiunEngine 更新日志 · Changelog
 
-> 完整记录 2026年6月19日 至 10月7日 的所有改进、修复与突破
-> A comprehensive record of every improvement, fix, and breakthrough from June 19 to October 7, 2026.
+> 完整记录 2026年6月19日 至 11月7日 的所有改进、修复与突破
+> A comprehensive record of every improvement, fix, and breakthrough from June 19 to November 7, 2026.
 
 ---
 
 ## 中文版
-
----
-
-### 2026年11月7日 — iOS / macOS 渲染与字体修复（含 SDL3）
-
-- **新增 `backend/RenderScale.hx`**：缩放模式改读真实的「舞台单位 ↔ 设备像素」映射（`Context3D` 后台缓冲 + 舞台 `__displayMatrix`）再摆放画布。旧 `RatioScaleMode` 用一种空间算偏移、画在另一种空间里，iOS/macOS 上画布右移约 `offset × 像素比`、左侧黑边、画面被裁；舞台与 drawable 不一致时按可见区域布局（日志 `trace.render.inconsistent`），一致时与旧版逐像素相同。`RenderScale.setFillScreen(true)` 可切「铺满裁切」。
-- **字体解包**：`CopyState.getFileBytes()` 对 `.ttf/.otf` 不再走 `ByteArray.fromFile()`（iOS 工作目录是待写入的 Documents，解包前文件不存在，字体被整批记为失败），改为与其他资源一样读内置资源；完整性检查新增 `assets/fonts/vcr.ttf`，缺字体就重新解包。
-- **字体兜底**：新增 `backend/FontRegistry.hx`，工作目录没有字体时按绝对路径在应用包/资源目录找到文件，`Font.fromFile()` 注册后返回家族名；`Paths.font()` / `languageFont()` / `optionsfont()` 接入，日志记录命中路径。
-- **iOS 换用 SDL3**：`Project.xml` 的 `lime-sdl3` 定义扩到 `ios || tvos`，lime 的 `Build.xml` 默认给 iOS/tvOS 编 SDL3 并补齐缺失源码；iOS 不再定义 `SDL_MAIN_HANDLED`（SDL3 把 `main()` 移进 `SDL_main_impl.h`，屏蔽会链不上 `_main`），帧循环改由 display link 驱动、不再首帧 `SDL_WaitEvent` 阻塞，隐藏 home indicator。
-- **其他**：SDL3 后端把 `DISPLAY_SCALE_CHANGED` 转发为 resize（Retina↔非 Retina、iPad 显示缩放后立即重排）；iOS 架构与系统版本进入设备信息/崩溃报告；`applyStorageDirectory()` 校验 `Sys.getCwd()` 并记 `trace.storage.cwdMismatch`；启动日志和崩溃转储都带一行 `Render scale: …`。
-
-### 2026年10月31日 — 后台减弱（Background Dim）音量逻辑修复
-
-- **不再改写主音量**：后台减弱改为在 `FlxSound.updateTransform()` 上叠加 0.25 的衰减系数（新增 `backend/AudioDim.hx`），`FlxG.sound.volume` 始终是玩家设置的音量。旧实现直接把主音量写成 0.2；flixel 的音量托盘隐藏时会把 `FlxG.sound.volume` 写入存档，因此「失焦时托盘正好收起」会把 0.2 持久化成玩家的音量，之后前台一直很小声。
-- **后台只会更小声**：旧实现使用固定值 0.2，玩家音量本来低于 0.2 时切到后台反而会变大声；衰减系数只会让后台更小（例如 0.1 → 0.025）。
-- **恢复不再依赖开关状态**：窗口重新获得焦点时无条件把系数复位为 1，关闭「后台减弱」或错过来焦事件都不会把游戏卡在低音量。
-- **与音量托盘解耦**：托盘显示和保存的始终是玩家真实音量，不再把后台衰减值写进存档。
-
----
-
-### 2026年10月18日 — 图片内存后端重写
-
-- **删除旧 Gfx 后端**：移除 GfxPolicy / GfxLru / GfxRepack。旧实现持有 FlxGraphic 强引用、手动销毁仍被引用的图、强制 GC、运行时重打包图集，并在每台设备上产生不同的 C++ 崩溃路径。
-- **新的 GfxMemory 后端**：只做一件事——大图上传到 GPU 后释放 CPU 像素副本（≥512×512），需要读像素时由 OpenFL 层自动重新解码。不销毁图片、不驱逐缓存、不触碰 GC。
-- **安全兜底**：纹理丢失/GL 上下文重建时自动重新解码并上传；解码失败只返回空纹理，不会空指针；FlxGraphic 增加重复销毁保护、活引用销毁保护和 bitmap 置空。
-- **状态切换 O(n²) 清理优化**：clearStoredMemory / clearUnusedMemory / purgeUnusedGraphics 改为单遍收集 + 批量清理，长会话切状态不再因反复全表扫描冻结。
-- **设置项精简**：移除 LRU 缓存、运行时贴图密排两个不可靠选项；保留「纹理内存释放」和「清除图片缓存」，并更新说明。
 
 ---
 
@@ -510,6 +483,85 @@
 
 ---
 
+### 2026年10月11日 – 11月7日（0.2.2 Pre-Online.3）
+
+> 本条目记录 0.2.2 Pre-Online.3 整个开发周期的最终成果；周期内被后续提交取代或撤销的中间状态（HUD 文本节流与命中表现按帧排队、图形 LRU 缓存与运行时贴图重排、崩溃报告里的自动诊断建议）不再单独记录。玩家向的完整公告见 `release-notes/0.2.2preonline3.md`。
+
+#### 谱面：新容器、快速加载与 64 位计数
+
+- **新增谱面容器 `.chartpack`（SEIUNPK1）**：谱面存成「骨架 + 组流」——骨架除每个 `sectionNotes` 数组的内容外逐字节保留（节对象、未知字段、events、格式都不动），数组位置留一个 NUL；组流按 section 内不同的 `(time, lane, sustain, type)` 各写一条记录加重复次数（varint + zlib）。引擎读 pack 时把一组展开成带 `repeat` 的原始 note，直接喂给折叠器，不再为每个重复音符分配对象。时间落在 BPM 网格上走 tick，否则退回 float64，判定容差 `1e-6 ms`。
+- **实测**：工具侧 funeral 全 17 个 JSON `76,765,170,749 B（71.5 GiB）` → `20,834 B`（`3,684,610×`，23.47 s，峰值 392.8 MB）；引擎侧 amphotercity 的 34 个文件 `45,217,329,492 B（42.11 GiB）` → `2,535,680 B（2.42 MiB）`（`17,832×`），33 part / 386,282 section / 约 20.64 亿 note 首次加载 6–8 秒（550,954 代表点）、峰值约 1.7 GB，缓存命中 4.7 秒、约 1.5 GB；32 MB / 1,521,362 note 的切片 `songLoad` 0.04 s（同份 JSON 2.73 s）。
+- **工具换代**：`tools/chartpack/chartpack.mjs` 改成流式字节解析（不把谱面读进内存），重复段用「指数倍增 + 二分」的 `memcmp` 快进，分组表用 typed array，并支持 ZIP 直读；新增界面 `chartpack-ui.exe`（中英双语、拖拽、实时压缩比、可选便携版）。容器格式仍为 v1，引擎不必重编；引擎只读 pack，不会自动把 JSON 转 pack。
+- **原生扫描与折叠（`source/ChartNative.hx`）**：第一阶段按 part 并行扫描，产出合并骨架、每 section 的 `sectionNotes` 字节区间与精确 note 数；第二阶段按区间读取，worker 解码归一化、单消费线程按谱面顺序折叠，直接产出打包列，worker 上不创建 Haxe 对象。任何异常返回失败并**自动回退 Haxe 路径**。只在 Turbo 或 note 数 > 12,000,000 时启用，含 Change Mania 事件的谱面不走。
+- **谱面 JSON 与寻址**：`sectionNotes` 里的垃圾字节不再抛错，改为跳到下一个数组并记录跳过量；单个 part 超过 2 GiB 改用 64 位 `seek` / `tell`（`_hx_std_file_seek64`），不再因偏移截断静默读错；折叠行数上限 6000 万 → 4 亿；骨架缓存升到 `chartstream-scan-v2`，缓存未被完整消费则判损坏重建。
+- **游玩计数换 Int64**：分数、连击、各判定桶、Miss 数、总可玩数改 `haxe.Int64`，存档与回放按十进制字符串写、读取兼容旧档的 Int / Float / String。真正的根因不是溢出：`Int64` 交给 `haxe.Json` 会序列化成对象，反序列化抛 `Null Object Reference`，且发生在音频结束回调里、崩溃处理器够不到 —— 表现为「打完歌写成绩直接崩」；`details` 数组恢复成纯数字。Lua / HScript 边界统一转成 number（hxcpp 反射会把 ≥2^31 的 `Int64` box 成对象，Lua 收到 `nil`、HScript 当字符串拼接）。
+- **Note 复用与内存**：池化时着色器对象跟着 Note 复用（只归零色相/饱和/亮度），轨道色数组按 `(mania, lane)` 记忆化（原实现每次新建三个 `Array<Float>`）；Turbo 单个可视代表的吸收上限 512 → 65536（与原生折叠器同值）；非流式谱面在 note ≥ 100,000 且由引擎从磁盘读入时，转成打包列后清空原始 `sectionNotes` 并记住重载配方。
+- **Note 材质**：新增统一的材质应用入口，修复池化复用跳过 `reloadNote` 时「一部分 Note 不上色」；Hurt Note 的白底图集改走 RGB 色板染色（`0xFF101010` / `0xFFFF0000` / `0xFF990022`），不再无条件找不存在的 `HURTNOTE_assets` 把帧清空，Hurt 溅射也不再沿用轨道色。
+- **strum 着色器按需挂载**：8 个空闲 strum 不再各带一个恒等 `ColorSwap`（flixel 按着色器实例分批，八个箭头就是八次 draw，也无法与从不挂着色器的下落音符合批），改为轨道色非中性时才挂、回中性即摘。
+
+#### 图形：图集裁切、调色板与图片内存
+
+- **内存后端重写**：删除 `GfxPolicy` / `GfxLru` / `GfxRepack`（持有强引用、销毁仍被引用的图、强制 GC、运行时重打包，并走出设备相关的 C++ 崩溃路径）。新的 `GfxMemory` 只在上传 GPU 后释放大图（≥512×512）的 CPU 像素副本，读像素时由 OpenFL 自动重解码；不销毁图片、不驱逐缓存、不碰 GC。`GfxSource` 在重解码后立刻移出 OpenFL 的位图缓存，避免「释放」名不副实。
+- **图集裁边（第一步）**：把整张图裁到所有帧实际用到的区域，并按同样距离平移帧坐标，`offset` / `sourceSize` / 帧名 / 顺序不变；换图前后逐帧校验 `parent` / `uv` / `offset` / 采样像素，任一不符整体回滚；省不到 0.5% 就放弃。
+- **图集重排（第二步：逐帧裁边 + 去重 + 紧排）**：每帧裁到自身不透明边界、相同的图块只留一份、紧密重排进新画布并改写帧坐标，`offset` 按 trim 补偿，精灵位置与大小不变；换图前逐 cell 逐字节比对、换图后逐帧校验并采样，失败整体回滚；省不到 5% 跳过。旋转 / 翻转帧整张回滚。
+- **调色板纹理**：一张图不同颜色 ≤ 256 种时改成「8 位索引 + 256 色调色板」，调色板条目就是源位图的 premultiplied BGRA 原始字节，索引采样强制 `NEAREST`，批次数不变。超过 256 色、无 CPU 像素、已上传过纹理、无 8 位索引格式、shader 编译失败、采样校验不一致 —— 逐图退回 RGBA。
+- **实测**（Windows debug 启动快照）：解码 85.9 → 82.7（裁边）→ 57.3 MB，GPU 85.4 → 79.4 → 55.6 MB；调色板本身解码 −17.5 MB（−23.4%）、GPU −15.9 ~ −20.8 MB（−22.2% ~ −29.1%），单张合格图 `166.3 → 41.6 MB（−75.0%）`；图集重排在启动 11 张里做了 8 张（−9.6% / −10.0%），代价约 0.50 s；三张真实 mod 图集 467.9 → 117.0 MB（省 350.9 MB）。省的是显存，工作集在噪声内（±3 MB）。
+- **GL 提交开销**：openfl 侧缓存 viewport / 纹理绑定 / 属性数组位掩码，删掉冗余 `glEnable`，同一 95-draw 画面 GL 调用 3563 → 1746（−51%）；动态顶点缓冲改原地 `bufferSubData`（装不下才退回 `bufferData`），上到 GPU 的字节不变。
+- **选项精简**：删「纹理复用缓存（LRU）」与「运行时纹理重打包」；「大纹理内存释放」改名「纹理内存释放」、阈值 2048px → 512px；「清除图片缓存」说明补上「仍在使用的图不会被动」。
+
+#### 文本：HUD 保持高清，命中不掉帧
+
+- **flixel fork**：`FlxText.regenGraphic()` 的描边从「每个偏移把 TextField 整画一遍」（1 + 8 × `int(borderSize × borderQuality)`，HUD 是 17 遍）改为「描边色栅格化一次 + 位图 blit 盖章」，17 遍变 2 遍且逐像素相同（14 组用例逐字节一致）；新增增量重绘，只重画新旧字符串差异对应的设备像素箱，证明不出安全箱时整行重画；新增输入签名比对，输入未变的重建直接跳过；签名稳定 750 ms 的静态文本合页到共享大图（菜单版本块 8 次 draw → 1 次，整个菜单 14 → 7 批次）。
+- **openfl fork**：`TextField.setTextFormat()` 在「单 range、整字段、只改不影响度量的属性」时不再标脏布局。
+- **实测**：分数行单次重画 `1594 → 1092 us`（中位 `2023 → 1278 us`）；harness p50/p90/p99 在 1.5x 下 `788/1076/1389 → 185/234/391 us`；颜色改动触发的排版 `148 → 0.3 us`；541 个样本逐像素 0 差异。
+- **HUD 文本行为回到 0.6.3 原版**：命中表现按帧排队、各类文本节流、1x 栅格化全部撤销（脚本会读 `scoreTxt`，`onUpdateScore` 要求命中当帧就是新值；1x 会让高倍率窗口文字变软）。`Stock HUD Text Rewrite` 选项随之删除，「脚本优化」页 4 项变 3 项。省下来的性能全部来自上面的库侧补丁，不是「少画」。
+- **溅射合批**：中性 `ColorSwap` 不再挂 shader，同屏多个溅射可合批。
+
+#### 崩溃诊断：四条路径、符号文件与一个工具
+
+- **四条路径、一个出口**：`native`（SEH / signal）、`haxe`（未捕获异常到顶层）、`lime:*`（窗口 / GL / 音频 / SDL 初始化失败，发生在 Haxe 之下）、`html5`（无原生对话框，报告渲染进页面）；报告首行带 `Kind:`，不靠文件名猜来源；原生层只留 `native_crash.pending`，下次启动消费后进崩溃恢复界面。
+- **报告内容**：`Kind` / `Date`、构建身份（主模块尺寸与 PE `TimeDateStamp`、`Linemap` 是否存在）、原生诊断（系统、GPU 与驱动、环境、进程目录、真实 Win32 错误码，进报告前先快照 `LastError`）、`lime` 模块探针（ndll 存在性与位数、`LoadLibrary` 原始错误码）、已加载模块列表。报告 UTF-8 + BOM，Windows 对话框用 UTF-16。
+- **符号包默认产出**：`Project.xml` 去掉 `hxcpp_symbols` 门控，`<postbuild>` 每次构建把本次链接的 `ApplicationMain.map` / `.pdb`（Android 为未剥离 `.so`）**移动**到 `export/symbols/<platform>-<mode>/`，旧产物进 `_stale/`，并写 `build-info.txt` / `build.json`（exe 尺寸 + PE `TimeDateStamp`）。报告因此带一行 `Build: 60396032B@1793431505s`，工具用同一对数字判断「这份 map 是否属于这个二进制」（整数比较，不看修改时间）。版本号改由 `BuildStampMacro` 编译期问 git 内联。
+- **工具合并**：`tools/crash.py` 一个文件取代九个脚本（crash_triage / diag / mapresolve / verify_map / symbolize_android / gen_linemap / gen_linemap_msvc / linemap_compare / fnv1a），子命令覆盖 status / report / bundle / ui / symbols / prune / triage / resolve / verify-map / symbolize / linemap。拆开本身就是 bug 来源：报告可能对着另一个构建的 map 解析，每一帧都「解析成功」却全错。
+- **删除自动诊断建议**：报告与弹窗里「什么 / 为什么 / 怎么修」那张固定表整段删除（没有一张表能覆盖所有失败，猜错比不猜更糟），报告只写事实，解释交给 issue 回复。
+- **验证范围**：只有 Windows 链端到端验证（报告 → 清单 → 解析）；Android / iOS / macOS 的符号位置接好但未在真机重测。发布包默认不含内联 `[文件:行号]`（那需要第二遍构建），需要时用 `crash.py linemap` 现做。
+
+#### 平台与启动
+
+- **iOS / macOS 渲染缩放**：新增 `backend/RenderScale.hx`，按真实「舞台单位 ↔ 设备像素」映射摆放画布。旧 `RatioScaleMode` 在一个空间算 letterbox 偏移、在另一个空间应用，iOS/macOS 上画布右移 `offset × 像素比`、左侧黑边、右侧被裁；不一致时按可见区域布局并记 `trace.render.inconsistent`，一致时与旧版逐像素相同。
+- **iOS 字体**：解包时 `.ttf/.otf` 不再走 `ByteArray.fromFile()`（iOS 工作目录正是待写入的 Documents），改读内置资源，完整性探针加入 `assets/fonts/vcr.ttf`；新增 `backend/FontRegistry.hx` 按绝对路径兜底注册，`Paths.font` / `languageFont` / `optionsfont` 接入并记录命中路径。
+- **iOS / tvOS 换 SDL3**：`lime-sdl3` 扩到 `ios || tvos`，部署目标 13.0、设备 `universal`；不再定义 `SDL_MAIN_HANDLED`、帧循环改 display link 驱动、不再首帧阻塞、隐藏 home indicator；`DISPLAY_SCALE_CHANGED` 转发为 resize；iOS 设备信息报出真实版本与架构；`applyStorageDirectory()` 回读校验 cwd；启动日志与崩溃转储带 `Render scale: …`。切换平台需要 `lime rebuild <target>` 一次。
+- **Android**：崩溃报告模块列表改用运行时 `dlsym` 取 `dl_iterate_phdr`（NDK 只在 API 21 以上声明，工程用 android-16，armv7 直接调用编不过），POSIX 补 `MAX_PATH`；联机聊天可收起软键盘，BACK 第一次只关输入法、不退出结算页，输入框有字时也能双击 B 取消。
+- **评级顺序**：`buildRatingsData()` 恢复 0=sick / 1=good / 2=bad / 3=shit，marvelous 追加到 index 4 并新增「最优档在前」的判定优先级 —— 此前 marvelous 占 index 0 把整张表挪位，联机复算分数按错档位加权。
+- **启动路径**：Windows 存储根改用可执行文件目录（原为进程工作目录），快捷方式 / cmd / 其他目录启动都能找对 `assets` / `mods` / `crash`。
+
+#### 界面
+
+- **切换过渡**：新增 `backend/transition/`（`TransitionDirector` / `TransitionStyle` / `WipeVisual` / `FadeVisual`），Wipe（0.25 s 扫入 + 0.03 s 黑屏 + 0.35 s 扫出）/ Fade / Off 三档，落成「视觉」页的 `transitionStyle` 选项。旧 `CustomFadeTransition` 类名与 `finishCallback` / `nextCamera` 保留，中途销毁补触发回调避免卡黑。
+- **菜单特效移除**：极光、粒子、节拍脉冲、选中辉光、条目入场、选歌预览辉光 / now playing / EQ 条整套删除（`MenuFX.hx` 及三个菜单 state 的调用、`quickMenuTransition`、`seiuMenuFx` 选项与三语文案），共 −1004 行，HEAD 全仓零引用。
+- **Credits**：新增 GitHub 贡献者段（最多 30 人，头像 150px / 6 小时缓存），取数顺序为磁盘缓存 → 在线接口 → 内置快照，离线时标题标注 `· offline` / `· cached`；`tools/gen_contributors.py` 刷新内置快照。
+
+#### 分支库更改
+
+- **hxcpp（`seiunengine-4.3.175`，自 4.3.2 重基到上游 v4.3.175）**：重基本身即本周期最大的性能变化（旧分支最大帧 57.9–66.9 ms / 停顿 53.5–62.9 ms，重基后 34.9–38.9 / 39.7–46.2 ms）。修 GC 行计数回归（`uint8_t` 在 `HXCPP_GC_BIG_BLOCKS` 的 508 行块上回绕，堆占用被低估、几乎每次要新块都回收）；采纳上游弱键 ephemeron；标记栈预取（x86-64）、finalizer 表重建再交换、碎片整理节奏调整（堆上限 1 GB → 512 MB，作者结论：只有节奏真正移动最大停顿 36.1–39.0 ms）；`hx::Boot()` 移进 `try` 并把异常汇入可选 `seiun_fatal_report()`、Windows 对话框改 `MessageBoxW`；新增 `_hx_std_file_seek64` / `tell64`；zlib 1.3.1 换 zlib-ng 2.3.90（`ZLIB_COMPAT`）并修掉 `haxe.zip` 流式解压返回累计计数；恢复并重做编译进度与本次重编译清单。
+- **openfl**：GL 状态缓存与原地顶点缓冲（同画面 GL 调用 −51%）；`BitmapData` 的 `dropCPU` / `restoreCPU` / 8 位索引纹理 / 不透明 RGB 纹理；`Shader.gfxTryCompile` 与生成式 shader 参数表重新解析；`TextField.setTextFormat()` 颜色改动不重排版。
+- **flixel**：`FlxText` 描边盖章、增量重绘、无变化跳过与静态文本合页；`FlxGraphic` 的 CPU 副本释放/恢复、调色板与重排计划挂载点、幂等销毁与活引用保护；相机画布跳过每批四边形边界重扫；重建中的 state 不再被销毁；预加载改为极简进度 + 启动画面绘制 logo。
+- **lime**：新增 `FatalReport`（SDL / 窗口 / GL / 音频初始化失败自写 `crash/lime_<kind>_<时间>.txt`）；资源清单从可执行文件目录解析；原生重建默认 SDL3，避免一次 `lime rebuild` 用 SDL2 覆盖 SDL3 的 `lime.ndll`；Apple SDL3 后端接线。
+- **hscript-seiun 1.4.0**：正则字面量 `~/pattern/flags`、对象 / 数组展开、结构化 switch 模式、`enum abstract` 与类泛型；运行时错误带脚本调用链与拼写提示。作者自述性能「中性到略快」，不按百分比宣传。
+- **hxvlc 2.3.1**（libVLC 3.0.23）：macOS 的 `libvlc.dylib` / `libvlccore.dylib` 原本是两个 14 / 18 字节的「符号链接文本文件」，检出后链接必失败，换成真实 x86_64 + arm64 fat 二进制；无 Stage3D 上下文时恢复 CPU `BitmapData` 渲染路径；并发 `initAsync` 不再创建两个实例；视频实例泄漏防护。
+- **linc_luajit**：15 个平台预编译库改为 CI 全量重建 + 架构自检（直接读 ELF / Mach-O / COFF 头）+ 每平台 sha256 清单；多 Lua state 的回调表串味修掉。
+- **flixel-ui / flixel-addons**：`FlxUICursor` 里裸写的 `case ID:` 被解析成继承来的 `FlxBasic.ID` 而非 `SortMethod.ID`，被 Haxe 降级成 catch-all；改为显式 `SortMethod.ID`。`@:enum abstract` 换成 Haxe 4 的 `enum abstract`。
+
+#### 注意事项 / 已知限制
+
+- ⚠ **四个分支库的改动尚未发布到远端**（hxcpp 14 个提交在 `seiunengine-4.3.175`、lime 5 个、flixel 12 个、openfl 7 个），`hmm.json` 里 hxcpp 的 `ref` 仍写作 `haxe-4.3`。以现有远端状态在干净环境构建，拿到的是重基前的旧底座，而且不会报错：**能编译、能运行，只是 GC / 崩溃路由 / `seek64` / 进度条这些改进不在里面**。
+- 图集裁切只保留每帧实际用到的区域：绕过帧、直接按绝对坐标读图集位图的模组会看到图外被切；走 `Paths.getSparrowAtlas / getAtlas / getAsepriteAtlas / getPackerAtlas` 的自动生效，自己 `FlxAtlasFrames.fromSparrow()` 的不经过。调色板采样为 `NEAREST`，缩放 / 旋转 + 抗锯齿时与 RGBA 的 LINEAR 结果不同。这条线没有玩家可见开关，只有 `FNF_GFX_ATLAS_CROP` / `FNF_GFX_ATLAS_REPACK` / `FNF_GFX_PALETTE` / `FNF_GFX_RGB` 环境变量。
+- 原生折叠路径会丢 Alt Animation（`PlayState.nativeFoldToChartNotes` 先写 `'-alt'` 又被 `''` 覆盖），只影响走原生路径的 Turbo / 超巨谱，已记录未修。
+- `.chartpack` 语义等价而非逐字节还原：同 section 内同刻 note 顺序与数字格式可能不同；基础 pack 存在时必须同时提供 `<song>.parts.json`，否则 2..N 不合并；打包器只接受 3 / 4 个标量字段的 note，5 个以上直接报错；工具需 Node 18+，界面需 .NET 4.8。
+- Windows 存储根改为 exe 目录后，装进只读目录会写不进存档与崩溃报告；macOS 仍用 `../Resources/`、Linux 仍是工作目录。tvOS 只加了编译定义，无配置与 CI，未构建未验证。
+
+---
+
 ### 鸣谢
 
 感谢所有参与测试的人员，你们的宝贵反馈是推动引擎不断完善的重要力量。
@@ -519,33 +571,6 @@
 ---
 
 ## English Version
-
----
-
-### November 7, 2026 — iOS / macOS rendering and fonts (SDL3 included)
-
-- **New `backend/RenderScale.hx`**: the scale mode now reads the real "stage unit to device pixel" mapping (`Context3D` back buffer plus the stage's `__displayMatrix`) and lays the canvas out from it. `RatioScaleMode` computed the letterbox offset in one space and applied it in another, so on iOS/macOS the canvas moved right by `offset * pixelRatio`, the left side stayed black and the scene was clipped; a mismatch now lays the game out inside the visible rectangle (logging `trace.render.inconsistent`), and a consistent stage renders exactly as before. `RenderScale.setFillScreen(true)` switches to "cover".
-- **Font extraction**: `CopyState.getFileBytes()` no longer reads `.ttf`/`.otf` with `ByteArray.fromFile()` (on iOS the working directory is the Documents folder the pass is about to fill, so every font failed): fonts now come from the bundled asset system like every other file, and the readiness probes include `assets/fonts/vcr.ttf` so a missing font re-runs the copy pass.
-- **Font fallback**: new `backend/FontRegistry.hx` finds the bundled file by absolute path when the working directory has none, loads it with `Font.fromFile()` and returns the family name; `Paths.font()` / `languageFont()` / `optionsfont()` use it and log the path that matched.
-- **SDL3 on iOS**: the `lime-sdl3` define covers `ios || tvos`, lime's `Build.xml` builds SDL3 for iOS/tvOS by default with the missing iOS sources added; iOS no longer defines `SDL_MAIN_HANDLED` (SDL3 moved `main()` into `SDL_main_impl.h`; hiding it leaves `_main` undefined), the frame loop is display-link driven without the first-tick `SDL_WaitEvent` stall, and the home indicator is hidden.
-- **Also**: the SDL3 backend forwards `DISPLAY_SCALE_CHANGED` as a resize (Retina/non-Retina moves and iPad display zoom re-lay out immediately); iOS reports its architecture and OS version in the device info and crash reports; `applyStorageDirectory()` verifies `Sys.getCwd()` and logs `trace.storage.cwdMismatch`; the boot log and the crash dump carry a `Render scale: ...` line.
-
-### October 31, 2026 — Background Dim volume logic fixed
-
-- **The master volume is no longer rewritten**: background dimming is now a 0.25 multiplier applied in `FlxSound.updateTransform()` (new `backend/AudioDim.hx`), while `FlxG.sound.volume` always stays at the player's value. The old code wrote 0.2 to the master volume; flixel's sound tray persists `FlxG.sound.volume` to the save file when it hides, so losing focus while the tray was still up saved 0.2 as the player's volume and left the foreground quiet from then on.
-- **The background can only get quieter**: the old absolute 0.2 made the background LOUDER for anyone already at or below 0.2; the multiplier only attenuates (for example 0.1 -> 0.025).
-- **Restore is unconditional**: regaining focus always resets the multiplier to 1, so disabling the option or a missed focus event can no longer leave the game stuck quiet.
-- **Sound tray decoupled**: the tray now always displays and persists the real player volume, never the attenuated value.
-
----
-
-### October 18, 2026 — Image memory backend rewrite
-
-- **Removed the old Gfx backend** (GfxPolicy / GfxLru / GfxRepack). It kept hidden strong references to FlxGraphic objects, destroyed graphics that could still be referenced, forced GC, and repacked atlases at runtime; those paths produced device-specific C++ crashes.
-- **New GfxMemory backend**: after a large image (>=512x512) is uploaded, its CPU pixel buffer is released; any later pixel access is transparently re-decoded by OpenFL. It never destroys graphics, never evicts the cache, and never touches the GC.
-- **Safety nets**: context-loss/restore re-decodes and re-uploads automatically; a failed restore returns an empty texture instead of a null pointer. FlxGraphic now has double-destroy and live-reference guards and clears its bitmap on destroy.
-- **O(n^2) state-switch cleanup fixed**: clearStoredMemory / clearUnusedMemory / purgeUnusedGraphics now collect once and purge in batches.
-- **Options simplified**: removed the unreliable LRU and runtime-repack toggles; kept Texture RAM Release and Clear Image Cache with updated descriptions.
 
 ---
 
@@ -1024,70 +1049,82 @@ Bundled regression harness (temp/touch-fix-test/TouchFixTest.hx): replicates the
 
 ---
 
-### October 17, 2026 (0.2.2 Pre-Online.3)
+### October 11 - November 7, 2026 (0.2.2 Pre-Online.3)
 
-> Player-visible goal: the frame-time spike on the frame a note is hit, with HUD text kept at full resolution.
+> This entry records the final state of the whole Pre-Online.3 development cycle; intermediate states that later commits superseded or reverted (HUD text throttling and the hit-presentation queue, the graphics LRU and runtime atlas repack, the automatic diagnosis paragraph in crash reports) are not listed separately. The player-facing announcement is `release-notes/0.2.2preonline3.md`.
 
-#### Root cause (measured, not guessed)
+#### Charts: new container, fast loading, 64-bit counters
 
-Flixel runs `FlxText.regenGraphic()` inside `draw()`, so none of the text-rebuild cost shows up in the
-hit handler. An outlined text is drawn `1 + 8 * int(borderSize * borderQuality)` times per rebuild (17
-passes for the HUD's `borderSize = 2`), and every one of those passes runs the whole TextField draw
-path - layout bookkeeping, a fresh renderer for the target bitmap, glyph submission - even though only
-the first pass of each colour actually rasterizes glyphs; the rest are pure blits. The bitmap is also
-field-wide and scales with the window / mobile rasterization scale, so the cost grows quadratically
-with DPI.
+- **New chart container `.chartpack` (SEIUNPK1)**: a chart is stored as a skeleton plus a group stream — the skeleton keeps every byte except the contents of each `sectionNotes` array (section objects, unknown fields, events and formatting survive byte for byte) with a NUL where the array belongs; the group stream writes one record per distinct `(time, lane, sustain, type)` plus a repeat count (varint + zlib). Reading a pack expands a group into raw notes carrying `repeat`, so the folder never allocates per duplicate. Times on the BPM grid use tick deltas, otherwise float64, tested at a `1e-6 ms` tolerance.
+- **Measured**: tool side, the 17 funeral JSONs `76,765,170,749 B (71.5 GiB)` become `20,834 B` (`3,684,610x`, 23.47 s, 392.8 MB peak); engine side, amphotercity's 34 files `45,217,329,492 B (42.11 GiB)` become `2,535,680 B (2.42 MiB)` (`17,832x`), and the full chart (33 parts / 386,282 sections / about 2.064 billion notes) loads in 6-8 s cold (550,954 representatives, ~1.7 GB peak) or 4.7 s from cache (~1.5 GB); a 32 MB / 1,521,362-note slice takes 0.04 s through `songLoad` against 2.73 s for the same JSON.
+- **New tooling**: `tools/chartpack/chartpack.mjs` is now a streaming byte parser (never holds the chart in memory), fast-forwards repeated runs with exponent-doubling plus binary search over `memcmp`, keeps its group tables in typed arrays and reads straight out of a ZIP; a windowed `chartpack-ui.exe` (English + Chinese, drag and drop, live ratios, optional portable build) ships alongside. The container is still v1, so the engine does not need a rebuild, and the engine only reads packs — it never converts JSON on its own.
+- **Native scan and fold (`source/ChartNative.hx`)**: phase one scans every part in parallel and produces the merged skeleton, each section's `sectionNotes` byte range and the exact note count; phase two reads those ranges, decodes on workers and folds on one consumer in chart order, emitting packed columns without creating a Haxe object on the workers. Any failure **falls back to the Haxe path**. It only runs under Turbo or above 12,000,000 notes, never for charts with Change Mania events.
+- **Chart JSON and addressing**: a stray byte inside `sectionNotes` no longer throws — the parser skips to the next array and counts what it skipped; a part beyond 2 GiB uses 64-bit `seek` / `tell` (`_hx_std_file_seek64`) instead of silently reading from a truncated offset; the fold ceiling moves from 60 million to 400 million rows; the skeleton cache becomes `chartstream-scan-v2` and a cache that was not fully consumed is treated as corrupt and rebuilt.
+- **Play counters become Int64**: score, combo, every judgement bucket, misses and total playable notes are `haxe.Int64`; saves and replays write decimal strings and read back Int / Float / String. The real root cause was not overflow — `Int64` handed to `haxe.Json` serialises as an object and deserialises into `Null Object Reference`, inside the audio-finished callback where the crash handler cannot reach it, which is why "writing the score at the end of a song crashed the game". The `details` array is plain numbers again. The Lua / HScript boundary converts everything to a number (hxcpp reflection boxes an `Int64` at or above 2^31, which arrived in Lua as `nil` and in HScript as string concatenation).
+- **Note reuse and memory**: the shader object survives pooling (hue/saturation/brightness reset only), lane colours are memoised per `(mania, lane)` (the old code allocated three `Array<Float>` per call), and the Turbo representative ceiling moves from 512 to 65536 (matching the native folder). A non-streamed chart with at least 100,000 notes that the engine read from disk releases its raw `sectionNotes` after being converted and keeps a reload recipe.
+- **Note materials**: one entry point now applies the material, fixing "some notes do not take their colour" when the pooled path skipped `reloadNote`; white-atlas Hurt Notes use the RGB palette (`0xFF101010` / `0xFFFF0000` / `0xFF990022`) instead of unconditionally looking for the absent `HURTNOTE_assets` and clearing the frames, and Hurt splashes stop inheriting the lane colour.
+- **Strum shaders attach on demand**: eight idle strums no longer carry an identity `ColorSwap` (flixel batches by shader instance, so eight arrows were eight draws that could not merge with the falling notes); the shader attaches only while the lane colour is non-neutral and is dropped when it returns.
 
-Measured in-game on a crisp (1.5x) HUD: one score-line rebuild cost 1594 us, and rewriting the four
-HUD texts a judgement touches on one frame produced ~6.4 ms frames (p99) against the 2.78 ms budget of
-a 360 fps frame - exactly the "360 -> 340 fps" an external overlay reports.
+#### Graphics: atlas cropping, palettes and image memory
 
-#### Changes
+- **Memory backend rewritten**: `GfxPolicy` / `GfxLru` / `GfxRepack` are deleted (strong references, destroying still-referenced graphics, forced GC, runtime repacking, and device-specific C++ crash paths). The new `GfxMemory` only releases the CPU pixel copy of a large image (>=512x512) after upload, and OpenFL re-decodes on demand; it never destroys graphics, evicts the cache or touches GC. `GfxSource` removes the decoded bitmap from OpenFL's cache so the release is real.
+- **Atlas crop (step 1)**: crops the atlas to the area its frames actually use and shifts frame coordinates by the same amount; `offset` / `sourceSize` / names / order are untouched and every frame's `parent` / `uv` / `offset` / sampled pixels are re-checked, rolling back on any mismatch. Less than 0.5% saved is skipped.
+- **Atlas repack (step 2: per-frame trim, dedup, tight packing)**: each frame is trimmed to its opaque bounds, identical tiles are kept once and the rest is repacked into a new canvas with frame coordinates rewritten; `offset` is compensated so sprite position and size are unchanged. Cells are compared byte-for-byte before the swap and every frame is validated and sampled after it, rolling back on failure. Less than 5% saved is skipped. Rotated / flipped frames roll back entirely.
+- **Palette textures**: an image with at most 256 distinct colours becomes an 8-bit index plus a 256-entry palette whose entries are the exact premultiplied BGRA bytes, sampled `NEAREST`, with the batch count unchanged. More than 256 colours, no CPU pixels, an already-uploaded texture, no 8-bit index format, a shader compile failure or a failed sample check falls back to RGBA per image.
+- **Measured** (Windows debug boot snapshot): decoded 85.9 -> 82.7 (crop) -> 57.3 MB, GPU 85.4 -> 79.4 -> 55.6 MB; the palette alone is decoded -17.5 MB (-23.4%) and GPU -15.9 to -20.8 MB (-22.2% to -29.1%), with one eligible image at `166.3 -> 41.6 MB (-75.0%)`; Atlas repacking touched 8 of the 11 boot atlases (-9.6% / -10.0%) for about 0.50 s of load time; three real mod atlases went from 467.9 to 117.0 MB (350.9 MB saved). This saves VRAM, not resident memory — the working set stayed inside +-3 MB.
+- **GL submission cost**: the openfl fork caches viewport, texture bindings and an attribute-array bitmask and drops redundant `glEnable` calls, taking a fixed 95-draw frame from 3563 to 1746 GL calls (-51%); dynamic vertex buffers refresh in place with `bufferSubData` (falling back to `bufferData` only when they do not fit), with identical bytes reaching the GPU.
+- **Options simplified**: "Texture Reuse Cache (LRU)" and "Runtime Texture Repack" are gone; "Big Texture RAM Release" becomes "Texture RAM Release" with the threshold lowered from 2048px to 512px, and "Clear Image Cache" now says images still in use are never touched.
 
-- **`FlxText.regenGraphic()` rewritten (flixel fork)**: the border-coloured text is rasterized **once**
-  into a reusable scratch bitmap and then stamped at the exact offsets of the old loop with plain
-  bitmap blits; the fill-coloured text is drawn once on top, as before. Two rasterizations instead of
-  17 - and the output is **pixel-identical** (verified byte-for-byte against the old path on 14 cases:
-  OUTLINE / OUTLINE_FAST / SHADOW, several border sizes and qualities, multi-line text, transparent
-  border colours, at 1x / 1.5x / 2x / 3x rasterization). Text therefore keeps the **full** rasterization
-  scale: the 1x `renderScaleCap` compromise of the earlier iteration is no longer used by the HUD, the
-  knob stays as an opt-in (default 0) for weak devices. Transparent border colours keep the historical
-  path (they accumulate alpha and multiply it once at the end, which needs the individual draws).
-- **`openfl.text.TextField.setTextFormat()` (openfl fork)**: a whole-field format change that only
-  touches non-metric properties (colour, underline, url) no longer marks the text layout dirty. The
-  layout groups keep a reference to the range's `TextFormat`, which is mutated in place, so the
-  rasterizer picks the new colour up without a re-layout. FlxText applies a border-coloured and a
-  fill-coloured format on every rebuild, so this removed a full lime text re-layout from both passes.
-  The optimisation is restricted to the single-range whole-field case, i.e. the only one where the
-  range objects cannot be replaced while the layout groups still reference them.
-- **Hit-presentation queue** (kept from the earlier iteration): score line, ms readout and judgement
-  popup stay separate one-per-frame tasks, so a hit frame never carries all of them.
-- **Batched note splashes** (kept): a neutral `ColorSwap` no longer attaches its shader.
+#### Text: the HUD stays crisp, hit frames stop dropping
 
-#### Measured result
+- **flixel fork**: the border pass goes from drawing the whole TextField once per offset (1 + 8 x `int(borderSize x borderQuality)`, 17 passes for the HUD) to rasterising the border colour once and stamping it with bitmap blits — 17 passes to 2, pixel-identical across 14 cases (byte-for-byte). Incremental rebuilds redraw only the device-pixel box covering the changed span and fall back to a full line whenever a safe box cannot be proven. An input signature skips rebuilds that would not change a pixel, and text whose signature has been stable for 750 ms is packed into a shared page (the menu's version block goes from 8 draw calls to 1, the whole menu from 14 to 7 batches).
+- **openfl fork**: `TextField.setTextFormat()` no longer dirties the layout for a single-range, whole-field change that only touches non-metric properties.
+- **Measured**: a score-line rebuild goes from `1594 to 1092 us` (median `2023 -> 1278 us`); the harness p50/p90/p99 at 1.5x goes from `788/1076/1389 to 185/234/391 us`; the layout triggered by a colour-only change goes from `148 to 0.3 us`; 541 samples compared with zero differing pixels.
+- **HUD text behaviour is back to 0.6.3**: the hit-presentation queue, all text throttling and the 1x rasterisation cap are reverted (scripts read `scoreTxt` and `onUpdateScore` must see the new value on the frame of the hit, and 1x made text soft at higher window scales). The `Stock HUD Text Rewrite` option is deleted and the Script Optimization page drops from 4 entries to 3. Every saving above comes from the library patches, not from drawing less.
+- **Splashes batch**: a neutral `ColorSwap` no longer attaches a shader, so several splashes share one batch.
 
-In-game, release build, 1921x1081 window (1.5x rasterization), 360 fps cap, four HUD texts rewritten
-per simulated judgement at 18 hits/s, 17 s runs, same machine:
+#### Crash diagnostics: four paths, symbol files, one tool
 
-| metric | before | after |
-| --- | --- | --- |
-| score-line rebuild (in-game) | 1594 us | **1092 us** |
-| score-line rebuild, median | 2023 us | **1278 us** |
-| hit frames over 6 ms, 4 texts per hit, per run | 70 | **18** |
-| forced-phase frame p99, 4 texts per hit | 6.37 ms | **5.90 ms** |
-| score-line-only frame p99 | 5.26 ms | **4.55 ms** |
-| re-raster after a colour-only format change (1.5x) | 52.9 us | **45.8 us** |
-| layout triggered by a colour-only `setTextFormat` | 148 us | **0.3 us** |
+- **Four paths, one exit**: `native` (SEH / signal), `haxe` (an uncaught exception reaching the top), `lime:*` (window / GL / audio / SDL init failing below Haxe) and `html5` (no native dialog, so the report is rendered into the page). Every report starts with `Kind:`, so the origin is never guessed from the file name; the native layer only leaves a `native_crash.pending` marker that the next start consumes before showing the crash screen.
+- **Report contents**: `Kind` / `Date`, build identity (main module size and PE `TimeDateStamp`, whether a linemap is loaded), native diagnostics (OS, GPU and driver, environment, process directory, the real Win32 error code, with `LastError` snapshotted before the report writes anything), a `lime` module probe (ndll presence and bitness, raw `LoadLibrary` error) and the loaded module list. Reports are UTF-8 + BOM; Windows dialogs are UTF-16.
+- **Symbols are always published**: the `hxcpp_symbols` switch is gone and a `<postbuild>` **moves** this link's `ApplicationMain.map` / `.pdb` (an unstripped `.so` on Android) into `export/symbols/<platform>-<mode>/` on every build, parking older bundles in `_stale/` and writing `build-info.txt` / `build.json` (exe size and PE `TimeDateStamp`). A report therefore carries `Build: 60396032B@1793431505s`, and the tool compares the same pair to decide whether a map belongs to that binary — an integer comparison, not modification times. The revision is inlined by `BuildStampMacro` asking git while Haxe compiles.
+- **Tooling collapsed**: `tools/crash.py` replaces nine scripts (crash_triage / diag / mapresolve / verify_map / symbolize_android / gen_linemap / gen_linemap_msvc / linemap_compare / fnv1a) with status / report / bundle / ui / symbols / prune / triage / resolve / verify-map / symbolize / linemap subcommands. Splitting them was itself the bug: a report could be resolved against a map from a different build and every frame would still "resolve", to the wrong function.
+- **Automatic advice removed**: the fixed "what / why / how to fix it" table is deleted from reports and dialogs (no table covers every failure, and a wrong guess is worse than none); the file carries facts, and the explanation comes from the issue thread.
+- **Scope of verification**: only the Windows chain is verified end to end (report -> manifest -> resolution); Android / iOS / macOS locations are wired but not re-tested on device. Release builds carry no inline `[file:line]` by default (that needs a second build pass); `crash.py linemap` builds the table on demand.
 
-Honest limits: at 2x / 3x rasterization (very large windows, high-DPI mobile) the border stamp blits
-are memory-bandwidth bound, so the gain shrinks - measured 3x score rebuild 1180-1427 us -> 1142-1383
-us. On those devices the hit-presentation queue and the opt-in `renderScaleCap` remain the levers; the
-default is crisp text.
+#### Platforms and boot
 
-⚠ Both patches live in the `flixel` and `openfl` forks and must be upstreamed to `mohong2/flixel` /
-`mohong2/openfl`, otherwise CI re-clones the dependencies without them.
+- **iOS / macOS render scale**: new `backend/RenderScale.hx` lays the canvas out from the real stage-units-to-device-pixels mapping. The old `RatioScaleMode` computed the letterbox offset in one space and applied it in another, so on iOS/macOS the canvas moved right by `offset x pixelRatio`, the left stayed black and the right was clipped; a mismatch lays out inside the visible rectangle and logs `trace.render.inconsistent`, and a consistent stage renders exactly as before.
+- **iOS fonts**: `.ttf/.otf` no longer go through `ByteArray.fromFile()` during extraction (on iOS the working directory is the Documents folder being filled), the readiness probes include `assets/fonts/vcr.ttf`, and the new `backend/FontRegistry.hx` registers a bundled font by absolute path and returns the family name, wired into `Paths.font` / `languageFont` / `optionsfont` with the matched path logged.
+- **iOS / tvOS move to SDL3**: `lime-sdl3` covers `ios || tvos`, deployment target 13.0, device `universal`; iOS no longer defines `SDL_MAIN_HANDLED`, the frame loop is display-link driven without the first-tick stall, the home indicator is hidden, `DISPLAY_SCALE_CHANGED` is forwarded as a resize, device info reports the real iOS version and architecture, `applyStorageDirectory()` verifies the working directory, and boot logs and crash dumps carry a `Render scale: ...` line. Switching a platform needs one `lime rebuild <target>`.
+- **Android**: the crash report resolves `dl_iterate_phdr` at runtime with `dlsym` (the NDK only declares it at API 21 while this project builds with android-16, so a direct call did not compile on armv7) and POSIX gets `MAX_PATH`; the online chat box can close the soft keyboard, the first BACK press closes the IME instead of leaving the results screen, and a text prompt with typed text can be cancelled with a double B.
+- **Judgement order**: `buildRatingsData()` is back to 0=sick / 1=good / 2=bad / 3=shit with marvelous appended at index 4 and a "best judgement first" priority — marvelous used to occupy index 0 and shift the whole table, so online score recalculation weighted the wrong tier.
+- **Boot path**: on Windows the storage root becomes the executable's directory (it was the process working directory), so a shortcut, a cmd launch or a different working directory still finds `assets` / `mods` / `crash`.
 
-(2026-10-17, changelog written by AI as usual.)
+#### Interface
+
+- **State transitions**: new `backend/transition/` (`TransitionDirector` / `TransitionStyle` / `WipeVisual` / `FadeVisual`) with Wipe (0.25 s in + 0.03 s held + 0.35 s out), Fade and Off, exposed as the `transitionStyle` option on the Visuals page. The old `CustomFadeTransition` name and its `finishCallback` / `nextCamera` statics are kept, and a transition destroyed mid-flight fires the callback once so the switch cannot be lost to a black screen.
+- **Menu effects removed**: the aurora, particles, beat pulses, selection glow, entry animations and the freeplay preview glow / now-playing label / EQ bars are gone (`MenuFX.hx` and its call sites in three menu states, `quickMenuTransition`, the `seiuMenuFx` option and its strings in three languages) — 1004 lines removed, with zero references left in HEAD.
+- **Credits**: a GitHub contributors block (up to 30, 150px avatars cached for 6 hours) reads from the disk cache, then the live endpoint, then a bundled snapshot, marking the section `. offline` / `. cached` when offline; `tools/gen_contributors.py` refreshes the snapshot.
+
+#### Forked library changes
+
+- **hxcpp (`seiunengine-4.3.175`, rebased from 4.3.2 onto upstream v4.3.175)**: the rebase is the largest performance change this cycle (the old fork measured a 57.9-66.9 ms max frame and a 53.5-62.9 ms stall; after the rebase 34.9-38.9 / 39.7-46.2 ms). It fixes a GC row-count regression (`uint8_t` counters wrapping on the 508-row blocks of `HXCPP_GC_BIG_BLOCKS`, which under-reported heap usage and triggered a collection on nearly every new block), adopts the upstream weak-key ephemeron work, adds a marking-stack prefetch (x86-64 only), rebuilds the finalizer table instead of erasing while iterating, retunes compaction (maximum free space 1 GB -> 512 MB; the author's own conclusion is that only the cadence moves the worst stall, 36.1-39.0 ms), moves `hx::Boot()` inside the `try` and routes exceptions into an optional `seiun_fatal_report()`, switches Windows dialogs to `MessageBoxW`, adds `_hx_std_file_seek64` / `tell64`, swaps zlib 1.3.1 for zlib-ng 2.3.90 (`ZLIB_COMPAT`) and fixes `haxe.zip`'s streaming decompressor returning cumulative counts, and restores the build progress display with an end-of-build list of recompiled files.
+- **openfl**: cached GL state and in-place vertex buffer updates (-51% GL calls on the same frame); `BitmapData` `dropCPU` / `restoreCPU` / 8-bit index textures / opaque RGB textures; `Shader.gfxTryCompile` and re-parsing of generated shader parameter tables; `TextField.setTextFormat()` no longer re-lays out for a colour-only change.
+- **flixel**: `FlxText`'s border stamp, incremental rebuilds, no-op skipping and static-text page packing; `FlxGraphic`'s CPU-copy release and restore, palette and repack plan slots, idempotent destroy and live-reference guards; camera canvases skip the per-batch quad bounds rescan; a state being re-created is no longer destroyed; the preloader is a minimal progress screen with the boot state drawing the logo.
+- **lime**: new `FatalReport` (SDL / window / GL / audio init failures write `crash/lime_<kind>_<time>.txt` themselves); asset manifests resolve from the executable's directory; native rebuilds default to SDL3 so one `lime rebuild` cannot overwrite an SDL3 `lime.ndll` with an SDL2 one; the Apple SDL3 backend wiring.
+- **hscript-seiun 1.4.0**: regex literals `~/pattern/flags`, object and array spreads, structural switch patterns, `enum abstract` and class generics; runtime errors carry the script call stack and a spelling hint. The author's own note is "performance-neutral to slightly faster", so no percentage is claimed.
+- **hxvlc 2.3.1** (libVLC 3.0.23): the macOS `libvlc.dylib` / `libvlccore.dylib` were 14- and 18-byte text files containing a symlink target, so every checkout failed to link; they are real x86_64 + arm64 fat binaries now. A CPU `BitmapData` render path returns for the no-Stage3D case, concurrent `initAsync` no longer creates two instances, and video instances get leak guards.
+- **linc_luajit**: the 15 platform prebuilts are rebuilt entirely by CI with an architecture check that reads ELF / Mach-O / COFF headers, each with a sha256 manifest; the multi-state callback-table leak is fixed.
+- **flixel-ui / flixel-addons**: a bare `case ID:` in `FlxUICursor` resolved to the inherited `FlxBasic.ID` instead of `SortMethod.ID` and Haxe degraded it to a catch-all; it is now explicit. `@:enum abstract` becomes Haxe 4's `enum abstract`.
+
+#### Notes / known limitations
+
+- ⚠ **The four fork changes are not published to the remote yet** (14 commits on hxcpp's `seiunengine-4.3.175`, 5 on lime, 12 on flixel, 7 on openfl), and `hmm.json` still names `haxe-4.3` for hxcpp. Built from the current remote state in a clean environment, the result is the pre-rebase base — and nothing complains: **it compiles and runs, the GC work, crash routing, `seek64` and the progress bar are simply not in it**.
+- Atlas cropping keeps only the area each frame actually uses: a mod that reads an atlas bitmap directly at absolute coordinates loses what was outside. Atlases going through `Paths.getSparrowAtlas / getAtlas / getAsepriteAtlas / getPackerAtlas` are handled automatically; ones loaded with `FlxAtlasFrames.fromSparrow()` directly are not. Palette sampling is `NEAREST`, so a scaled, rotated, smoothed sprite filters differently from the RGBA LINEAR path. This pipeline has no player-facing switch, only the `FNF_GFX_ATLAS_CROP` / `FNF_GFX_ATLAS_REPACK` / `FNF_GFX_PALETTE` / `FNF_GFX_RGB` environment variables.
+- The native fold path drops Alt Animation (`PlayState.nativeFoldToChartNotes` writes `'-alt'` and then overwrites it with `''`); it only affects Turbo / enormous charts on the native path. Recorded, not fixed.
+- `.chartpack` is semantically equivalent, not byte-identical: note order within a section and number formatting can differ; when a base pack exists `<song>.parts.json` must ship with it or parts 2..N are not merged; the packer accepts only 3- or 4-scalar notes and errors on five or more; the tool needs Node 18+ and the UI needs .NET 4.8.
+- With the Windows storage root now at the exe directory, installing into a read-only location fails to write saves and crash reports; macOS still uses `../Resources/` and Linux still uses the working directory. tvOS only has the define — no config and no CI, unbuilt and unverified.
 
 ---
 
@@ -1097,5 +1134,5 @@ A huge thank you to all testers — your feedback has been invaluable in shaping
 
 ---
 
-*本日志覆盖 SeiunEngine 自 6.19 至 10.7 全部主要变动。*
-*This changelog covers all significant changes from June 19 to October 7, 2026.*
+*本日志覆盖 SeiunEngine 自 6.19 至 11.7 全部主要变动。*
+*This changelog covers all significant changes from June 19 to November 7, 2026.*
