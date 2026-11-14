@@ -71,6 +71,15 @@ import sys.io.Process;
 	public var noteSplashes:Bool = true;
 	public var lowQuality:Bool = false;
 	/**
+	 * Graphics API picked on the Renderer row of the Graphics page.
+	 *
+	 * Preview only: this build renders through OpenGL and nothing reads this value to
+	 * switch backends (backend.VulkanNotice.active reports what a session is really
+	 * running on). It is a real saved preference rather than a fake one so the choice
+	 * survives a restart and the Vulkan switch has a value to read once it lands.
+	 */
+	public var renderer:String = 'OpenGL';
+	/**
 	 * State transition style: 'Wipe' (downward black shutter, default), 'Fade' (full screen
 	 * fade) or 'Off' (states swap instantly). Read by backend.transition.TransitionDirector.
 	 */
@@ -337,6 +346,25 @@ import sys.io.Process;
 class ClientPrefs {
 	public static var data:SaveVariables = {};
 	public static var defaultData:SaveVariables = {};
+
+	/**
+	 * The only renderer this build can actually draw with.
+	 *
+	 * The Renderer row of the Graphics page is a preview and its picker refuses every other
+	 * card, but the stored value is pinned here as well: a save written by an earlier preview
+	 * build (or a mod going through Reflect) would otherwise reach a build that trusts it and
+	 * claim to be running Vulkan while the session draws through OpenGL. When a real Vulkan
+	 * path lands, this constant is the one thing to relax.
+	 */
+	public static var SUPPORTED_RENDERER:String = 'OpenGL';
+
+	/** Forces data.renderer back to SUPPORTED_RENDERER; returns true when it had to change. */
+	public static function clampRenderer():Bool
+	{
+		if (data == null || data.renderer == SUPPORTED_RENDERER) return false;
+		data.renderer = SUPPORTED_RENDERER;
+		return true;
+	}
 	public static var arrowRGB(get, never):Array<Array<FlxColor>>;
 	public static var arrowRGBPixel(get, never):Array<Array<FlxColor>>;
 	public static var noteSkin(get, never):String;
@@ -855,6 +883,9 @@ class ClientPrefs {
 			return;
 		}
 
+		// Nothing is allowed to write a renderer this build cannot run on.
+		clampRenderer();
+
 		for (key in Reflect.fields(data))
 			Reflect.setField(FlxG.save.data, key, Reflect.field(data, key));
 
@@ -1121,6 +1152,10 @@ class ClientPrefs {
 		// Sync the loaded key binds into the controls system; otherwise PlayerSettings keeps using the defaults
 		reloadControls();
 		reloadVolumeKeys();
+
+		// The Renderer row previews a backend that does not exist yet, so an older preview
+		// build may have stored a choice this one cannot honour.
+		clampRenderer();
 
 		// Save file loaded; saveSettings() may write from here on
 		prefsLoaded = true;

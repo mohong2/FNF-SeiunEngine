@@ -878,6 +878,10 @@ class Main extends Sprite
 
 		if (!runtime.start(false)) return;
 
+		// Let the settings menu (and anything else) see that this session really is on
+		// Vulkan instead of only assuming OpenGL.
+		backend.VulkanNotice.active = true;
+
 		// Vulkan keeps its own texture table, so the CPU release decision can no
 		// longer look for a Context3D texture: this context is about to be deleted,
 		// and getTexture() on it would create textures nothing renders with.

@@ -560,6 +560,17 @@
 - `.chartpack` 语义等价而非逐字节还原：同 section 内同刻 note 顺序与数字格式可能不同；基础 pack 存在时必须同时提供 `<song>.parts.json`，否则 2..N 不合并；打包器只接受 3 / 4 个标量字段的 note，5 个以上直接报错；工具需 Node 18+，界面需 .NET 4.8。
 - Windows 存储根改为 exe 目录后，装进只读目录会写不进存档与崩溃报告；macOS 仍用 `../Resources/`、Linux 仍是工作目录。tvOS 只加了编译定义，无配置与 CI，未构建未验证。
 
+### 2026年11月14日 — 渲染器选项（预览）
+
+- **新增「渲染器」设置**（图形页第 3 行）：`ClientPrefs.data.renderer` 记住玩家选的图形接口，默认 `OpenGL`。**这一项目前只是预览**：引擎只有 OpenGL 一条渲染路径，所以目前也只允许选 OpenGL，选项下方常驻一行「目前只能选择 OpenGL，Vulkan 将在后续版本开放，敬请期待」。英 / 简 / 繁三语文案齐备。
+- **专属卡片选择器**：光标移到该行时其余条目向左退场、该行自己滑到左上角页标题的位置，页标题与说明面板一并淡出（三行说明会压到提示行上），整页让给 OpenGL / Vulkan 两张卡片；左右切换（或直接点卡片）时选中卡片点亮品牌色光晕、未选中的压灰，底部的强调条在两卡之间滑动，背景从菜单蓝过渡到深紫。进入 / 离开、呼吸光晕、提示闪烁全部由单一 `reveal` 值驱动指数缓动，不创建 `FlxTween`，所以快速开关也不会互相打架。
+- **图标**：OpenGL / Vulkan 标志取自 Wikimedia Commons 的公有领域 SVG（仅商标限制），重采样成白色 alpha 蒙版后由代码染色，选中 / 未选中只改颜色，不必准备第二套贴图。
+- **真实后端状态**：新增 `backend.VulkanNotice.active`，`Main.installVulkan()` 成功后置位；以 `-D seiun_vulkan` 构建并带 `--vulkan` 启动时，选项下方会多一行「本局已经在通过 Vulkan 绘制画面」，避免选项与实际后端对不上。
+- **回车不再叠面板**：光标在这一行时按回车（或直接点该行文字）原本会弹出通用取值面板，正好盖在两张卡片中间。现在这一行完全交给选择器：回车只闪一下提示条并播放确认音，通用面板不再出现在这一行。
+- **修复历史遗留日志**（`OptionLoader`）：内置选项加载时把 `null` 当作模组名传给 `trace.options.modLoaded`，控制台于是长期打印「从模组 graphics 加载了 null 个选项，分类: {}」。现在内置 / 模组 / 补丁各用自己的文案与占位符数量，并且报告的是真正新增的选项条数；全局根目录分类的报错也拆成独立 key（它原来同样会多留一个 `{}`）。
+- **目前只允许选 OpenGL（预防）**：`ClientPrefs.SUPPORTED_RENDERER` 是眼下唯一能被选中的渲染器。在卡片选择器里转向或点击 Vulkan 会被**拒绝**——播取消音、Vulkan 卡片连光晕亮一瞬（把画好的一套真容展示出来）、提示条闪白并写着「目前只能选择 OpenGL……」——选项值与存档都不动。左右切换改由选择器自己处理：通用的字符串循环会先把值写进去再轮到拒绝，所以那条路被绕开；两端环绕，左右两个方向都有回应。
+- **存档兜底**：`ClientPrefs.clampRenderer()` 在 `loadPrefs()` 与 `saveSettings()` 两头各夹一次，早期预览版本存下的 `Vulkan`（或模组用 `Reflect` 塞进去的任何值）都会被夹回 `OpenGL`，不会出现「存档说 Vulkan、实际在跑 OpenGL」。将来真 Vulkan 落地时，只需要放开 `SUPPORTED_RENDERER` 这一处。
+
 ---
 
 ### 鸣谢
@@ -1125,6 +1136,19 @@ Bundled regression harness (temp/touch-fix-test/TouchFixTest.hx): replicates the
 - The native fold path drops Alt Animation (`PlayState.nativeFoldToChartNotes` writes `'-alt'` and then overwrites it with `''`); it only affects Turbo / enormous charts on the native path. Recorded, not fixed.
 - `.chartpack` is semantically equivalent, not byte-identical: note order within a section and number formatting can differ; when a base pack exists `<song>.parts.json` must ship with it or parts 2..N are not merged; the packer accepts only 3- or 4-scalar notes and errors on five or more; the tool needs Node 18+ and the UI needs .NET 4.8.
 - With the Windows storage root now at the exe directory, installing into a read-only location fails to write saves and crash reports; macOS still uses `../Resources/` and Linux still uses the working directory. tvOS only has the define — no config and no CI, unbuilt and unverified.
+
+---
+
+### November 14, 2026 — Renderer option (preview)
+
+- **New "Renderer" setting** (third row of the Graphics page): `ClientPrefs.data.renderer` remembers the graphics API the player picked, defaulting to `OpenGL`. **It is a preview and nothing more**: the engine only has an OpenGL path, which is also why only OpenGL can be picked, and the row carries a permanent "only OpenGL for now - the Vulkan switch arrives in a future update" notice. English / Simplified / Traditional Chinese all covered.
+- **Its own card picker**: selecting the row sends every other row off to the left, slides the row itself into the page-title corner (the page title and the description panel fade out with them, since a three-line description lands right on top of the hint line) and hands the page to two OpenGL / Vulkan cards. Left/right (or a click on a card) lights the chosen card with its brand halo while the other is greyed out, an accent bar slides between them, and the background drifts from menu blue to deep violet. Enter/leave, the breathing halo and the notice flash are all driven by one `reveal` value through an exponential lerp instead of `FlxTween`s, so a fast open/close can never leave two animations fighting.
+- **Marks**: the OpenGL and Vulkan logos come from public-domain SVGs on Wikimedia Commons (trademark restrictions only), resampled into white alpha masks that the code tints, so selected/unselected needs no second set of textures.
+- **Real backend state**: new `backend.VulkanNotice.active`, set by `Main.installVulkan()` once the runtime succeeds. A build made with `-D seiun_vulkan` and launched with `--vulkan` gets an extra "this session is already drawing through Vulkan" line, so the row can never disagree with what the game is actually doing.
+- **ENTER no longer stacks a panel on it**: pressing Enter (or clicking the row's text) while the picker was up opened the generic value popup right between the two cards. The row now belongs to the picker entirely - Enter only flashes the notice with a confirm sound - so the popup never appears there.
+- **Legacy log fix** (`OptionLoader`): the builtin roots passed a `null` mod source into `trace.options.modLoaded`, so the console kept printing "loaded graphics ... from mod null" with a stray `{}`. Builtin / mod / patch loads now have their own keys, their own placeholder count, and report how many options were actually appended; the global-root category error got its own key too (it also left a `{}` behind).
+- **Only OpenGL can be picked for now (the safeguard)**: `ClientPrefs.SUPPORTED_RENDERER` is the one renderer the picker accepts. Turning to Vulkan or clicking its card is **refused** - deny sound, the Vulkan card and its halo light up for a moment (so the finished artwork still gets shown), the notice flashes "Only OpenGL for now ..." - and neither the option nor the save moves. Left/Right on that row is handled by the picker itself now: the generic string cycling would commit the value before the row could refuse it. It wraps at both ends, so either direction always answers.
+- **Save-file backstop**: `ClientPrefs.clampRenderer()` runs inside both `loadPrefs()` and `saveSettings()`, so a `Vulkan` stored by an earlier preview build (or pushed in by a mod through `Reflect`) is clamped back to `OpenGL`. A save can never claim a backend the session is not drawing with, and `SUPPORTED_RENDERER` is the single switch to flip when a real Vulkan path lands.
 
 ---
 

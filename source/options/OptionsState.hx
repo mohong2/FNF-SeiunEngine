@@ -57,6 +57,15 @@ class OptionsState extends MusicBeatState
 	static final TRANSITION_DURATION:Float = 0.3;
 	static final ENTER_DURATION:Float = 0.4;
 
+	/** Where the Renderer row parks itself while the picker is up (the page-title slot). */
+	static final PICKER_ROW_X:Float = 110;
+	static final PICKER_ROW_Y:Float = 36;
+	/** How far the other rows slide left; comfortably past the edge of a 1280-wide screen. */
+	static final ROW_RETREAT:Float = 900;
+	/** Menu background, and the violet the Renderer picker tints it towards. */
+	static final BG_MENU:Int = 0xff17719b;
+	static final BG_PICKER:Int = 0xff1a0d33;
+
 	// ═══════════════════════════════════════════════════════════════
 	//  Category data — driven by OptionLoader
 	// ═══════════════════════════════════════════════════════════════
@@ -145,6 +154,25 @@ class OptionsState extends MusicBeatState
 	var settingsNotesTween:Array<FlxTween> = [];
 	/** Row index of the noteSkin option in the list (-1 = absent on this page). */
 	var settingsNoteSkinID:Int = -1;
+
+	// ── Renderer picker ────────────────────────────────────────────────────────
+	/** Row index of the Renderer option on the current page (-1 = absent). */
+	var settingsRendererID:Int = -1;
+	/** Card picker that takes the page over while the Renderer row is selected. */
+	var rendererShowcase:RendererShowcase = null;
+	/** True while the picker owns the page. */
+	var rendererShowcaseOpen:Bool = false;
+	/** The page opened straight onto the Renderer row; wait for the slide-in to settle. */
+	var rendererShowcasePending:Bool = false;
+	/** Resting position of every row, so retreating is always reversible. */
+	var rowHomeX:Array<Float> = [];
+	var rowHomeY:Array<Float> = [];
+	/** Page title alpha captured when the picker dims it. */
+	var rendererTitleAlpha:Float = 1;
+	/** 0 = menu blue, 1 = picker violet; lerped so the swap cannot jump. */
+	var bgTint:Float = 0;
+	/** Debounce for ENTER on the Renderer row (controls.ACCEPT is a level, not an edge). */
+	var rendererAcceptHeld:Bool = false;
 
 	var currentMode:Int = MODE_CATEGORY;
 	var currentSettingsPage:String = '';
@@ -246,6 +274,7 @@ class OptionsState extends MusicBeatState
 			'onClearChartCache'            => onClearChartCache,
 			'onChangeStorageType'          => onChangeStorageType,
 			'onChangeAutoExtractAssets'    => onChangeAutoExtractAssets,
+			'onChangeRenderer'             => onChangeRenderer,
 		];
 		OptionLoader.setCallbacks(callbacks);
 	}
@@ -789,6 +818,27 @@ class OptionsState extends MusicBeatState
 			settingsUpdateText(setOptionsArray[i]);
 		}
 
+		// Renderer row: the one page in the menu that gets a picker instead of a value line.
+		// Home positions are captured here because the picker moves the rows by retargeting
+		// their startPosition, and closing it has to put them back where the page built them.
+		settingsRendererID = -1;
+		rowHomeX = [];
+		rowHomeY = [];
+		for (i in 0...setOptionsArray.length)
+		{
+			var row = setGrpOptions.members[i];
+			rowHomeX.push(row != null ? row.startPosition.x : 280);
+			rowHomeY.push(row != null ? row.startPosition.y : 260);
+			if (setOptionsArray[i].variable == 'renderer')
+				settingsRendererID = i;
+		}
+
+		if (settingsRendererID >= 0 && !previewMode)
+		{
+			rendererShowcase = new RendererShowcase(setOptionsArray[settingsRendererID].options);
+			add(rendererShowcase);
+		}
+
 		changeSettingsSelection(0, !previewMode);
 		settingsReloadCheckboxes();
 		settingsSetupNotePreview(optionsArray);
@@ -882,6 +932,22 @@ class OptionsState extends MusicBeatState
 		for (t in settingsNotesTween) if (t != null) t.cancel();
 		settingsNotesTween = [];
 		settingsNoteSkinID = -1;
+
+		// The picker owns sprites of its own; without this every visit would leave another
+		// full set of cards, marks and halos behind.
+		if (rendererShowcase != null)
+		{
+			remove(rendererShowcase);
+			rendererShowcase.destroy();
+			rendererShowcase = null;
+		}
+		rendererShowcaseOpen = false;
+		rendererShowcasePending = false;
+		rendererAcceptHeld = false;
+		settingsRendererID = -1;
+		rowHomeX = [];
+		rowHomeY = [];
+		bgTint = 0;
 	}
 
 	/**
@@ -954,6 +1020,17 @@ class OptionsState extends MusicBeatState
 	{
 		updateDeferredDescription(elapsed);
 
+		updateBackgroundTint(elapsed);
+
+		// A page that lands on the renderer row the moment it is built (a mod can reorder
+		// the Graphics page) asks for the picker while the slide-in is still running.
+		// Opening it there looks like a glitch, so it is raised once the page has settled.
+		if (rendererShowcasePending && !transitioning)
+		{
+			rendererShowcasePending = false;
+			openRendererShowcase();
+		}
+
 		// Keyboard always wins on the frame it is used; mouse is ignored that frame.
 		var keyboardUsed:Bool = controls.UI_UP_P || controls.UI_DOWN_P
 			|| controls.ACCEPT || controls.BACK || controls.UI_LEFT_P || controls.UI_RIGHT_P
@@ -994,7 +1071,9 @@ class OptionsState extends MusicBeatState
 						if (option.type == 'string' || option.type == 'int'
 							|| option.type == 'float' || option.type == 'percent')
 						{
-							openOptionPopup(option);
+							// The picker was already raised by the click moving the cursor onto the Renderer
+							// row, and stacking the value popup on it is the overlap this row must not make.
+							if (!rendererRowOwnsInput()) openOptionPopup(option);
 						}
 						else if (option.type == 'button')
 						{
@@ -1007,6 +1086,14 @@ class OptionsState extends MusicBeatState
 					}
 				}
 			}
+		}
+
+		// A click or tap on a card is exactly "press Left/Right onto it".
+		if (rendererShowcaseOpen && !keyboardUsed && FlxG.mouse.justPressed
+			&& !(virtualPad != null && virtualPad.isMouseOverAnyButton()))
+		{
+			var card:Int = rendererShowcase.hoveredCard(FlxG.camera);
+			if (card >= 0) setRendererChoice(card, true);
 		}
 
 		if (controls.UI_UP_P)   changeSettingsSelection(-1);
@@ -1022,6 +1109,20 @@ class OptionsState extends MusicBeatState
 
 		if (nextAccept <= 0)
 		{
+			// ENTER on the Renderer row just restates the promise: nothing is applied, because
+			// there is no second backend to apply. controls.ACCEPT is a level (true while the
+			// key is held), so the flash is edge-triggered by hand.
+			if (rendererShowcaseOpen && setCurOption != null && setCurOption.variable == 'renderer')
+			{
+				if (controls.ACCEPT && !rendererAcceptHeld)
+				{
+					rendererAcceptHeld = true;
+					FlxG.sound.play(Paths.sound('confirmMenu'), 0.6);
+					rendererShowcase.flashNotice();
+				}
+				else if (!controls.ACCEPT)
+					rendererAcceptHeld = false;
+			}
 			var usesCheckbox = (setCurOption != null && (setCurOption.type == 'bool' || setCurOption.type == 'button'));
 
 			if (usesCheckbox)
@@ -1036,7 +1137,7 @@ class OptionsState extends MusicBeatState
 			}
 			else if (setCurOption != null)
 			{
-				if (controls.ACCEPT && (setCurOption.type == 'string'
+				if (controls.ACCEPT && !rendererRowOwnsInput() && (setCurOption.type == 'string'
 					|| setCurOption.type == 'int' || setCurOption.type == 'float'
 					|| setCurOption.type == 'percent'))
 				{
@@ -1046,7 +1147,20 @@ class OptionsState extends MusicBeatState
 
 				var isWindowMode:Bool = (setCurOption.variable == 'windowedmode');
 
-				if (controls.UI_LEFT || controls.UI_RIGHT)
+				// The picker owns Left/Right on its row: the string cycling below would commit the
+				// value before the row could refuse it. Wrapping keeps both directions answered even
+				// with a single selectable card - they just end up on the locked one and are refused.
+				var rendererRow:Bool = rendererRowOwnsInput();
+
+				if (rendererRow && (controls.UI_LEFT_P || controls.UI_RIGHT_P) && setCurOption.options != null)
+				{
+					var count:Int = setCurOption.options.length;
+					var target:Int = setCurOption.curOption + (controls.UI_RIGHT_P ? 1 : -1);
+					if (target < 0) target = count - 1;
+					else if (target >= count) target = 0;
+					setRendererChoice(target, true);
+				}
+				else if (!rendererRow && (controls.UI_LEFT || controls.UI_RIGHT))
 				{
 					var pressed = (controls.UI_LEFT_P || controls.UI_RIGHT_P);
 					if (holdTime > 0.5 || pressed)
@@ -1306,6 +1420,11 @@ class OptionsState extends MusicBeatState
 			}
 		}
 
+		// Crossing into or out of the renderer row hands the page over to (or back from) the
+		// picker. Every route into a row - keys, wheel, mouse, touch, RESET - ends here, so
+		// this is the only place the transition has to be hooked.
+		updateRendererShowcase(lastSettingsSelected, setCurSelected);
+
 		lastSettingsSelected = setCurSelected;
 		setCurOption = setOptionsArray[setCurSelected];
 		if (playSound == true)
@@ -1343,6 +1462,239 @@ class OptionsState extends MusicBeatState
 	function settingsSaveState()
 	{
 		ClientPrefs.saveSettings();
+	}
+
+	// ═══════════════════════════════════════════════════════════════════════════
+	//  Renderer picker
+	// ═══════════════════════════════════════════════════════════════════════════
+
+	/** The Renderer option on the current page, or null when this page has none. */
+	function rendererOption():Option
+	{
+		if (settingsRendererID < 0 || setOptionsArray == null || settingsRendererID >= setOptionsArray.length)
+			return null;
+		return setOptionsArray[settingsRendererID];
+	}
+
+	/**
+	 * True while the Renderer row owns the input.
+	 *
+	 * The picker *is* the editor for that row - Left/Right and the cards are the whole
+	 * interaction - so the generic value popup must not open on top of it. It did, and the two
+	 * panels landed on each other. The queued-open frame is covered too: ENTER can arrive while
+	 * the page is still sliding in, before the picker has been raised.
+	 */
+	function rendererRowOwnsInput():Bool
+	{
+		return setCurOption != null && setCurOption.variable == 'renderer'
+			&& (rendererShowcaseOpen || rendererShowcasePending);
+	}
+
+	/**
+	 * Whether a card may actually be picked.
+	 *
+	 * Only a renderer this build can honour is selectable. The row is a preview, but a preview
+	 * must not become a saved preference that claims a backend the engine cannot draw with -
+	 * ClientPrefs pins the stored value to the same constant.
+	 */
+	function rendererSelectable(index:Int):Bool
+	{
+		var opt:Option = rendererOption();
+		if (opt == null || opt.options == null || index < 0 || index >= opt.options.length) return false;
+		return opt.options[index] == ClientPrefs.SUPPORTED_RENDERER;
+	}
+
+	/**
+	 * Opens or closes the picker.
+	 *
+	 * The rows are never tweened here: FlxTextMenuItem lerps towards startPosition every
+	 * frame, so retargeting that point *is* the slide, and the rows keep exactly the easing
+	 * they use for every other cursor move.
+	 */
+	function setRendererPickerOpen(open:Bool, ?instant:Bool = false):Void
+	{
+		if (rendererShowcase == null || settingsRendererID < 0) return;
+		if (rendererShowcaseOpen == open) return;
+		rendererShowcaseOpen = open;
+
+		for (i in 0...setGrpOptions.length)
+		{
+			var item = setGrpOptions.members[i];
+			if (item == null || i >= rowHomeX.length) continue;
+
+			if (i == settingsRendererID)
+			{
+				// The row itself stays readable - it is the header of the picker - so it is
+				// pulled up and left into the corner the page title normally sits in.
+				item.startPosition.x = open ? PICKER_ROW_X : rowHomeX[i];
+				item.startPosition.y = open ? PICKER_ROW_Y : rowHomeY[i];
+			}
+			else
+			{
+				// Everything else retreats past the left edge. The offset is deliberately larger
+				// than the screen so nothing can peek back in on a narrow window.
+				item.startPosition.x = open ? rowHomeX[i] - ROW_RETREAT : rowHomeX[i];
+				item.startPosition.y = rowHomeY[i];
+			}
+
+			if (instant == true) item.snapToPosition();
+		}
+
+		// The page title would land on top of the moved row, and the description panel sits
+		// exactly where the picker's hint and notice go: both step aside for the duration.
+		// (A three-line description is tall enough that merely dimming it still collided.)
+		if (setTitleText != null)
+		{
+			if (open) rendererTitleAlpha = setTitleText.alpha;
+			setTitleText.alpha = open ? 0 : rendererTitleAlpha;
+		}
+		// Faded, not toggled: a hard cut at the same moment the rows start sliding reads as
+		// a glitch, and a tween makes the panel slide out of the way with them. cancelTweensOf
+		// keeps a fast open/close from stacking two tweens on the same property.
+		if (setDescText != null)
+		{
+			FlxTween.cancelTweensOf(setDescText, ['alpha']);
+			FlxTween.tween(setDescText, {alpha: open ? 0 : 1}, 0.18, {ease: FlxEase.quadOut});
+		}
+		if (setDescBox != null)
+		{
+			FlxTween.cancelTweensOf(setDescBox, ['alpha']);
+			FlxTween.tween(setDescBox, {alpha: open ? 0 : 0.6}, 0.18, {ease: FlxEase.quadOut});
+		}
+	}
+
+	/**
+	 * Called from changeSettingsSelection with the row the cursor came from and the one it
+	 * landed on. Only a transition onto or off the Renderer row does anything.
+	 */
+	function updateRendererShowcase(previous:Int, current:Int):Void
+	{
+		if (rendererShowcase == null || settingsRendererID < 0) return;
+
+		var wasOn:Bool = (previous == settingsRendererID);
+		var isOn:Bool = (current == settingsRendererID);
+		if (wasOn == isOn) return;
+
+		if (isOn)
+		{
+			// The page was still sliding in when the cursor landed here, so the picker is
+			// raised once that transition has finished.
+			if (transitioning)
+			{
+				rendererShowcasePending = true;
+				return;
+			}
+			openRendererShowcase();
+		}
+		else
+		{
+			closeRendererShowcase();
+		}
+	}
+
+	function openRendererShowcase():Void
+	{
+		var opt:Option = rendererOption();
+		if (opt == null || rendererShowcase == null || rendererShowcaseOpen) return;
+
+		rendererShowcasePending = false;
+
+		var index:Int = 0;
+		if (opt.options != null)
+		{
+			var found:Int = opt.options.indexOf(Std.string(opt.getValue()));
+			if (found >= 0) index = found;
+		}
+
+		rendererShowcase.enter(index);
+		setRendererPickerOpen(true);
+	}
+
+	function closeRendererShowcase(?instant:Bool = false):Void
+	{
+		if (rendererShowcase == null || !rendererShowcaseOpen) return;
+		rendererShowcase.leave();
+		if (instant == true) rendererShowcase.hideNow();
+		setRendererPickerOpen(false, instant);
+	}
+
+	/**
+	 * Applies a card choice exactly like pressing Left/Right onto it would.
+	 *
+	 * A card this build cannot honour is refused instead of applied: the press is still answered
+	 * (denied sound, the card lights up for a moment, the notice flashes) but neither the option
+	 * nor ClientPrefs is touched, so the row can never leave OpenGL.
+	 */
+	function setRendererChoice(index:Int, playSound:Bool):Void
+	{
+		var opt:Option = rendererOption();
+		if (opt == null || opt.options == null) return;
+		if (index < 0 || index >= opt.options.length) return;
+
+		if (!rendererSelectable(index))
+		{
+			if (playSound) FlxG.sound.play(Paths.sound('cancelMenu'), 0.7);
+			if (rendererShowcase != null) rendererShowcase.deny(index);
+			return;
+		}
+
+		if (opt.curOption == index) return;
+
+		opt.curOption = index;
+		opt.setValue(opt.options[index]);
+		settingsUpdateText(opt);
+		if (playSound) FlxG.sound.play(Paths.sound('scrollMenu'));
+		opt.change();
+	}
+
+	/**
+	 * Renderer row onChange.
+	 *
+	 * The row is a preview and nothing else: no backend is touched here. All it does is
+	 * re-point the picker and restate the "coming in a later update" notice, which is the
+	 * whole promise the option makes.
+	 */
+	function onChangeRenderer()
+	{
+		var opt:Option = rendererOption();
+		if (opt == null || rendererShowcase == null) return;
+
+		var index:Int = opt.curOption;
+		if (opt.options != null)
+		{
+			var found:Int = opt.options.indexOf(Std.string(opt.getValue()));
+			if (found >= 0) index = found;
+		}
+
+		rendererShowcase.select(index);
+		if (rendererShowcaseOpen) rendererShowcase.flashNotice();
+	}
+
+	/**
+	 * Tilts the menu background towards the picker's violet while it is open.
+	 *
+	 * Driven by a lerped 0..1 value instead of a FlxTween so a quick open/close cannot leave
+	 * a half-applied colour behind; the endpoints snap so the category view, which resets the
+	 * colour itself, always starts from the exact menu blue.
+	 */
+	function updateBackgroundTint(elapsed:Float):Void
+	{
+		if (bg == null) return;
+
+		bgTint = FlxMath.lerp(bgTint, rendererShowcaseOpen ? 1 : 0, 1 - Math.exp(-elapsed * 7));
+		if (bgTint < 0.002)
+		{
+			bgTint = 0;
+			bg.color = BG_MENU;
+			return;
+		}
+		if (bgTint > 0.998)
+		{
+			bgTint = 1;
+			bg.color = BG_PICKER;
+			return;
+		}
+		bg.color = FlxColor.interpolate(BG_MENU, BG_PICKER, bgTint);
 	}
 
 	// Options built from JSON via OptionLoader — see assets/data/options/
@@ -1463,6 +1815,21 @@ class OptionsState extends MusicBeatState
 	{
 		if (transitioning) return;
 		transitioning = true;
+
+		// Leaving the page with the picker up drops it without animating. The rows keep their
+		// retreated positions: they are about to slide out and be destroyed, and snapping them
+		// home first would pop the whole list back on screen for a frame.
+		if (rendererShowcase != null && rendererShowcaseOpen)
+		{
+			rendererShowcase.hideNow();
+			rendererShowcaseOpen = false;
+		}
+		bgTint = 0;
+
+		// A description fade may still be running from the picker; it would fight the
+		// slide-out tween below for the same property.
+		if (setDescText != null) FlxTween.cancelTweensOf(setDescText, ['alpha']);
+		if (setDescBox != null) FlxTween.cancelTweensOf(setDescBox, ['alpha']);
 
 		tweenSpriteSlideOut(settingsSprites, FlxG.width, TRANSITION_DURATION, FlxEase.cubeIn, function() {
 			destroySettingsSprites();

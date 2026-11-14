@@ -14,6 +14,16 @@ class VulkanNotice
 {
 	static inline var TAG = "[vulkan]";
 
+	/**
+	 * True once the experimental Vulkan backend has actually taken over this session.
+	 *
+	 * Set by `Main.installVulkan()` after the runtime reports success, and read by the
+	 * Renderer row in the settings menu so it can say what the game is really drawing
+	 * through. Stays false in builds compiled without `-D seiun_vulkan`, because the
+	 * renderer never starts there.
+	 */
+	public static var active:Bool = false;
+
 	/** Returns true when --vulkan (or SEIUN_VULKAN) asked for a backend this build lacks. */
 	public static function report(show:String->Void):Bool
 	{

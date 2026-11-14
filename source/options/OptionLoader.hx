@@ -638,7 +638,7 @@ class OptionLoader
 		}
 		catch (e:Dynamic)
 		{
-			TraceManager.warn('trace.options.modCategoriesError', 'Failed to load global root categories: {}', [e]);
+			TraceManager.warn('trace.options.globalRootCategoriesError', 'Failed to load global root categories: {}', [e]);
 		}
 	}
 
@@ -672,35 +672,56 @@ class OptionLoader
 		{
 			var files = FileSystem.readDirectory(dirPath);
 			files.sort(function(a, b) return a < b ? -1 : (a > b ? 1 : 0));
-			var loadedCount = 0;
+			var before = target.length;
 			for (file in files)
 			{
 				if (!file.endsWith('.json')) continue;
-				var fullPath = dirPath + file;
-				if (loadSingleJsonFile(fullPath, target, extraCallbacks, modSource))
-					loadedCount++;
+				loadSingleJsonFile(dirPath + file, target, extraCallbacks, modSource);
 			}
-			if (loadedCount > 0)
-				TraceManager.info('trace.options.modLoaded', 'Loaded {} option files from {} for mod {}', [loadedCount, fileName, modSource]);
+			traceLoaded(target.length - before, fileName, modSource);
 			return;
 		}
 
 		if (FileSystem.exists(singlePath))
 		{
-			if (loadSingleJsonFile(singlePath, target, extraCallbacks, modSource))
-				TraceManager.info('trace.options.modLoaded', 'Loaded options from {} (mod {})', [fileName, modSource]);
+			var before = target.length;
+			loadSingleJsonFile(singlePath, target, extraCallbacks, modSource);
+			traceLoaded(target.length - before, fileName, modSource);
 			return;
 		}
 
 		if (!primaryOnly && FileSystem.exists(patchPath))
 		{
-			if (loadSingleJsonFile(patchPath, target, extraCallbacks, modSource))
-				TraceManager.info('trace.options.modLoaded', 'Loaded patch options from {} (mod {})', [fileName, modSource]);
+			var before = target.length;
+			loadSingleJsonFile(patchPath, target, extraCallbacks, modSource);
+			traceLoaded(target.length - before, fileName, modSource, true);
 		}
 		#else
-		if (loadSingleJsonFile(singlePath, target, extraCallbacks, modSource))
-			TraceManager.info('trace.options.modLoaded', 'Loaded options from {} (mod {})', [fileName, modSource]);
+		var before = target.length;
+		loadSingleJsonFile(singlePath, target, extraCallbacks, modSource);
+		traceLoaded(target.length - before, fileName, modSource);
 		#end
+	}
+
+	/**
+	 * Logs a load, with the arguments its message actually asks for.
+	 *
+	 * Every call site used to share trace.options.modLoaded, whose translation is worded around a
+	 * category and a mod source, while the builtin roots pass a null source: the console line read
+	 * "loaded ... from mod null" and still had a placeholder left over. The count is the difference
+	 * on the target array, so a file that contributes nothing logs nothing - the builtin probe walks
+	 * several candidate roots in a row and a miss has to stay quiet.
+	 */
+	static function traceLoaded(added:Int, fileName:String, modSource:String, patch:Bool = false):Void
+	{
+		if (added <= 0) return;
+
+		if (modSource == null)
+			TraceManager.info('trace.options.builtinLoaded', 'Loaded {} built-in options for {}', [added, fileName]);
+		else if (patch)
+			TraceManager.info('trace.options.modPatchLoaded', 'Loaded {} patch options for {} from mod {}', [added, fileName, modSource]);
+		else
+			TraceManager.info('trace.options.modLoaded', 'Loaded {} options for {} from mod {}', [added, fileName, modSource]);
 	}
 
 	/** Parse a single JSON file into Options and append to target. */

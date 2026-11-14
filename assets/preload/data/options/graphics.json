@@ -20,6 +20,21 @@
 		"onChange": "onChangeAntiAliasing"
 	},
 	{
+		"nameKey": "option.renderer",
+		"defaultName": "Renderer",
+		"descKey": "option.renderer.desc",
+		"defaultDesc": "Which graphics API the engine draws with.\nOpenGL is what every build runs on today; the Vulkan path is still experimental.\nThis row is a preview: the choice is remembered, but only the engine build can actually switch backends.",
+		"variable": "renderer",
+		"type": "string",
+		"defaultValue": "OpenGL",
+		"options": [
+			"OpenGL",
+			"Vulkan"
+		],
+		"onChange": "onChangeRenderer",
+		"platform": "desktop"
+	},
+	{
 		"nameKey": "option.shaders",
 		"defaultName": "Shaders",
 		"descKey": "option.shaders.desc",
