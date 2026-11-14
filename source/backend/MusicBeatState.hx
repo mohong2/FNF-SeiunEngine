@@ -642,12 +642,18 @@ class MusicBeatState extends FlxUIState
 			return true;
 		}
 
+		// Search order: the mod that asked for the shader first, then the shared
+		// mods/shaders folder, then global mods. A global mod used to be inserted at
+		// the front, so any global mod that happened to ship a file with the same
+		// name silently replaced the mod's own shader (rain.frag in Erect Mode
+		// shadowed the one a song was written against, and the leftover uniforms
+		// turned the screen into noise).
 		var foldersToCheck:Array<String> = [Paths.mods('shaders/')];
 		if (Paths.currentModDirectory != null && Paths.currentModDirectory.length > 0)
 			foldersToCheck.insert(0, Paths.mods(Paths.currentModDirectory + '/shaders/'));
 
 		for (mod in Paths.getGlobalMods())
-			foldersToCheck.insert(0, Paths.mods(mod + '/shaders/'));
+			foldersToCheck.push(Paths.mods(mod + '/shaders/'));
 
 		for (folder in foldersToCheck) {
 			if (FileSystem.exists(folder)) {

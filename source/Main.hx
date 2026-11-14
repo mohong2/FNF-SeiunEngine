@@ -317,6 +317,17 @@ class Main extends Sprite
 
 		addChild(new FlxGame(gameWidth, gameHeight, initialState, zoom, updateFramerate, drawFramerate, skipSplash, startFullscreen));
 
+		#if seiun_vulkan
+		// 实验性 Vulkan 后端：等第一帧再探测。setupGame 跑的时候窗口可能还没 show，
+		// lvk_self_window 找不到可见窗口就会判定失败 —— 那是误报。
+		if (FlxG.stage != null) installVulkanAfterFirstFrame();
+		#else
+		// 这一份构建里没有 Vulkan 代码。玩家如果带了 --vulkan，必须**说出来**：
+		// 安静地忽略会让人以为"开了 Vulkan 但画面没变"，反而更难查。
+		// 这个提示放在引擎里：没有 seiun_vulkan 的时候，渲染器的类根本不在源码路径上。
+		backend.VulkanNotice.report(function(text) backend.Dialog.show('Vulkan', text, 'Warning'));
+		#end
+
 
 		// Image residency backend: release CPU pixels only after the renderer has
 		// uploaded them, and re-decode transparently on demand. Installed before
@@ -826,6 +837,118 @@ class Main extends Sprite
 		};
 
 		stage.addEventListener(Event.ENTER_FRAME, onFrame);
+	}
+	#end
+
+	#if seiun_vulkan
+	/**
+	 * 实验性 Vulkan 后端接线。默认不启用：只有 --vulkan / SEIUN_VULKAN=1 才真的切，
+	 * 切不过去就留在 OpenGL。
+	 *
+	 * 这里只做三件游戏侧才知道的事：
+	 *   1. 回退提示怎么显示（VkRuntime 不认识游戏的 Dialog / 语言表）；
+	 *   2. 每帧末尾提交上屏的时机（必须晚于 flixel 的 draw 和 OpenFL 的 stage render）；
+	 *   3. 窗口尺寸变化和状态切换时通知运行时。
+	 */
+	static function installVulkanAfterFirstFrame():Void
+	{
+		var onFirstFrame:openfl.events.Event->Void = null;
+
+		onFirstFrame = function(_)
+		{
+			FlxG.stage.removeEventListener(openfl.events.Event.ENTER_FRAME, onFirstFrame);
+			installVulkan();
+		};
+
+		FlxG.stage.addEventListener(openfl.events.Event.ENTER_FRAME, onFirstFrame);
+	}
+
+	static function installVulkan():Void
+	{
+		var runtime = seiun.vulkan.VkRuntime;
+
+		runtime.onFallback = function(reason:String)
+		{
+			try
+			{
+				backend.Dialog.show('Vulkan', reason, 'Warning');
+			}
+			catch (e:Dynamic) {}
+		};
+
+		if (!runtime.start(false)) return;
+
+		// Vulkan keeps its own texture table, so the CPU release decision can no
+		// longer look for a Context3D texture: this context is about to be deleted,
+		// and getTexture() on it would create textures nothing renders with.
+		backend.gfx.GfxMemory.externalActive = function() return runtime.enabled;
+		backend.gfx.GfxMemory.externalHolds = seiun.vulkan.VkTextures.holdsGraphic;
+		backend.gfx.GfxMemory.externalUpload = seiun.vulkan.VkTextures.uploadGraphic;
+
+		// flixel 的鼠标指针是塞在舞台里的一个 Bitmap（cursorContainer），走的是
+		// OpenFL 的渲染器，Vulkan 这条路不会画它 —— 表现就是"游戏里没有鼠标"。
+		// 让它改用系统光标，指针就回来了。
+		try
+		{
+			FlxG.mouse.useSystemCursor = true;
+		}
+		catch (e:Dynamic) {}
+
+		// 每帧收尾：flixel 的 draw() 在 update 阶段就跑完了，这里挂在 render 阶段，
+		// 一定晚于所有 drawQuads，也晚于 OpenFL 自己的 stage render。
+		// window.onRender 的监听顺序就是执行顺序：lime 自己在窗口创建时挂的 render() 在前，
+		// 所以这一句一定在 OpenFL 画完整个舞台之后才跑，也就是"这一帧的 draw 全部结束了"。
+		var window = lime.app.Application.current.window;
+
+		var stats:Bool = false;
+
+		for (arg in Sys.args ())
+		{
+			if (arg == "--vulkan-stats") stats = true;
+		}
+
+		if (window != null)
+		{
+			var frames:Int = 0;
+			var lastStat:Float = haxe.Timer.stamp ();
+
+			window.onRender.add(function(_)
+			{
+				seiun.vulkan.VkTextures.tick ();
+				runtime.endFrame ();
+
+				frames++;
+
+				// lime flips the OpenGL buffers right after this dispatch. That paints the
+				// (empty) GL frame over ours, so the window alternates between the two
+				// renderers every frame. Cancelling the event skips the flip.
+				window.onRender.cancel ();
+
+				// Frame stats are printed only with --vulkan-stats.
+				if (stats && (frames == 60 || frames % 60 == 0))
+				{
+					var now = haxe.Timer.stamp ();
+					var ms = (now - lastStat) * 1000.0 / 60.0;
+					lastStat = now;
+
+					Sys.println ('[vulkan] frame ' + frames + ' avg=' + Std.int (ms * 100) / 100 + 'ms ('
+						+ Std.int (1000.0 / (ms <= 0 ? 1 : ms)) + ' fps): ' + seiun.vulkan.VkQuads.debugLine ()
+						+ ' | ' + seiun.vulkan.VkTextures.stats ());
+				}
+			});
+		}
+
+		FlxG.stage.addEventListener(openfl.events.Event.RESIZE, function(_)
+		{
+			runtime.resize(FlxG.stage.stageWidth, FlxG.stage.stageHeight);
+		});
+
+		// 状态切换时全清纹理缓存：换关卡的纹理本来就用不上了，
+		// 留着只会让显存曲线随进出关卡一路往上涨。
+		// 状态切换时**不要**清纹理缓存：引擎的 GfxMemory 已经释放了大部分图片的
+		// CPU 像素，清掉之后传不回来，下一关满屏精灵就是空的。缓存的寿命跟着
+		// FlxGraphic 走（destroy 时 bitmap 置空，sweep 会回收）。
+		FlxG.signals.preStateCreate.add(function(_) seiun.vulkan.VkQuads.restartTrace ());
 	}
 	#end
 

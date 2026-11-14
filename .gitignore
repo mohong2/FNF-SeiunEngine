@@ -58,3 +58,4 @@ __pycache__/
 
 # script diagnostics log written by backend.ScriptLog when the test harness runs
 /logs/
+docs/vulkan/

@@ -193,6 +193,47 @@ class GfxMemory
 			&& bmp.width * bmp.height >= minPixels;
 	}
 
+	/**
+	 * Renderer-side residency hooks.
+	 *
+	 * The default answers come from Context3D textures. A renderer that keeps its
+	 * own textures (Vulkan) installs these instead, because there is no GL texture
+	 * to ask about and the GL context may already be gone.
+	 */
+	public static var externalActive:Void->Bool = null;
+
+	/** True when the renderer already holds this graphic's pixels. */
+	public static var externalHolds:FlxGraphic->Bool = null;
+
+	/** Upload through the renderer; true when the pixels are on the GPU afterwards. */
+	public static var externalUpload:FlxGraphic->Bool = null;
+
+	static inline function externalOn():Bool
+	{
+		return externalActive != null && externalActive();
+	}
+
+	/** True when the GPU already has a copy of this graphic. */
+	static function onGPU(graphic:FlxGraphic, ctx:Context3D):Bool
+	{
+		if (externalOn()) return externalHolds != null && externalHolds(graphic);
+		var bmp:BitmapData = graphic == null ? null : graphic.bitmap;
+		return bmp != null && ctx != null && bmp.hasTexture(ctx);
+	}
+
+	/** Makes sure the GPU has a copy; the renderer releases the CPU pixels itself. */
+	static function ensureResident(graphic:FlxGraphic, ctx:Context3D):Bool
+	{
+		if (externalOn()) return externalUpload != null && externalUpload(graphic);
+		var bmp:BitmapData = graphic == null ? null : graphic.bitmap;
+		if (bmp == null || ctx == null) return false;
+		if (!bmp.hasTexture(ctx))
+		{
+			try bmp.getTexture(ctx, false) catch (e:Dynamic) { return false; }
+		}
+		return bmp.hasTexture(ctx);
+	}
+
 	public static function install():Void
 	{
 		if (installed) return;
@@ -385,13 +426,9 @@ class GfxMemory
 		if (!eligible(bmp) || bmp.cpuReleased) return false;
 
 		var ctx = FlxG.stage != null ? FlxG.stage.context3D : null;
-		if (ctx == null) return false;
+		if (ctx == null && !externalOn()) return false;
 
-		if (!bmp.hasTexture(ctx))
-		{
-			try bmp.getTexture(ctx, false) catch (e:Dynamic) { return false; }
-		}
-		if (!bmp.hasTexture(ctx)) return false;
+		if (!ensureResident(graphic, ctx)) return false;
 
 		return drop(bmp);
 	}
@@ -409,7 +446,7 @@ class GfxMemory
 	{
 		if (!enabled || !commitOn()) return false;
 		var ctx:Context3D = FlxG.stage != null ? FlxG.stage.context3D : null;
-		if (ctx == null) return false;
+		if (ctx == null && !externalOn()) return false;
 
 		var started:Float = Timer.stamp();
 		var paletted:Int = 0;
@@ -436,7 +473,7 @@ class GfxMemory
 			if (graphic == null) graphic = Paths.currentTrackedAssets.get(key);
 			if (graphic == null || graphic.bitmap == null) continue;
 			var bmp:BitmapData = graphic.bitmap;
-			if (!bmp.cpuReleased && bmp.hasCPU && bmp.restorable && eligible(bmp) && !bmp.hasTexture(ctx))
+			if (!bmp.cpuReleased && bmp.hasCPU && bmp.restorable && eligible(bmp) && !onGPU(graphic, ctx))
 				retry.set(key, 0);
 		}
 		pending = retry;
@@ -485,7 +522,7 @@ class GfxMemory
 	{
 		if (!enabled || !commitOn() || !pending.keys().hasNext()) return;
 		var ctx:Context3D = FlxG.stage != null ? FlxG.stage.context3D : null;
-		if (ctx == null) return;
+		if (ctx == null && !externalOn()) return;
 
 		var started:Float = Timer.stamp();
 		try GfxPalette.flushQueue() catch (e:Dynamic) {}
@@ -542,17 +579,17 @@ class GfxMemory
 			return COMMIT_DONE;
 		}
 
-		if (!bmp.hasTexture(ctx))
+		if (!onGPU(graphic, ctx))
 		{
-			try bmp.getTexture(ctx, false) catch (e:Dynamic)
+			if (!ensureResident(graphic, ctx))
 			{
 				stats.failed++;
 				return COMMIT_RETRY;
 			}
-			if (bmp.hasTexture(ctx)) stats.uploaded++;
+			stats.uploaded++;
 		}
 
-		if (!bmp.hasTexture(ctx))
+		if (!onGPU(graphic, ctx))
 		{
 			stats.failed++;
 			return COMMIT_RETRY;
@@ -656,7 +693,10 @@ class GfxMemory
 		// Palette bitmaps keep their index bytes (w*h) for texture/restore, so only
 		// the 3 RGBA bytes per pixel are actually released.
 		var bytes:Float = bmp.paletteApplied ? bmp.width * bmp.height * 3 : bmp.width * bmp.height * 4;
-		if (!bmp.dropCPU()) return false;
+		// A renderer with its own texture table releases the pixels while it
+		// uploads; dropCPU() would ask for a GL texture that does not exist.
+		var released:Bool = externalOn() ? bmp.cpuReleased : bmp.dropCPU();
+		if (!released) return false;
 		#if sys
 		if (croppedProbe == bmp && Sys.getEnv('FNF_GFX_SELFTEST') == '1')
 		{
@@ -933,7 +973,7 @@ class GfxMemory
 		if (!pending.keys().hasNext()) return;
 
 		var ctx = FlxG.stage != null ? FlxG.stage.context3D : null;
-		if (ctx == null) return;
+		if (ctx == null && !externalOn()) return;
 
 		var budget:Int = maxDropsPerFrame;
 		var remove:Array<String> = [];
@@ -957,7 +997,7 @@ class GfxMemory
 				continue;
 			}
 
-			if (bmp.hasTexture(ctx))
+			if (onGPU(graphic, ctx))
 			{
 				drop(bmp);
 				remove.push(key);
@@ -967,8 +1007,7 @@ class GfxMemory
 			{
 				// The image never reached the renderer (hidden layer, precached
 				// asset, ...). Upload once after the grace period, then release.
-				try bmp.getTexture(ctx, false) catch (e:Dynamic) {}
-				if (bmp.hasTexture(ctx)) drop(bmp);
+				if (ensureResident(graphic, ctx)) drop(bmp);
 				remove.push(key);
 				budget--;
 			}
@@ -990,7 +1029,7 @@ class GfxMemory
 	static function sweepCache():Void
 	{
 		var ctx = FlxG.stage != null ? FlxG.stage.context3D : null;
-		if (ctx == null) return;
+		if (ctx == null && !externalOn()) return;
 
 		@:privateAccess
 		for (key in FlxG.bitmap._cache.keys())
@@ -1000,7 +1039,7 @@ class GfxMemory
 			var bmp = graphic.bitmap;
 			if (bmp.cpuReleased || !bmp.hasCPU || !bmp.restorable || !eligible(bmp)) continue;
 			if (isReadBackGraphic(key)) continue;
-			if (bmp.hasTexture(ctx)) note(key);
+			if (onGPU(graphic, ctx)) note(key);
 		}
 	}
 
