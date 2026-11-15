@@ -151,10 +151,10 @@ runs:
       run: haxelib run lime rebuild ios -arm64 -release
 
     # Same reason as the desktop Compile step: an hxcpp error can leave the process
-    # hanging instead of exiting, so the step has to fail on its own.
+    # hanging instead of exiting. Composite steps cannot carry timeout-minutes, so the
+    # bound is on the job.
     - name: Compile iOS (device, arm64)
       shell: bash
-      timeout-minutes: 60
       run: haxelib run lime build "$GITHUB_WORKSPACE/Project.xml" ios -arm64 --app-version="$APP_VERSION-${{ github.run_id }}"
 
     - name: Package IPA

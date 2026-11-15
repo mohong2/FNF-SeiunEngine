@@ -165,10 +165,10 @@ runs:
     # with build.json + build-info.txt. The release workflow publishes that directory
     # inside the single SeiunEngine-symbols-<version>.zip.
     # Same reason as the desktop Compile step: an hxcpp error can leave the process
-    # hanging instead of exiting, so the step has to fail on its own.
+    # hanging instead of exiting. Composite steps cannot carry timeout-minutes, so the
+    # bound is on the job.
     - name: Build APK
       shell: pwsh
-      timeout-minutes: 60
       env:
         _JAVA_OPTIONS: "-Xmx5g -XX:MaxMetaspaceSize=1g"
       run: |

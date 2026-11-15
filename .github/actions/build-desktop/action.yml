@@ -188,10 +188,11 @@ runs:
 
     # A compile error is not always fatal to the process: on macOS the 2026-11-15 run
     # printed "compile failed: src/BuildInfo.cpp" and then sat there for four hours
-    # until the job timeout. Bound the step so the failure arrives in minutes.
+    # until the job timeout. A step cannot be bounded here - composite actions reject
+    # timeout-minutes ("Unexpected value 'timeout-minutes'") - so the bound sits on the
+    # job in each workflow.
     - name: Compile
       shell: bash
-      timeout-minutes: 100
       run: ${{ inputs.build }}
 
     - name: Verify crash symbols

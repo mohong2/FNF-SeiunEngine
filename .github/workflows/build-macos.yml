@@ -66,7 +66,11 @@ jobs:
             artifact: SeiunEngine-mac-arm64
             experimental: true
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ matrix.target == 'macos-arm64' && 120 || 240 }}
+    # An hxcpp error can hang instead of exiting: the 2026-11-15 x64 leg printed
+    # "compile failed: src/BuildInfo.cpp" and then idled for four hours until the old
+    # 240-minute limit. A green leg needs 21-40 minutes, so 90 bounds a hang without
+    # cutting a real build.
+    timeout-minutes: 90
     continue-on-error: ${{ matrix.experimental == true }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
