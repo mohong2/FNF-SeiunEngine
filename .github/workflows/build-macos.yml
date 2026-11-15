@@ -29,13 +29,21 @@ jobs:
             rebuild: haxelib run lime rebuild mac -64 -release -Dlime-sdl3 -Dhxcpp_api_level=430
             build: haxelib run lime build "$GITHUB_WORKSPACE/Project.xml" mac -64 --app-version="$APP_VERSION-$GITHUB_RUN_ID"
             artifact: SeiunEngine-mac-x64
-          - runner: macos-15
+          - runner: macos-15-intel
             target: macos-arm64
-            # macos-14 was retired (actions/runner-images#15226): while the leg still
-            # named it, the job died in one second with zero steps and macOS arm64
-            # silently stopped being built at all. Labels matter here - macos-14 and
-            # macos-15-intel are x64, macos-15 and macos-26 are Apple Silicon, so this
-            # leg now cross-compiles nothing: it links arm64 natively.
+            # An x64 host on purpose. macos-14 was retired (actions/runner-images#15226)
+            # and a job naming it ended as cancelled within one second without running a
+            # single step, so this leg produced nothing at all after October.
+            #
+            # Native Apple Silicon (macos-15) is the tempting replacement and does start
+            # the build, but it dies in the first lime build:
+            #   Link: ../ndll/MacArm64/lime.ndll
+            #   Uncaught exception - Failed to load library : lime.ndll
+            # tools/hxcpp/BuildTool.hx sends an arm64 host's ndll to ndll/MacArm64,
+            # while the CFFI loader only ever inspects ndll/Mac64 (the fork's old
+            # haxe-4.3 tip fixed that; the rebased base does not carry the fix).
+            # Cross-compiling from an Intel host leaves the host ndll in Mac64 and works.
+            # Flip this back to macos-15 once that BuildTool fix is ported.
             #
             # Both flags are required, and they do different jobs:
             #   -arm64 -> lime's ARM64 selection. The lime fork turns it into hxcpp's
