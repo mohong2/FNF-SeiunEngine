@@ -172,7 +172,9 @@ class CharacterEditorState extends MusicBeatState implements PsychUIEventHandler
 			Language.get('characterEditor_character', 'Character'),
 			Language.get('characterEditor_animations', 'Animations')
 		];
-		UI_characterbox = new PsychUIBox(UI_box.x - 100, UI_box.y + UI_box.height, 350, 250, chartabs);
+		// 面板加宽到 380: 0.6.3 的 350px 放不下 "数字步进器 + 按钮" 这一整行,
+	// 右边的 X/Y 两个步进器会叠在一起 (值被盖住、只剩一对 +/-)。
+	UI_characterbox = new PsychUIBox(UI_box.x - 130, UI_box.y + UI_box.height, 380, 250, chartabs);
 		UI_characterbox.cameras = [camMenu];
 		UI_characterbox.scrollFactor.set();
 		add(UI_characterbox);
@@ -501,7 +503,7 @@ class CharacterEditorState extends MusicBeatState implements PsychUIEventHandler
 			}
 		};
 
-		flipXCheckBox = new PsychUICheckBox(singDurationStepper.x + 80, singDurationStepper.y, Language.get('characterEditor_flip_x', 'Flip X'), 50, null);
+		flipXCheckBox = new PsychUICheckBox(singDurationStepper.x + 100, singDurationStepper.y, Language.get('characterEditor_flip_x', 'Flip X'), 70, null);
 		flipXCheckBox.checked = char.flipX;
 		if(char.isPlayer) flipXCheckBox.checked = !flipXCheckBox.checked;
 		flipXCheckBox.onClick = function() {
@@ -523,7 +525,7 @@ class CharacterEditorState extends MusicBeatState implements PsychUIEventHandler
 			ghostChar.antialiasing = char.antialiasing;
 		};
 
-		positionXStepper = new PsychUINumericStepper(flipXCheckBox.x + 110, flipXCheckBox.y, 10, char.positionArray[0], -9000, 9000, 0);
+		positionXStepper = new PsychUINumericStepper(flipXCheckBox.x + 105, flipXCheckBox.y, 10, char.positionArray[0], -9000, 9000, 0, 45);
 		positionXStepper.textObj.font = 'assets/fonts/editors.ttf';
 		positionXStepper.onValueChange = function() {
 			char.positionArray[0] = positionXStepper.value;
@@ -531,7 +533,7 @@ class CharacterEditorState extends MusicBeatState implements PsychUIEventHandler
 			updatePointerPos();
 		};
 
-		positionYStepper = new PsychUINumericStepper(positionXStepper.x + 60, positionXStepper.y, 10, char.positionArray[1], -9000, 9000, 0);
+		positionYStepper = new PsychUINumericStepper(positionXStepper.x + 85, positionXStepper.y, 10, char.positionArray[1], -9000, 9000, 0, 45);
 		positionYStepper.textObj.font = 'assets/fonts/editors.ttf';
 		positionYStepper.onValueChange = function() {
 			char.positionArray[1] = positionYStepper.value;
@@ -553,17 +555,17 @@ class CharacterEditorState extends MusicBeatState implements PsychUIEventHandler
 			updatePointerPos();
 		};
 
-		var saveCharacterButton = new PsychUIButton(reloadImage.x, noAntialiasingCheckBox.y + 40, Language.get('characterEditor_save_character', 'Save Character'), function() {
+		var saveCharacterButton = new PsychUIButton(290, noAntialiasingCheckBox.y + 40, Language.get('characterEditor_save_character', 'Save Character'), function() {
 			saveCharacter();
 		}, 80, 20);
 
-		healthColorStepperR = new PsychUINumericStepper(singDurationStepper.x, saveCharacterButton.y, 20, char.healthColorArray[0], 0, 255, 0);
+		healthColorStepperR = new PsychUINumericStepper(singDurationStepper.x, saveCharacterButton.y, 20, char.healthColorArray[0], 0, 255, 0, 45);
 		healthColorStepperR.textObj.font = 'assets/fonts/editors.ttf';
 		healthColorStepperR.onValueChange = onHealthColorChange;
-		healthColorStepperG = new PsychUINumericStepper(singDurationStepper.x + 65, saveCharacterButton.y, 20, char.healthColorArray[1], 0, 255, 0);
+		healthColorStepperG = new PsychUINumericStepper(singDurationStepper.x + 95, saveCharacterButton.y, 20, char.healthColorArray[1], 0, 255, 0, 45);
 		healthColorStepperG.textObj.font = 'assets/fonts/editors.ttf';
 		healthColorStepperG.onValueChange = onHealthColorChange;
-		healthColorStepperB = new PsychUINumericStepper(singDurationStepper.x + 130, saveCharacterButton.y, 20, char.healthColorArray[2], 0, 255, 0);
+		healthColorStepperB = new PsychUINumericStepper(singDurationStepper.x + 190, saveCharacterButton.y, 20, char.healthColorArray[2], 0, 255, 0, 45);
 		healthColorStepperB.textObj.font = 'assets/fonts/editors.ttf';
 		healthColorStepperB.onValueChange = onHealthColorChange;
 

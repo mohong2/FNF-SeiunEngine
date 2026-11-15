@@ -1,5 +1,14 @@
 package backend.ui;
 
+import flixel.math.FlxMath;
+
+/**
+ * Numeric input with +/- buttons (a {@link PsychUIInputText} that filters and clamps its value).
+ *
+ * The buttons animate a small press pop, and every accessor is guarded so a stepper that is
+ * still being constructed (min/max are read from the constructor) or already destroyed cannot
+ * touch a null label.
+ */
 class PsychUINumericStepper extends PsychUIInputText
 {
 	public static final CHANGE_EVENT = "numericstepper_change";
@@ -14,6 +23,13 @@ class PsychUINumericStepper extends PsychUIInputText
 
 	public var onValueChange:Void->Void;
 	public var value(default, set):Float;
+
+	/** Press animation state of the two buttons (smoothed). */
+	var _plusT:Float = 0;
+	var _minusT:Float = 0;
+	var _pressedPlus:Bool = false;
+	var _pressedMinus:Bool = false;
+
 	public function new(x:Float = 0, y:Float = 0, step:Float = 1, defValue:Float = 0, min:Float = -999, max:Float = 999, decimals:Int = 0, ?wid:Int = 60, ?isPercent:Bool = false)
 	{
 		super(x, y, wid, '');
@@ -30,7 +46,7 @@ class PsychUINumericStepper extends PsychUIInputText
 		buttonPlus.animation.add('pressed', [1], false);
 		buttonPlus.animation.play('normal');
 		add(buttonPlus);
-		
+
 		buttonMinus = new FlxSprite(fieldWidth + buttonPlus.width).loadGraphic(Paths.image('psych-ui/stepper_minus', 'embed'), true, 16, 16);
 		buttonMinus.animation.add('normal', [0], false);
 		buttonMinus.animation.add('pressed', [1], false);
@@ -41,7 +57,7 @@ class PsychUINumericStepper extends PsychUIInputText
 		{
 			_updateValue();
 			_internalOnChange();
-		}
+		};
 		value = defValue;
 	}
 
@@ -49,33 +65,66 @@ class PsychUINumericStepper extends PsychUIInputText
 	{
 		super.update(elapsed);
 
-		if(FlxG.mouse.justPressed)
+		if (!exists || !visible || !active) return;
+		if (buttonPlus == null || buttonMinus == null) return;
+
+		var overPlus:Bool = PsychUIEventHandler.overlaps(buttonPlus, camera);
+		var overMinus:Bool = PsychUIEventHandler.overlaps(buttonMinus, camera);
+
+		if (FlxG.mouse.justPressed)
 		{
-			if(buttonPlus != null && buttonPlus.exists && PsychUIEventHandler.overlaps(buttonPlus, camera))
+			if (overPlus)
 			{
+				_pressedPlus = true;
 				buttonPlus.animation.play('pressed');
 				value += step;
 				_internalOnChange();
 			}
-			else if(buttonMinus != null && buttonMinus.exists && PsychUIEventHandler.overlaps(buttonMinus, camera))
+			else if (overMinus)
 			{
+				_pressedMinus = true;
 				buttonMinus.animation.play('pressed');
 				value -= step;
 				_internalOnChange();
 			}
 		}
-		else if(!FlxG.mouse.pressed)
+		else if (!FlxG.mouse.pressed)
 		{
-			if(buttonPlus != null && buttonPlus.exists && buttonPlus.animation.curAnim != null && buttonPlus.animation.curAnim.name != 'normal')
+			if (_pressedPlus)
+			{
+				_pressedPlus = false;
+				_plusT = 0.16;
+			}
+			if (_pressedMinus)
+			{
+				_pressedMinus = false;
+				_minusT = 0.16;
+			}
+			if (buttonPlus.animation.curAnim != null && buttonPlus.animation.curAnim.name != 'normal')
 				buttonPlus.animation.play('normal');
-			if(buttonMinus != null && buttonMinus.exists && buttonMinus.animation.curAnim != null && buttonMinus.animation.curAnim.name != 'normal')
+			if (buttonMinus.animation.curAnim != null && buttonMinus.animation.curAnim.name != 'normal')
 				buttonMinus.animation.play('normal');
 		}
+
+		// Press pop: shrink while held, spring back afterwards.
+		var plusTarget:Float = overPlus ? 0.86 : 1.0;
+		var minusTarget:Float = overMinus ? 0.86 : 1.0;
+		if (!FlxG.mouse.pressed)
+		{
+			plusTarget = 1.0;
+			minusTarget = 1.0;
+		}
+		buttonPlus.scale.set(PsychUIHelper.approach(buttonPlus.scale.x, plusTarget, elapsed, 26),
+			PsychUIHelper.approach(buttonPlus.scale.y, plusTarget, elapsed, 26));
+		buttonMinus.scale.set(PsychUIHelper.approach(buttonMinus.scale.x, minusTarget, elapsed, 26),
+			PsychUIHelper.approach(buttonMinus.scale.y, minusTarget, elapsed, 26));
 	}
 
 	function set_value(v:Float)
 	{
-		value = Math.max(min, Math.min(max, v));
+		var clamped:Float = Math.max(min, Math.min(max, v));
+		if (min > max) clamped = min;
+		value = clamped;
 		text = Std.string(isPercent ? (value * 100) : value);
 		_updateValue();
 		return value;
@@ -84,7 +133,7 @@ class PsychUINumericStepper extends PsychUIInputText
 	function set_min(v:Float)
 	{
 		min = v;
-		@:bypassAccessor if(min > max) max = min;
+		@:bypassAccessor if (min > max) max = min;
 		_updateFilter();
 		_updateValue();
 		return min;
@@ -93,7 +142,7 @@ class PsychUINumericStepper extends PsychUIInputText
 	function set_max(v:Float)
 	{
 		max = v;
-		@:bypassAccessor if(max < min) min = max;
+		@:bypassAccessor if (max < min) min = max;
 		_updateFilter();
 		_updateValue();
 		return max;
@@ -105,13 +154,14 @@ class PsychUINumericStepper extends PsychUIInputText
 		_updateFilter();
 		return decimals;
 	}
+
 	function set_isPercent(v:Bool)
 	{
 		var changed:Bool = (isPercent != v);
 		isPercent = v;
 		_updateFilter();
 
-		if(changed)
+		if (changed)
 		{
 			text = Std.string(value * 100);
 			_updateValue();
@@ -121,86 +171,63 @@ class PsychUINumericStepper extends PsychUIInputText
 
 	function _updateValue()
 	{
-		var txt:String = text.replace('%', '');
-		if(txt.indexOf('-') > 0)
-			txt.replace('-', '');
+		var raw:String = (text != null) ? text : '';
+		var txt:String = raw.replace('%', '');
+		if (txt.indexOf('-') > 0)
+			txt = txt.replace('-', '');
 
-		while(txt.indexOf('.') > -1 && txt.indexOf('.') != txt.lastIndexOf('.'))
+		while (txt.indexOf('.') > -1 && txt.indexOf('.') != txt.lastIndexOf('.'))
 		{
 			var lastId = txt.lastIndexOf('.');
-			txt = txt.substr(0, lastId) + txt.substring(lastId+1);
+			txt = txt.substr(0, lastId) + txt.substring(lastId + 1);
 		}
 
 		var val:Float = Std.parseFloat(txt);
-		if(Math.isNaN(val))
-			val = 0;
+		if (Math.isNaN(val)) val = 0;
 
-		if(isPercent) val /= 100;
+		if (isPercent) val /= 100;
 
-		if(val < min) val = min;
-		else if(val > max) val = max;
+		if (val < min) val = min;
+		else if (val > max) val = max;
 		val = FlxMath.roundDecimal(val, decimals);
 		@:bypassAccessor value = val;
 
-		if(isPercent)
+		if (isPercent)
 		{
 			text = Std.string(val * 100);
 			text += '%';
 		}
 		else text = Std.string(val);
 
-		if(caretIndex > text.length) caretIndex = text.length;
-		if(selectIndex > text.length) selectIndex = text.length;
+		if (caretIndex > text.length) caretIndex = text.length;
+		if (selectIndex > text.length) selectIndex = text.length;
 	}
-	
+
 	function _updateFilter()
 	{
-		if(min < 0)
-		{
-			if(decimals > 0)
-			{
-				if(isPercent)
-					customFilterPattern = ~/[^0-9.%\-]*/g;
-				else
-					customFilterPattern = ~/[^0-9.\-]*/g;
-			}
-			else
-			{
-				if(isPercent)
-					customFilterPattern = ~/[^0-9%\-]*/g;
-				else
-					customFilterPattern = ~/[^0-9\-]*/g;
-			}
-		}
-		else
-		{
-			if(decimals > 0)
-			{
-				if(isPercent)
-					customFilterPattern = ~/[^0-9.%]*/g;
-				else
-					customFilterPattern = ~/[^0-9.]*/g;
-			}
-			else
-			{
-				if(isPercent)
-					customFilterPattern = ~/[^0-9%]*/g;
-				else
-					customFilterPattern = ~/[^0-9]*/g;
-			}
-		}
+		customFilterPattern = numericFilter(min < 0, decimals > 0, isPercent);
+	}
+
+	public static function numericFilter(allowNegative:Bool, allowDot:Bool, percent:Bool):EReg
+	{
+		var allowed:String = '0-9';
+		if (allowDot) allowed += '\\.';
+		if (allowNegative) allowed += '\\-';
+		if (percent) allowed += '%';
+		return new EReg('[^' + allowed + ']*', 'g');
 	}
 
 	public var broadcastStepperEvent:Bool = true;
 	function _internalOnChange()
 	{
-		if(onValueChange != null) onValueChange();
-		if(broadcastStepperEvent) PsychUIEventHandler.event(CHANGE_EVENT, this);
+		if (onValueChange != null) onValueChange();
+		if (broadcastStepperEvent) PsychUIEventHandler.event(CHANGE_EVENT, this);
 	}
 
 	override function setGraphicSize(width:Float = 0, height:Float = 0)
 	{
+		// The base class bakes the field at the requested size; scaling behindText here would
+		// shift the white area away from its own frame (and away from the click area).
 		super.setGraphicSize(width, height);
-		behindText.setGraphicSize(Std.int(width) - 32, Std.int(height) - 2);
 	}
 }

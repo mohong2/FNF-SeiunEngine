@@ -28,6 +28,7 @@ import editors.content.MetaNote;
 import editors.content.VSlice;
 import editors.content.Prompt;
 import editors.content.*;
+import editors.chart.*;
 
 import Song;
 import StageData;
@@ -47,6 +48,22 @@ using DateTools;
 typedef UndoStruct = {
 	var action:UndoAction;
 	var data:Dynamic;
+}
+
+/** 编辑器的一块面板 (新版的一个标签页), 旧版排版直接复用它。 */
+typedef ChartPanelRef = {
+	var id:String;
+	var menu:FlxSpriteGroup;
+	var box:PsychUIBox;
+	/** 内容高度 (相对 menu 原点), 用于旧版竖排。 */
+	var height:Float;
+	var minHeight:Float;
+	/** 属于这块面板的控件 (构建完后固定, 搬来搬去只动它们)。 */
+	var sprites:Array<FlxSprite>;
+	/** 这些控件当前挂在哪个菜单组里 (新版菜单或旧版标签页菜单)。 */
+	var currentMenu:FlxSpriteGroup;
+	/** 控件在新版菜单里的原始相对坐标 (旧版重排过位置的页, 例如文件按钮, 切回来要还原)。 */
+	var basePos:Array<{x:Float, y:Float}>;
 }
 
 enum abstract UndoAction(String)
@@ -123,18 +140,45 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 	public static var GRID_SIZE = 40;
 	final BACKUP_EXT = '.bkp';
 
+	/** 多k: 网格左侧最少留白 (旧版排版网格贴左边)。 */
+	public static inline final GRID_MARGIN:Int = 8;
+
 	/**
-	 * 多k: 计算编辑器网格格宽。
+	 * 多k: 计算编辑器网格格宽 (新版排版)。
 	 * 1K~9K 沿用固定表 (gridSizes), 10K+ 按屏幕宽度自适应, 避免高 K 时 Note 过小。
 	 */
 	public static function editorGridSize(mania:Int):Int
 	{
+		return editorGridSizeFor(mania, false);
+	}
+
+	/**
+	 * 多k: 按"可用宽度"算格宽。
+	 *
+	 * 旧版排版里面板固定在 660~1000, 网格只能用面板左边那 632px: 8K 以上如果还按
+	 * 整个屏幕宽度算格宽, 网格会直接钻到面板底下 (Note 被面板盖住, 也点不到),
+	 * 所以这里对旧版排版再夹一次, 保证 网格右边缘 <= 面板左边缘 - 间距。
+	 *
+	 * 4K 两种排版算出来都是 40, 与 0.6.3 完全一致。
+	 */
+	public static function editorGridSizeFor(mania:Int, classic:Bool):Int
+	{
 		var m:Int = EKData.clampMania(mania);
-		if (m < 9) return Note.gridSizes[m];
 		var cols:Int = Note.ammo[m] * GRID_PLAYERS;
-		var usableW:Int = FlxG.width - 120 - (SHOW_EVENT_COLUMN ? EVENT_COLUMN_WIDTH : 0);
-		var auto:Int = Math.floor(usableW / cols);
-		return Std.int(Math.max(auto, 18));
+		if (cols < 1) return 40;
+
+		var usableW:Int = classic
+			? (ChartEditorLayout.CLASSIC_X - ChartEditorLayout.CLASSIC_GRID_GAP - GRID_MARGIN)
+			: (FlxG.width - 120);
+		if (SHOW_EVENT_COLUMN) usableW -= EVENT_COLUMN_WIDTH;
+
+		var auto:Int = Std.int(Math.floor(usableW / cols));
+		if (m < 9)
+		{
+			// 空间够就用原表; 不够 (旧版 8K/9K, 或窗口很窄) 才缩
+			return Std.int(Math.max(6, Math.min(Note.gridSizes[m], auto)));
+		}
+		return Std.int(Math.max(auto, classic ? 6 : 18));
 	}
 
 	public var quantizations:Array<Int> = [
@@ -199,6 +243,49 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 	var infoBox:PsychUIBox;
 	var infoBoxPosition:FlxPoint = FlxPoint.get(1000, 360);
 	var upperBox:PsychUIBox;
+
+	// ── UI 布局 (新版浮动面板 / 旧版单面板) ──
+	/** 当前布局: ChartEditorLayout.MODERN / CLASSIC。 */
+	public var layoutId:String = ChartEditorLayout.MODERN;
+	/** 入口指定的布局 (为空时用存档里记住的布局)。 */
+	var entryLayout:String = null;
+	var classicBox:PsychUIBox;
+	/** 旧版排版专用: 面板上方的常驻退出按钮 (旧版没有工具盒, "文件"页藏在"歌曲"标签里)。 */
+	var classicExitButton:PsychUIButton;
+	var classicBoxHeight:Int = 0;
+	/** 旧版排版下信息盒被当成屏幕文字, 这里记住它在新版里的位置, 切回新版时还原。 */
+	var infoBoxModernPos:FlxPoint;
+	var layoutButton:PsychUIButton;
+	/** 选完排版后下一帧再关面板 (不能在自己的点击回调里销毁自己)。 */
+	var layoutPanelClosePending:Bool = false;
+	var layoutPanel:ChartEditorLayoutPanel;
+	/** 新版各面板 (按 id 索引), 旧版排版复用同一批控件。 */
+	var _panels:Array<ChartPanelRef> = [];
+	/** 旧版每个标签页里各面板的竖排偏移。 */
+	var _classicPlan:Array<Array<{panel:ChartPanelRef, offsetY:Float}>> = [];
+	/** 面板在旧版排版里占的高度 (文件页会被重排成 3 列, 比新版里一列矮很多)。 */
+	function classicPanelHeight(panel:ChartPanelRef):Float
+	{
+		if (panel.id == 'file')
+		{
+			var rows:Int = Std.int(Math.ceil(panel.sprites.length / ChartEditorLayout.CLASSIC_FILE_COLUMNS));
+			return rows * ChartEditorLayout.CLASSIC_FILE_ROW_H + 6;
+		}
+		return panel.height;
+	}
+
+	/** 旧版每个标签页的内容高度 (决定面板盒高度: 只有当前页那么高, 不再留大白块)。 */
+	var _classicTabHeights:Array<Float> = [];
+	var _classicTabSeen:Int = -1;
+
+	// ── 切换排版时的过渡动画: 控件从旧位置滑到新位置 ──
+	var _flyActive:Bool = false;
+	var _flyTime:Float = 0;
+	var _flySprites:Array<FlxSprite> = [];
+	var _flyFromX:Array<Float> = [];
+	var _flyFromY:Array<Float> = [];
+	var _flyToX:Array<Float> = [];
+	var _flyToY:Array<Float> = [];
 	
 	var camUI:FlxCamera;
 
@@ -213,6 +300,21 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 	var _segmentsBuildSec:Int = -999;
 	var waveformSprite:FlxSprite;
 	var scrollY:Float = 0;
+
+	// ── 网格移动动画 (小节切换 / 滚轮吸附) ──
+	/**
+	 * 网格正在平滑移动到的音乐时间 (音乐时间域, 不含 Conductor.offset)。
+	 *
+	 * 旧实现是"每次按键都 FlxTween 一个固定 0.2s 的 music.time": 连按时每按一次都从当前
+	 * 位置重新计时, 剩下的距离越来越短、时长却还是 0.2s, 于是越接近下一段越慢, 表现成
+	 * 在段落衔接处卡住。这里只维护一个目标 (可以随时改), 由 updateGridNav 逐帧逼近,
+	 * 连按只会把目标继续往前推, 动画不会重新开始。
+	 */
+	var _navTargetTime:Float = 0;
+	/** 平滑移动是否正在跑。 */
+	var _navActive:Bool = false;
+	/** 平滑移动的目标小节 (连按时在这个值上累加, 而不是在 curSec 上累加)。 */
+	var _navTargetSec:Int = -1;
 	
 	var zoomList:Array<Float> = [
 		0.25,
@@ -262,9 +364,10 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 	var selectionBox:FlxSprite;
 
 	var _shouldReset:Bool = true;
-	public function new(?shouldReset:Bool = true)
+	public function new(?shouldReset:Bool = true, ?layout:String = null)
 	{
 		this._shouldReset = shouldReset;
+		this.entryLayout = layout;
 		super();
 	}
 
@@ -340,7 +443,7 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 			if (PlayState.SONG.mania == null) PlayState.SONG.mania = Note.defaultMania;
 			PlayState.mania = EKData.clampMania(PlayState.SONG.mania);
 			GRID_COLUMNS_PER_PLAYER = Note.ammo[PlayState.mania];
-			GRID_SIZE = editorGridSize(PlayState.mania);
+			syncGridSize();
 		}
 		TraceManager.info('trace.editor.create2', 'NewChartingState create() #{} mania={} notes={}', [Math.floor(FlxG.random.float(0, 100000)), PlayState.mania, PlayState.SONG != null ? PlayState.SONG.notes.length : 0]);
 
@@ -562,13 +665,15 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 		autoSaveTxt.visible = false;
 		add(autoSaveTxt);
 
-		// save data positions for the UI boxes
+		// save data positions for the UI boxes (记录坏掉的坐标时退回默认位置, 否则面板会跑到屏幕外)
 		if(chartEditorSave.data.mainBoxPosition != null && chartEditorSave.data.mainBoxPosition.length > 1)
-			mainBox.setPosition(chartEditorSave.data.mainBoxPosition[0], chartEditorSave.data.mainBoxPosition[1]);
+			setBoxPositionSafe(mainBox, chartEditorSave.data.mainBoxPosition[0], chartEditorSave.data.mainBoxPosition[1]);
 		if(chartEditorSave.data.infoBoxPosition != null && chartEditorSave.data.infoBoxPosition.length > 1)
-			infoBox.setPosition(chartEditorSave.data.infoBoxPosition[0], chartEditorSave.data.infoBoxPosition[1]);
+			setBoxPositionSafe(infoBox, chartEditorSave.data.infoBoxPosition[0], chartEditorSave.data.infoBoxPosition[1]);
 
-		upperBox = new PsychUIBox(40, 40, 330, 300, ['newchartEditor_file', 'newchartEditor_edit', 'newchartEditor_view']);
+		// 左上角被引擎的 FPS/HEAP/RAM 监视条占着 (约 12..274 x 9..68), 三个标签页原来正好压在它底下:
+		// 既看不见也点不到 (点一下又立刻被 minimizeOnFocusLost 收回去)。往下让开那条监视条。
+		upperBox = new PsychUIBox(40, 96, 330, 300, ['newchartEditor_file', 'newchartEditor_edit', 'newchartEditor_view']);
 		upperBox.scrollFactor.set();
 		upperBox.isMinimized = true;
 		upperBox.minimizeOnFocusLost = true;
@@ -650,6 +755,16 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 		stageDropDown.list = loadFileList('stages/', 'data/stageList.txt');
 		onChartLoaded();
 
+		// 旧版 UI 的退出入口 (常驻在旧版面板上方)。
+		// 0.6.3 的退出是 BACKSPACE, 但新版编辑器把 BACKSPACE 当作删音符; 旧版排版复用同一套控件,
+		// 于是旧版就完全没有"退出"可点 ("文件"页又藏在"歌曲"标签里, 不去翻根本找不到)。
+		// 注意: 必须加在 F1 帮助遮罩之前, 否则它会画在帮助界面上层, 看帮助时还能点到退出。
+		classicExitButton = new PsychUIButton(ChartEditorLayout.CLASSIC_X + ChartEditorLayout.CLASSIC_WIDTH - 96, 4,
+			'newchartEditor_exit', function() confirmExit(), 96, 18);
+		classicExitButton.cameras = [camUI];
+		classicExitButton.visible = classicExitButton.active = false;
+		add(classicExitButton);
+
 		var tipText:EditorsText = new EditorsText(FlxG.width - 210, FlxG.height - 30, 200, Language.get('newchartEditor_press_f1_for_help', 'Press F1 for Help'), 20);
 		tipText.cameras = [camUI];
 		tipText.setFormat(Paths.font('editors.ttf'), 16, FlxColor.WHITE, RIGHT);
@@ -715,6 +830,8 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
     
 		fullTipText.screenCenter();
 		add(fullTipText);
+
+		setupLayouts();
 		#if (android || desktop)
 		addVirtualPad(LEFT_FULL, NEW_CHART_EDITOR);
 		#end
@@ -918,6 +1035,24 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 	var lastBeatHit:Int = 0;
 	override function update(elapsed:Float)
 	{
+		if(layoutPanelClosePending)
+		{
+			layoutPanelClosePending = false;
+			closeLayoutPanel();
+		}
+
+		updateFlyAnimation(elapsed);
+
+		// 旧版排版: 面板盒高度跟着当前标签页的内容走 (切页时不留下面的空白块)
+		if(layoutId == ChartEditorLayout.CLASSIC && classicBox != null && !classicBox.isMinimized)
+		{
+			var tabIdx:Int = classicBox.selectedIndex;
+			if(tabIdx != _classicTabSeen)
+			{
+				_classicTabSeen = tabIdx;
+				applyClassicHeight();
+			}
+		}
 		if(!fileDialog.completed)
 		{
 			lastFocus = PsychUIInputText.focusOn;
@@ -1057,6 +1192,8 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 					var vis:Bool = !fullTipText.visible;
 					tipBg.visible = tipBg.active = fullTipText.visible = fullTipText.active = vis;
 				}
+				else if(FlxG.keys.justPressed.F9)
+					toggleLayoutPanel();
 
 				var goingBack:Bool = false;
 				if(FlxG.keys.pressed.RBRACKET || (FlxG.keys.pressed.LBRACKET && (goingBack = true)))
@@ -1160,37 +1297,16 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 						setSongPlaying(false);
 
 					var shiftAdd:Int = (#if (android || desktop) (virtualPad != null && virtualPad.buttonY.pressed) || #end FlxG.keys.pressed.SHIFT) ? 4 : 1;
+					var goingLeft:Bool = #if (android || desktop) (virtualPad != null && virtualPad.buttonLeft.justPressed) || #end FlxG.keys.justPressed.A;
 
-					if(#if (android || desktop) (virtualPad != null && virtualPad.buttonLeft.justPressed) || #end FlxG.keys.justPressed.A)
-					{
-						if(curSec - shiftAdd < 0) shiftAdd = curSec;
-
-						if(shiftAdd > 0)
-						{
-							loadSection(curSec - shiftAdd);
-							var targetTime:Float = cachedSectionTimes[curSec] - Conductor.offset + 0.000001;
-							FlxTween.cancelTweensOf(FlxG.sound.music);
-							FlxTween.tween(FlxG.sound.music, {time: targetTime}, 0.2, {ease: FlxEase.circOut});
-							Conductor.songPosition = targetTime;
-						}
-					}
-					else if(#if (android || desktop) (virtualPad != null && virtualPad.buttonRight.justPressed) || #end FlxG.keys.justPressed.D)
-					{
-						if(curSec + shiftAdd >= PlayState.SONG.notes.length) shiftAdd = PlayState.SONG.notes.length - curSec - 1;
-                        
-						if(shiftAdd > 0)
-						{
-							loadSection(curSec + shiftAdd);
-							var targetTime:Float = cachedSectionTimes[curSec] - Conductor.offset + 0.000001;
-							FlxTween.cancelTweensOf(FlxG.sound.music);
-							FlxTween.tween(FlxG.sound.music, {time: targetTime}, 0.2, {ease: FlxEase.circOut});
-							Conductor.songPosition = targetTime;
-						}
-					}
+					// 连按时只把目标小节往后推, 由 updateGridNav 逐帧滑过去;
+					// 不再"每按一次就重开一个 0.2s tween", 所以不会在段落衔接处卡顿。
+					navToSection(goingLeft ? -shiftAdd : shiftAdd);
 				}
 				else if(FlxG.keys.justPressed.HOME)
 				{
 					setSongPlaying(false);
+					stopGridNav();
 					loadSection(0);
 					FlxTween.cancelTweensOf(FlxG.sound.music);
 					FlxTween.tween(FlxG.sound.music, {time: 0}, 0.3, {ease: FlxEase.circOut});
@@ -1199,11 +1315,13 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 				else if(FlxG.keys.justPressed.END)
 				{
 					setSongPlaying(false);
+					stopGridNav();
 					loadSection(PlayState.SONG.notes.length - 1);
 					Conductor.songPosition = FlxG.sound.music.time = FlxG.sound.music.length - 1;
 				}
 				else if(#if (android || desktop) (virtualPad != null && virtualPad.buttonB.justPressed) || #end FlxG.keys.justPressed.R)
 				{
+					stopGridNav();
 					var timeToGoBack:Float = 0;
 					if(#if (android || desktop) (virtualPad == null || !virtualPad.buttonY.pressed) || #end !FlxG.keys.pressed.SHIFT) timeToGoBack = cachedSectionTimes[curSec] + (curSec > 0 ? 0.000001 : 0);
 					else loadSection(0);
@@ -1220,13 +1338,16 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 					{
 						var snap:Float = Conductor.stepCrochet / (curQuant/16) / curZoom;
 						var timeAdd:Float = (#if (android || desktop) (virtualPad != null && virtualPad.buttonY.pressed) || #end FlxG.keys.pressed.SHIFT ? 4 : 1) / (holdingAlt ? 4 : 1) * -FlxG.mouse.wheel * snap;
-						var targetTime:Float = Math.round((FlxG.sound.music.time + timeAdd) / snap) * snap;
+						// 连续滚轮按"当前目标"累加, 由同一个平滑器滑过去 (不再每次重开 tween)
+						var baseTime:Float = _navActive ? _navTargetTime : FlxG.sound.music.time;
+						var targetTime:Float = Math.round((baseTime + timeAdd) / snap) * snap;
 						if(targetTime > 0) targetTime += 0.000001;
-						FlxTween.cancelTweensOf(FlxG.sound.music);
-						FlxTween.tween(FlxG.sound.music, {time: targetTime}, 0.15, {ease: FlxEase.circOut});
+						navToTrackTime(targetTime);
 					}
 					else
 					{
+						// 手动拖动/滚轮优先: 先停掉正在跑的平滑移动, 免得两套位置互相拉扯
+						stopGridNav();
 						var speedMult:Float = (#if (android || desktop) (virtualPad != null && virtualPad.buttonY.pressed) || #end FlxG.keys.pressed.SHIFT ? 4 : 1) * (FlxG.mouse.wheel != 0 ? 4 : 1) / (holdingAlt ? 4 : 1);
 						if((FlxG.keys.pressed.W #if (android || desktop) || (virtualPad != null && virtualPad.buttonUp.pressed) #end) || FlxG.mouse.wheel > 0)
 							FlxG.sound.music.time -= Conductor.crochet * speedMult * 1.5 * elapsed / curZoom;
@@ -1242,6 +1363,9 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 					setSongPlaying(!FlxG.sound.music.playing);
 				}
 			}
+
+			// 网格平滑移动 (小节切换/滚轮吸附): 只改音乐时间, 视野每帧跟着 songPosition 走
+			updateGridNav(elapsed);
 
 			if(!songFinished) Conductor.songPosition = FlxMath.bound(FlxG.sound.music.time + Conductor.offset, 0, FlxG.sound.music.length - 1);
 			updateScrollY();
@@ -1517,6 +1641,7 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 		}
 		
 		if(FlxG.mouse.justPressed && (FlxG.mouse.overlaps(mainBox.bg) || FlxG.mouse.overlaps(infoBox.bg)
+			|| (classicBox != null && layoutId == ChartEditorLayout.CLASSIC && FlxG.mouse.overlaps(classicBox.bg))
 			#if (android || desktop)
 			|| (virtualPad != null && virtualPad.isMouseOverAnyButton())
 			#end
@@ -2056,6 +2181,82 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 		scrollY = (((Conductor.songPosition - secStartTime) / secCrochet * GRID_SIZE * 4) + (secRows * GRID_SIZE)) * curZoom - FlxG.height/2;
 	}
 
+	/** 立刻停掉网格平滑移动 (播放 / 手动拖动 / 跳转时调用)。 */
+	function stopGridNav():Void
+	{
+		_navActive = false;
+		_navTargetSec = -1;
+	}
+
+	/**
+	 * 让网格平滑移动到目标音乐时间 (音乐时间域, 不含 Conductor.offset)。
+	 *
+	 * 已经在移动时只改目标: 连按把目标一直往前推, 动画不会重新开始, 所以不会出现
+	 * "每次按键都从头缓出 → 越接近下一段越慢 → 卡在衔接处"的问题。
+	 */
+	function navToTrackTime(targetTrackTime:Float, ?targetSec:Int = -1):Void
+	{
+		if(FlxG.sound.music == null) return;
+		var maxTime:Float = FlxG.sound.music.length - 1;
+		if(!(maxTime > 0)) return;
+		// 平滑移动接管音乐时间: 先把别的 tween (HOME / 重播小节) 停掉, 免得两套动画互相拉扯
+		FlxTween.cancelTweensOf(FlxG.sound.music);
+		_navTargetTime = FlxMath.bound(targetTrackTime, 0, maxTime);
+		_navTargetSec = targetSec;
+		_navActive = true;
+	}
+
+	/** 按小节移动网格: delta 可正可负, 边界处自动收敛 (连按在目标小节上累加)。 */
+	function navToSection(delta:Int):Void
+	{
+		if(delta == 0 || cachedSectionTimes == null || cachedSectionTimes.length < 1) return;
+
+		var last:Int = cachedSectionTimes.length - 1;
+		if(PlayState.SONG != null && PlayState.SONG.notes != null)
+			last = Std.int(Math.min(last, PlayState.SONG.notes.length - 1));
+		if(last < 0) return;
+
+		var base:Int = (_navActive && _navTargetSec >= 0) ? _navTargetSec : curSec;
+		var target:Int = Std.int(FlxMath.bound(base + delta, 0, last));
+		if(target == base) return;
+
+		// +0.05ms (≈0.02px) 只是为了浮点运算后 songPosition 仍 >= 小节起点, 视野上看不出来
+		navToTrackTime(cachedSectionTimes[target] - Conductor.offset + 0.05, target);
+	}
+
+	/**
+	 * 每帧推进网格移动 (指数逼近 + 速度上限)。
+	 *
+	 * 单位是毫秒: FlxG.sound.music.time / cachedSectionTimes / Conductor.crochet 全是 ms。
+	 * (第一版这里按"秒"写常量, 上限变成 34ms/秒, 步子只有 0.5ms, 所以动起来像龟爬。)
+	 *
+	 *  - 单次按键: 时间常数 25ms ≈ 0.16s 缓出, 和原来的 0.2s circOut 手感一致;
+	 *  - 连按: 目标一直往前, 速度按距离自适应并封顶, 表现为匀速滑行, 不会卡顿;
+	 *  - 剩余不足 3ms (屏幕上约 1px) 直接落位, 去掉尾巴几帧的爬行。
+	 */
+	function updateGridNav(elapsed:Float):Void
+	{
+		if(!_navActive || FlxG.sound.music == null) return;
+
+		var cur:Float = FlxG.sound.music.time;
+		var diff:Float = _navTargetTime - cur;
+		if(Math.abs(diff) < 3) // 3ms ≈ 屏幕上 1px
+		{
+			FlxG.sound.music.time = _navTargetTime;
+			stopGridNav();
+			return;
+		}
+
+		var dt:Float = elapsed;
+		if(dt > 1 / 20) dt = 1 / 20; // 卡帧时不要一步跳过去
+		var step:Float = diff * 40 * dt;
+		var maxStep:Float = 30000 * dt; // 每秒最多推进 30000ms(30 秒)谱面 ≈ 原来的手感上限, 连按/远跳 ~0.2s
+		if(step > maxStep) step = maxStep;
+		else if(step < -maxStep) step = -maxStep;
+
+		FlxG.sound.music.time = cur + step;
+	}
+
 	function updateSelectionBox()
 	{
 		var diffX:Float = FlxG.mouse.screenX - selectionStart.x;
@@ -2348,7 +2549,9 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 		var nextColumnCount:Int = (Note.ammo[nextSegs[0].k] * GRID_PLAYERS) + (SHOW_EVENT_COLUMN ? 1 : 0);
 
 		gridBg = new ChartingGridSprite(curColumnCount, gridColors[0], gridColors[1], NewChartingState.GRID_SIZE, SHOW_EVENT_COLUMN ? EVENT_COLUMN_WIDTH : 0);
-		gridBg.screenCenter(X);
+		// 网格重建 (切小节 / 切 K / 事件分段) 后必须留在当前排版的位置:
+		// 以前这里无脑 screenCenter, 旧版排版下随便点个下拉框就把网格弹回屏幕正中, 压到面板上。
+		gridBg.x = gridXForLayout();
 
 		prevGridBg = new ChartingGridSprite(prevColumnCount, gridColorsOther[0], gridColorsOther[1], NewChartingState.GRID_SIZE, SHOW_EVENT_COLUMN ? EVENT_COLUMN_WIDTH : 0);
 		nextGridBg = new ChartingGridSprite(nextColumnCount, gridColorsOther[0], gridColorsOther[1], NewChartingState.GRID_SIZE, SHOW_EVENT_COLUMN ? EVENT_COLUMN_WIDTH : 0);
@@ -2377,6 +2580,57 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 	{
 		if (PlayState.SONG == null) return Note.defaultMania;
 		return (PlayState.SONG.mania != null) ? EKData.clampMania(PlayState.SONG.mania) : Note.defaultMania;
+	}
+
+	/** 多k: 扫子事件表, 求里面出现过的最大键数 (没有 Change Mania 事件时原样返回 m)。 */
+	function maxManiaInSubEvents(subs:Array<Dynamic>, m:Int):Int
+	{
+		if (subs == null) return m;
+		for (sub in subs)
+		{
+			if (sub == null || sub.length < 2) continue;
+			if (Std.string(sub[0]) != 'Change Mania') continue;
+			var v:Null<Int> = Std.parseInt(Std.string(sub[1]));
+			if (v == null || Math.isNaN(v)) continue;
+			m = Std.int(Math.max(m, EKData.clampMania(v - 1)));
+		}
+		return m;
+	}
+
+	/**
+	 * 多k: 谱面内实际会用到的最大键数 (基准 k 与所有 Change Mania 事件里最大的那个)。
+	 * 编辑器所有小节共用同一格宽, 所以格宽必须按最大键数算 —— 否则经过 Change Mania 事件时
+	 * 格宽跟着变, 整个网格和 Note 一起左右乱跳; 高 K 小节还会撑到屏幕/面板外面。
+	 */
+	function chartMaxMania():Int
+	{
+		var m:Int = chartBaseMania();
+		if (PlayState.SONG != null && PlayState.SONG.events != null)
+		{
+			for (event in PlayState.SONG.events)
+			{
+				if (event == null) continue;
+				m = maxManiaInSubEvents(cast event[1], m);
+			}
+		}
+		// 编辑器里刚加的 Change Mania 事件可能还没同步回 SONG, 两边一起看
+		for (e in events)
+		{
+			if (e == null || e.songData == null) continue;
+			m = maxManiaInSubEvents(cast e.songData[1], m);
+		}
+		return m;
+	}
+
+	/**
+	 * 多k: 按 (谱面最大键数, 当前排版) 决定格宽 GRID_SIZE。
+	 * 只由谱面数据和排版决定, 与播放位置/预览键数无关 → 拖动、播放、切小节都不会跳。
+	 */
+	function syncGridSize():Int
+	{
+		GRID_COLUMNS_PER_PLAYER = Note.ammo[EKData.clampMania(PlayState.mania)];
+		GRID_SIZE = editorGridSizeFor(chartMaxMania(), layoutId == ChartEditorLayout.CLASSIC);
+		return GRID_SIZE;
 	}
 
 	/** 多k: 计算某小节起始时刻 (ms), 与 _cacheSections 同一公式。 */
@@ -2641,13 +2895,16 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 	var cachedSectionBPMs:Array<Float>;
 	function loadChart(song:SwagSong)
 	{
+		// 换谱面时旧谱面的平滑移动目标已经没意义了
+		stopGridNav();
 		PlayState.SONG = song;
 		// 多k: 键数与网格尺寸同步 (旧 4K 谱面无 mania 字段)
 		if (PlayState.SONG.mania == null) PlayState.SONG.mania = Note.defaultMania;
 		PlayState.mania = EKData.clampMania(PlayState.SONG.mania);
 		PlayState.SONG.mania = PlayState.mania;
 		GRID_COLUMNS_PER_PLAYER = Note.ammo[PlayState.mania];
-		GRID_SIZE = editorGridSize(PlayState.mania);
+		// 多k: 格宽按谱面内最大键数 + 当前排版, 与播放位置无关 (否则经过 Change Mania 事件时网格会跳)
+		syncGridSize();
 
 		// 多k: 打开不同键数的谱面时, 网格/轨道/头部图标必须按新键数重建,
 		// 否则只更新了静态列数, 网格精灵还是旧键数的样子 (打开 7K 谱仍显示 4K)。
@@ -2839,6 +3096,8 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 
 		if(doPlay)
 		{
+			// 开始播放就把网格移动动画停掉, 否则它每帧还在改音乐时间 (会和播放进度打架)
+			stopGridNav();
 			FlxG.sound.music.play();
 			if(FlxG.sound.music.time < vocals.length) vocals.play(true, FlxG.sound.music.time);
 			if(FlxG.sound.music.time < opponentVocals.length) opponentVocals.play(true, FlxG.sound.music.time);
@@ -2903,7 +3162,8 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 			// 多k: 按该 Note 自身时间点的生效键数解释, 不随播放头 k 变化
 			n.mania = EKData.effectiveManiaAtTime((PlayState.SONG != null) ? PlayState.SONG.events : null, chartBaseMania(), n.strumTime);
 			var noteAmmo:Int = Note.ammo[EKData.clampMania(n.mania)];
-			if (n.chartNoteData != raw || n.noteData != raw % noteAmmo)
+			// 多k: 数据没变但格宽变了 (切排版) 时也要走一遍 changeNoteData, 否则图标还是旧尺寸
+			if (n.chartNoteData != raw || n.noteData != raw % noteAmmo || notePinnedSize(n) != GRID_SIZE)
 			{
 				n.changeNoteData(raw); // 更新动画/颜色/尺寸 (songData[1] 保持完整 raw, 保留 side)
 			}
@@ -2961,14 +3221,12 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 		previewMania = target;
 		PlayState.mania = target;
 		GRID_COLUMNS_PER_PLAYER = Note.ammo[PlayState.mania];
-		var oldGridSize:Int = GRID_SIZE;
-		var newGridSize:Int = editorGridSize(PlayState.mania);
-		GRID_SIZE = newGridSize;
+		// 多k: 格宽只由"谱面最大键数 + 排版"决定, 预览键数不再动 GRID_SIZE。
+		// 以前这里跟着预览 k 改格宽并重建网格, 经过 Change Mania 事件时整片网格和 Note
+		// 会一起横向跳一下 (4K 段 40 格宽 / 18K 段 31 格宽来回切换)。
 		try
 		{
-			// 多k: 网格列数按事件静态分段, 播放经过事件时只有跨 k 格宽变化才重建网格,
-			// 避免滑动时整段重建成像闪烁 (4K<->9K 格宽同为 40, 无需重建)。
-			if (newGridSize != oldGridSize) createGrids(false);
+			syncGridSize();
 			rebuildStrumNotes();
 			repositionEditorUI();
 			updateGridVisibility();
@@ -3937,6 +4195,15 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 		return Math.max(((strumTime - secTime) / secCrochet) * GRID_SIZE * 4 * zoom + secRow * GRID_SIZE * zoom, -150);
 	}
 
+	/**
+	 * 多k: Note 图标被 changeNoteData 固定到 GRID_SIZE 的那条边 (正方形就是宽, 长条是高)。
+	 * 直接拿宽度比会把所有非正方形材质 (长条/异形 Note) 判成"尺寸不对", 每次重排都重载一遍动画。
+	 */
+	inline function notePinnedSize(note:MetaNote):Int
+	{
+		return Std.int(Math.round((note.width > note.height) ? note.width : note.height));
+	}
+
 	function positionNoteXByData(note:MetaNote, ?data:Null<Int> = null)
 	{
 		if(data == null) data = note.songData[1];
@@ -4038,6 +4305,622 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 	var playerMuteCheckBox:PsychUICheckBox;
 	var opponentVolumeStepper:PsychUINumericStepper;
 	var opponentMuteCheckBox:PsychUICheckBox;
+	// ═══════════════════════════════════════════════════════════════════
+	//  UI 布局：新版（三个浮动面板盒）/ 旧版（0.6.3 单面板 + 网格贴左）
+	//
+	//  两套排版共用同一批控件：切到旧版时把这些控件原样搬进旧版的 5 个
+	//  标签页里，切回新版再搬回原位。所以功能天然 1:1，不存在"切过去少东西"。
+	// ═══════════════════════════════════════════════════════════════════
+
+	/** 面板 id -> 更小的高度下限 (内容太短的标签页堆起来才不会贴在一起)。 */
+	static inline var PANEL_MIN_INFORMATION:Float = 200;
+
+	/** 读档坐标合理性检查: 面板必须还能点到 (标题栏留在屏幕内)。 */
+	function setBoxPositionSafe(box:PsychUIBox, x:Dynamic, y:Dynamic):Void
+	{
+		if (box == null || x == null || y == null) return;
+		var px:Float = Std.parseFloat(Std.string(x));
+		var py:Float = Std.parseFloat(Std.string(y));
+		if (Math.isNaN(px) || Math.isNaN(py)) return;
+		if (px < -4 || px > FlxG.width - 60 || py < -4 || py > FlxG.height - 40) return;
+		box.setPosition(px, py);
+	}
+
+	function setupLayouts():Void
+	{
+		registerPanels();
+		buildClassicBox();
+		buildLayoutButton();
+
+		var initial:String = entryLayout;
+		if (!ChartEditorLayout.isValid(initial))
+			initial = Std.string(chartEditorSave.data.layout);
+		if (!ChartEditorLayout.isValid(initial))
+			initial = ChartEditorLayout.MODERN;
+		applyLayout(initial, false);
+	}
+
+	/** 记录新版每个标签页的菜单组 (旧版排版直接复用)。 */
+	function registerPanels():Void
+	{
+		_panels = [];
+		addPanel('charting', mainBox, 'newchartEditor_charting');
+		addPanel('data', mainBox, 'newchartEditor_data');
+		addPanel('events', mainBox, 'newchartEditor_events');
+		addPanel('note', mainBox, 'newchartEditor_note');
+		addPanel('section', mainBox, 'newchartEditor_section');
+		addPanel('song', mainBox, 'newchartEditor_song');
+		// 工具盒 (file / edit / view) 不搬进旧版面板: 它们没有旧版对应标签页,
+		// 旧版用面板底部工具栏按需弹出, 也避免把 110px 宽的工具按钮塞进 300px 面板。
+		addPanel('information', infoBox, 'newchartEditor_information', PANEL_MIN_INFORMATION);
+		// 文件页 (新建/打开/保存/...): 旧版没有这个标签页, 但旧版把保存按钮放在"歌曲"页里,
+		// 这里直接把整页按钮搬进旧版"歌曲"页, 不另写一套保存逻辑。
+		addPanel('file', upperBox, 'newchartEditor_file');
+	}
+
+	function addPanel(id:String, box:PsychUIBox, tabKey:String, minHeight:Float = 60):Void
+	{
+		if (box == null) return;
+		var tab:PsychUITab = box.getTab(tabKey);
+		if (tab == null) return;
+		var sprites:Array<FlxSprite> = [];
+		var basePos:Array<{x:Float, y:Float}> = [];
+		for (s in tab.menu.members)
+		{
+			if (s == null) continue;
+			sprites.push(s);
+			basePos.push({x: s.x - tab.menu.x, y: s.y - tab.menu.y});
+		}
+		_panels.push({
+			id: id,
+			menu: tab.menu,
+			box: box,
+			height: minHeight,
+			minHeight: minHeight,
+			sprites: sprites,
+			currentMenu: tab.menu,
+			basePos: basePos
+		});
+	}
+
+	function getPanel(id:String):ChartPanelRef
+	{
+		for (panel in _panels)
+			if (panel.id == id) return panel;
+		return null;
+	}
+
+	/** 旧版面板盒：300px 宽、5 个标签页、固定不能拖动 (与 0.6.3 一致)。 */
+	function buildClassicBox():Void
+	{
+		_classicPlan = [];
+		var boxHeight:Int = ChartEditorLayout.CLASSIC_MIN_HEIGHT;
+		var box:PsychUIBox = new PsychUIBox(ChartEditorLayout.CLASSIC_X, ChartEditorLayout.CLASSIC_Y,
+			ChartEditorLayout.CLASSIC_WIDTH, boxHeight, ChartEditorLayout.CLASSIC_TABS.copy());
+		box.canMove = false;
+		box.scrollFactor.set();
+		box.cameras = [camUI];
+		classicBox = box;
+
+		// 标签页菜单是独立的组：先把原点摆到面板内 (框架之后每帧都会同步成同样的值)
+		for (tab in classicBox.tabs)
+		{
+			tab.menu.x = ChartEditorLayout.CLASSIC_X;
+			tab.menu.y = ChartEditorLayout.CLASSIC_Y + ChartEditorLayout.CLASSIC_TAB_HEIGHT;
+		}
+		classicBox.visible = classicBox.active = false;
+		add(classicBox);
+	}
+
+	/**
+	 * 隐藏工具盒。
+	 * 必须置 isMinimized, 让 selectedTab 变 null: PsychUIBox.draw() 不看 visible,
+	 * 只判断 selectedTab != null && !isMinimized, 否则隐藏后菜单还会画在屏幕上。
+	 */
+	function hideToolbox():Void
+	{
+		if (upperBox == null) return;
+		upperBox.isMinimized = true;
+		upperBox.visible = false;
+		upperBox.active = false;
+	}
+
+	/** 顶部右侧的布局切换按钮。 */
+	function buildLayoutButton():Void
+	{
+		layoutButton = new PsychUIButton(FlxG.width - 112, 8,
+			Language.get('newchartEditor_ui_layout', 'UI Layout'), function() toggleLayoutPanel(), 104, 26);
+		layoutButton.cameras = [camUI];
+		add(layoutButton);
+	}
+
+	function toggleLayoutPanel():Void
+	{
+		if (layoutPanel != null)
+		{
+			closeLayoutPanel();
+			return;
+		}
+		PsychUIDropDownMenu.closeAll();
+		layoutPanel = new ChartEditorLayoutPanel(FlxG.width - ChartEditorLayoutPanel.WIDTH - 16, 44, layoutId,
+			function(id:String)
+			{
+				applyLayout(id, true);
+				layoutPanelClosePending = true;
+			});
+		layoutPanel.cameras = [camUI];
+		add(layoutPanel);
+		layoutPanel.fadeIn();
+	}
+
+	function closeLayoutPanel():Void
+	{
+		if (layoutPanel == null) return;
+		remove(layoutPanel);
+		layoutPanel.destroy();
+		layoutPanel = null;
+	}
+
+	/**
+	 * 切换排版。
+	 * 先把控件全部搬回新版位置 (顺便量出每块面板的真实高度), 再按需要竖排进旧版标签页。
+	 */
+	public function applyLayout(id:String, save:Bool = true):Void
+	{
+		if (!ChartEditorLayout.isValid(id)) id = ChartEditorLayout.MODERN;
+		if (classicBox == null) return;
+
+		// 切换排版牵扯到搬控件 / 重建网格 / 改盒子高度, 任何一步抛异常都会把 UI 卡在
+		// "一半新版一半旧版"的状态。这里兜住异常并记日志, 至少界面不会整个失效。
+		try
+		{
+			applyLayoutInternal(id, save);
+		}
+		catch (e:Dynamic)
+		{
+			TraceManager.error('trace.editor.exception', 'applyLayout({}) failed: {}', [id, Std.string(e)]);
+		}
+	}
+
+	function applyLayoutInternal(id:String, save:Bool):Void
+	{
+		PsychUIDropDownMenu.closeAll();
+		// 记下切换前每个控件的屏幕坐标, 摆好新位置后再让它们从旧坐标滑过去
+		var startX:Array<Float> = [];
+		var startY:Array<Float> = [];
+		for (panel in _panels)
+			for (s in panel.sprites)
+			{
+				startX.push((s != null) ? s.x : 0);
+				startY.push((s != null) ? s.y : 0);
+			}
+
+		restorePanelsToModern();
+		layoutId = ChartEditorLayout.MODERN;
+		measurePanels();
+		rebuildClassicPlan();
+
+		var classic:Bool = (id == ChartEditorLayout.CLASSIC);
+		if (classic)
+		{
+			mountClassicLayout();
+			layoutId = ChartEditorLayout.CLASSIC;
+		}
+
+		refreshBoxVisibility();
+		// 多k: 旧版排版下面板占着屏幕右侧, 格宽要按面板左边那块宽度重算, 否则网格钻到面板底下
+		applyGridMetrics(classic);
+		layoutGrid(classic);
+		if (save) startFlyAnimation(startX, startY, classic);
+		if (layoutPanel != null) layoutPanel.refresh(id, true);
+
+		if (save)
+		{
+			chartEditorSave.data.layout = id;
+			chartEditorSave.flush();
+		}
+	}
+
+	/**
+	 * 多k: 按 (排版, 谱面最大键数) 决定格宽; 变了就把网格 / 轨道 / 头部图标 / Note 全部重排一遍。
+	 * 4K 两种排版格宽都是 40, 这里直接返回, 不会有多余重建。
+	 */
+	function applyGridMetrics(classic:Bool):Void
+	{
+		GRID_COLUMNS_PER_PLAYER = Note.ammo[EKData.clampMania(PlayState.mania)];
+		var want:Int = editorGridSizeFor(chartMaxMania(), classic);
+		if (want == GRID_SIZE || gridBg == null) return;
+
+		GRID_SIZE = want;
+		if (PlayState.SONG == null || PlayState.SONG.notes == null || PlayState.SONG.notes.length < 1) return;
+		try
+		{
+			_cacheSections();
+			createGrids(false);
+			rebuildStrumNotes();
+			repositionEditorUI();
+			updateNotesForMania(); // X / Y / 图标尺寸 全按新格宽重算, 末尾自带 loadSection
+			updateScrollY(); // 格宽变了 → 同一播放位置对应的 Y 也变了, 视野必须跟着重算
+		}
+		catch (e:Dynamic)
+		{
+			TraceManager.error('trace.editor.exception', 'layout grid metrics failed: {}', [Std.string(e)]);
+		}
+	}
+
+	function refreshBoxVisibility():Void
+	{
+		var classic:Bool = (layoutId == ChartEditorLayout.CLASSIC);
+		if (mainBox != null)
+		{
+			mainBox.visible = !classic;
+			mainBox.active = !classic;
+		}
+		if (infoBox != null) positionInfoBoxAsHud(classic);
+		if (upperBox != null)
+		{
+			// 旧版排版没有工具盒 (0.6.3 根本没有 文件/编辑/视图 菜单), 整块收掉
+			if (classic) hideToolbox();
+			else
+			{
+				// 回到新版: 工具盒恢复成默认的"收起成一条标签栏"状态
+				upperBox.visible = true;
+				upperBox.active = true;
+				upperBox.bg.visible = false;
+				upperBox.isMinimized = true;
+			}
+		}
+		if (classicBox != null)
+		{
+			classicBox.visible = classic;
+			classicBox.active = classic;
+		}
+		if (classicExitButton != null)
+		{
+			classicExitButton.visible = classic;
+			classicExitButton.active = classic;
+		}
+	}
+
+	/**
+	 * 信息盒 (时间 / 段落 / 拍 / 步 / 吸附 / 已选)。
+	 *
+	 * 旧版排版里没有这块盒子: 0.6.3 只是把它当一行文字画在 (1000, 50)。
+	 * 所以旧版下把盒子的背景和标签栏都藏掉, 只留文字, 并摆回旧版的位置;
+	 * 切回新版再恢复原来的位置和外框。
+	 */
+	function positionInfoBoxAsHud(classic:Bool):Void
+	{
+		if (classic)
+		{
+			if (infoBoxModernPos == null) infoBoxModernPos = FlxPoint.get(infoBox.x, infoBox.y);
+			infoBox.visible = true;
+			// 旧版这行字是纯显示: 关掉 update 里的点击处理, 否则点到(隐藏的)标签栏会把它最小化掉
+			infoBox.active = false;
+			infoBox.bg.visible = false;
+			infoBox.canMove = false;
+			if (infoBox.isMinimized) infoBox.isMinimized = false;
+			for (tab in infoBox.tabs)
+				tab.visible = false;
+			infoBox.setPosition(ChartEditorLayout.CLASSIC_INFO_X, ChartEditorLayout.CLASSIC_INFO_Y);
+		}
+		else
+		{
+			infoBox.visible = true;
+			infoBox.active = true;
+			infoBox.bg.visible = true;
+			infoBox.canMove = true;
+			for (tab in infoBox.tabs)
+				tab.visible = true;
+			// 只有"从旧版切回来"才需要还原位置, 平时不要动用户拖好的位置
+			if (infoBoxModernPos != null)
+			{
+				infoBox.setPosition(infoBoxModernPos.x, infoBoxModernPos.y);
+				infoBoxModernPos = null;
+			}
+		}
+		// 盒子被 disable 了 update, 菜单原点不会自动跟随; 这里立刻同步一次,
+		// 否则切换排版做过渡动画时, 文字会在下一帧才跳到新位置。
+		if (infoBox.selectedTab != null)
+		{
+			infoBox.selectedTab.menu.x = infoBox.x;
+			infoBox.selectedTab.menu.y = infoBox.y + infoBox.tabHeight;
+		}
+	}
+
+	/** 过渡: 把控件摆回切换前的位置, 再逐帧滑到当前(新)位置。 */
+	function startFlyAnimation(startX:Array<Float>, startY:Array<Float>, enteringClassic:Bool):Void
+	{
+		_flySprites = [];
+		_flyFromX = [];
+		_flyFromY = [];
+		_flyToX = [];
+		_flyToY = [];
+		var i:Int = 0;
+		for (panel in _panels)
+			for (s in panel.sprites)
+			{
+				var idx:Int = i++;
+				if (s == null || !s.exists || idx >= startX.length) continue;
+				_flySprites.push(s);
+				_flyFromX.push(startX[idx]);
+				_flyFromY.push(startY[idx]);
+				_flyToX.push(s.x);
+				_flyToY.push(s.y);
+				s.x = startX[idx];
+				s.y = startY[idx];
+			}
+		_flyTime = 0;
+		_flyActive = _flySprites.length > 0;
+	}
+
+	function updateFlyAnimation(elapsed:Float):Void
+	{
+		if (!_flyActive) return;
+		_flyTime += elapsed;
+		var r:Float = _flyTime / ChartEditorLayout.LAYOUT_ANIM_DUR;
+		if (r > 1) r = 1;
+		var e:Float = 1 - Math.pow(1 - r, 3);
+		for (i in 0..._flySprites.length)
+		{
+			var s:FlxSprite = _flySprites[i];
+			if (s == null || !s.exists) continue;
+			s.x = _flyFromX[i] + (_flyToX[i] - _flyFromX[i]) * e;
+			s.y = _flyFromY[i] + (_flyToY[i] - _flyFromY[i]) * e;
+		}
+		if (r >= 1)
+		{
+			for (i in 0..._flySprites.length)
+			{
+				var s:FlxSprite = _flySprites[i];
+				if (s == null || !s.exists) continue;
+				s.x = _flyToX[i];
+				s.y = _flyToY[i];
+			}
+			_flyActive = false;
+			_flySprites = [];
+		}
+	}
+
+	/** 量出每块面板的内容高度 (必须在控件位于各自新版菜单里时调用)。 */
+	function measurePanels():Void
+	{
+		for (panel in _panels)
+		{
+			var originY:Float = panel.menu.y;
+			var bottom:Float = 0;
+			for (s in panel.menu.members)
+			{
+				if (s == null || !s.exists) continue;
+				// 下拉菜单的 height 把展开后的列表也算进去了, 这里只算它闭合时的高度
+				var h:Float = Std.isOfType(s, PsychUIDropDownMenu) ? 22 : s.height;
+				var b:Float = s.y + h - originY;
+				if (b > bottom) bottom = b;
+			}
+			panel.height = Math.max(panel.minHeight, bottom + 4);
+		}
+	}
+
+	/** 按测好的高度算出旧版每个标签页的竖排位置 (面板盒高度按当前页单独算)。 */
+	function rebuildClassicPlan():Void
+	{
+		_classicPlan = [];
+		_classicTabHeights = [];
+		for (i in 0...ChartEditorLayout.CLASSIC_PANELS.length)
+		{
+			var stack:Array<{panel:ChartPanelRef, offsetY:Float}> = [];
+			var y:Float = 4;
+			for (id in ChartEditorLayout.CLASSIC_PANELS[i])
+			{
+				var panel:ChartPanelRef = getPanel(id);
+				if (panel == null) continue;
+				stack.push({panel: panel, offsetY: y});
+				y += classicPanelHeight(panel) + ChartEditorLayout.PANEL_GAP;
+			}
+			_classicPlan.push(stack);
+			_classicTabHeights.push(y);
+		}
+		applyClassicHeight();
+	}
+
+	/**
+	 * 旧版面板盒高度: 只按当前标签页的内容算。
+	 * 以前所有标签页共用"最高的那页"的高度, 于是 Note / 板块 页下面永远拖着一大块空白。
+	 */
+	function applyClassicHeight():Void
+	{
+		if (classicBox == null) return;
+		var i:Int = classicBox.selectedIndex;
+		var content:Float = (i >= 0 && i < _classicTabHeights.length) ? _classicTabHeights[i] : ChartEditorLayout.CLASSIC_MIN_HEIGHT;
+		var h:Float = content + ChartEditorLayout.CLASSIC_TAB_HEIGHT + 8;
+		if (h < ChartEditorLayout.CLASSIC_MIN_HEIGHT) h = ChartEditorLayout.CLASSIC_MIN_HEIGHT;
+		var maxH:Float = FlxG.height - ChartEditorLayout.CLASSIC_Y - 12;
+		if (h > maxH) h = maxH;
+		var ih:Int = Std.int(h);
+		if (classicBoxHeight != ih)
+		{
+			classicBoxHeight = ih;
+			classicBox.resize(ChartEditorLayout.CLASSIC_WIDTH, ih);
+		}
+	}
+
+	/**
+	 * 把一块面板的控件搬进指定菜单组, 并按"绝对坐标"重新摆放。
+	 *
+	 * FlxSpriteGroup 入组 +原点 / 出组 -原点, 所以搬动本身不改变屏幕位置; 这里搬完后直接用
+	 * "菜单原点 + 相对坐标" 重写绝对坐标。每次切换都从头算, 不依赖任何累计偏移, 来回切十次
+	 * 也不会越走越偏。
+	 */
+	function placePanel(panel:ChartPanelRef, targetMenu:FlxSpriteGroup, offsetY:Float, classicArrangement:Bool):Void
+	{
+		if (panel == null || targetMenu == null) return;
+
+		for (s in panel.sprites)
+		{
+			if (s == null || !s.exists) continue;
+			if (panel.currentMenu != null && panel.currentMenu != targetMenu && panel.currentMenu.members.indexOf(s) > -1)
+				panel.currentMenu.remove(s, false);
+			if (targetMenu.members.indexOf(s) < 0) targetMenu.add(s);
+		}
+		panel.currentMenu = targetMenu;
+
+		var menuX:Float = targetMenu.x;
+		var menuY:Float = targetMenu.y;
+		var count:Int = panel.sprites.length;
+
+		if (classicArrangement && panel.id == 'file')
+		{
+			// 旧版"歌曲"页: 110 宽的文件按钮排成 3 列填满 340 宽的面板 (新版里是一竖列)。
+			var cols:Int = ChartEditorLayout.CLASSIC_FILE_COLUMNS;
+			for (i in 0...count)
+			{
+				var s:FlxSprite = panel.sprites[i];
+				if (s == null) continue;
+				s.x = menuX + ChartEditorLayout.CLASSIC_PAD + (i % cols) * ChartEditorLayout.CLASSIC_FILE_BTN_W;
+				s.y = menuY + offsetY + Std.int(i / cols) * ChartEditorLayout.CLASSIC_FILE_ROW_H;
+			}
+			return;
+		}
+
+		for (i in 0...count)
+		{
+			var s:FlxSprite = panel.sprites[i];
+			if (s == null || i >= panel.basePos.length) continue;
+			s.x = menuX + panel.basePos[i].x;
+			s.y = menuY + offsetY + panel.basePos[i].y;
+		}
+	}
+
+	/** 旧版排版：把新版面板竖排进 5 个旧标签页。 */
+	function mountClassicLayout():Void
+	{
+		for (i in 0...classicBox.tabs.length)
+		{
+			var stack:Array<{panel:ChartPanelRef, offsetY:Float}> = (i < _classicPlan.length) ? _classicPlan[i] : null;
+			if (stack == null) continue;
+			var tab:PsychUITab = classicBox.tabs[i];
+			tab.menu.x = ChartEditorLayout.CLASSIC_X;
+			tab.menu.y = ChartEditorLayout.CLASSIC_Y + ChartEditorLayout.CLASSIC_TAB_HEIGHT;
+			for (entry in stack)
+				placePanel(entry.panel, tab.menu, entry.offsetY, true);
+		}
+	}
+
+	/** 新版排版：把控件搬回各自的新版面板, 并恢复新版里的绝对坐标。 */
+	function restorePanelsToModern():Void
+	{
+		if (classicBox == null) return;
+		for (panel in _panels)
+		{
+			panel.menu.x = panel.box.x;
+			panel.menu.y = panel.box.y + panel.box.tabHeight;
+			placePanel(panel, panel.menu, 0, false);
+		}
+	}
+
+	/** 当前排版下网格该放的位置 (新版居中 / 旧版贴左)。 */
+	function gridXForLayout():Float
+	{
+		return gridXForTarget(layoutId == ChartEditorLayout.CLASSIC);
+	}
+
+	/**
+	 * 多k: 本谱面 (按最大键数) 最宽的网格像素宽度。
+	 *
+	 * 网格左边缘要按这个宽度算, 不能按"当前小节"的宽度算: 谱面里 4K 小节和 18K 小节混排时,
+	 * 按当前小节算会在切小节时把整片网格左右挪一次, 而且窄小节算出来的左边缘会让宽小节
+	 * 撑到屏幕/面板外面去。
+	 */
+	function maxGridWidth():Float
+	{
+		var ammo:Int = Note.ammo[chartMaxMania()];
+		return (SHOW_EVENT_COLUMN ? EVENT_COLUMN_WIDTH : 0) + ammo * GRID_PLAYERS * GRID_SIZE;
+	}
+
+	/** 目标排版下网格该放的左边缘 (新版居中 / 旧版贴左)。 */
+	function gridXForTarget(classic:Bool):Float
+	{
+		var wid:Float = maxGridWidth();
+		if (classic) return classicGridX(wid);
+		return Math.max(0, Math.floor((FlxG.width - wid) / 2));
+	}
+
+	/** 旧版网格左边缘：4K 时正好 280 (与 0.6.3 完全一致), 高 K 时自动左移避免压到面板。 */
+	function classicGridX(?wid:Float = -1):Float
+	{
+		if (wid < 0) wid = maxGridWidth();
+		var x:Float = Math.min(ChartEditorLayout.CLASSIC_GRID_X,
+			ChartEditorLayout.CLASSIC_X - ChartEditorLayout.CLASSIC_GRID_GAP - wid);
+		return Math.max(GRID_MARGIN, Math.floor(x));
+	}
+
+	/**
+	 * 按排版摆放网格 (新版居中 / 旧版贴左), 并把 Note / 事件的坐标重新对齐到网格。
+	 *
+	 * 以前这里只重建了网格本身, Note 的 X 还是切换前的旧坐标, 于是"网格动了、Note 没动":
+	 * 旧版切回新版后满屏 Note 偏离半个轨道 (18K 这种高 K 尤其明显)。
+	 */
+	function layoutGrid(classic:Bool):Void
+	{
+		if (gridBg == null) return;
+		var targetX:Float = gridXForTarget(classic);
+
+		if (Math.round(gridBg.x) != Math.round(targetX))
+		{
+			gridBg.x = targetX;
+			if (prevGridBg != null) prevGridBg.x = targetX;
+			if (nextGridBg != null) nextGridBg.x = targetX;
+			for (seg in gridSegments)
+				if (seg != null) seg.x = targetX;
+			_segmentsBuildSec = -999;
+		}
+
+		repositionEditorUI();
+		rebuildStrumNotes();
+		resyncChartElements();
+		if (PlayState.SONG != null && PlayState.SONG.notes != null && PlayState.SONG.notes.length > 0
+			&& cachedSectionBPMs != null && cachedSectionBPMs.length > 0)
+			loadSection();
+	}
+
+	/**
+	 * 多k: 把全部 Note / 事件的坐标重新对齐到当前网格 (网格左边缘或格宽变化后必须调用)。
+	 *
+	 * 只改坐标/图标尺寸, 不重建对象; 格宽变了的话 Y 也要按新格宽重算 (Y = 时间 * GRID_SIZE)。
+	 */
+	function resyncChartElements():Void
+	{
+		if (gridBg == null) return;
+		var cachesReady:Bool = (cachedSectionTimes != null && cachedSectionTimes.length > 1
+			&& cachedSectionCrochets != null && cachedSectionRow != null);
+		var secCount:Int = cachesReady ? cachedSectionTimes.length : 0;
+
+		for (n in notes)
+		{
+			if (n == null || n.isEvent) continue;
+			// 格宽变了 (切排版 / 切 K) 时 Note 图标尺寸也要跟着变, changeNoteData 内部才会 setGraphicSize
+			if (notePinnedSize(n) != GRID_SIZE) n.changeNoteData(n.chartNoteData);
+			positionNoteXByData(n);
+			if (cachesReady)
+			{
+				var secNum:Int = 0;
+				while (secNum + 1 < secCount && cachedSectionTimes[secNum + 1] <= n.strumTime) secNum++;
+				positionNoteYOnTime(n, secNum);
+			}
+		}
+		for (e in events)
+		{
+			if (e == null) continue;
+			e.x = gridBg.x;
+			if (cachesReady)
+			{
+				var secNum:Int = 0;
+				while (secNum + 1 < secCount && cachedSectionTimes[secNum + 1] <= e.strumTime) secNum++;
+				positionNoteYOnTime(e, secNum);
+			}
+		}
+	}
+
 	function addChartingTab()
 	{
 		var tab_group = mainBox.getTab('newchartEditor_charting').menu;
@@ -4963,7 +5846,7 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 		#end
 
 		objY += 65;
-		bpmStepper = new PsychUINumericStepper(objX, objY, 1, 1, 1, 400, 3);
+		bpmStepper = new PsychUINumericStepper(objX, objY, 1, 1, 1, 400, 3, 50);
 		bpmStepper.onValueChange = function()
 		{
 			var oldTimes:Array<Float> = cachedSectionTimes.copy();
@@ -4971,10 +5854,10 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 			adaptNotesToNewTimes(oldTimes);
 		};
 
-		scrollSpeedStepper = new PsychUINumericStepper(objX + 90, objY, 0.1, 1, 0.1, 10, 2);
+		scrollSpeedStepper = new PsychUINumericStepper(objX + 100, objY, 0.1, 1, 0.1, 10, 2, 50);
 		scrollSpeedStepper.onValueChange = function() PlayState.SONG.speed = scrollSpeedStepper.value;
 
-		audioOffsetStepper = new PsychUINumericStepper(objX + 180, objY, 1, 0, -500, 500, 0);
+		audioOffsetStepper = new PsychUINumericStepper(objX + 200, objY, 1, 0, -500, 500, 0, 50);
 		audioOffsetStepper.onValueChange = function()
 		{
 			PlayState.SONG.offset = audioOffsetStepper.value;
@@ -4985,7 +5868,7 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 		// 键数 (显示 1-18, 内部 mania = 值-1): 作为整张谱面的单一键数映射保留
 		maniaStepper = new PsychUINumericStepper(objX, objY + 40, 1, (PlayState.SONG.mania != null ? PlayState.SONG.mania : Note.defaultMania) + 1, 1, Note.maxMania + 1, 0, 45);
 		// Key conversion mode: sequential / shuffle / auto-double / shuffle+double.
-		convertModeDropDown = new PsychUIDropDownMenu(objX + 55, objY + 40, [
+		convertModeDropDown = new PsychUIDropDownMenu(objX + 95, objY + 40, [
 			Language.get('newchartEditor_convert_sequential', '顺序映射'),
 			Language.get('newchartEditor_convert_shuffle', '自动打乱'),
 			Language.get('newchartEditor_convert_double', '自动补双押'),
@@ -5002,8 +5885,7 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 			convertChartNoteData(oldMania, newMania, (convertModeDropDown != null) ? convertModeDropDown.selectedIndex : 0);
 			PlayState.SONG.mania = newMania;
 			PlayState.mania = EKData.clampMania(PlayState.SONG.mania);
-			GRID_COLUMNS_PER_PLAYER = Note.ammo[PlayState.mania];
-			GRID_SIZE = editorGridSize(PlayState.mania);
+			syncGridSize();
 			TraceManager.info('trace.editor.mania2', 'Change mania -> {} (stepper={}) membersBefore={}', [newMania, maniaStepper.value, members.length]);
 			try
 			{
@@ -7349,8 +8231,11 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 				ignoreClickForThisFrame = true;
 
 			case PsychUIBox.MINIMIZE_EVENT:
-				chartEditorSave.data.mainBoxPosition = [mainBox.x, mainBox.y];
-				chartEditorSave.data.infoBoxPosition = [infoBox.x, infoBox.y];
+				if (layoutId != ChartEditorLayout.CLASSIC)
+				{
+					if (mainBox != null) chartEditorSave.data.mainBoxPosition = [mainBox.x, mainBox.y];
+					if (infoBox != null) chartEditorSave.data.infoBoxPosition = [infoBox.x, infoBox.y];
+				}
 		}
 	}
 	function openEditorPlayState()
@@ -7450,8 +8335,12 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 	{
 		ClientPrefs.toggleVolumeKeys(true);
 		super.closeSubState();
-		upperBox.isMinimized = true;
-		upperBox.visible = mainBox.visible = infoBox.visible = true;
+		if (upperBox != null)
+		{
+			upperBox.isMinimized = true;
+			upperBox.bg.visible = false;
+		}
+		refreshBoxVisibility();
 		updateAudioVolume();
 	}
 

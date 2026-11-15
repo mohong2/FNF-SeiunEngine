@@ -28,7 +28,6 @@ class MasterEditorMenu extends MusicBeatState
 		'editors_dialogue_portrait',
 		'editors_character',
 		'editors_chart',
-		'editors_new_chart',
 		'editors_chart_converter'//,
 		//'editors_background'
 		//,
@@ -218,9 +217,8 @@ class MasterEditorMenu extends MusicBeatState
 						LoadingState.loadAndSwitchState(new DialogueCharacterEditorState(), false);
 					case 'editors_dialogue':
 						LoadingState.loadAndSwitchState(new DialogueEditorState(), false);
-					case 'editors_chart':
-						LoadingState.loadAndSwitchState(new ChartingState(), false);
-					case 'editors_new_chart':
+					case 'editors_chart', 'editors_new_chart':
+						// 旧版 / 新版编辑器已合并为同一个状态: 排版在编辑器里切换 (顶部 UI 按钮 / F9), 会记住选择
 						LoadingState.loadAndSwitchState(new NewChartingState(), false);
 					case 'editors_chart_converter':
 						MusicBeatState.switchState(new ChartConverterState());
@@ -259,9 +257,8 @@ class MasterEditorMenu extends MusicBeatState
 					LoadingState.loadAndSwitchState(new DialogueCharacterEditorState(), false);
 				case 'editors_dialogue':
 					LoadingState.loadAndSwitchState(new DialogueEditorState(), false);
-				case 'editors_chart':
-					LoadingState.loadAndSwitchState(new ChartingState(), false);
-				case 'editors_new_chart':
+				case 'editors_chart', 'editors_new_chart':
+					// 旧版 / 新版编辑器已合并为同一个状态: 排版在编辑器里切换 (顶部 UI 按钮 / F9), 会记住选择
 					LoadingState.loadAndSwitchState(new NewChartingState(), false);
 				case 'editors_chart_converter':
 					MusicBeatState.switchState(new ChartConverterState());

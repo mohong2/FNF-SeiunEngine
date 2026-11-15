@@ -166,9 +166,12 @@ class MetaNote extends Note
     }
 
     var _lastZoom:Float = -1;
+    /** 上次铺长条时的格宽 (切排版/切K 后格宽会变, 长条必须跟着重算)。 */
+    var _lastGridSize:Int = -1;
     public function setSustainLength(v:Float, stepCrochet:Float, zoom:Float = 1)
     {
         _lastZoom = zoom;
+        _lastGridSize = gridSize();
         v = Math.round(v / (stepCrochet / 2)) * (stepCrochet / 2);
         songData[2] = sustainLength = Math.max(Math.min(v, stepCrochet * 128), 0);
 
@@ -189,7 +192,8 @@ class MetaNote extends Note
 
     public function updateSustainToZoom(stepCrochet:Float, zoom:Float = 1)
     {
-        if(_lastZoom == zoom) return;
+        // 格宽变了也要重算 (长条宽度/高度都按 gridSize 算)
+        if(_lastZoom == zoom && _lastGridSize == gridSize()) return;
         setSustainLength(sustainLength, stepCrochet, zoom);
     }
     public function updateSustainToStepCrochet(stepCrochet:Float)

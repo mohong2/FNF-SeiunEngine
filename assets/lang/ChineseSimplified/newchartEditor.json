@@ -301,5 +301,10 @@
   "newchartEditor_convert_shuffle": "自动打乱",
   "newchartEditor_convert_double": "自动补双押",
   "newchartEditor_convert_shuffle_double": "打乱+双押",
-  "newchartEditor_events_tab": "事件"
+  "newchartEditor_events_tab": "事件",
+  "newchartEditor_ui_layout": "界面切换",
+  "newchartEditor_layout_title": "谱面编辑器排版",
+  "newchartEditor_layout_classic": "旧版 UI",
+  "newchartEditor_layout_modern": "新版 UI",
+  "newchartEditor_layout_hint": "选择会被记住，F9 也可切换。"
 }

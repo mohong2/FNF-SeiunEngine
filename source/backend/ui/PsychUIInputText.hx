@@ -48,6 +48,12 @@ class PsychUIInputText extends FlxSpriteGroup
 
 	public static var focusOn(default, set):PsychUIInputText = null;
 
+	/** Releases keyboard / IME focus from whatever field currently owns it. */
+	public static function clearFocus():Void
+	{
+		if (focusOn != null) focusOn = null;
+	}
+
 	public var name:String;
 	public var bg:FlxSprite;
 	public var behindText:FlxSprite;
@@ -77,25 +83,26 @@ class PsychUIInputText extends FlxSpriteGroup
 	public function new(x:Float = 0, y:Float = 0, wid:Int = 100, ?text:String = '', size:Int = 8, ?font:String)
 	{
 		super(x, y);
+		_fontSize = size;
+		_fieldH = Std.int(Math.max(size + 4, 16));
 		var totalW:Int = wid + 2;
-		var totalH:Int = Std.int(Math.max(size + 4, 16));
+		var totalH:Int = _fieldH;
 
-		// Outer border (black) with rounded corners
-		this.bg = PsychUIHelper.createRoundedRectSprite(totalW, totalH, borderRadius);
-		this.bg.color = FlxColor.BLACK;
+		// Outer frame (black, rounded). Every sprite here owns its own bitmap - nothing is
+		// shared with another widget, so destroying a field can never black out another one.
+		this.bg = new FlxSprite();
 		add(this.bg);
+		this.bg.color = FlxColor.BLACK;
 
-		// Inner white area – use a 1x1 white pixel scaled up (original approach, safe)
-		this.behindText = new FlxSprite(1, 1).makeGraphic(1, 1, FlxColor.WHITE);
-		this.behindText.setGraphicSize(wid, totalH - 2);
-		this.behindText.updateHitbox();
+		// Inner white area.
+		this.behindText = new FlxSprite();
 		add(this.behindText);
 
-		this.selection = new FlxSprite().makeGraphic(1, 1, FlxColor.WHITE);
+		this.selection = new FlxSprite().makeGraphic(1, 1, FlxColor.WHITE, true);
 		this.textObj = new FlxText(1, 1, Math.max(1, wid - 2), '', size);
 		if(font == null) textObj.font = 'assets/fonts/editors.ttf';
 		else textObj.font = Paths.font(font);
-		this.caret = new FlxSprite().makeGraphic(1, 1, FlxColor.WHITE);
+		this.caret = new FlxSprite().makeGraphic(1, 1, FlxColor.WHITE, true);
 		add(this.selection);
 		add(this.textObj);
 		add(this.caret);
@@ -107,11 +114,10 @@ class PsychUIInputText extends FlxSpriteGroup
 		this.selection.color = FlxColor.BLUE;
 
 		@:bypassAccessor fieldWidth = wid;
-		setGraphicSize(totalW, totalH);
-		updateHitbox();
+		applyGeometry(totalW, totalH);
 		this.text = text;
 
-		FlxG.stage.addEventListener(KeyboardEvent.KEY_DOWN, onKeyDown);
+		if (FlxG.stage != null) FlxG.stage.addEventListener(KeyboardEvent.KEY_DOWN, onKeyDown);
 
 		_skipTextInput = false;
 	}
@@ -426,6 +432,8 @@ class PsychUIInputText extends FlxSpriteGroup
 	public var unfocus:Void->Void;
 	public static function set_focusOn(v:PsychUIInputText)
 	{
+		// A destroyed / half-built input must never become the focus target.
+		if (v != null && (!v.exists || v.textObj == null)) v = null;
 		if(focusOn != null && focusOn != v && focusOn.exists)
 		{
 			if(focusOn.unfocus != null) focusOn.unfocus();
@@ -438,6 +446,16 @@ class PsychUIInputText extends FlxSpriteGroup
 
 	static function updateIME()
 	{
+		// The focused input may have been removed/destroyed while it was focused.
+		if (focusOn != null && (!focusOn.exists || focusOn.behindText == null || !focusOn.behindText.exists))
+			focusOn = null;
+
+		if (FlxG.stage == null)
+		{
+			_textInputActive = false;
+			return;
+		}
+
 		if(focusOn != null)
 		{
 			if(!_hiddenTFReady)
@@ -524,6 +542,7 @@ class PsychUIInputText extends FlxSpriteGroup
 	static function setHiddenText(value:String)
 	{
 		if(_hiddenTF == null) return;
+		if(value == null) value = '';
 		// Use replaceText to preserve format ranges (unlike direct text= assignment)
 		var oldLen = _hiddenTF.text.length;
 		if(oldLen == 0)
@@ -793,7 +812,7 @@ class PsychUIInputText extends FlxSpriteGroup
 	{
 		_boundaries = null;
 		if(focusOn == this) focusOn = null;
-		FlxG.stage.removeEventListener(KeyboardEvent.KEY_DOWN, onKeyDown);
+		if (FlxG.stage != null) FlxG.stage.removeEventListener(KeyboardEvent.KEY_DOWN, onKeyDown);
 		destroyHiddenTextField();
 		super.destroy();
 	}
@@ -805,33 +824,68 @@ class PsychUIInputText extends FlxSpriteGroup
 		return v;
 	}
 
+	var _fontSize:Int = 8;
+	var _fieldH:Int = 16;
+	var _wid:Int = 100;
+
+	/**
+	 * Resizes the field. The FlxSpriteGroup variants are deliberately not used here: a group
+	 * has no frame, so FlxSpriteGroup.setGraphicSize() computes scale = w / 0 and then copies
+	 * that infinite scale (and a bogus offset) onto every child - which is exactly how an input
+	 * field ends up drawn at a different place than its own hit box.
+	 */
 	override public function setGraphicSize(width:Float = 0, height:Float = 0)
 	{
-		super.setGraphicSize(Std.int(width), Std.int(height));
-		bg.setGraphicSize(Std.int(width), Std.int(height));
-		behindText.setGraphicSize(Std.int(width) - 2, Std.int(height) - 2);
-		if(textObj != null && textObj.exists)
-		{
-			textObj.scale.x = 1;
-			textObj.scale.y = 1;
-			if(caret != null && caret.exists) caret.setGraphicSize(1, Std.int(textObj.height) - 4);
-		}
+		var w:Int = (width > 0) ? Std.int(width) : (_wid + 2);
+		var h:Int = (height > 0) ? Std.int(height) : _fieldH;
+		applyGeometry(w, h);
 	}
-	
+
 	override public function updateHitbox()
 	{
-		super.updateHitbox();
-		bg.updateHitbox();
-		behindText.updateHitbox();
-		if(textObj != null && textObj.exists)
+		// Geometry is owned by applyGeometry(); see the comment above setGraphicSize().
+	}
+
+	/** Lays the frame, the white area, the text, the caret and the selection out at w x h. */
+	public function applyGeometry(totalW:Int, totalH:Int)
+	{
+		_wid = Std.int(Math.max(2, totalW - 2));
+		_fieldH = Std.int(Math.max(_fontSize + 4, totalH));
+
+		if (bg != null)
 		{
-			textObj.updateHitbox();
-			if(caret != null && caret.exists) caret.updateHitbox();
+			PsychUIHelper.bakeRounded(bg, _wid + 2, _fieldH, borderRadius);
+			bg.color = FlxColor.BLACK;
+			bg.x = x;
+			bg.y = y;
 		}
+
+		if (behindText != null)
+		{
+			behindText.makeGraphic(_wid, Std.int(Math.max(1, _fieldH - 2)), FlxColor.WHITE, true);
+			behindText.x = x + 1;
+			behindText.y = y + 1;
+		}
+
+		if (textObj != null)
+		{
+			textObj.x = x + textOffsetX;
+			textObj.y = y + textOffsetY;
+			textObj.fieldWidth = Math.max(1, _wid - 2);
+			textObj.scale.set(1, 1);
+			if (caret != null)
+			{
+				caret.setGraphicSize(1, Std.int(textObj.height) - 4);
+				caret.updateHitbox();
+			}
+		}
+
+		if (selection != null) selection.scale.set(1, 1);
 	}
 
 	function set_fieldWidth(v:Int)
 	{
+		_wid = Std.int(Math.max(2, v));
 		textObj.fieldWidth = Math.max(1, v - 2);
 		textObj.textField.selectable = false;
 		textObj.textField.wordWrap = false;
@@ -859,7 +913,9 @@ class PsychUIInputText extends FlxSpriteGroup
 	var _boundaries:Array<Float> = [];
 	function set_text(v:String)
 	{
+		if (_boundaries == null) _boundaries = [];
 		for (i in 0..._boundaries.length) _boundaries.pop();
+		if (textObj == null || !textObj.exists) return (text = v);
 		v = filter(v);
 
 		textObj.text = '';
@@ -988,7 +1044,8 @@ class PsychUIInputText extends FlxSpriteGroup
 				default:
 					throw new flash.errors.Error("FlxInputText: Unknown filterMode (" + filterMode + ")");
 			}
-			text = pattern.replace(text, "");
+			// A null custom pattern used to crash every keystroke of a filtered input.
+			if (pattern != null) text = pattern.replace(text, "");
 		}
 		return text;
 	}

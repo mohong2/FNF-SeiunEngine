@@ -301,5 +301,10 @@
   "newchartEditor_convert_sequential": "Sequential Mapping",
   "newchartEditor_convert_shuffle": "Auto Shuffle",
   "newchartEditor_convert_double": "Auto Double",
-  "newchartEditor_convert_shuffle_double": "Shuffle + Double"
+  "newchartEditor_convert_shuffle_double": "Shuffle + Double",
+  "newchartEditor_ui_layout": "UI Layout",
+  "newchartEditor_layout_title": "Chart Editor Layout",
+  "newchartEditor_layout_classic": "Classic UI",
+  "newchartEditor_layout_modern": "Modern UI",
+  "newchartEditor_layout_hint": "Remembered for next time. F9 toggles."
 }

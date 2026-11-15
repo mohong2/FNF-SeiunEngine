@@ -1,8 +1,15 @@
 package backend.ui;
 
-import flixel.tweens.FlxTween;
-import flixel.tweens.FlxEase;
+import flixel.math.FlxMath;
 
+/**
+ * Checkbox (and, through {@link PsychUIRadioItem}, a radio button): a 16x16 toggle plus a label.
+ *
+ * The hit area is an explicit rectangle that covers the box and the label, so the thing that is
+ * clickable can never drift away from the thing that is drawn. Hover feedback is a colour tint
+ * plus the 0.6.3-style spring pop of the box itself (never a setGraphicSize call: the hit box is
+ * fixed, only the sprite's scale changes).
+ */
 class PsychUICheckBox extends FlxSpriteGroup
 {
 	public static final CLICK_EVENT = 'checkbox_click';
@@ -15,8 +22,17 @@ class PsychUICheckBox extends FlxSpriteGroup
 	public var checked(default, set):Bool = false;
 	public var onClick:Void->Void = null;
 
-	/** If true, hover/click on the checkbox will scale it smoothly. */
+	/** If true, hover/click animate the box instead of snapping. */
 	public var smoothAnimations:Bool = true;
+	public var broadcastCheckBoxEvent:Bool = true;
+
+	var _hitW:Float = 0;
+	var _hitH:Float = 0;
+	var _hoverT:Float = 0;
+	var _hovered:Bool = false;
+
+	var _pop:Float = 1;
+	var _popVel:Float = 0;
 
 	public function new(x:Float, y:Float, label:String, ?textWid:Int = 100, ?callback:Void->Void, ?font:String, ?size:Int = 10)
 	{
@@ -26,13 +42,15 @@ class PsychUICheckBox extends FlxSpriteGroup
 		boxGraphic();
 		add(box);
 
-		text = new FlxText(box.width + 4, 0, textWid, label);
-		if(font == null) text.font = 'assets/fonts/editors.ttf';
-		else 
-		text.font = Paths.font(font);
+		text = new FlxText(box.width + 4, 0, textWid, (label != null) ? label : '');
+		if (font == null) text.font = 'assets/fonts/editors.ttf';
+		else text.font = Paths.font(font);
 		text.borderSize = 2;
 		text.size = size;
 		add(text);
+
+		_hitW = box.width + 4 + textWid;
+		_hitH = Math.max(box.height, text.height);
 
 		this.onClick = callback;
 	}
@@ -45,52 +63,81 @@ class PsychUICheckBox extends FlxSpriteGroup
 		box.animation.play('false');
 	}
 
-	public var broadcastCheckBoxEvent:Bool = true;
-	var _hovered:Bool = false;
 	override function update(elapsed:Float)
 	{
 		super.update(elapsed);
 
-		var screenPos:FlxPoint = getScreenPosition(null, camera);
-		var mousePos:FlxPoint = FlxG.mouse.getPositionInCameraView(camera);
-		var overBox:Bool = (mousePos.x >= screenPos.x && mousePos.x < screenPos.x + width) &&
-			(mousePos.y >= screenPos.y && mousePos.y < screenPos.y + height);
+		if (!exists || !visible || !active || box == null || !box.exists || text == null) return;
 
-		// Hover scale effect
-		if(overBox != _hovered)
-		{
-			_hovered = overBox;
-			if(smoothAnimations)
-			{
-				FlxTween.cancelTweensOf(box, ['scale.x', 'scale.y']);
-				FlxTween.tween(box.scale, {x: overBox ? 1.15 : 1.0, y: overBox ? 1.15 : 1.0}, 0.1, {ease: FlxEase.backOut});
-			}
-		}
+		var over:Bool = PsychUIHelper.overlapsRect(this, 0, 0, _hitW, _hitH, camera);
+		_hovered = over;
 
-		if(FlxG.mouse.justPressed && overBox)
+		if (smoothAnimations)
+			_hoverT = PsychUIHelper.approach(_hoverT, over ? 1 : 0, elapsed, 20);
+		else
+			_hoverT = over ? 1 : 0;
+
+		box.color = PsychUIHelper.lerpColor(FlxColor.WHITE, 0xFFB8D8FF, _hoverT);
+
+		_tickPop(elapsed, over);
+
+		if (FlxG.mouse.justPressed && over)
 		{
 			checked = !checked;
-			if(smoothAnimations)
-			{
-				FlxTween.cancelTweensOf(box, ['scale.x', 'scale.y']);
-				box.scale.set(0.85, 0.85);
-				FlxTween.tween(box.scale, {x: 1.0, y: 1.0}, 0.15, {ease: FlxEase.backOut});
-			}
-			if(onClick != null) onClick();
-			if(broadcastCheckBoxEvent) PsychUIEventHandler.event(CLICK_EVENT, this);
+			_popVel -= 3.2;
+			if (onClick != null) onClick();
+			if (broadcastCheckBoxEvent) PsychUIEventHandler.event(CLICK_EVENT, this);
 		}
+	}
+
+	/** Spring pop of the 16x16 box: 1 -> 1.13 on hover, squash on click, bounce back. */
+	function _tickPop(elapsed:Float, over:Bool):Void
+	{
+		var target:Float = 1;
+		if (smoothAnimations) target = 1 + 0.13 * _hoverT;
+
+		if (!smoothAnimations)
+		{
+			_pop = target;
+			_popVel = 0;
+		}
+		else
+		{
+			var dt:Float = Math.min(elapsed, 1 / 40);
+			_popVel += (target - _pop) * 700 * dt;
+			_popVel *= 1 / (1 + 24 * dt);
+			_pop += _popVel * dt;
+
+			if (Math.abs(_pop - target) < 0.0006 && Math.abs(_popVel) < 0.006)
+			{
+				_pop = target;
+				_popVel = 0;
+			}
+		}
+		if (box != null && box.exists) box.scale.set(_pop, _pop);
 	}
 
 	function set_checked(v:Bool):Bool
 	{
-		box.animation.play(Std.string(v));
+		if (box != null && box.animation != null) box.animation.play(Std.string(v));
 		return (checked = v);
 	}
 
-	function get_label():String {
-		return text.text;
+	function get_label():String
+	{
+		return (text != null) ? text.text : null;
 	}
-	function set_label(v:String):String {
-		return (text.text = v);
+
+	function set_label(v:String):String
+	{
+		if (text != null && text.exists) text.text = (v != null) ? v : '';
+		return v;
+	}
+
+	override function destroy()
+	{
+		box = null;
+		text = null;
+		super.destroy();
 	}
 }

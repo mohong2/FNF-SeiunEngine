@@ -301,5 +301,10 @@
   "newchartEditor_convert_sequential": "順序映射",
   "newchartEditor_convert_shuffle": "自動打亂",
   "newchartEditor_convert_double": "自動補雙押",
-  "newchartEditor_convert_shuffle_double": "打亂+雙押"
+  "newchartEditor_convert_shuffle_double": "打亂+雙押",
+  "newchartEditor_ui_layout": "介面切換",
+  "newchartEditor_layout_title": "譜面編輯器排版",
+  "newchartEditor_layout_classic": "舊版 UI",
+  "newchartEditor_layout_modern": "新版 UI",
+  "newchartEditor_layout_hint": "選擇會被記住，F9 也可切換。"
 }
