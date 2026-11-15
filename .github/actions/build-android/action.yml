@@ -96,6 +96,18 @@ runs:
         $cacheDir = "$env:GITHUB_WORKSPACE\.hxcpp-cache"
         $cacheDir = $cacheDir -replace '\\','/'
         New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+        # A restored precompiled header cannot be trusted: clang bakes every header's
+        # mtime into the .pch, a fresh checkout stamps those headers with today's time,
+        # and hxcpp only compares the group header's hash before reusing one - so the
+        # first file that has to be compiled dies with
+        #   file '...\include\hx\LessThanEq.h' has been modified since the
+        #   precompiled header '...\hxcpp.h.pch' was built
+        # src/BuildInfo.cpp is always newest (it carries the run id), so this hits the
+        # very first group of every run. Dropping the pch* directories costs a couple of
+        # seconds per group and leaves the object cache itself alone.
+        Get-ChildItem -Path $cacheDir -Directory -Recurse -Filter 'pch*' -ErrorAction SilentlyContinue |
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Output "dropped cached precompiled headers"
         $example = "$env:HAXELIB_HXCPP_PATH/toolchain/example.hxcpp_config.xml"
         $example = $example -replace '\\','/'
         # Keep the config OUT of the workspace root (see build-desktop/action.yml): a stray xml
@@ -152,8 +164,11 @@ runs:
     # (tools/SymbolsAfterBuild.hx) then moves it into export/symbols/android-release/
     # with build.json + build-info.txt. The release workflow publishes that directory
     # inside the single SeiunEngine-symbols-<version>.zip.
+    # Same reason as the desktop Compile step: an hxcpp error can leave the process
+    # hanging instead of exiting, so the step has to fail on its own.
     - name: Build APK
       shell: pwsh
+      timeout-minutes: 60
       env:
         _JAVA_OPTIONS: "-Xmx5g -XX:MaxMetaspaceSize=1g"
       run: |

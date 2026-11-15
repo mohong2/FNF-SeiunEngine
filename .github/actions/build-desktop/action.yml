@@ -116,6 +116,18 @@ runs:
         CACHE_DIR="$GITHUB_WORKSPACE/.hxcpp-cache"
         CACHE_DIR="${CACHE_DIR//\\//}"
         mkdir -p "$CACHE_DIR"
+        # A restored precompiled header cannot be trusted: clang bakes every header's
+        # mtime into the .pch, a fresh checkout stamps those headers with today's time,
+        # and hxcpp only compares the group header's hash before reusing one - so the
+        # first file that has to be compiled dies with
+        #   file '.../include/hx/LessThanEq.h' has been modified since the
+        #   precompiled header '.../hxcpp.h.pch' was built
+        # src/BuildInfo.cpp is always newest (it carries $GITHUB_RUN_ID), so this hits
+        # the very first group of every run. Dropping the pch* directories costs a
+        # couple of seconds per group and leaves the object cache itself alone.
+        find "$CACHE_DIR" -type d -name 'pch*' -prune -print0 2>/dev/null |
+          while IFS= read -r -d '' stale_pch; do rm -rf "$stale_pch"; done
+        echo "dropped cached precompiled headers"
         EXAMPLE="$HAXELIB_HXCPP_PATH/toolchain/example.hxcpp_config.xml"
         EXAMPLE="${EXAMPLE//\\//}"
         # Keep the config OUT of the workspace root: lime's project auto-detection scans *.xml
@@ -174,8 +186,12 @@ runs:
       shell: bash
       run: ${{ inputs.rebuild }}
 
+    # A compile error is not always fatal to the process: on macOS the 2026-11-15 run
+    # printed "compile failed: src/BuildInfo.cpp" and then sat there for four hours
+    # until the job timeout. Bound the step so the failure arrives in minutes.
     - name: Compile
       shell: bash
+      timeout-minutes: 100
       run: ${{ inputs.build }}
 
     - name: Verify crash symbols

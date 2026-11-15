@@ -67,6 +67,18 @@ runs:
         CACHE_DIR="$GITHUB_WORKSPACE/.hxcpp-cache"
         CACHE_DIR="${CACHE_DIR//\\//}"
         mkdir -p "$CACHE_DIR"
+        # A restored precompiled header cannot be trusted: clang bakes every header's
+        # mtime into the .pch, a fresh checkout stamps those headers with today's time,
+        # and hxcpp only compares the group header's hash before reusing one - so the
+        # first file that has to be compiled dies with
+        #   file '.../include/hx/LessThanEq.h' has been modified since the
+        #   precompiled header '.../hxcpp.h.pch' was built
+        # src/BuildInfo.cpp is always newest (it carries $GITHUB_RUN_ID), so this hits
+        # the very first group of every run. Dropping the pch* directories costs a
+        # couple of seconds per group and leaves the object cache itself alone.
+        find "$CACHE_DIR" -type d -name 'pch*' -prune -print0 2>/dev/null |
+          while IFS= read -r -d '' stale_pch; do rm -rf "$stale_pch"; done
+        echo "dropped cached precompiled headers"
         EXAMPLE="$HAXELIB_HXCPP_PATH/toolchain/example.hxcpp_config.xml"
         EXAMPLE="${EXAMPLE//\\//}"
         # Keep the config OUT of the workspace root (see build-desktop/action.yml).
@@ -138,8 +150,11 @@ runs:
       shell: bash
       run: haxelib run lime rebuild ios -arm64 -release
 
+    # Same reason as the desktop Compile step: an hxcpp error can leave the process
+    # hanging instead of exiting, so the step has to fail on its own.
     - name: Compile iOS (device, arm64)
       shell: bash
+      timeout-minutes: 60
       run: haxelib run lime build "$GITHUB_WORKSPACE/Project.xml" ios -arm64 --app-version="$APP_VERSION-${{ github.run_id }}"
 
     - name: Package IPA
