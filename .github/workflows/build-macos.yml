@@ -29,8 +29,14 @@ jobs:
             rebuild: haxelib run lime rebuild mac -64 -release -Dlime-sdl3 -Dhxcpp_api_level=430
             build: haxelib run lime build "$GITHUB_WORKSPACE/Project.xml" mac -64 --app-version="$APP_VERSION-$GITHUB_RUN_ID"
             artifact: SeiunEngine-mac-x64
-          - runner: macos-14
+          - runner: macos-15
             target: macos-arm64
+            # macos-14 was retired (actions/runner-images#15226): while the leg still
+            # named it, the job died in one second with zero steps and macOS arm64
+            # silently stopped being built at all. Labels matter here - macos-14 and
+            # macos-15-intel are x64, macos-15 and macos-26 are Apple Silicon, so this
+            # leg now cross-compiles nothing: it links arm64 natively.
+            #
             # Both flags are required, and they do different jobs:
             #   -arm64 -> lime's ARM64 selection. The lime fork turns it into hxcpp's
             #             HXCPP_ARM64, which is what selects -arch arm64 and the
@@ -57,10 +63,15 @@ jobs:
       - name: Resolve hxcpp revision
         shell: bash
         run: |
-          # Hash the branch hmm.json actually pins (haxe-4.3). main moves
-          # independently of it, so keying the cache on main left it stale.
-          git ls-remote https://github.com/mohong2/hxcpp.git refs/heads/haxe-4.3 | awk '{print $1}' > hxcpp-head.txt
+          # Hash the hxcpp ref hmm.json pins instead of a branch name written here:
+          # the two drifted apart (hmm.json said haxe-4.3 while the engine needed the
+          # rebased fork), and a cache keyed on a branch nothing builds is just stale.
+          REF=$(python3 -c "import json;print(next(d['ref'] for d in json.load(open('hmm.json'))['dependencies'] if d['name']=='hxcpp'))")
+          SHA=$(git ls-remote https://github.com/mohong2/hxcpp.git "$REF" | awk '{print $1}' | head -n1)
+          [ -n "$SHA" ] || SHA="$REF"
+          echo "$SHA" > hxcpp-head.txt
           cat hxcpp-head.txt
+          echo "hxcpp ref: $REF"
 
       - name: Restore hxcpp compile cache
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3

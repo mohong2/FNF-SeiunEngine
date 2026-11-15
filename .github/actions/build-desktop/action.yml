@@ -80,6 +80,11 @@ runs:
         # rebuilt ndll through HAXELIB_LIME_PATH instead of hardcoding .haxelib/<lib>/git.
         libs: hxcpp lime discord_rpc
 
+    # A wrong fork revision is invisible to the Haxe build and only explodes in C++, so
+    # every lane checks the installed forks before it compiles anything.
+    - name: Verify forked libraries
+      uses: ./.github/actions/verify-forks
+
     # The hxcpp 4.3.x forward port does not carry the 4.2.1 fork's -march=x86-64-v3
     # additions at all (they were dropped while porting), so the old
     # `sed '/-march=x86-64-v3/d'` here only ever matched nothing. It is gone:

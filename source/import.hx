@@ -6,8 +6,11 @@
 // #error accepts a string literal only (an expression fails with "Not implemented for
 // current platform"), so the text is fixed; run haxe --version to see what is installed.
 //
-// Haxe 4.3.x also needs an hxcpp built against the 4.3 API (mohong2/hxcpp, branch
-// haxe-4.3); the older 4.2.1 fork is refused with "Hxcpp is out of date - please update".
+// Haxe 4.3.x also needs an hxcpp built against the 4.3 API: mohong2/hxcpp, branch
+// seiunengine-4.3.175 (the fork rebased onto upstream v4.3.175, which is also the only
+// branch with the 64-bit file helpers src/ChartStream.hx calls). The older 4.2.1 fork is
+// refused with "Hxcpp is out of date - please update", and hmm.json pins the branch so a
+// fresh install cannot land on the pre-rebase base by accident.
 // Install it with:    haxe -cp ./setup -main Main --interp
 // See USE HAXE 4.3.7.txt and the comment at the top of Project.xml.
 #if (haxe_ver < 4.3)

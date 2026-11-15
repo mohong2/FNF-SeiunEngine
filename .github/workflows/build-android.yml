@@ -49,8 +49,19 @@ jobs:
       - name: Resolve hxcpp revision
         shell: pwsh
         run: |
-          git ls-remote https://github.com/mohong2/hxcpp.git refs/heads/main | ForEach-Object { ($_ -split "`t")[0] } | Set-Content hxcpp-head.txt
+          # Key the cache on the hxcpp ref hmm.json pins. A hardcoded branch name drifts
+          # from the fork the build actually installs: that is how CI ended up on the
+          # pre-rebase haxe-4.3 branch and died on _hx_std_file_seek64.
+          $ref = (Get-Content -Raw hmm.json | ConvertFrom-Json).dependencies |
+            Where-Object { $_.name -eq 'hxcpp' } | Select-Object -First 1 -ExpandProperty ref
+          if (-not $ref) { Write-Error 'hmm.json has no hxcpp entry with a ref'; exit 1 }
+          $sha = git ls-remote https://github.com/mohong2/hxcpp.git $ref |
+            ForEach-Object { ($_ -split "`t")[0] } | Select-Object -First 1
+          # A ref already pinned to a commit is its own identity.
+          if (-not $sha) { $sha = $ref }
+          $sha | Set-Content hxcpp-head.txt
           Get-Content hxcpp-head.txt
+          Write-Output "hxcpp ref: $ref"
 
       - name: Restore hxcpp compile cache
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3

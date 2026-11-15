@@ -44,7 +44,7 @@
       "name": "hxcpp",
       "type": "git",
       "url": "https://github.com/mohong2/hxcpp.git",
-      "ref": "haxe-4.3"
+      "ref": "seiunengine-4.3.175"
     },
     {
       "name": "hscript-seiun",

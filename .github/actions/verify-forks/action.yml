@@ -1,0 +1,52 @@
+name: Verify forked libraries
+description: Fail in seconds when a pinned fork does not provide what the engine compiles against.
+
+# Every haxelib git dependency is a moving branch, so a fork that was rebased - or a
+# hmm.json ref that still names the pre-rebase branch - installs a library this engine
+# cannot compile against. That used to surface 13 minutes into a build as
+#   ./src/ChartSectionReader.cpp(224): error C3861: '_hx_std_file_seek64': identifier not found
+# (MSVC) or the same symbol as "use of undeclared identifier" (clang), neither of which
+# names the real cause: the C++ error is generated from Haxe that type-checked fine,
+# because the call goes through __cpp__.
+#
+# Expects HAXELIB_HXCPP_PATH / HAXELIB_LIME_PATH, which ./.github/actions/haxelib-path
+# publishes to GITHUB_ENV.
+
+runs:
+  using: composite
+  steps:
+    - name: Check hxcpp fork features
+      shell: bash
+      run: |
+        set -euo pipefail
+        STD="$HAXELIB_HXCPP_PATH/include/hx/StdLibs.h"
+        if [ ! -f "$STD" ]; then
+          echo "::error::hxcpp headers not found at $STD (HAXELIB_HXCPP_PATH=$HAXELIB_HXCPP_PATH)"
+          exit 1
+        fi
+        # src/ChartStream.hx drives these through __cpp__, so a missing declaration is
+        # only ever reported by the C++ compiler: fork additions, not stock hxcpp.
+        for sym in _hx_std_file_seek64 _hx_std_file_tell64; do
+          if ! grep -q "$sym" "$STD"; then
+            echo "::error::the installed hxcpp ($HAXELIB_HXCPP_PATH) does not declare $sym - that is the pre-rebase haxe-4.3 base, not the rebased fork. The hxcpp entry in hmm.json must name the seiunengine-4.3.175 branch (or a commit from it)."
+            exit 1
+          fi
+        done
+        echo "hxcpp: fork features present"
+
+    - name: Check lime fork features
+      shell: bash
+      run: |
+        set -euo pipefail
+        VK="$HAXELIB_LIME_PATH/vulkan/haxe/seiun/vulkan"
+        if [ ! -d "$VK" ]; then
+          echo "::error::the installed lime ($HAXELIB_LIME_PATH) has no vulkan/haxe/seiun/vulkan - the fork's Vulkan API is missing, so -Dseiun_vulkan / LIME_VULKAN cannot build. Check the lime ref in hmm.json."
+          exit 1
+        fi
+        for f in VkNative.hx VkStageRenderer.hx; do
+          if [ ! -f "$VK/$f" ]; then
+            echo "::error::lime's Vulkan API is incomplete: $VK/$f is missing. Check the lime ref in hmm.json."
+            exit 1
+          fi
+        done
+        echo "lime: fork features present"

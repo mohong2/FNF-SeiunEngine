@@ -76,6 +76,11 @@ runs:
       with:
         libs: hxcpp lime discord_rpc
 
+    # A wrong fork revision is invisible to the Haxe build and only explodes in C++, so
+    # every lane checks the installed forks before it compiles anything.
+    - name: Verify forked libraries
+      uses: ./.github/actions/verify-forks
+
     - name: Enable hxcpp compile cache
       shell: pwsh
       run: |
