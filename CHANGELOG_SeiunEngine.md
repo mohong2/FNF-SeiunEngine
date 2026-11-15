@@ -485,7 +485,7 @@
 
 ### 2026年10月11日 – 11月7日（0.2.2 Pre-Online.3）
 
-> 本条目记录 0.2.2 Pre-Online.3 整个开发周期的最终成果；周期内被后续提交取代或撤销的中间状态（HUD 文本节流与命中表现按帧排队、图形 LRU 缓存与运行时贴图重排、崩溃报告里的自动诊断建议）不再单独记录。玩家向的完整公告见 `release-notes/0.2.2preonline3.md`。
+> 本条目记录 0.2.2 Pre-Online.3 整个开发周期的最终成果；周期内被后续提交取代或撤销的中间状态（HUD 文本节流与命中表现按帧排队、图形 LRU 缓存与运行时贴图重排、崩溃报告里的自动诊断建议）不再单独记录。玩家向的完整公告见 `release-notes/0.2.2preonline3.md`。**本版是最后一个联机预发布版本**：之后不再有 `Pre-Online.4`，联机相关内容改为随正式版发布。
 
 #### 谱面：新容器、快速加载与 64 位计数
 
@@ -530,7 +530,7 @@
 
 - **iOS / macOS 渲染缩放**：新增 `backend/RenderScale.hx`，按真实「舞台单位 ↔ 设备像素」映射摆放画布。旧 `RatioScaleMode` 在一个空间算 letterbox 偏移、在另一个空间应用，iOS/macOS 上画布右移 `offset × 像素比`、左侧黑边、右侧被裁；不一致时按可见区域布局并记 `trace.render.inconsistent`，一致时与旧版逐像素相同。
 - **iOS 字体**：解包时 `.ttf/.otf` 不再走 `ByteArray.fromFile()`（iOS 工作目录正是待写入的 Documents），改读内置资源，完整性探针加入 `assets/fonts/vcr.ttf`；新增 `backend/FontRegistry.hx` 按绝对路径兜底注册，`Paths.font` / `languageFont` / `optionsfont` 接入并记录命中路径。
-- **iOS / tvOS 换 SDL3**：`lime-sdl3` 扩到 `ios || tvos`，部署目标 13.0、设备 `universal`；不再定义 `SDL_MAIN_HANDLED`、帧循环改 display link 驱动、不再首帧阻塞、隐藏 home indicator；`DISPLAY_SCALE_CHANGED` 转发为 resize；iOS 设备信息报出真实版本与架构；`applyStorageDirectory()` 回读校验 cwd；启动日志与崩溃转储带 `Render scale: …`。切换平台需要 `lime rebuild <target>` 一次。
+- **iOS / tvOS 换 SDL3**：`lime-sdl3` 扩到 `ios || tvos`，部署目标 13.0、设备 `universal`；不再定义 `SDL_MAIN_HANDLED`、帧循环改 display link 驱动、不再首帧阻塞、隐藏 home indicator；`DISPLAY_SCALE_CHANGED` 转发为 resize；iOS 设备信息报出真实版本与架构；`applyStorageDirectory()` 回读校验 cwd；启动日志与崩溃转储带 `Render scale: …`。切换平台需要 `lime rebuild <target>` 一次。这一版 iOS 只验证到「代码 + CI 能编出 `.ipa`」，没有真机跑过整套流程；CI 产出的是 ad-hoc 签名、无描述文件的包，需要自行重签才能安装。
 - **Android**：崩溃报告模块列表改用运行时 `dlsym` 取 `dl_iterate_phdr`（NDK 只在 API 21 以上声明，工程用 android-16，armv7 直接调用编不过），POSIX 补 `MAX_PATH`；联机聊天可收起软键盘，BACK 第一次只关输入法、不退出结算页，输入框有字时也能双击 B 取消。
 - **评级顺序**：`buildRatingsData()` 恢复 0=sick / 1=good / 2=bad / 3=shit，marvelous 追加到 index 4 并新增「最优档在前」的判定优先级 —— 此前 marvelous 占 index 0 把整张表挪位，联机复算分数按错档位加权。
 - **启动路径**：Windows 存储根改用可执行文件目录（原为进程工作目录），快捷方式 / cmd / 其他目录启动都能找对 `assets` / `mods` / `crash`。
@@ -1109,7 +1109,7 @@ Bundled regression harness (temp/touch-fix-test/TouchFixTest.hx): replicates the
 
 ### October 11 - November 7, 2026 (0.2.2 Pre-Online.3)
 
-> This entry records the final state of the whole Pre-Online.3 development cycle; intermediate states that later commits superseded or reverted (HUD text throttling and the hit-presentation queue, the graphics LRU and runtime atlas repack, the automatic diagnosis paragraph in crash reports) are not listed separately. The player-facing announcement is `release-notes/0.2.2preonline3.md`.
+> This entry records the final state of the whole Pre-Online.3 development cycle; intermediate states that later commits superseded or reverted (HUD text throttling and the hit-presentation queue, the graphics LRU and runtime atlas repack, the automatic diagnosis paragraph in crash reports) are not listed separately. The player-facing announcement is `release-notes/0.2.2preonline3.md`. **This is the last online pre-release**: there will be no `Pre-Online.4`, and online work ships with regular releases from here on.
 
 #### Charts: new container, fast loading, 64-bit counters
 
@@ -1154,7 +1154,7 @@ Bundled regression harness (temp/touch-fix-test/TouchFixTest.hx): replicates the
 
 - **iOS / macOS render scale**: new `backend/RenderScale.hx` lays the canvas out from the real stage-units-to-device-pixels mapping. The old `RatioScaleMode` computed the letterbox offset in one space and applied it in another, so on iOS/macOS the canvas moved right by `offset x pixelRatio`, the left stayed black and the right was clipped; a mismatch lays out inside the visible rectangle and logs `trace.render.inconsistent`, and a consistent stage renders exactly as before.
 - **iOS fonts**: `.ttf/.otf` no longer go through `ByteArray.fromFile()` during extraction (on iOS the working directory is the Documents folder being filled), the readiness probes include `assets/fonts/vcr.ttf`, and the new `backend/FontRegistry.hx` registers a bundled font by absolute path and returns the family name, wired into `Paths.font` / `languageFont` / `optionsfont` with the matched path logged.
-- **iOS / tvOS move to SDL3**: `lime-sdl3` covers `ios || tvos`, deployment target 13.0, device `universal`; iOS no longer defines `SDL_MAIN_HANDLED`, the frame loop is display-link driven without the first-tick stall, the home indicator is hidden, `DISPLAY_SCALE_CHANGED` is forwarded as a resize, device info reports the real iOS version and architecture, `applyStorageDirectory()` verifies the working directory, and boot logs and crash dumps carry a `Render scale: ...` line. Switching a platform needs one `lime rebuild <target>`.
+- **iOS / tvOS move to SDL3**: `lime-sdl3` covers `ios || tvos`, deployment target 13.0, device `universal`; iOS no longer defines `SDL_MAIN_HANDLED`, the frame loop is display-link driven without the first-tick stall, the home indicator is hidden, `DISPLAY_SCALE_CHANGED` is forwarded as a resize, device info reports the real iOS version and architecture, `applyStorageDirectory()` verifies the working directory, and boot logs and crash dumps carry a `Render scale: ...` line. Switching a platform needs one `lime rebuild <target>`. This build's iOS support is verified only at the code level and as far as "CI produces an `.ipa`" - no device has run the whole flow, and the IPA is ad-hoc signed without a provisioning profile, so it needs re-signing to install.
 - **Android**: the crash report resolves `dl_iterate_phdr` at runtime with `dlsym` (the NDK only declares it at API 21 while this project builds with android-16, so a direct call did not compile on armv7) and POSIX gets `MAX_PATH`; the online chat box can close the soft keyboard, the first BACK press closes the IME instead of leaving the results screen, and a text prompt with typed text can be cancelled with a double B.
 - **Judgement order**: `buildRatingsData()` is back to 0=sick / 1=good / 2=bad / 3=shit with marvelous appended at index 4 and a "best judgement first" priority — marvelous used to occupy index 0 and shift the whole table, so online score recalculation weighted the wrong tier.
 - **Boot path**: on Windows the storage root becomes the executable's directory (it was the process working directory), so a shortcut, a cmd launch or a different working directory still finds `assets` / `mods` / `crash`.
