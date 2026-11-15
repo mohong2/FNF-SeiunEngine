@@ -573,6 +573,40 @@
 
 ---
 
+### 2026年11月14–15日 — Vulkan 后端、编辑器控件与构建流程
+
+#### 实验性 Vulkan 后端（Windows）
+
+- **默认编入、默认不开**：`Project.xml` 里 `<define name="seiun_vulkan" if="windows" unless="SEIUN_NO_VULKAN"/>`，Haxe 侧由 lime 的 `<source path="vulkan/haxe" if="seiun_vulkan"/>` 挂进来。启动仍然走 OpenGL，只有 `--vulkan`（或 `SEIUN_VULKAN=1`）才真的切；驱动、窗口或 `Lime.ndll` 报错时 `VkRuntime.onFallback` 弹提示并留在 OpenGL。要纯 OpenGL 包就加 `-D SEIUN_NO_VULKAN`。
+- **首帧之后才探测**：`Main.installVulkanAfterFirstFrame()` 等到第一个 `ENTER_FRAME` 再调 `installVulkan()`——`setupGame` 跑的时候窗口可能还没 show，提前探测会把「窗口不可见」误判成「Vulkan 不可用」。
+- **四边形批处理**：新增 `source/flixel/graphics/tile/FlxDrawQuadsItem.hx`（上游文件的本地覆写），同时在批内颜色/透明度一致时只上传一个常量属性，真的出现混合值时才展开逐顶点数组（`hasVertexColors` / `uniformAlpha` 两个不变式）；没有 `-Dseiun_vulkan` 时行为与上游一致。相机滤镜与舞台覆盖层一并走 Vulkan。
+- **图像内存判断跟着换后端**：`GfxMemory` 新增 `externalActive` / `externalHolds` / `externalUpload`，Vulkan 有自己的纹理表，`Context3D.getTexture()` 在上下文即将销毁时会凭空造出没人用的纹理，所以「上传后释放 CPU 副本」的判断改由运行时回答。
+- **鼠标指针改用系统光标**：flixel 的指针是舞台里的一个 Bitmap，走 OpenFL 渲染器，Vulkan 这条路不画它，不切过去就是「游戏里没有鼠标」。
+- **每帧收尾时机**：`window.onRender` 里提交上屏并 `cancel()` 掉 lime 随后的 GL buffer flip——不取消的话每一帧都会被那张空的 GL 帧盖掉，窗口在两套渲染器之间来回闪。
+- **`--vulkan-stats`**：每 60 帧打印平均帧时与 `VkQuads` / `VkTextures` 统计。
+- **没有 Vulkan 的构建**：`backend.VulkanNotice` 在 `--vulkan` 被要求时明确弹窗与写状态记录，不静默忽略（渲染器的类在这种构建里根本不在源码路径上，所以提示放在引擎侧）。范围只有 Windows：macOS / Linux / 移动端未接后端，也未验证。
+
+#### 编辑器控件与两套排版
+
+- **`PsychUIBox` 重做**：可拖动、双击标题折叠（`smoothMinimize` 每帧一个平滑因子，不用 tween，销毁半途也不会留下跑着的补间），页签悬停只是把黑条提亮一点，切页时控件逐个淡入。命中判断全部改成显式矩形（面板/页签），不再用「某个恰好隐藏的精灵」参与判断——那是「折叠起来的面板还在吃点击」的根因；未选中的页 `update` / `draw` 都不跑。
+- **其余控件统一事件模型**：`PsychUIButton` / `PsychUICheckBox` / `PsychUISlider` / `PsychUINumericStepper` / `PsychUIRadioGroup` / `PsychUIInputText` / `PsychUITab` / `PsychUIEventHandler` / `PsychUIHelper`。
+- **谱面编辑器两套排版**：新增 `source/editors/chart/ChartEditorLayout.hx`（只描述排版常量）与 `ChartEditorLayoutPanel.hx`（右上角的布局切换窗，两个大按钮 + 白色高光滑块）。`modern` 是三块浮动面板、网格居中；`classic` 与 Psych 0.6.3 一致：网格贴左，右侧 5 标签页面板，宽度从 300 放宽到 340（要装 0.7/1.0 那批控件）。两套排版搬的是**同一批控件对象**，所以功能不可能分叉。
+- **删除** `PsychUIDropDownMenuOld`（388 行），编辑器不再保留旧下拉菜单。
+
+#### Lua
+
+- **关闭 state 前先摘回调表**：`FunkinLua.stop` / `EditorLua` / `HScript` 的一次性 state 都先 `Lua_helper.forget_state(lua)` 再 `Lua.close(lua)`，否则 `Lua_helper.byState` 会一直强引用脚本注册的那批闭包，重载脚本与退出编辑器都留着。
+- **取值栈平衡统一**：`LuaApi` 不再为「取到的是函数」单开一条分支——`Convert.fromLua` 对函数不再偷偷 `luaL_ref` 弹栈，现在一律「取出 → 弹一次」。
+
+#### 构建流程与符号发布
+
+- **Windows / Android 构建修复**：崩溃工具合并进 `crash.py`（62d6044）时删掉了 `tools/build_windows_symbols.ps1` 与 `tools/build_android_symbols.ps1`，但 `.github/workflows/build-windows.yml` 和 `.github/actions/build-android/action.yml` 还在调用它们，两个平台因此在 CI 里直接失败。现在两边都回到**一次 `lime build`**，符号由 `Project.xml` 里的 `<postbuild haxe="tools.SymbolsAfterBuild"/>` 归集到 `export/symbols/<platform>-<mode>/`。
+- **`build-desktop` 的「Collect crash symbols」改成「Verify crash symbols」**：不再自己拷 `.map`（那正是「发布别人没拿到的 map」的来源），只校验 postbuild 归集出来的那份；Windows 上跑 `python tools/crash.py verify-map <exe> <map>`，map 与 exe 对不上就让构建红掉。
+- **符号发布变成一个压缩包**：新增 `python tools/crash.py package`，把每个 target 的 bundle 折成 `SeiunEngine-symbols-<version>.zip`（`windows-x64/`、`android-arm64/`…外加 `manifest.json` 与 `README.txt`）。`build-all.yml` / `release.yml` 不再产出 `crash-symbols/*.zip` 一堆文件，`append-mirror-links` 也不再扫 `crash-symbols/`；大二进制原样入库（不压缩），`.map` / `.json` / `.txt` 才 deflate（88 MB 的 map 变成 9 MB）。
+- **文档同步**：`tools/README.md`、`docs/crash-handling.md`、`docs/android-crash-reports.md`。linemap 现在是**手动**的一条路（`python tools\crash.py linemap --android release --abi arm64-v8a` 生成、`adb push` 到 `<storage>/linemap/`），不再是构建的一部分，也没有 `refresh_linemap.ps1`。
+
+---
+
 ### 鸣谢
 
 感谢所有参与测试的人员，你们的宝贵反馈是推动引擎不断完善的重要力量。
@@ -1149,6 +1183,40 @@ Bundled regression harness (temp/touch-fix-test/TouchFixTest.hx): replicates the
 - **Legacy log fix** (`OptionLoader`): the builtin roots passed a `null` mod source into `trace.options.modLoaded`, so the console kept printing "loaded graphics ... from mod null" with a stray `{}`. Builtin / mod / patch loads now have their own keys, their own placeholder count, and report how many options were actually appended; the global-root category error got its own key too (it also left a `{}` behind).
 - **Only OpenGL can be picked for now (the safeguard)**: `ClientPrefs.SUPPORTED_RENDERER` is the one renderer the picker accepts. Turning to Vulkan or clicking its card is **refused** - deny sound, the Vulkan card and its halo light up for a moment (so the finished artwork still gets shown), the notice flashes "Only OpenGL for now ..." - and neither the option nor the save moves. Left/Right on that row is handled by the picker itself now: the generic string cycling would commit the value before the row could refuse it. It wraps at both ends, so either direction always answers.
 - **Save-file backstop**: `ClientPrefs.clampRenderer()` runs inside both `loadPrefs()` and `saveSettings()`, so a `Vulkan` stored by an earlier preview build (or pushed in by a mod through `Reflect`) is clamped back to `OpenGL`. A save can never claim a backend the session is not drawing with, and `SUPPORTED_RENDERER` is the single switch to flip when a real Vulkan path lands.
+
+---
+
+### November 14-15, 2026 — Vulkan backend, editor controls and the build pipeline
+
+#### The experimental Vulkan backend (Windows)
+
+- **Compiled in by default, off by default**: `Project.xml` carries `<define name="seiun_vulkan" if="windows" unless="SEIUN_NO_VULKAN"/>` and lime adds the Haxe side through `<source path="vulkan/haxe" if="seiun_vulkan"/>`. The game still starts on OpenGL; only `--vulkan` (or `SEIUN_VULKAN=1`) actually switches, and when the driver, the window or `Lime.ndll` refuses, `VkRuntime.onFallback` shows the reason and the session stays on OpenGL. Build with `-D SEIUN_NO_VULKAN` for an OpenGL-only binary.
+- **Probe after the first frame**: `Main.installVulkanAfterFirstFrame()` waits for the first `ENTER_FRAME` before `installVulkan()`. `setupGame` can run before the window is shown, and probing early reads "the window is not visible yet" as "Vulkan is unavailable".
+- **Quad batching**: `source/flixel/graphics/tile/FlxDrawQuadsItem.hx` (a local override of the upstream file) uploads one constant attribute while a whole batch agrees on colour and alpha, and only materialises per-vertex arrays when the batch really has to mix values (`hasVertexColors` / `uniformAlpha` are the invariants). Without `-Dseiun_vulkan` it compiles to upstream behaviour. Camera filters and the stage overlay go through the same path.
+- **The image-memory decision follows the backend**: `GfxMemory` grew `externalActive` / `externalHolds` / `externalUpload`. Vulkan keeps its own texture table, and `Context3D.getTexture()` on a context that is about to be deleted would create textures nothing renders with, so "release the CPU copy after upload" is now answered by the active runtime.
+- **The mouse uses the system cursor**: flixel's pointer is a Bitmap inside the stage, drawn by OpenFL's renderer; the Vulkan path does not draw it, and without the switch there is simply no mouse in the game.
+- **End of frame**: the `window.onRender` handler submits the frame and then `cancel()`s lime's following GL buffer flip - without that, the empty GL frame paints over ours and the window alternates between the two renderers every frame.
+- **`--vulkan-stats`** prints the average frame time plus `VkQuads` / `VkTextures` statistics every 60 frames.
+- **A build compiled without Vulkan** reports it through `backend.VulkanNotice` (dialog plus a status record) when `--vulkan` is requested, instead of ignoring the flag. The renderer's classes are not even on the source path in such a build, which is why the notice lives in the engine. Scope: Windows only - macOS, Linux and mobile have no backend and no verification.
+
+#### Editor controls and two layouts
+
+- **`PsychUIBox` rebuilt**: draggable, double-click on the title collapses it (`smoothMinimize` is one smoothed factor per frame, never a tween, so a box destroyed mid-collapse cannot leave an animation running), a hovered unselected tab only lightens the black bar, and switching a page fades its controls in one after another. Hit testing is explicit rects (box / tab) now, never "a sprite that happens to be hidden" - that was the root cause of "a collapsed panel still eats clicks" - and an unselected page neither updates nor draws.
+- **The other widgets share one event model**: `PsychUIButton` / `PsychUICheckBox` / `PsychUISlider` / `PsychUINumericStepper` / `PsychUIRadioGroup` / `PsychUIInputText` / `PsychUITab` / `PsychUIEventHandler` / `PsychUIHelper`.
+- **Two chart editor layouts**: new `source/editors/chart/ChartEditorLayout.hx` (layout constants only) and `ChartEditorLayoutPanel.hx` (the top-right picker: two large buttons plus a white highlight that slides). `modern` is three floating panels with the grid centred; `classic` matches Psych 0.6.3 - grid on the left, a five-tab panel on the right, widened from 300 to 340 to hold the 0.7/1.0 widgets. Both layouts move the same control objects, so the two cannot diverge feature-wise.
+- **`PsychUIDropDownMenuOld` deleted** (388 lines); the editors keep the new controls only.
+
+#### Lua
+
+- **Drop the callback table before closing a state**: `FunkinLua.stop`, `EditorLua` and even the throwaway state in `HScript` call `Lua_helper.forget_state(lua)` before `Lua.close(lua)`. Otherwise `Lua_helper.byState` keeps strong references to every closure a script registered, which outlives a script reload and an editor exit.
+- **One stack discipline**: `LuaApi` no longer special-cases "the value is a function". `Convert.fromLua` does not `luaL_ref` (and pop) behind the caller's back any more, so every read is convert once, pop once.
+
+#### Build pipeline and symbol publishing
+
+- **Windows / Android builds fixed**: collapsing the crash tooling into `crash.py` (62d6044) deleted `tools/build_windows_symbols.ps1` and `tools/build_android_symbols.ps1`, but `.github/workflows/build-windows.yml` and `.github/actions/build-android/action.yml` still invoked them, so both targets failed in CI. Both are back to **one `lime build`**; the `<postbuild haxe="tools.SymbolsAfterBuild"/>` hook in `Project.xml` files the symbols under `export/symbols/<platform>-<mode>/`.
+- **`build-desktop`'s "Collect crash symbols" became "Verify crash symbols"**: it no longer copies a `.map` around (that is exactly how a release publishes a map nobody has), it only checks the bundle the postbuild hook filed. On Windows it runs `python tools/crash.py verify-map <exe> <map>` and fails the build when the pair does not match.
+- **One symbols archive per release**: new `python tools/crash.py package` folds every target's bundle into `SeiunEngine-symbols-<version>.zip` (`windows-x64/`, `android-arm64/`, ... plus `manifest.json` and `README.txt`). `build-all.yml` / `release.yml` no longer produce a `crash-symbols/*.zip` pile, and `append-mirror-links` no longer scans `crash-symbols/`. Big binaries are stored (not deflated), `.map` / `.json` / `.txt` are deflated - an 88 MB map becomes 9 MB.
+- **Docs**: `tools/README.md`, `docs/crash-handling.md`, `docs/android-crash-reports.md`. The linemap is a **manual** path now (`python tools\crash.py linemap --android release --abi arm64-v8a` then `adb push` into `<storage>/linemap/`), not part of a build, and `refresh_linemap.ps1` does not exist.
 
 ---
 

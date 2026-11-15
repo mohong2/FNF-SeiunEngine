@@ -173,43 +173,48 @@ runs:
       shell: bash
       run: ${{ inputs.build }}
 
-    - name: Collect crash symbols
+    - name: Verify crash symbols
       shell: bash
-      # Windows already ships a matching symbol bundle from
-      # tools/build_windows_symbols.ps1 (embedded crash linemap + .map +
-      # build-info.txt). This step only fills the gap for the targets that have
-      # none yet: it copies the linker .map, which maps every function's exact
-      # RVA so a report's "Fault offset" still resolves offline.
-      # The .map is a separate download - never inside the game package - and a
-      # PDB is never published.
+      # tools/SymbolsAfterBuild.hx (the <postbuild> hook in Project.xml) has already
+      # moved this link's map/.pdb into export/symbols/<platform>-release/ and wrote
+      # build.json + build-info.txt next to it, so nothing is collected here: the step
+      # only proves the bundle describes the binary that is about to ship. The bundle
+      # is published as its own download - never inside the game zip - and a PDB is
+      # never published (a release link does not even produce one).
       run: |
         set -euo pipefail
         TARGET="${{ inputs.target }}"
         case "$TARGET" in
-          windows) OUT="export/release/windows" ;;
-          linux)   OUT="export/release/linux" ;;
-          *)       OUT="export/release/macos" ;;
+          windows)               PLAT=windows; EXE="export/release/windows/bin/SeiunEngine.exe" ;;
+          linux)                 PLAT=linux;   EXE="export/release/linux/bin/SeiunEngine" ;;
+          macos-x64|macos-arm64) PLAT=macos;   EXE="" ;;
+          *) echo "::error::unknown target $TARGET - cannot look up its symbols"; exit 1 ;;
         esac
+        DIR="export/symbols/$PLAT-release"
 
-        mkdir -p "$OUT/symbols"
-        found=0
-        # Only the .map: with HXCPP_DEBUG_LINK off the linker never runs /DEBUG,
-        # so no PDB is regenerated and whatever .pdb sits in obj/ belongs to some
-        # older build. Shipping it would actively mislead - resolve against the map.
-        if [ "$TARGET" = "windows" ]; then
-          # tools/build_windows_symbols.ps1 already wrote this bundle, and it holds
-          # the map of the link that produced bin/SeiunEngine.exe. Re-collecting the
-          # newest map from obj/ is exactly how a release ends up publishing symbols
-          # for a binary nobody has, so verify the pair that is about to be
-          # published instead of guessing.
-          EXE="$OUT/bin/SeiunEngine.exe"
-          MAP="$OUT/symbols/ApplicationMain.map"
-          if [ ! -f "$EXE" ]; then
-            echo "::error::$EXE is missing - cannot check the crash symbols against it"
+        if [ ! -f "$DIR/build.json" ]; then
+          # The hook is the only writer, so a missing manifest means it did not run.
+          # On Windows that is a hard failure: a release whose map does not exist is a
+          # release nobody can debug. Linux/macOS keep no separate map anyway (gcc and
+          # clang release links do not write one), so there the manifest IS the bundle.
+          echo "::warning::$DIR has no build.json - the symbol hook (tools/SymbolsAfterBuild.hx) did not run"
+          ls -la export/symbols 2>/dev/null || true
+          if [ "$PLAT" = "windows" ]; then
+            echo "::error::crash symbols missing for windows - refusing to publish a build that cannot be debugged"
             exit 1
           fi
+          exit 0
+        fi
+        cat "$DIR/build-info.txt"
+
+        if [ "$PLAT" = "windows" ]; then
+          MAP="$DIR/ApplicationMain.map"
           if [ ! -f "$MAP" ]; then
-            echo "::error::$MAP is missing - crash reports would not be symbolizable"
+            echo "::error::$MAP is missing - crash reports could not be symbolized"
+            exit 1
+          fi
+          if [ ! -f "$EXE" ]; then
+            echo "::error::$EXE is missing - cannot check the crash symbols against it"
             exit 1
           fi
           if ! python tools/crash.py verify-map "$EXE" "$MAP" --quiet; then
@@ -218,71 +223,9 @@ runs:
             exit 1
           fi
           echo "crash symbols verified: $MAP describes $EXE"
-          found=1
-        else
-          for f in "$OUT"/obj/ApplicationMain.map; do
-            if [ -e "$f" ]; then
-              cp -R "$f" "$OUT/symbols/"
-              found=1
-              echo "collected: $f"
-            fi
-          done
         fi
-
-        if [ "$found" -eq 0 ]; then
-          echo "::warning::No symbol files found for $TARGET - crash reports will not be symbolizable"
-          exit 0
-        fi
-
-        # Shim so `python tools/crash.py resolve <map> <offset>` works with the
-        # published layout (the CI collector is named after the target).
-        if [ -f "$OUT/symbols/ApplicationMain.map" ]; then
-          cat > "$OUT/symbols/README.txt" <<'EOF'
-        SeiunEngine crash symbol files
-        ==============================
-
-        These files map a crash report's "Fault offset" back to a real function.
-
-        Every build also writes build-info.txt and build.json next to the map: the
-        exe size and PE TimeDateStamp recorded there are what a crash report prints,
-        so "does this map belong to this build" is a comparison, not a guess.
-
-        How to use
-        ----------
-        1. Get crash/native_crash_*.txt from the affected user.
-        2. Confirm the map belongs to this build - it is checked automatically at
-           release time, and you can re-check any pair yourself:
-
-             python tools/crash.py verify-map SeiunEngine.exe ApplicationMain.map
-
-           It compares the map's recorded Timestamp and image base with the exe's
-           PE header and the .text extent of both. A mismatch means every frame
-           would resolve to the wrong function - get the right bundle instead.
-        3. Resolve the offsets (the report may contain several, from the backtrace):
-
-             python tools/crash.py resolve ApplicationMain.map 0x1340289 0x133429A
-
-           or point it straight at a crash directory:
-
-             python tools/crash.py resolve --crash-dir <crash dir> ApplicationMain.map
-
-        4. Read the nearest preceding function and the +0x offset. Frames whose
-           offset is implausibly large (hundreds of KB) are not reliable: release
-           builds do not list every function in the map.
-
-        The native "Symbols:" line in the report refers to dbghelp pairing the exe
-        with a PDB; release builds do not ship one, so it says SymType=0. Resolve
-        with the .map instead - tools/crash.py does it for you:
-
-            python tools/crash.py report crash/native_crash_*.txt
-
-        A .pdb is intentionally NEVER published (it is ~50 MB).
-        EOF
-          echo "wrote $OUT/symbols/README.txt"
-        fi
-
-        du -sh "$OUT/symbols" || true
-        ls -la "$OUT/symbols"
+        du -sh "$DIR" || true
+        ls -la "$DIR"
 
     # A macOS build that ships the wrong slice is worse than a red build: it looks
     # green until something dlopen()s it. IconHelper loads lime.ndll to rasterize the

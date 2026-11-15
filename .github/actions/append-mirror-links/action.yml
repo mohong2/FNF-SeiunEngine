@@ -87,7 +87,7 @@ runs:
 
         shopt -s nullglob
         cd "$MIRROR_DIST_DIR"
-        for file in *.apk *.ipa *.zip crash-symbols/*.zip; do
+        for file in *.apk *.ipa *.zip; do
           [ -f "$file" ] || continue
           name="$(basename "$file")"
           printf '| `%s` | [下载](%s/%s) | [加速下载](%s/github.com/%s/releases/download/%s/%s) |\n' \

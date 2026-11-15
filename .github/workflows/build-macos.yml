@@ -86,21 +86,27 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      # A clang release link writes no .map (and the dSYM would need an Xcode
+      # archive step), so the bundle is build.json + build-info.txt: the identity of
+      # the build a report is matched against. Each slice uploads its own artifact,
+      # and the release folds them into one SeiunEngine-symbols-<version>.zip.
       - name: Check crash symbols
         id: symbols
         shell: bash
         run: |
-          if [ -d export/release/macos/symbols ] && [ -n "$(ls -A export/release/macos/symbols)" ]; then
+          DIR=export/symbols/macos-release
+          if [ -f "$DIR/build.json" ]; then
             echo "present=1" >> "$GITHUB_OUTPUT"
+            cat "$DIR/build-info.txt"
           else
             echo "present=0" >> "$GITHUB_OUTPUT"
-            echo "::warning::crash symbols missing for ${{ matrix.target }}"
+            echo "::warning::no build.json in $DIR - the symbol hook (tools/SymbolsAfterBuild.hx) did not run"
           fi
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: steps.symbols.outputs.present == '1'
         with:
           name: ${{ matrix.artifact }}-symbols
-          path: export/release/macos/symbols
+          path: export/symbols/macos-release
           if-no-files-found: error
           retention-days: 90

@@ -63,20 +63,36 @@ jobs:
           fi
           rm -rf dist
           mkdir -p dist
-          mkdir -p dist/crash-symbols
+          shopt -s nullglob
+
+          # ONE symbols archive for the whole release. Each job uploads its own
+          # *-symbols artifact (they build on different operating systems, so they
+          # cannot be zipped together there); this step is where they become a single
+          # download with one directory per target. No symbol file ever lands inside a
+          # game zip, and the release page carries one symbols entry, not one per target.
+          adds=()
+          for d in release/*-symbols; do
+            [ -d "$d" ] || continue
+            label="${d#release/}"
+            label="${label#SeiunEngine-}"
+            label="${label%-symbols}"
+            adds+=(--add "$label=$d")
+          done
+          if [ "${#adds[@]}" -gt 0 ]; then
+            python3 tools/crash.py package --out "dist/SeiunEngine-symbols-${APP_VERSION}.zip" \
+              --version "$APP_VERSION" "${adds[@]}"
+          else
+            echo "::warning::no *-symbols artifact in this run - the release will not be debuggable"
+          fi
+
           cd release
           for d in */; do
             d="${d%/}"
             [ -d "$d" ] || continue
 
-            # Crash symbol artifacts ship as separate downloads, never inside the
-            # game zip (the .map alone is tens of MB and only needed for triage).
-            case "$d" in
-              *-symbols)
-                zip -r "../dist/crash-symbols/${d}-${APP_VERSION}.zip" "$d"
-                continue
-                ;;
-            esac
+            # Symbol bundles are already in the archive above; everything else is a
+            # game build: APK/IPA copied out as-is, desktop targets zipped.
+            case "$d" in *-symbols) continue ;; esac
 
             mobile=0
             for f in "$d"/*.apk "$d"/*.ipa; do
@@ -90,16 +106,11 @@ jobs:
             fi
           done
           cd ../dist
-          shopt -s nullglob
-          if [ -z "$(ls -A crash-symbols 2>/dev/null)" ]; then
-            rmdir crash-symbols 2>/dev/null || true
-          fi
           files=(*.apk *.ipa *.zip)
           if [ "${#files[@]}" -gt 0 ]; then
             sha256sum "${files[@]}" > SHA256SUMS.txt
           fi
           ls -la
-          ls -la crash-symbols 2>/dev/null || true
 
       - name: Prepare release body
         env:
@@ -139,28 +150,29 @@ jobs:
 
           ### Crash debugging symbols
 
-          Published builds embed a crash linemap, so a report's backtrace carries
-          `[src/File.cpp:123]` on its own - triage no longer depends on the
-          developer's local build matching the user's. The files under
-          `crash-symbols/` are the symbols for exactly the APK/exe in this release:
+          One archive - `SeiunEngine-symbols-${{ env.APP_VERSION }}.zip` - holds the symbols of every target in
+          this release: one directory per target plus a `manifest.json` naming the build each
+          directory describes.
 
-          - `SeiunEngine-windows-x64-symbols-${{ env.APP_VERSION }}.zip`  (ApplicationMain.map + windows-x64.bin + build-info.txt)
-          - `SeiunEngine-android-arm64-symbols-${{ env.APP_VERSION }}.zip` / `SeiunEngine-android-armv7-symbols-${{ env.APP_VERSION }}.zip`
-            (unstripped libApplicationMain.so + <abi>.bin + build-info.txt)
-          - `SeiunEngine-linux-x64-symbols-${{ env.APP_VERSION }}.zip` / `SeiunEngine-mac-*-symbols-${{ env.APP_VERSION }}.zip` (linker .map)
+          - `windows-x64/`  `ApplicationMain.map` + `build.json` + `build-info.txt`
+          - `android-arm64/`, `android-armv7/`  the unstripped `libApplicationMain*.so` + the same two files
+          - `linux-x64/`, `mac-x64/`, `mac-arm64/`  `build.json` + `build-info.txt` (a gcc/clang release link writes no `.map`)
 
-          Match them to the report via the report's `Build:` line and the
-          `build-info.txt` of the matching zip. Offline fallback for desktop:
-          `python tools/crash.py resolve ApplicationMain.map <fault offset>`.
+          A crash report carries `module + offset`, and an offset only means something against
+          the exact link that produced that binary. Match the report's `Build:` line against
+          the `build.json` of the matching directory, then check the pair before trusting a
+          single frame:
 
-          The Windows `ApplicationMain.map` is verified against the published exe before it
-          ships (`python tools/crash.py verify-map SeiunEngine.exe ApplicationMain.map`), so a
-          resolved frame is exact and not merely plausible. Re-check any pair yourself
-          before trusting it - a map from a different link resolves every frame to the
-          wrong function.
+              python tools/crash.py verify-map SeiunEngine.exe windows-x64/ApplicationMain.map
+              python tools/crash.py resolve windows-x64/ApplicationMain.map <fault offset>
 
-          Every download carries the version, so a file taken off the release page is self-identifying:
-          game builds are `SeiunEngine-<target>-<version>.<ext>` and crash symbols end in `-symbols-<version>.zip`.
+          The Windows map is verified against the published exe during the build, so a resolved
+          frame is exact and not merely plausible. Symbol files are never inside the game
+          packages, and a `.pdb` is never published.
+
+          Every download carries the version, so a file taken off the release page is
+          self-identifying: game builds are `SeiunEngine-<target>-<version>.<ext>` and the
+          symbols are the single `SeiunEngine-symbols-<version>.zip`.
 
           Checksums are included in `SHA256SUMS.txt`.
           EOF
@@ -179,6 +191,4 @@ jobs:
           name: v${{ env.APP_VERSION }}
           prerelease: false
           body_path: release_body.md
-          files: |
-            dist/*
-            dist/crash-symbols/*
+          files: dist/*

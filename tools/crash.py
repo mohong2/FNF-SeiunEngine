@@ -6,6 +6,7 @@ Subcommands
     crash.py status [--json]       is the symbol bundle from this binary?
     crash.py report <file> [...]   freshness check, then resolve the frames
     crash.py bundle <file>         report + manifest as one zip
+    crash.py package [--add L=D]   every target's symbols as ONE zip
     crash.py ui                    bilingual window (English / Chinese)
     crash.py symbols [--quiet]     re-publish the bundle for the build on disk
     crash.py prune [--dry-run]     drop superseded bundles (_stale/, *.tmp)
@@ -1020,11 +1021,10 @@ def selm_main():
             "       Two causes, in order of likelihood:\n"
             "       1. this is a STALE unstripped copy - check the path and mtime printed\n"
             "          above; the fresh one is export/<mode>/android/obj/obj/<target>/\n"
-            "          libApplicationMain.so. gen_linemap.bat now picks the newest.\n"
+            "          libApplicationMain.so. crash.py linemap picks the newest.\n"
             "       2. the hxcpp object cache was built without -g and is being reused\n"
             "          (hxcpp's cache key ignores the debug flags). Delete\n"
-            "          export/<mode>/android/obj/obj/<target> and rebuild, or run\n"
-            "          tools/build_android_symbols.ps1 - it purges the poisoned cache.\n"
+            "          export/<mode>/android/obj/obj/<target> and rebuild.\n"
             "       Pass --min-coverage 0 only to force a blind table."
             % (ratio * 100.0, lib_path, min_coverage * 100.0))
 
@@ -1683,7 +1683,7 @@ TRANSLATIONS = {
         'step_bt_detail': 'no fault offset (abort/terminate path); {a} app frame(s), first: 0x{b:X} -> {c}',
         'step_bt_skip': 'the backtrace has no SeiunEngine.exe frames',
         'step_haxe': 'this report has no fault offset (Haxe-level crash)',
-        'step_posix': 'no Windows fault offset/backtrace (POSIX report? use tools/symbolize_android.py)',
+        'step_posix': 'no Windows fault offset/backtrace (POSIX report? use: python tools/crash.py symbolize)',
         'step_no_map_loaded': 'no map loaded',
         'step_write_ok': '{v}',
         'step_write_skip': 'disabled (--no-write)',
@@ -1715,7 +1715,7 @@ TRANSLATIONS = {
         'rep_stack_line': '      #{a:02d} 0x{b:X} -> {c}',
         'rep_no_fault_abort': '  fault offset : (none - abort()/terminate() path, no faulting instruction)',
         'rep_no_fault_haxe': '  fault offset : (this report has no fault offset - Haxe-level crash, nothing to symbolise)',
-        'rep_no_fault_posix': '  fault offset : (native report without a Windows fault offset/backtrace - use tools/symbolize_android.py for POSIX dumps)',
+        'rep_no_fault_posix': '  fault offset : (native report without a Windows fault offset/backtrace - POSIX dumps: python tools/crash.py symbolize)',
 
         # Hit
         'hit_below': '(below the first symbol in this map)',
@@ -1856,7 +1856,7 @@ TRANSLATIONS = {
         'step_bt_detail': '无崩溃偏移 (abort/terminate 路径)；{a} 个应用栈帧，首个: 0x{b:X} -> {c}',
         'step_bt_skip': '调用栈中没有 SeiunEngine.exe 的帧',
         'step_haxe': '此报告没有崩溃偏移 (Haxe 层崩溃)',
-        'step_posix': '没有 Windows 崩溃偏移/调用栈 (POSIX 报告？请使用 tools/symbolize_android.py)',
+        'step_posix': '没有 Windows 崩溃偏移/调用栈 (POSIX 报告？请使用 python tools/crash.py symbolize)',
         'step_no_map_loaded': '未加载 map',
         'step_write_ok': '{v}',
         'step_write_skip': '已禁用 (--no-write)',
@@ -1888,7 +1888,7 @@ TRANSLATIONS = {
         'rep_stack_line': '      #{a:02d} 0x{b:X} -> {c}',
         'rep_no_fault_abort': '  崩溃偏移     : (无 - abort()/terminate() 路径，没有触发崩溃的指令)',
         'rep_no_fault_haxe': '  崩溃偏移     : (此报告没有崩溃偏移 - Haxe 层崩溃，无需解析符号)',
-        'rep_no_fault_posix': '  崩溃偏移     : (原生报告缺少 Windows 崩溃偏移/调用栈 - POSIX dump 请使用 tools/symbolize_android.py)',
+        'rep_no_fault_posix': '  崩溃偏移     : (原生报告缺少 Windows 崩溃偏移/调用栈 - POSIX dump 请使用 python tools/crash.py symbolize)',
 
         # Hit
         'hit_below': '(低于此 map 中的第一个符号)',
@@ -3735,6 +3735,243 @@ def cmd_prune(args):
     return 0
 
 
+# ============================================================================
+# package - every target's symbols in ONE archive
+# ============================================================================
+
+# A symbol bundle is a download, not a build artifact: it is opened by whoever
+# triages a report. One zip per target meant the release page carried half a dozen
+# '*-symbols-<version>.zip' next to the game builds, exactly one of which belonged
+# to the binary in the report - and the local store collected the same pile under a
+# second naming scheme. There is one archive now: one directory per target plus a
+# manifest that names the build each directory describes.
+
+PACKAGE_README = """\
+SeiunEngine crash symbols
+=========================
+version: {version}
+
+One archive for every target of this release. Each directory holds the symbol
+files of exactly the binary that shipped with it.
+
+{directories}
+
+What each directory can do
+--------------------------
+  windows-*    ApplicationMain.map  - the MSVC link map: a function name for every
+                                     RVA, so a report's "Fault offset" resolves.
+                 build.json          - exe size + PE TimeDateStamp, the two numbers
+                                     a report prints as "Build: <size>B@<stamp>s".
+  android-*    libApplicationMain*.so - the UNSTRIPPED library the APK's .so was
+                                     cut from, so ndk-stack/addr2line give file:line.
+  linux-*, macos-*
+               build.json/build-info.txt only: a gcc/clang release link keeps no
+               separate map, so the identity of the build is all there is to match.
+
+How to use
+----------
+1. Get the report from the user (crash/native_crash_*.txt).
+2. Find the directory whose build.json matches the report's Build: line, then
+   check the pair before trusting a single frame:
+
+     python tools/crash.py verify-map SeiunEngine.exe windows-x64/ApplicationMain.map
+     python tools/crash.py report crash/native_crash_XXXX.txt
+
+   A map from a different link resolves every frame to a real, wrong function.
+3. Resolve offsets by hand when you want to:
+
+     python tools/crash.py resolve windows-x64/ApplicationMain.map 0x1340289
+
+A .pdb is never published (~50 MB, and release builds do not ship one).
+
+中 文
+-----
+这个压缩包里放着本次发布所有平台的符号文件，一个平台一个目录，目录名就是平台名。
+windows-* 里是链接器生成的 .map（把崩溃报告里的偏移还原成函数名）；
+android-* 里是没 strip 的 .so（配合 ndk-stack / addr2line 还能还原到源文件和行号）；
+linux-*、macos-* 里只有 build.json / build-info.txt（gcc/clang 的 release 链接不留单独的 map）。
+
+用法：先用报告里的 Build: 行对上 build.json（大小 + TimeDateStamp），
+再跑 python tools/crash.py verify-map SeiunEngine.exe windows-x64/ApplicationMain.map
+确认这份 map 真的属于那个 exe，最后才解析偏移。
+"""
+
+# A zip inside a bundle is never wanted (that is the pile this replaces), and a .tmp
+# is a half-written file.
+PACKAGE_SKIP_SUFFIX = (".tmp", ".zip")
+PACKAGE_TEXT_SUFFIX = (".map", ".txt", ".json", ".log", ".md")
+
+
+def package_compress_for(path):
+    """Deflate what compresses, store what does not.
+
+    A release .map is ~10x smaller zipped (88 MB -> 9 MB, a few seconds of CPU).
+    An unstripped .so is 600 MB of DWARF that deflates to maybe a third after
+    minutes of CPU - and it is a download either way.
+    """
+    if path.lower().endswith(PACKAGE_TEXT_SUFFIX):
+        return zipfile.ZIP_DEFLATED
+    return zipfile.ZIP_STORED if os.path.getsize(path) > (8 << 20) else zipfile.ZIP_DEFLATED
+
+
+def package_version():
+    try:
+        with open(os.path.join(ROOT, "Project.xml"), "r", encoding="utf-8", errors="replace") as fh:
+            m = re.search(r'<app\b[^>]*\bversion="([^"]*)"', fh.read())
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+    return "unknown"
+
+
+def package_commit():
+    try:
+        out = subprocess.run(["git", "-C", ROOT, "rev-parse", "--short", "HEAD"],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        if out.returncode == 0:
+            return out.stdout.strip()
+    except Exception:
+        pass
+    return "unknown"
+
+
+def package_sources(adds):
+    """[(label, dir)]: the --add specs, or every bundle in the store."""
+    srcs = []
+    if adds:
+        for spec in adds:
+            label, sep, path = spec.partition("=")
+            label, path = label.strip(), path.strip()
+            if not sep or not label or not path:
+                print("bad --add %r - expected label=directory" % spec, file=sys.stderr)
+                return None
+            if not os.path.isdir(path):
+                print("--add %s: %s is not a directory" % (label, path), file=sys.stderr)
+                return None
+            srcs.append((label, os.path.abspath(path)))
+        return srcs
+    store = os.path.join(ROOT, "export", "symbols")
+    if not os.path.isdir(store):
+        return srcs
+    for name in sorted(os.listdir(store)):
+        d = os.path.join(store, name)
+        if not os.path.isdir(d) or name.startswith("_"):
+            continue
+        # A bundle without build.json cannot be matched to a binary, so it is not
+        # publishable - that is a half-finished build, not a target of this one.
+        if not os.path.isfile(os.path.join(d, "build.json")):
+            continue
+        srcs.append((name, d))
+    return srcs
+
+
+def package_files(src):
+    """Publishable files under a bundle, relative and sorted. _stale/ never ships."""
+    out = []
+    for base, dirs, files in os.walk(src):
+        dirs[:] = sorted(d for d in dirs if d != "_stale")
+        for name in sorted(files):
+            if name.lower().endswith(PACKAGE_SKIP_SUFFIX):
+                continue
+            p = os.path.join(base, name)
+            out.append(os.path.relpath(p, src).replace("\\", "/"))
+    return out
+
+
+def package_manifest_entry(label, src, rels):
+    entry = {"name": label, "source": rel(src), "files": []}
+    man_path = os.path.join(src, "build.json")
+    if os.path.isfile(man_path):
+        try:
+            with open(man_path, "r", encoding="utf-8") as fh:
+                man = json.load(fh)
+            entry["platform"] = man.get("platform")
+            entry["mode"] = man.get("mode")
+            entry["git"] = man.get("git")
+            entry["builtAt"] = man.get("builtAt")
+            entry["binary"] = man.get("exe")
+        except Exception as e:
+            entry["manifestError"] = str(e)
+    for r in rels:
+        try:
+            entry["files"].append({"path": "%s/%s" % (label, r),
+                                   "size": os.path.getsize(os.path.join(src, r))})
+        except OSError:
+            pass
+    return entry
+
+
+def cmd_package(args):
+    srcs = package_sources(args.add)
+    if srcs is None:
+        return 2
+    if not srcs:
+        print("nothing to package: no export/symbols/<platform>-<mode>/build.json on disk\n"
+              "  build a target first, or pass --add <label>=<directory>", file=sys.stderr)
+        return 1
+
+    labels = [label for label, _ in srcs]
+    dupes = sorted({x for x in labels if labels.count(x) > 1})
+    if dupes:
+        print("two bundles would land in the same directory: %s" % ", ".join(dupes), file=sys.stderr)
+        return 1
+
+    version = args.version or package_version()
+    if args.out:
+        out = os.path.abspath(args.out)
+    else:
+        out = os.path.join(ROOT, "export", "symbols", "SeiunEngine-symbols-%s.zip" % version)
+
+    total = 0
+    directories = []
+    manifest = {"schema": 1, "product": EXE_APP, "version": version,
+                "commit": args.commit or package_commit(),
+                "generatedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "targets": []}
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    tmp = out + ".tmp"
+    if os.path.exists(tmp):
+        os.remove(tmp)
+    try:
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as z:
+            for label, src in srcs:
+                rels = package_files(src)
+                if not rels:
+                    print("skipping %s - it holds no files" % label, file=sys.stderr)
+                    continue
+                for r in rels:
+                    p = os.path.join(src, r.replace("/", os.sep))
+                    total += os.path.getsize(p)
+                    z.write(p, "%s/%s" % (label, r), compress_type=package_compress_for(p))
+                manifest["targets"].append(package_manifest_entry(label, src, rels))
+                directories.append("  %s/" % label)
+            z.writestr("manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+                       compress_type=zipfile.ZIP_DEFLATED)
+            z.writestr("README.txt", PACKAGE_README.format(version=version,
+                                                           directories="\n".join(directories)),
+                       compress_type=zipfile.ZIP_DEFLATED)
+    except Exception as e:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        print("could not write %s (%s)" % (rel(out), e), file=sys.stderr)
+        return 1
+    os.replace(tmp, out)
+
+    size = os.path.getsize(out)
+    if not args.quiet:
+        print("packaged %d target(s), %s of symbols" % (len(manifest["targets"]), human(total)))
+        for label, src in srcs:
+            print("  %-18s %s" % (label + "/", rel(src)))
+        print("archive %s (%s)" % (rel(out), human(size)))
+        print("sha256  %s" % sha256_file(out))
+    else:
+        print("%s (%s)" % (rel(out), human(size)))
+    return 0
+
+
 def cmd_doctor(args):
     print("repo      %s" % ROOT)
     print("python    %s" % sys.version.split()[0])
@@ -3784,6 +4021,16 @@ def run_diag(argv=None):
         ap = argparse.ArgumentParser(prog="crash.py prune")
         ap.add_argument("--dry-run", action="store_true")
         return cmd_prune(ap.parse_args(rest))
+    if cmd == "package":
+        ap = argparse.ArgumentParser(prog="crash.py package")
+        ap.add_argument("--add", action="append", metavar="LABEL=DIR",
+                        help="add one bundle under LABEL (repeatable); default: every bundle in the store")
+        ap.add_argument("--out", metavar="ZIP",
+                        help="archive to write (default: export/symbols/SeiunEngine-symbols-<version>.zip)")
+        ap.add_argument("--version", help="release version recorded in the manifest (default: Project.xml)")
+        ap.add_argument("--commit", help="commit recorded in the manifest (default: git HEAD)")
+        ap.add_argument("--quiet", action="store_true")
+        return cmd_package(ap.parse_args(rest))
     if cmd == "ui":
         ap = argparse.ArgumentParser(prog="crash.py ui")
         ap.add_argument("report", nargs="?")

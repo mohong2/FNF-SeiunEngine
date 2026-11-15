@@ -41,12 +41,15 @@ jobs:
           restore-keys: |
             seiu-hxcpp-windows-v2-
 
+      # One plain lime build. Project.xml wires <postbuild haxe="tools.SymbolsAfterBuild"/>,
+      # which moves this link's ApplicationMain.map into export/symbols/windows-release/
+      # and writes build.json + build-info.txt next to it - there is no separate
+      # "symbol build" and no tools/build_windows_symbols.ps1 any more.
       - uses: ./.github/actions/build-desktop
         with:
           target: windows
           rebuild: haxelib run lime rebuild windows -64 -release -Dlime-sdl3 -Dhxcpp_api_level=430 -DLIME_VULKAN
-          build: |
-            pwsh -NoProfile -ExecutionPolicy Bypass -File tools/build_windows_symbols.ps1 -AppVersion "$APP_VERSION-$GITHUB_RUN_ID"
+          build: haxelib run lime build "$GITHUB_WORKSPACE/Project.xml" windows -64 --app-version="$APP_VERSION-$GITHUB_RUN_ID"
           artifact: SeiunEngine-windows-x64
           path: export/release/windows/bin
           gh-pat: ${{ secrets.GH_PAT }}
@@ -60,6 +63,8 @@ jobs:
 
       # Crash symbols are published separately so they never land inside the game
       # zip users download. Attach this artifact to bug reports when triaging.
+      # The release workflow folds every *-symbols artifact into ONE archive
+      # (SeiunEngine-symbols-<version>.zip), so nothing here is zipped per target.
       - name: Check crash symbols
         id: symbols
         shell: bash
@@ -67,11 +72,11 @@ jobs:
           # The bundle is the only thing that can turn a user's `Fault offset` into a
           # function name, so it is a hard requirement, not a warning: a release
           # without it is a release nobody can debug. The map/exe pair was already
-          # verified in the build step (tools/build_windows_symbols.ps1); this only
-          # confirms the three files actually made it into the artifact directory.
-          DIR=export/release/windows/symbols
+          # verified in the build step (crash.py verify-map); this only confirms the
+          # files actually made it into the store directory that gets uploaded.
+          DIR=export/symbols/windows-release
           missing=0
-          for f in ApplicationMain.map windows-x64.bin build-info.txt; do
+          for f in ApplicationMain.map build.json build-info.txt; do
             if [ -s "$DIR/$f" ]; then
               echo "ok: $f ($(stat -c%s "$DIR/$f" 2>/dev/null || wc -c < "$DIR/$f") bytes)"
             else
@@ -90,6 +95,6 @@ jobs:
         if: steps.symbols.outputs.present == '1'
         with:
           name: SeiunEngine-windows-x64-symbols
-          path: export/release/windows/symbols
+          path: export/symbols/windows-release
           if-no-files-found: error
           retention-days: 90

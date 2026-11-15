@@ -14,18 +14,34 @@ file is the record, the dialog is a courtesy.
 | `html5` | `source/backend/Html5Fatal.hx` | no native dialog exists; the report goes into the page |
 
 Every report starts with `Kind:`, so a kind is never guessed from the file name.
-`diag report` uses the same field.
+`crash.py report` uses the same field.
 
 ## Where the symbols are
 
 ```
 export/symbols/<platform>-<mode>/
-    ApplicationMain.map     the link map (Windows/Linux/macOS/tvOS/iOS)
-    *.pdb                   when the linker produced one
-    build-info.txt          facts for humans
-    build.json              the same facts for tools: exe size + PE TimeDateStamp + git commit
-    _stale/                 bundles superseded by a later build of the same target
+    ApplicationMain.map          the MSVC link map - only Windows writes one
+    *.pdb                        when the linker produced one (never published)
+    libApplicationMain-<abi>.so  Android: the unstripped library the APK was cut from
+    build-info.txt               facts for humans
+    build.json                   the same facts for tools: binary size + PE TimeDateStamp + git commit
+    _stale/                      bundles superseded by a later build of the same target
 ```
+
+Nothing else may live in there: a build either owns `<platform>-<mode>/` or owns
+nothing. `crash.py status` walks `export/*/*/bin` and compares each binary with the
+`build.json` of its bundle, so a leftover from an earlier build cannot pass as current.
+
+## One archive per release
+
+A build publishes its bundle as an artifact; the release workflow folds every one
+of them into a single download, `SeiunEngine-symbols-<version>.zip`, with one
+directory per target (`windows-x64/`, `android-arm64/`, ...) and a `manifest.json`
+that names the build each directory describes. There is deliberately no pile of
+per-target zips: half a dozen near-identical names on the release page is how the
+wrong map gets used.
+
+    python tools\crash.py package     every bundle in export/symbols -> one zip
 
 The bundle is written by `tools/SymbolsAfterBuild.hx` on **every** `lime build`.
 `source/BuildInfo.hx` stamps itself: `source/BuildStampMacro.hx` asks git while
@@ -43,6 +59,7 @@ pair; when they differ it prints `STALE` and refuses to resolve frames.
     python tools\crash.py status        are the symbols from this exact binary?
     python tools\crash.py report <f>    freshness check, then resolve the frames
     python tools\crash.py bundle <f>    report + manifest as one zip
+    python tools\crash.py package       every bundle as ONE zip (what a release ships)
     python tools\crash.py ui            the same verdicts in a bilingual window
     python tools\crash.py prune         drop _stale/ and *.tmp
 

@@ -19,11 +19,10 @@ jobs:
   android:
     name: Android
     runs-on: windows-latest
-    # The symbol pipeline builds the APK twice (the linemap is generated between the
-    # builds and must converge). Now that the lime fork honours -arm64 / -armv7, each
-    # job compiles a single ABI (~30 minutes) instead of one of them plus the other
-    # (~55-70), so the cap only needs headroom for a convergence retry.
-    timeout-minutes: 150
+    # One lime build per ABI (the lime fork honours -arm64 / -armv7), so a job
+    # compiles a single ABI (~30 minutes) instead of the old build-linemap-rebuild
+    # pair; the cap keeps generous headroom for a cold hxcpp cache.
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -86,12 +85,13 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # The crash symbols for exactly this APK: the embedded linemap, the
-      # unstripped .so and the build fingerprints a report can be matched
-      # against (published separately, never inside the APK).
+      # The crash symbols for exactly this APK: the unstripped .so and the build
+      # fingerprints a report is matched against (published separately, never
+      # inside the APK). The release workflow folds this artifact into the single
+      # SeiunEngine-symbols-<version>.zip.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: SeiunEngine-android-${{ matrix.abi }}-symbols
-          path: export/release/android/symbols
+          path: export/symbols/android-release
           if-no-files-found: error
           retention-days: 90

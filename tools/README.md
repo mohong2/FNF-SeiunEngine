@@ -20,6 +20,7 @@ the one that crashed.
 | `crash.py status [--json]` | do the symbols next to each binary belong to that exact binary? |
 | `crash.py report <file> [--check-only]` | which build wrote this report, and what do its frames resolve to? |
 | `crash.py bundle <file>` | one zip with the report and its manifest |
+| `crash.py package [--add L=D]` | every target's symbols as **one** zip (what a release ships) |
 | `crash.py ui` | the same verdicts in a bilingual (English/Chinese) window |
 | `crash.py symbols [--quiet]` | re-publish the bundle for the build that is on disk |
 | `crash.py prune [--dry-run]` | delete superseded bundles (`_stale/`, `*.tmp`) |
@@ -45,7 +46,8 @@ every path through this file.
 | file | location | content |
 |---|---|---|
 | `ApplicationMain.map` / `.pdb` | `export/symbols/<platform>-<mode>/` | the link byproducts, moved here (not copied) |
-| `build.json` | same | machine-readable: exe size, PE `TimeDateStamp`, git commit, artifact list |
+| `libApplicationMain-<abi>.so` | same (Android) | the unstripped library the APK's `.so` was cut from |
+| `build.json` | same | machine-readable: binary size, PE `TimeDateStamp`, git commit, artifact list |
 | `build-info.txt` | same | the same facts for humans |
 
 `build.json` records `size` and `peStamp`: those two numbers are what a report
@@ -54,6 +56,25 @@ prints as `Build: 60396032B@1793431505s`, written into the image by the linker.
 from this build?" is an integer comparison, not a guess from modification times.
 
 Anything older than the build that just finished is parked in `_stale/`.
+
+## One archive, not one per target
+
+A release used to publish `SeiunEngine-<target>-symbols-<version>.zip` once per
+target - five names that differ only in the middle, exactly one of which belongs
+to the binary in a given report. It is one file now:
+
+    SeiunEngine-symbols-<version>.zip
+        windows-x64/  android-arm64/  android-armv7/  linux-x64/  mac-x64/  mac-arm64/
+        manifest.json   which build each directory describes
+        README.txt      what each directory can do
+
+    python tools\crash.py package                    # whole store -> export/symbols/<zip>
+    python tools\crash.py package --add windows-x64=export/symbols/windows-release \
+                                  --out dist/SeiunEngine-symbols-0.2.2preonline3.zip
+
+CI builds the same archive from the downloaded `*-symbols` artifacts, so a local
+package and a release package have the same layout. Big binaries are stored
+uncompressed, text (`.map`, `.json`, `.txt`) is deflated - an 88 MB map becomes 9 MB.
 
 ## One build, no symbol switch
 

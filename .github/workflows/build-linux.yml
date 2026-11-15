@@ -57,21 +57,26 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      # A gcc release link writes no .map, so the bundle is build.json + build-info.txt:
+      # the identity of the build (size, git commit) a report is matched against. It
+      # lands in the single SeiunEngine-symbols-<version>.zip the release publishes.
       - name: Check crash symbols
         id: symbols
         shell: bash
         run: |
-          if [ -d export/release/linux/symbols ] && [ -n "$(ls -A export/release/linux/symbols)" ]; then
+          DIR=export/symbols/linux-release
+          if [ -f "$DIR/build.json" ]; then
             echo "present=1" >> "$GITHUB_OUTPUT"
+            cat "$DIR/build-info.txt"
           else
             echo "present=0" >> "$GITHUB_OUTPUT"
-            echo "::warning::crash symbols missing for linux"
+            echo "::warning::no build.json in $DIR - the symbol hook (tools/SymbolsAfterBuild.hx) did not run"
           fi
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: steps.symbols.outputs.present == '1'
         with:
           name: SeiunEngine-linux-x64-symbols
-          path: export/release/linux/symbols
+          path: export/symbols/linux-release
           if-no-files-found: error
           retention-days: 90

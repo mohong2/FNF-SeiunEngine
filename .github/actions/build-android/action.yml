@@ -141,18 +141,38 @@ runs:
       shell: pwsh
       run: haxelib run lime rebuild android ${{ inputs.arch }} -release -Dlime-sdl3 -Dhxcpp_api_level=430
 
-    # Two lime builds plus the linemap generation, driven by one script: the
-    # .bin files only exist after the first build, so the second one embeds them
-    # (the linemap is a resident Project.xml asset now). The script also verifies the embedded table against the
-    # .so it was built from and stages export/release/android/symbols, which the
-    # release workflow publishes as SeiunEngine-android-<abi>-symbols.
-    - name: Build APK with matching crash symbols
+    # One plain lime build per ABI. Project.xml keeps HXCPP_DEBUG_LINK_AND_STRIP on
+    # release android builds, so hxcpp saves the unstripped libApplicationMain.so
+    # before stripping the one that goes into the APK; the <postbuild> hook
+    # (tools/SymbolsAfterBuild.hx) then moves it into export/symbols/android-release/
+    # with build.json + build-info.txt. The release workflow publishes that directory
+    # inside the single SeiunEngine-symbols-<version>.zip.
+    - name: Build APK
       shell: pwsh
       env:
         _JAVA_OPTIONS: "-Xmx5g -XX:MaxMetaspaceSize=1g"
-      run: >
-        powershell -ExecutionPolicy Bypass -File tools\build_android_symbols.ps1
-        -Arch "${{ inputs.arch }}" -AppVersion "$env:APP_VERSION-${{ github.run_id }}"
+      run: |
+        haxelib run lime build "$env:GITHUB_WORKSPACE\Project.xml" android ${{ inputs.arch }} --app-version="$env:APP_VERSION-${{ github.run_id }}"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    - name: Check crash symbols
+      shell: pwsh
+      # The unstripped .so is the only thing that turns this APK's addresses into
+      # file:line, so a build that lost it is not publishable.
+      run: |
+        $dir = 'export/symbols/android-release'
+        if (-not (Test-Path (Join-Path $dir 'build.json'))) {
+          Write-Error "$dir\build.json is missing - the symbol hook (tools/SymbolsAfterBuild.hx) did not run"
+          exit 1
+        }
+        Get-Content (Join-Path $dir 'build-info.txt')
+        $so = Get-ChildItem $dir -Filter 'libApplicationMain*.so' -ErrorAction SilentlyContinue
+        if (-not $so) {
+          Write-Error "$dir holds no unstripped libApplicationMain*.so - a report from this APK could not be resolved"
+          exit 1
+        }
+        $so | Select-Object Name, Length | Format-Table -AutoSize | Out-String
+        Get-ChildItem $dir | Select-Object Name, Length | Format-Table -AutoSize | Out-String
 
     - name: Prepare APK artifact
       shell: pwsh
