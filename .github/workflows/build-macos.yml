@@ -54,6 +54,13 @@ jobs:
             #             "incompatible architecture (have 'x86_64', need 'arm64')".
             #   -64    -> lime's is64 flag, which keeps the .app layout and the
             #             template context on the 64-bit paths.
+            #
+            # The rebuild leaves two ndlls behind: ndll/Mac64 (x86_64, the copy hxcpp
+            # builds for the host tools - IconHelper dlopens that one while the build
+            # runs) and ndll/MacArm64 (arm64, the target). lime copies the .app's
+            # lime.ndll out of MacArm64 for this target; packing the x86_64 one gave an
+            # arm64 executable with an x86_64 library beside it, which stays green here
+            # and only shows up as a dyld error on a real Apple Silicon machine.
             rebuild: haxelib run lime rebuild mac -arm64 -64 -release -Dlime-sdl3 -Dhxcpp_api_level=430
             build: haxelib run lime build "$GITHUB_WORKSPACE/Project.xml" mac -arm64 -64 --app-version="$APP_VERSION-$GITHUB_RUN_ID"
             artifact: SeiunEngine-mac-arm64

@@ -233,12 +233,12 @@ runs:
         ls -la "$DIR"
 
     # A macOS build that ships the wrong slice is worse than a red build: it looks
-    # green until something dlopen()s it. IconHelper loads lime.ndll to rasterize the
-    # .icns, so a wrong-architecture ndll kills the build in IconHelper with
-    # "incompatible architecture". The cause was lime never passing HXCPP_ARM64 (only
-    # HXCPP_M64), which pinned hxcpp to "-arch x86_64" and ndll/Mac64; the lime fork
-    # now selects ndll/MacArm64 for -arm64. Verify the built artifacts really are the
-    # target architecture before packaging.
+    # green until something dlopen()s it. The arm64 rebuild produces two ndlls -
+    # ndll/Mac64 (x86_64, the copy hxcpp builds for the host tools) and ndll/MacArm64
+    # (arm64, the target) - and lime used to package the former, so the .app carried an
+    # x86_64 lime.ndll beside an arm64 executable and only a real Apple Silicon machine
+    # noticed. Verify the source ndll the target was built into, and the one that ended
+    # up inside the .app.
     - name: Verify macOS build architecture
       if: startsWith(inputs.target, 'macos')
       shell: bash
@@ -246,8 +246,8 @@ runs:
         set -euo pipefail
         TARGET="${{ inputs.target }}"
         case "$TARGET" in
-          macos-arm64) WANT="arm64" ;;
-          macos-x64)   WANT="x86_64" ;;
+          macos-arm64) WANT="arm64";  NDLL_DIR="MacArm64" ;;
+          macos-x64)   WANT="x86_64"; NDLL_DIR="Mac64" ;;
           *) echo "::error::unknown macOS target $TARGET - cannot verify architecture"; exit 1 ;;
         esac
         echo "verifying $TARGET -> expect $WANT"
@@ -274,11 +274,11 @@ runs:
 
         fail=0
 
-        # The ndll lime just rebuilt: what the .app ships, and what IconHelper
-        # dlopens during the icon step.
-        for ndll in "$HAXELIB_LIME_PATH"/ndll/MacArm64/lime.ndll "$HAXELIB_LIME_PATH"/ndll/Mac64/lime.ndll "$HAXELIB_LIME_PATH"/ndll/Mac/lime.ndll; do
-          if [ -f "$ndll" ]; then check "lime.ndll ($(basename "$(dirname "$ndll")"))" "$ndll" || fail=1; fi
-        done
+        # The ndll this target was rebuilt into. It is deliberately not a loop over
+        # every macOS ndll directory: ndll/Mac64 holds the host tools' x86_64 copy and
+        # ndll/Mac still holds a 32-bit one, neither of which says anything about the
+        # architecture of the build being packaged.
+        check "lime.ndll ($NDLL_DIR)" "$HAXELIB_LIME_PATH/ndll/$NDLL_DIR/lime.ndll" || fail=1
 
         APP="$(find export/release/macos/bin -maxdepth 2 -name '*.app' | head -n1 || true)"
         if [ -z "$APP" ]; then
@@ -294,7 +294,12 @@ runs:
             check "SeiunEngine binary" "$EXE" || fail=1
           fi
           INAPP="$(find "$APP" -name 'lime.ndll' | head -n1 || true)"
-          if [ -n "$INAPP" ]; then check "lime.ndll (in .app)" "$INAPP" || fail=1; fi
+          if [ -z "$INAPP" ]; then
+            echo "::error::the .app does not contain lime.ndll - it cannot start"
+            fail=1
+          else
+            check "lime.ndll (in .app)" "$INAPP" || fail=1
+          fi
         fi
 
         if [ "$fail" -ne 0 ]; then

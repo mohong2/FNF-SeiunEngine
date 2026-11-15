@@ -39,6 +39,15 @@
 	<define name="lime-sdl3" if="desktop || android || ios || tvos" />
 	<config:ios deployment="13.0" />
 	<config:ios device="universal" />
+	<!-- SDL3's rumble support (project/lib/sdl3/src/joystick/apple/SDL_mfijoystick.m)
+	     drives CHHapticEngine. SDL3 links CoreHaptics weakly upstream, so the app has
+	     to link it too - without it xcodebuild stops at
+	       Undefined symbols: _OBJC_CLASS_$_CHHapticPattern
+	     lime appends ios.linker-flags to OTHER_LDFLAGS one array entry at a time, so a
+	     flag and its value need an entry each. Weak, not required: CoreHaptics is
+	     iOS 13+ and the deployment target already is 13.0. -->
+	<config:ios linker-flags="-weak_framework" />
+	<config:ios linker-flags="CoreHaptics" />
 	<define name="TOUCH_CONTROLS" if="android || ios" />
 
 	<define name="MODS_ALLOWED" if="desktop || mobile" />
