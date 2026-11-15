@@ -95,6 +95,9 @@ haxe -cp ./setup -main Main --interp
 lime build windows
 ```
 
+> [!NOTE]
+> Windows 构建默认编译进实验性的 Vulkan 渲染器。游戏仍然以 OpenGL 启动：加 `--vulkan`（或设置 `SEIUN_VULKAN=1`）才会切过去，驱动、窗口或 `Lime.ndll` 不支持时自动退回 OpenGL。加 `-D SEIUN_NO_VULKAN` 可构建纯 OpenGL 版本。
+
 其他平台：
 
 ```sh

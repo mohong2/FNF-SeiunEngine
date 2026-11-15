@@ -95,6 +95,9 @@ haxe -cp ./setup -main Main --interp
 lime build windows
 ```
 
+> [!NOTE]
+> Windows builds compile the experimental Vulkan renderer in by default. The game still starts on OpenGL: pass `--vulkan` (or set `SEIUN_VULKAN=1`) to switch, and it falls back to OpenGL when the driver, the window or `Lime.ndll` refuses. Add `-D SEIUN_NO_VULKAN` to get an OpenGL-only binary.
+
 Other targets:
 
 ```sh

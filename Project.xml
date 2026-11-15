@@ -56,10 +56,7 @@
 	<define name="DARKMODE" if="desktop" />
 	<define name="CRASH_HANDLER"/>
 
-	<!-- Experimental Vulkan renderer, part of Lime.ndll. Build with -Dseiun_vulkan
-	     to compile the Haxe side in; it falls back to OpenGL when the driver or the
-	     window refuses. -->
-	<!-- <define name="seiun_vulkan" if="windows" /> -->
+	<define name="seiun_vulkan" if="windows" unless="SEIUN_NO_VULKAN" />
 
 	<!-- Safety checks: null pointers throw with Haxe file and line information.
 	     Symbol publication is a <postbuild> below, so one "lime build" is enough. -->
