@@ -955,6 +955,9 @@ class HScript
 				backend.NativeCrash.installLuaPanic(l);
 				LuaL.dostring(l, code);
 				var result = Lua.tostring(l, -1);
+				// 一次性 state 也要摘回调表（脚本里可能间接注册过回调）
+				// English: even a throwaway state may have registered callbacks — drop them.
+				try { Lua_helper.forget_state(l); } catch (e:Dynamic) {}
 				Lua.close(l);
 				return result;
 			} catch (e:Dynamic) { return null; }

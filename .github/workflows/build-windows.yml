@@ -44,7 +44,7 @@ jobs:
       - uses: ./.github/actions/build-desktop
         with:
           target: windows
-          rebuild: haxelib run lime rebuild windows -64 -release -Dlime-sdl3 -Dhxcpp_api_level=430
+          rebuild: haxelib run lime rebuild windows -64 -release -Dlime-sdl3 -Dhxcpp_api_level=430 -DLIME_VULKAN
           build: |
             pwsh -NoProfile -ExecutionPolicy Bypass -File tools/build_windows_symbols.ps1 -AppVersion "$APP_VERSION-$GITHUB_RUN_ID"
           artifact: SeiunEngine-windows-x64

@@ -6044,6 +6044,8 @@ public static function setVarInArray(instance:Dynamic, variable:String, value:Dy
 			__importResolveName = null;
 		}
 
+		try { Lua_helper.forget_state(lua); } catch (e:Dynamic) {}
+
 		Lua.close(lua);
 		lua = null;
 		#end

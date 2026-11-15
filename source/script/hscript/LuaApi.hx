@@ -233,12 +233,9 @@ class LuaApi {
 		var state:State = getFirstActiveState();
 		if (state == null) return null;
 		Lua.getglobal(state, variableName);
-		if (Lua.type(state, -1) == Lua.LUA_TFUNCTION) {
-			// Convert.fromLua 对函数会 luaL_ref（自动弹栈），不能重复 pop
-			// English: Convert.fromLua calls luaL_ref for functions (which pops
-			// the stack), so do not pop again here.
-			return Convert.fromLua(state, -1);
-		}
+		// fromLua 现在对每种类型都保持栈平衡（函数是先 pushvalue 再 luaL_ref），
+		// 所以取出 + 弹栈各一次即可，不必再为函数单开一条分支。
+		// English: fromLua is stack-neutral for every type now, so convert once and pop once.
 		var result:Dynamic = Convert.fromLua(state, -1);
 		Lua.pop(state, 1);
 		return result;
@@ -560,8 +557,8 @@ class LuaApi {
 			TraceManager.error('trace.luaApi.callError', 'LuaApi: Error calling "{}": {}', [functionName, err]);
 			return null;
 		}
-		if (Lua.type(state, -1) == Lua.LUA_TFUNCTION)
-			return Convert.fromLua(state, -1); // luaL_ref 自动弹栈
+		// fromLua 对函数不再偷偷弹栈了，所以这里统一：取出 → 弹一次。
+		// English: fromLua no longer pops for functions; convert once, pop once.
 		var result:Dynamic = Convert.fromLua(state, -1);
 		Lua.pop(state, 1);
 		return result;
@@ -586,8 +583,8 @@ class LuaApi {
 			TraceManager.error('trace.luaApi.originalError', 'LuaApi: error in original function: {}', [err]);
 			return null;
 		}
-		if (Lua.type(state, -1) == Lua.LUA_TFUNCTION)
-			return Convert.fromLua(state, -1); // luaL_ref 自动弹栈
+		// fromLua 对函数不再偷偷弹栈了，所以这里统一：取出 → 弹一次。
+		// English: fromLua no longer pops for functions; convert once, pop once.
 		var result:Dynamic = Convert.fromLua(state, -1);
 		Lua.pop(state, 1);
 		return result;

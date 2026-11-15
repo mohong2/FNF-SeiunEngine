@@ -324,6 +324,11 @@ class EditorLua {
 			return;
 		}
 
+		// 同 FunkinLua.stop：先摘回调表再关 state，否则 Lua_helper.byState 会一直
+		// 强引用编辑器脚本注册的那批闭包。
+		// English: same as FunkinLua.stop — drop the dispatch table before closing.
+		try { Lua_helper.forget_state(lua); } catch (e:Dynamic) {}
+
 		Lua.close(lua);
 		lua = null;
 		#end
