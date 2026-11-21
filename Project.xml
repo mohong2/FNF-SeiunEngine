@@ -178,14 +178,13 @@
 	     into obj/ApplicationMain, so the copy needs its own name here: with the
 	     default name hxcpp would "copy" the output onto itself and then strip the
 	     only copy. Linux needs neither - its stripper is "strip -d", which leaves
-	     .symtab in the shipped executable. -->
+	     .symtab in the shipped executable.
+	     macOS cannot use a <section if="macos"> here: lime evaluates these sections
+	     against its own defines before hxcpp adds "macos", so the block never ran.
+	     The two flags are passed on the mac build command in
+	     .github/workflows/build-macos.yml instead. -->
 	<section if="android" unless="debug">
 		<haxedef name="HXCPP_DEBUG_LINK_AND_STRIP" />
-	</section>
-
-	<section if="macos" unless="debug">
-		<haxedef name="HXCPP_DEBUG_LINK_AND_STRIP" />
-		<haxedef name="HAXE_FULL_UNSTRIPPED_NAME" value="obj/ApplicationMain.unstripped" />
 	</section>
 
 	<!-- Android configuration -->
