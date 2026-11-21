@@ -11,14 +11,14 @@ on:
         description: 'Runner label. Pinned so a hosted-image upgrade cannot silently change the compiler; the canary passes windows-latest.'
         required: false
         type: string
-        default: windows-2025
+        default: windows-2022
   workflow_dispatch:
     inputs:
       runner:
-        description: 'Runner label (default: windows-2025)'
+        description: 'Runner label (default: windows-2022)'
         required: false
         type: string
-        default: windows-2025
+        default: windows-2022
 
 permissions:
   contents: read
@@ -34,11 +34,24 @@ env:
 jobs:
   windows:
     name: Windows x64
-    # Pinned, not "windows-latest": GitHub replaced the toolset under that alias
-    # once already (VS2022 -> VS2026) and nothing in this repository changed when
-    # it happened. A pinned label turns "the compiler changed yesterday" into
-    # "the compiler changes when we move this line".
-    runs-on: ${{ inputs.runner || 'windows-2025' }}
+    # windows-2022 on purpose, and pinned rather than "windows-latest".
+    #
+    # It is the image that carries the VS2022 toolset (MSVC 14.4x) - the same
+    # compiler a developer's machine resolves to - so a C++ breakage shows up on
+    # that machine first instead of only in CI. windows-2025 is not that image any
+    # more: it currently resolves to win25-vs2026 (MSVC 14.5x), which is how
+    # lime's openal stopped compiling with nothing in this repository changing.
+    #
+    # The toolset also reaches the user: hxcpp links the CRT dynamically
+    # (msvc-toolchain.xml C_ABI = -MD) and no redist is shipped in the win zip, so
+    # a binary built by a newer toolset asks for a newer Visual C++ runtime than
+    # the 2015-2022 redist nearly every machine already has.
+    #
+    # Whatever the toolchain turns out to be, tools/toolchain.py records it in
+    # build.json and the object cache is keyed on it, so this line moving is the
+    # only way the compiler changes. The Toolchain Canary workflow runs the same
+    # job on windows-latest weekly to report what the next move would land on.
+    runs-on: ${{ inputs.runner || 'windows-2022' }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

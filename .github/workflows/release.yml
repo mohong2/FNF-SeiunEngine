@@ -24,7 +24,9 @@ env:
 jobs:
   release:
     name: Publish release
-    runs-on: ubuntu-latest
+    # Pinned like the build and packaging jobs: this step zips, hashes and uploads
+    # the release, so the image (and its zip/python) must not move on its own.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

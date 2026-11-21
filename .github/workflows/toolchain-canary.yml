@@ -1,11 +1,12 @@
 name: Toolchain Canary
 
-# The release legs pin their runner labels (build-windows.yml -> windows-2025,
+# The release legs pin their runner labels (build-windows.yml -> windows-2022,
 # build-linux.yml -> ubuntu-24.04) so a hosted-image upgrade cannot change the
 # compiler under a release. This weekly run executes those two jobs on the
-# *unpinned* labels instead: what they resolve to today is what the pinned labels
-# will resolve to after the next migration, so the surprise lands here and not in
-# a release run.
+# *unpinned* labels instead, which answers the question the pinned labels cannot:
+# would this tree still build on the newer image we will be forced onto when the
+# pinned one is retired (windows-latest is already win25-vs2026, MSVC 14.5x)? The
+# surprise lands here, on a Monday, instead of in a release run.
 #
 # It is deliberately the real build and not a compile probe. The failure that
 # motivated it - windows-latest moving to Visual Studio 2026, where MSVC 14.5x

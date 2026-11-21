@@ -18,10 +18,11 @@ env:
 jobs:
   android:
     name: Android
-    # Pinned, not "windows-latest": the alias changed the C++ toolset once already
-    # (VS2022 -> VS2026, which broke lime's openal) with nothing in the repo
-    # changing. The canary workflow watches the unpinned label.
-    runs-on: windows-2025
+    # Same image as the Windows desktop leg (see build-windows.yml): pinned to the
+    # VS2022 / MSVC 14.4x toolset so the host side matches what a developer's
+    # machine compiles with, and so a hosted-image upgrade cannot change it
+    # silently. The canary workflow watches windows-latest for the next move.
+    runs-on: windows-2022
     # One lime build per ABI (the lime fork honours -arm64 / -armv7), so a job
     # compiles a single ABI (~30 minutes) instead of the old build-linemap-rebuild
     # pair; the cap keeps generous headroom for a cold hxcpp cache.
