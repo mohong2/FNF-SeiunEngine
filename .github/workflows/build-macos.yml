@@ -21,23 +21,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The two -D flags on the build command are what put a usable symbol table in
-        # the macOS bundle. lime compiles this target with -fvisibility=hidden and then
-        # strips local symbols ("strip -u -r -x"), so the .app ends up with ~150 exported
-        # names - enough to pass a naive "did we get symbols" check, useless for a real
-        # frame. HXCPP_DEBUG_LINK_AND_STRIP makes hxcpp copy the link output before it
-        # strips it, and HAXE_FULL_UNSTRIPPED_NAME moves that copy to its own name: the
-        # default name (obj/ApplicationMain) is the link output itself, so hxcpp would
-        # copy the file onto itself and then strip the only copy. They are passed here
-        # rather than in Project.xml because lime evaluates <section if="macos"> before
-        # hxcpp defines "macos", so such a section silently never matches.
+        # -Dnostrip on the build command is what puts a usable symbol table in the macOS
+        # bundle, and it is the only thing that reliably does. lime compiles this target
+        # with -fvisibility=hidden and hxcpp's release link then runs "strip -u -r -x",
+        # which leaves the .app with ~152 exported names - enough to pass a naive "did we
+        # get symbols" check, useless for a real frame. The alternative route (keep a
+        # pre-strip copy via HXCPP_DEBUG_LINK_AND_STRIP + HAXE_FULL_UNSTRIPPED_NAME) was
+        # tried first and produced no copy at all on the runner, so the symbol table is
+        # taken from the shipped binary instead and the archive simply carries it: a few
+        # MB of names next to a 340 MB .app. It is passed here rather than in Project.xml
+        # because lime evaluates <section if="macos"> before hxcpp defines "macos", so
+        # such a section silently never matches.
         include:
           - runner: macos-15-intel
             target: macos-x64
             # -64 makes lime push hxcpp's HXCPP_M64, which mac-toolchain.xml turns
             # into -arch x86_64 and the ndll/Mac64 output directory.
             rebuild: haxelib run lime rebuild mac -64 -release -Dlime-sdl3 -Dhxcpp_api_level=430
-            build: haxelib run lime build "$GITHUB_WORKSPACE/Project.xml" mac -64 --app-version="$APP_VERSION-$GITHUB_RUN_ID" -DHXCPP_DEBUG_LINK_AND_STRIP -DHAXE_FULL_UNSTRIPPED_NAME=obj/ApplicationMain.unstripped
+            build: haxelib run lime build "$GITHUB_WORKSPACE/Project.xml" mac -64 --app-version="$APP_VERSION-$GITHUB_RUN_ID" -Dnostrip
             artifact: SeiunEngine-mac-x64
           - runner: macos-15-intel
             target: macos-arm64
@@ -72,7 +73,7 @@ jobs:
             # arm64 executable with an x86_64 library beside it, which stays green here
             # and only shows up as a dyld error on a real Apple Silicon machine.
             rebuild: haxelib run lime rebuild mac -arm64 -64 -release -Dlime-sdl3 -Dhxcpp_api_level=430
-            build: haxelib run lime build "$GITHUB_WORKSPACE/Project.xml" mac -arm64 -64 --app-version="$APP_VERSION-$GITHUB_RUN_ID" -DHXCPP_DEBUG_LINK_AND_STRIP -DHAXE_FULL_UNSTRIPPED_NAME=obj/ApplicationMain.unstripped
+            build: haxelib run lime build "$GITHUB_WORKSPACE/Project.xml" mac -arm64 -64 --app-version="$APP_VERSION-$GITHUB_RUN_ID" -Dnostrip
             artifact: SeiunEngine-mac-arm64
             experimental: true
     runs-on: ${{ matrix.runner }}

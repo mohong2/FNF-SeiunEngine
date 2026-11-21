@@ -200,6 +200,10 @@ runs:
         # IT would "succeed" with ~150 exported names - a table that resolves almost
         # nothing. A real table has tens of thousands; anything below this floor means
         # the pre-strip copy was not there and the run must not pretend otherwise.
+        # Say what the link actually left behind when this is about to fail: the first
+        # macOS attempt reported only "no pre-strip copy" with nothing to look at.
+        ls -la "export/release/$PLAT/obj" 2>/dev/null | head -n 12 || true
+        find . -maxdepth 5 -name '*.unstripped' -print 2>/dev/null | head -n 5 || true
         python3 tools/symtab.py --platform "$PLAT" --out "export/symbols/$PLAT-release" --min-symbols 1000
 
     - name: Verify crash symbols
