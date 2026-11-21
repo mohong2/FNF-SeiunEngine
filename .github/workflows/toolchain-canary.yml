@@ -1,12 +1,12 @@
 name: Toolchain Canary
 
-# The release legs pin their runner labels (build-windows.yml -> windows-2022,
+# The release legs pin their runner labels (build-windows.yml -> windows-2025,
 # build-linux.yml -> ubuntu-24.04) so a hosted-image upgrade cannot change the
-# compiler under a release. This weekly run executes those two jobs on the
-# *unpinned* labels instead, which answers the question the pinned labels cannot:
-# would this tree still build on the newer image we will be forced onto when the
-# pinned one is retired (windows-latest is already win25-vs2026, MSVC 14.5x)? The
-# surprise lands here, on a Monday, instead of in a release run.
+# compiler under a release. Those pins today equal what the "-latest" aliases
+# resolve to (windows-latest is win25-vs2026, Visual Studio 2026 / MSVC 14.52),
+# and that is deliberate: this weekly run executes the same two jobs on the
+# aliases, so the day an alias moves to a newer image it fails here, on a Monday,
+# well before a release run meets it.
 #
 # It is deliberately the real build and not a compile probe. The failure that
 # motivated it - windows-latest moving to Visual Studio 2026, where MSVC 14.5x
