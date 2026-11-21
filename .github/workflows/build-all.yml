@@ -32,7 +32,9 @@ env:
 
 jobs:
   prepare:
-    runs-on: ubuntu-latest
+    # Pinned like the platform legs: "ubuntu-latest" moves the image (and the
+    # python/zip/sha256sum the release packaging runs on) without a commit.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       version_name: ${{ steps.parse.outputs.version_name }}
@@ -81,7 +83,7 @@ jobs:
     name: Create Release
     needs: [prepare, linux, windows, macos, android, ios]
     if: github.event.inputs.publish != 'none'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

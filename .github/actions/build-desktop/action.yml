@@ -235,6 +235,18 @@ runs:
         fi
         cat "$DIR/build-info.txt"
 
+        # Every artifact names the compiler that built it (the "Record toolchain"
+        # step in each workflow). A manifest without that block means the step
+        # stopped running before the build, and a bundle that cannot say which
+        # toolchain produced the binary is exactly what this pipeline exists to
+        # avoid: the CI image and a developer's machine are on different MSVC
+        # releases right now, so "which compiler" is a real question about a crash
+        # report, not trivia.
+        if ! grep -q '"toolchain"' "$DIR/build.json"; then
+          echo "::error::$DIR/build.json carries no toolchain block - tools/toolchain.py did not run before the build"
+          exit 1
+        fi
+
         if [ "$PLAT" = "windows" ]; then
           MAP="$DIR/ApplicationMain.map"
           if [ ! -f "$MAP" ]; then

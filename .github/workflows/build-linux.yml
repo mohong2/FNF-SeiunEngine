@@ -1,8 +1,24 @@
 name: Linux Build
 
 on:
+  # The runner label is an input, not a literal, so the Toolchain Canary workflow
+  # can run this same job on the *unpinned* label (ubuntu-latest) once a week and
+  # report an image upgrade before a release run meets it. Everything else gets
+  # the pinned default below.
   workflow_call:
+    inputs:
+      runner:
+        description: 'Runner label. Pinned so a hosted-image upgrade cannot silently change the compiler; the canary passes ubuntu-latest.'
+        required: false
+        type: string
+        default: ubuntu-24.04
   workflow_dispatch:
+    inputs:
+      runner:
+        description: 'Runner label (default: ubuntu-24.04)'
+        required: false
+        type: string
+        default: ubuntu-24.04
 
 permissions:
   contents: read
@@ -18,7 +34,9 @@ env:
 jobs:
   linux:
     name: Linux x64
-    runs-on: ubuntu-latest
+    # Pinned, not "ubuntu-latest": the image alias moves (20.04 -> 22.04 -> 24.04,
+    # and with it gcc and binutils) without anything in this repository changing.
+    runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -26,6 +44,15 @@ jobs:
       - uses: krdlab/setup-haxe@d93667502be3b4f31a94a3308a74388f2e178a8d # v2.1.0
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
+
+      # The image is an input nobody versions in git, so every job writes down the
+      # compiler it actually got: toolchain.json is merged into build.json by the
+      # <postbuild> hook (the shipped symbol bundle then names the toolchain of the
+      # binary it describes) and toolchain-key.txt keys the object cache below, so
+      # an image upgrade cannot restore gcc objects under a new gcc.
+      - name: Record toolchain
+        shell: bash
+        run: python3 tools/toolchain.py
 
       - name: Resolve hxcpp revision
         shell: bash
@@ -44,9 +71,12 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .hxcpp-cache
-          key: seiu-hxcpp-linux-v2-${{ hashFiles('hxcpp-head.txt', 'source/**/*.hx', 'assets/**/*', 'art/**/*', 'templates/**/*', 'Project.xml', 'hmm.json') }}
+          # toolchain-key.txt is the compiler (gcc-13.3.0-binutils-2.42, ...). The
+          # -v3- bump is what stops restore-keys from pulling a v2 cache built by
+          # the old toolset: a changed key alone would still fall back to it.
+          key: seiu-hxcpp-linux-v3-${{ hashFiles('toolchain-key.txt', 'hxcpp-head.txt', 'source/**/*.hx', 'assets/**/*', 'art/**/*', 'templates/**/*', 'Project.xml', 'hmm.json') }}
           restore-keys: |
-            seiu-hxcpp-linux-v2-
+            seiu-hxcpp-linux-v3-
 
       - uses: ./.github/actions/build-desktop
         with:

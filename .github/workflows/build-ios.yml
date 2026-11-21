@@ -30,6 +30,12 @@ jobs:
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
 
+      # The image is an input nobody versions in git: record the clang, Xcode and
+      # SDK this build used, and key the object cache on it.
+      - name: Record toolchain
+        shell: bash
+        run: python3 tools/toolchain.py
+
       - name: Resolve hxcpp revision
         shell: bash
         run: |
@@ -47,9 +53,11 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .hxcpp-cache
-          key: seiu-hxcpp-ios-v3-${{ hashFiles('hxcpp-head.txt', 'source/**/*.hx', 'assets/**/*', 'art/**/*', 'templates/**/*', 'Project.xml', 'hmm.json') }}
+          # toolchain-key.txt is the compiler. The -v4- bump is what stops
+          # restore-keys from pulling a v3 cache built by the old toolset.
+          key: seiu-hxcpp-ios-v4-${{ hashFiles('toolchain-key.txt', 'hxcpp-head.txt', 'source/**/*.hx', 'assets/**/*', 'art/**/*', 'templates/**/*', 'Project.xml', 'hmm.json') }}
           restore-keys: |
-            seiu-hxcpp-ios-v3-
+            seiu-hxcpp-ios-v4-
 
       - uses: ./.github/actions/build-ios
 

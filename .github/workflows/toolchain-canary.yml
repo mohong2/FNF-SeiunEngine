@@ -1,0 +1,41 @@
+name: Toolchain Canary
+
+# The release legs pin their runner labels (build-windows.yml -> windows-2025,
+# build-linux.yml -> ubuntu-24.04) so a hosted-image upgrade cannot change the
+# compiler under a release. This weekly run executes those two jobs on the
+# *unpinned* labels instead: what they resolve to today is what the pinned labels
+# will resolve to after the next migration, so the surprise lands here and not in
+# a release run.
+#
+# It is deliberately the real build and not a compile probe. The failure that
+# motivated it - windows-latest moving to Visual Studio 2026, where MSVC 14.5x
+# treats copysignf as a true intrinsic and lime's bundled openal is compiled
+# without HAVE_COPYSIGNF, so the fallback definition became error C2169 - only
+# ever met the compiler inside lime's native rebuild. Nothing smaller touches
+# that surface, and the same applies to a macos image that changes Xcode.
+#
+# macOS is not duplicated here: those jobs are already pinned to an OS-major
+# label (macos-15-intel) rather than to a "-latest" alias.
+
+on:
+  schedule:
+    # Mondays 03:00 UTC, before a release is likely to be dispatched.
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  windows-next:
+    name: Windows x64 on windows-latest
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      runner: windows-latest
+
+  linux-next:
+    name: Linux x64 on ubuntu-latest
+    uses: ./.github/workflows/build-linux.yml
+    with:
+      runner: ubuntu-latest

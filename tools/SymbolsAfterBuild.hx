@@ -42,7 +42,8 @@ typedef Row =
  *   4. move anything OLDER than the build that just finished into
  *      export/symbols/<platform>-<mode>/_stale/ - a leftover from an earlier
  *      build resolves offsets to plausible but wrong symbols,
- *   5. write build-info.txt + build.json there.
+ *   5. write build-info.txt + build.json there, plus the toolchain fingerprint
+ *      tools/toolchain.py recorded for this machine (when it ran).
  *
  * That directory is what CI uploads as the target's *-symbols artifact, and
  * "python tools/crash.py package" folds every one of them into the single
@@ -72,6 +73,10 @@ class SymbolsAfterBuild
 	static var argPlat:String = null;
 	static var argMode:String = null;
 	static var dryRun:Bool = false;
+
+	/** Written by tools/toolchain.py before the compile; null when nothing described the compiler. */
+	static var toolchainJson:String = null;
+	static var toolchainLine:String = null;
 
 	static function main()
 	{
@@ -107,6 +112,7 @@ class SymbolsAfterBuild
 			return;
 		}
 		readStamp(root);
+		readToolchain(root);
 
 		var d = detect();
 		plat = argPlat != null ? argPlat : d.plat;
@@ -146,6 +152,37 @@ class SymbolsAfterBuild
 
 		// --untracked-files=no matches BuildStampMacro: scratch files are not build identity.
 		STAMP.dirty = git(projectRoot, ["status", "--porcelain", "--untracked-files=no"]).length > 0;
+	}
+
+	/**
+	 * The compiler, copied from what tools/toolchain.py left in the project root.
+	 *
+	 * The runner image is not in this repository, so a bundle that only says which
+	 * commit it describes cannot answer "was this built by the same compiler as the
+	 * release?" - and that difference is real: the CI image moved to MSVC 14.5x and
+	 * lime's bundled openal stopped compiling, while the same tree kept building on
+	 * a developer's machine with 14.4x. Absent on a build that never ran the script:
+	 * the fields are then omitted, never guessed.
+	 */
+	static function readToolchain(projectRoot:String):Void
+	{
+		try
+		{
+			var j = projectRoot + "/toolchain.json";
+			if (FileSystem.exists(j)) toolchainJson = File.getContent(j);
+		}
+		catch (e:Dynamic) {}
+
+		try
+		{
+			var t = projectRoot + "/toolchain.txt";
+			if (FileSystem.exists(t))
+			{
+				var line = StringTools.trim(File.getContent(t));
+				if (line != "") toolchainLine = line;
+			}
+		}
+		catch (e:Dynamic) {}
 	}
 
 	/** <app ... version="..."> out of Project.xml, or "" when it cannot be read. */
@@ -884,6 +921,7 @@ class SymbolsAfterBuild
 		Sys.println(TAG + "   build  : " + STAMP.commit + (STAMP.dirty ? " (dirty tree)" : "") + "  " + STAMP.version);
 		if (plat == "linux" || plat == "macos")
 			Sys.println(TAG + "   resolve: python tools/crash.py sym export/symbols/" + plat + "-" + mode + " 0x<offset>");
+		if (toolchainLine != null) Sys.println(TAG + "   toolchain: " + toolchainLine);
 		if (plat == "windows") Sys.println(TAG + "   check  : python tools\\crash.py status");
 		if (plat == "windows") Sys.println(TAG + "   resolve: python tools\\crash.py report <report.txt>");
 		Sys.println(TAG + " " + dashes());
@@ -910,6 +948,7 @@ class SymbolsAfterBuild
 		var b = new StringBuf();
 		b.add("# SeiunEngine symbol bundle - " + plat + " " + mode + "\n");
 		b.add("# build   : " + STAMP.commit + (STAMP.dirty ? " (dirty tree)" : "") + "  " + STAMP.version + "\n");
+		if (toolchainLine != null) b.add("# toolchain: " + toolchainLine + "\n");
 		b.add("# Written by tools/SymbolsAfterBuild.hx on every lime build.\n");
 		b.add("# Match a crash report's 'Build:' line against the fingerprints below.\n");
 		b.add("# size and #hash are stable; @mtime is the install time on the\n");
@@ -958,6 +997,8 @@ class SymbolsAfterBuild
 		b.add("  \"builtAt\": " + jstr(Date.now().toString()) + ",\n");
 		b.add("  \"git\": {\"commit\": " + jstr(STAMP.commit) + ", \"dirty\": "
 			+ (STAMP.dirty ? "true" : "false") + ", \"version\": " + jstr(STAMP.version) + "},\n");
+		var toolchain:String = toolchainObject();
+		if (toolchain != null) b.add("  \"toolchain\": " + toolchain + ",\n");
 		if (exe == null)
 		{
 			b.add("  \"exe\": null,\n");
@@ -995,6 +1036,22 @@ class SymbolsAfterBuild
 		var json = dir + "/build.json";
 		File.saveContent(json, b.toString());
 		Sys.println(TAG + " manifest: " + rel(json));
+	}
+
+	/** toolchain.json re-serialised onto one line, so it can sit inside the manifest. */
+	static function toolchainObject():String
+	{
+		if (toolchainJson == null) return null;
+		try
+		{
+			var parsed:Dynamic = haxe.Json.parse(toolchainJson);
+			if (parsed == null) return null;
+			return haxe.Json.stringify(parsed);
+		}
+		catch (e:Dynamic)
+		{
+			return null;
+		}
 	}
 
 	static function jstr(s:String):String

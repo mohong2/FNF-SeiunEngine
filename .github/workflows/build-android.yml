@@ -18,7 +18,10 @@ env:
 jobs:
   android:
     name: Android
-    runs-on: windows-latest
+    # Pinned, not "windows-latest": the alias changed the C++ toolset once already
+    # (VS2022 -> VS2026, which broke lime's openal) with nothing in the repo
+    # changing. The canary workflow watches the unpinned label.
+    runs-on: windows-2025
     # One lime build per ABI (the lime fork honours -arm64 / -armv7), so a job
     # compiles a single ABI (~30 minutes) instead of the old build-linemap-rebuild
     # pair; the cap keeps generous headroom for a cold hxcpp cache.
@@ -46,6 +49,12 @@ jobs:
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
 
+      # The NDK is pinned by the build action, but the host compiler is not part of
+      # this repository either: record it, and key the object cache on it.
+      - name: Record toolchain
+        shell: bash
+        run: python tools/toolchain.py
+
       - name: Resolve hxcpp revision
         shell: pwsh
         run: |
@@ -67,9 +76,11 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .hxcpp-cache
-          key: seiu-hxcpp-android-${{ matrix.abi }}-v2-${{ hashFiles('hxcpp-head.txt', 'source/**/*.hx', 'assets/**/*', 'art/**/*', 'templates/**/*', 'Project.xml', 'hmm.json') }}
+          # toolchain-key.txt is the host compiler. The -v3- bump is what stops
+          # restore-keys from pulling a v2 cache built by the old toolset.
+          key: seiu-hxcpp-android-${{ matrix.abi }}-v3-${{ hashFiles('toolchain-key.txt', 'hxcpp-head.txt', 'source/**/*.hx', 'assets/**/*', 'art/**/*', 'templates/**/*', 'Project.xml', 'hmm.json') }}
           restore-keys: |
-            seiu-hxcpp-android-${{ matrix.abi }}-v2-
+            seiu-hxcpp-android-${{ matrix.abi }}-v3-
 
       # Both symbol builds run gradle, so its wrapper and dependency caches are
       # downloaded and configured twice per job unless they are cached here.

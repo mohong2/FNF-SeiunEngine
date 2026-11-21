@@ -1,8 +1,24 @@
 name: Windows Build
 
 on:
+  # The runner label is an input, not a literal, so the Toolchain Canary workflow
+  # can run this same job on the *unpinned* label (windows-latest) once a week and
+  # report an image upgrade before a release run meets it. Everything else gets
+  # the pinned default below.
   workflow_call:
+    inputs:
+      runner:
+        description: 'Runner label. Pinned so a hosted-image upgrade cannot silently change the compiler; the canary passes windows-latest.'
+        required: false
+        type: string
+        default: windows-2025
   workflow_dispatch:
+    inputs:
+      runner:
+        description: 'Runner label (default: windows-2025)'
+        required: false
+        type: string
+        default: windows-2025
 
 permissions:
   contents: read
@@ -18,7 +34,11 @@ env:
 jobs:
   windows:
     name: Windows x64
-    runs-on: windows-latest
+    # Pinned, not "windows-latest": GitHub replaced the toolset under that alias
+    # once already (VS2022 -> VS2026) and nothing in this repository changed when
+    # it happened. A pinned label turns "the compiler changed yesterday" into
+    # "the compiler changes when we move this line".
+    runs-on: ${{ inputs.runner || 'windows-2025' }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -26,6 +46,17 @@ jobs:
       - uses: krdlab/setup-haxe@d93667502be3b4f31a94a3308a74388f2e178a8d # v2.1.0
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
+
+      # The image is an input nobody versions in git, so every job writes down the
+      # compiler it actually got: tools/toolchain.py fills toolchain.json (merged
+      # into build.json by the <postbuild> hook, so the shipped symbol bundle names
+      # the toolchain of the binary it describes) and toolchain-key.txt, which the
+      # object cache below is keyed on. Without that key an image upgrade keeps
+      # restoring objects a different compiler produced - MSVC tolerates it, and
+      # the result is a build that only misbehaves in CI.
+      - name: Record toolchain
+        shell: bash
+        run: python tools/toolchain.py
 
       - name: Resolve hxcpp revision
         shell: pwsh
@@ -48,9 +79,12 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .hxcpp-cache
-          key: seiu-hxcpp-windows-v2-${{ hashFiles('hxcpp-head.txt', 'source/**/*.hx', 'assets/**/*', 'art/**/*', 'templates/**/*', 'Project.xml', 'hmm.json') }}
+          # toolchain-key.txt is the compiler (msvc-14.44.35207, ...). The -v3- bump
+          # is what stops restore-keys from pulling a v2 cache built by the old
+          # toolset: a key change alone would still fall back to it.
+          key: seiu-hxcpp-windows-v3-${{ hashFiles('toolchain-key.txt', 'hxcpp-head.txt', 'source/**/*.hx', 'assets/**/*', 'art/**/*', 'templates/**/*', 'Project.xml', 'hmm.json') }}
           restore-keys: |
-            seiu-hxcpp-windows-v2-
+            seiu-hxcpp-windows-v3-
 
       # One plain lime build. Project.xml wires <postbuild haxe="tools.SymbolsAfterBuild"/>,
       # which moves this link's ApplicationMain.map into export/symbols/windows-release/

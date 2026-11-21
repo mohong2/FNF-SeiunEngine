@@ -90,6 +90,14 @@ jobs:
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
 
+      # The image is an input nobody versions in git: record the clang, Xcode and
+      # SDK this slice was built with. toolchain.json is merged into build.json by
+      # the <postbuild> hook, so the shipped symbol bundle names its own toolchain,
+      # and toolchain-key.txt keys the object cache below.
+      - name: Record toolchain
+        shell: bash
+        run: python3 tools/toolchain.py
+
       - name: Resolve hxcpp revision
         shell: bash
         run: |
@@ -107,9 +115,12 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .hxcpp-cache
-          key: seiu-hxcpp-${{ matrix.target }}-v3-${{ hashFiles('hxcpp-head.txt', 'source/**/*.hx', 'assets/**/*', 'art/**/*', 'templates/**/*', 'Project.xml', 'hmm.json') }}
+          # toolchain-key.txt is the compiler (clang-16.0.0-sdk-15.2, ...). The -v4-
+          # bump is what stops restore-keys from pulling a v3 cache built by the
+          # old toolset: a changed key alone would still fall back to it.
+          key: seiu-hxcpp-${{ matrix.target }}-v4-${{ hashFiles('toolchain-key.txt', 'hxcpp-head.txt', 'source/**/*.hx', 'assets/**/*', 'art/**/*', 'templates/**/*', 'Project.xml', 'hmm.json') }}
           restore-keys: |
-            seiu-hxcpp-${{ matrix.target }}-v3-
+            seiu-hxcpp-${{ matrix.target }}-v4-
 
       - uses: ./.github/actions/build-desktop
         with:
