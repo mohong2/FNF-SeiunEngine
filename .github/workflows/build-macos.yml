@@ -116,11 +116,11 @@ jobs:
           retention-days: 14
 
       # A clang release link writes no .map (and a dSYM would need an Xcode archive
-      # step this pipeline does not run), but it strips nothing either: tools/symtab.py
-      # read the .app executable's Mach-O LC_SYMTAB into SeiunEngine.sym during the
-      # build step, and that is what names a frame from a report. A Mach-O nlist
-      # carries no size, so a macOS frame resolves to "name+offset" and not to a
-      # range - that is the format's limit, not a missing file.
+      # step this pipeline does not run), but its stripper is "strip -u -r -x": "-x"
+      # drops local symbols only, so the external ones stay in the .app executable's
+      # LC_SYMTAB. tools/symtab.py read them into SeiunEngine.sym during the build
+      # step. A Mach-O nlist carries no size, so a macOS frame resolves to
+      # "name+offset" and not to a range - the format's limit, not a missing file.
       # Each slice uploads its own artifact; the release folds them into one zip.
       - name: Check crash symbols
         id: symbols

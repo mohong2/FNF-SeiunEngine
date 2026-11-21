@@ -64,11 +64,12 @@ jobs:
           retention-days: 14
 
       # The bundle is build.json + build-info.txt + SeiunEngine.sym. A gcc release
-      # link writes no .map, but it strips nothing either: tools/symtab.py read the
-      # executable's .symtab into SeiunEngine.sym during the build step, and that is
-      # what turns a report's "pc <offset> <module>" into a function name. The table
-      # is a hard requirement - a symbols artifact without one symbolizes nothing.
-      # Everything here lands in the single SeiunEngine-symbols-<version>.zip.
+      # link writes no .map, but its stripper only removes debug sections ("strip
+      # -d"), so .symtab is still in the executable: tools/symtab.py read it into
+      # SeiunEngine.sym during the build step, and that is what turns a report's
+      # "pc <offset> <module>" into a function name. The table is a hard requirement
+      # - a symbols artifact without one symbolizes nothing. Everything here lands
+      # in the single SeiunEngine-symbols-<version>.zip.
       - name: Check crash symbols
         id: symbols
         shell: bash

@@ -3553,8 +3553,9 @@ def judge(plat, mode):
 # --------------------------------------------------------------- symbol tables
 # Windows ships an MSVC .map: a name for every RVA. A gcc/clang release link
 # writes neither a map nor a dSYM, so Linux and macOS get the next best thing:
-# tools/symtab.py reads the ELF .symtab / the Mach-O LC_SYMTAB (hxcpp strips
-# neither on those targets) and writes "<offset> <size> <name>" rows. The offset
+# tools/symtab.py reads the ELF .symtab / the Mach-O LC_SYMTAB (the release
+# stripper is narrow: "strip -d" keeps .symtab, "strip -u -r -x" keeps external
+# symbols) and writes "<offset> <size> <name>" rows. The offset
 # is "pc - module base" - exactly the number source/backend/native_crash.inc
 # prints for a POSIX frame ("pc <offset> <module>").
 
@@ -3904,8 +3905,9 @@ What each directory can do
   linux-*, macos-*
                SeiunEngine.sym     - a name for every offset: read out of the ELF
                                      .symtab / the Mach-O LC_SYMTAB of the binary
-                                     that shipped (a release link on these targets
-                                     is not stripped, so nothing had to be rebuilt).
+                                     that shipped (the release stripper there only
+                                     removes debug info / local symbols, so nothing
+                                     had to be rebuilt).
                  build.json        - which binary that table describes.
 
 How to use

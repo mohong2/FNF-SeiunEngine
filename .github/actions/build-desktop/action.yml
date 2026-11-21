@@ -174,12 +174,12 @@ runs:
       shell: bash
       run: ${{ inputs.build }}
 
-    # Linux and macOS links write no .map and no dSYM, but neither is stripped
-    # (linux-toolchain.xml only sets HXCPP_STRIP for the cross toolchains, and
-    # mac-toolchain.xml has no stripper at all), so the ELF .symtab and the Mach-O
-    # LC_SYMTAB are still in the shipped binary. Read them out now, while build.json
-    # names exactly that binary: without this the bundle can only say WHICH build
-    # crashed, never WHERE, which is what it said until now.
+    # Linux and macOS links write no .map and no dSYM, but their release stripper
+    # is narrow (gcc-toolchain.xml, shared by both): "strip -d" on Linux removes
+    # debugging sections and leaves the ELF .symtab, and "strip -u -r -x" on macOS
+    # drops local symbols only. So the shipped binary still carries the table a
+    # report needs. Read it out now, while build.json names exactly that binary:
+    # without this the bundle can only say WHICH build crashed, never WHERE.
     - name: Extract the symbol table
       if: inputs.target == 'linux' || startsWith(inputs.target, 'macos')
       shell: bash
@@ -190,11 +190,17 @@ runs:
           macos-x64|macos-arm64) PLAT=macos ;;
           *) exit 0 ;;
         esac
-        # --binary is deliberately not passed: symtab.py takes exe.path out of the
+        # --binary is deliberately not passed: symtab.py takes the path out of the
         # build.json the <postbuild> hook just wrote, so the table can only describe
         # the binary the manifest names - a mismatch is an error, not a wrong name in
-        # somebody's crash report. It fails loudly on a fully stripped binary too.
-        python3 tools/symtab.py --platform "$PLAT" --out "export/symbols/$PLAT-release"
+        # somebody's crash report.
+        #
+        # --min-symbols 1000 is the guard that matters on macOS: the shipped .app is
+        # built with -fvisibility=hidden and stripped of its local symbols, so reading
+        # IT would "succeed" with ~150 exported names - a table that resolves almost
+        # nothing. A real table has tens of thousands; anything below this floor means
+        # the pre-strip copy was not there and the run must not pretend otherwise.
+        python3 tools/symtab.py --platform "$PLAT" --out "export/symbols/$PLAT-release" --min-symbols 1000
 
     - name: Verify crash symbols
       shell: bash

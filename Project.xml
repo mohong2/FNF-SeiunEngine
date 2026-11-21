@@ -172,9 +172,20 @@
 	<haxedef name="HXCPP_CPP11" if="cpp" />
 	<haxedef name="loop_unroll_max_cost" value="25"/>
 
-	<!-- Keep an unstripped .so in release builds so crash reports stay resolvable. -->
+	<!-- Keep an unstripped copy in release builds so crash reports stay resolvable.
+	     Android's unstripped .so lands in obj/ while the shipped one sits in a
+	     per-ABI subdirectory, so the two never collide. A macOS exe links straight
+	     into obj/ApplicationMain, so the copy needs its own name here: with the
+	     default name hxcpp would "copy" the output onto itself and then strip the
+	     only copy. Linux needs neither - its stripper is "strip -d", which leaves
+	     .symtab in the shipped executable. -->
 	<section if="android" unless="debug">
 		<haxedef name="HXCPP_DEBUG_LINK_AND_STRIP" />
+	</section>
+
+	<section if="macos" unless="debug">
+		<haxedef name="HXCPP_DEBUG_LINK_AND_STRIP" />
+		<haxedef name="HAXE_FULL_UNSTRIPPED_NAME" value="obj/ApplicationMain.unstripped" />
 	</section>
 
 	<!-- Android configuration -->

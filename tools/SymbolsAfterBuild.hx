@@ -630,9 +630,9 @@ class SymbolsAfterBuild
 			// and build.json records this row so tools/symtab.py knows which file
 			// to read without a second path hardcoded in CI.
 			addRow(rows, "exe", shipped);
-			note("a gcc release link writes no .map, but it strips nothing either: the executable "
-				+ "keeps its .symtab, and 'python tools/symtab.py --platform linux --out export/symbols/linux-"
-				+ mode + "' turns it into SeiunEngine.sym (CI runs this on every build)");
+			note("a gcc release link writes no .map, and its stripper only removes debug sections "
+				+ "('strip -d'), so the executable keeps its .symtab: 'python tools/symtab.py --platform linux "
+				+ "--out export/symbols/linux-" + mode + "' turns it into SeiunEngine.sym (CI runs this on every build)");
 		}
 		else if (plat == "html5")
 		{
@@ -646,17 +646,32 @@ class SymbolsAfterBuild
 		}
 		else if (plat == "macos")
 		{
-			// Same story as Linux: no .map, no dSYM, but mac-toolchain.xml has no
-			// stripper, so the Mach-O in the .app still carries its LC_SYMTAB.
-			// That is the table a report's "pc <offset> <module>" resolves against.
+			// Same story as Linux: no .map, no dSYM, but the release stripper on
+			// macOS is "strip -u -r -x" - "-x" drops local symbols only, so the
+			// external ones stay in the .app executable's LC_SYMTAB. That is the
+			// table a report's "pc <offset> <module>" resolves against.
 			var exe = macExecutable(bin);
 			buildTime = exe != null ? mtime(exe) : mtime(obj);
 			if (exe != null)
 			{
 				addRow(rows, "app", exe);
-				note("the .app executable is not stripped, so its Mach-O symbol table is the resolvable "
-					+ "one: 'python tools/symtab.py --platform macos --out export/symbols/macos-"
-					+ mode + "' reads it into SeiunEngine.sym (CI runs this on every build)");
+				// The shipped .app is a poor symbol source: the build compiles with
+				// -fvisibility=hidden and then strips local symbols, which leaves the
+				// handful of explicitly exported names. The unstripped copy Project.xml
+				// has hxcpp keep before stripping is the real table, and it holds the
+				// exact same code - strip only removes sections, it never moves any.
+				var full = obj + "/ApplicationMain.unstripped";
+				if (isFile(full) && mtime(full) >= buildTime - FRESH_SLACK)
+				{
+					addRow(rows, "unstripped", full);
+					note("tools/symtab.py reads " + rel(full) + " (the pre-strip link output) into "
+						+ "SeiunEngine.sym: the shipped .app only keeps its exported symbols");
+				}
+				else
+				{
+					note("no fresh " + rel(full) + " - HXCPP_DEBUG_LINK_AND_STRIP/HAXE_FULL_UNSTRIPPED_NAME "
+						+ "did not take effect, so a .sym made now could only name exported symbols");
+				}
 			}
 			else
 			{

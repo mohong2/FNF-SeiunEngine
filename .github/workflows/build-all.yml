@@ -217,11 +217,12 @@ jobs:
               python tools/crash.py resolve windows-x64/ApplicationMain.map <fault offset>
               python tools/crash.py sym linux-x64/SeiunEngine.sym <pc offset>
 
-          Linux and macOS links write no `.map`, but they are not stripped either, so those
-          directories carry the ELF `.symtab` / the Mach-O `LC_SYMTAB` of the binary that
-          shipped, read out by `tools/symtab.py` during the build. A report from either
-          platform already prints `pc <offset> <module>`, and that offset is what a `.sym`
-          row is keyed on.
+          Linux and macOS links write no `.map`, and their release stripper is narrow -
+          `strip -d` there removes debugging sections only, `strip -u -r -x` on macOS drops
+          just local symbols - so those directories carry the ELF `.symtab` / the Mach-O
+          `LC_SYMTAB` of the binary that shipped, read out by `tools/symtab.py` during the
+          build. A report from either platform already prints `pc <offset> <module>`, and
+          that offset is what a `.sym` row is keyed on.
 
           Every table is verified against the published binary during the build (the map by
           `crash.py verify-map`, the tables by reading them back through `crash.py sym`), so a

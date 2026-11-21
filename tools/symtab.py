@@ -11,13 +11,17 @@ Windows release links emit an MSVC .map, so tools/crash.py could always turn a
 links emit neither a .map nor a dSYM, and for years the published symbol bundle
 for those two targets was build.json + build-info.txt - identity, no symbols.
 
-The binary itself has always carried the answer: hxcpp does not strip a release
-Linux or macOS link (linux-toolchain.xml only sets HXCPP_STRIP for the cross
-toolchains, mac-toolchain.xml has no stripper at all, and
-HXCPP_DEBUG_LINK_AND_STRIP is android-only in Project.xml). So the ELF keeps
-its .symtab and the Mach-O keeps its LC_SYMTAB; nothing has to be rebuilt and
-the published binary does not change by a byte. This tool reads them out into a
-few megabytes of text.
+The binary itself has always carried the answer, because hxcpp's release
+stripper is narrow (gcc-toolchain.xml, shared by both targets):
+
+  * Linux runs "strip -d" - debugging sections only. The ELF .symtab, which is
+    not a debugging section, is still in the shipped executable.
+  * macOS runs "strip -u -r -x" - "-x" drops local symbols, so every external
+    one survives (hxcpp compiles with default visibility there). A Mach-O nlist
+    carries no size, which is why a macOS frame resolves to "name+offset".
+
+Nothing has to be rebuilt and the published binary does not change by a byte;
+this tool reads the table out into a few megabytes of text.
 
 Offset convention (the part that must match the crash handler)
 -------------------------------------------------------------
@@ -444,23 +448,34 @@ def human(n):
 # --------------------------------------------------------------------- main
 
 def pick_binary(sym_dir, explicit, plat):
+    """(the file to read symbols from, the shipped binary's repo-relative path).
+
+    They differ when the build kept a pre-strip copy: on macOS the shipped .app
+    keeps only the exported names, so the table has to come from the unstripped
+    link output instead. Strip removes sections and never moves code, so the
+    offsets are the same in both files.
+    """
     if explicit:
         if not os.path.isfile(explicit):
             raise SymtabError("--binary %s does not exist" % explicit)
-        return explicit
+        return explicit, None
     man, path = read_manifest(sym_dir)
     if man is None:
         raise SymtabError("%s is missing - the <postbuild> hook did not run for this build, "
                           "so there is nothing to say which binary to read" % path)
     exe = man.get("exe") or {}
-    rel = exe.get("path") or ""
-    if not rel:
+    shipped = exe.get("path") or ""
+    if not shipped:
         raise SymtabError("%s names no exe - tools/SymbolsAfterBuild.hx did not record the "
                           "shipped binary for %s" % (path, plat))
-    cand = rel if os.path.isabs(rel) else os.path.join(repo_root(sym_dir), rel)
+    full = next((a.get("path") for a in man.get("artifacts", [])
+                 if a.get("role") == "unstripped"), None)
+    chosen = full or shipped
+    root = repo_root(sym_dir)
+    cand = chosen if os.path.isabs(chosen) else os.path.join(root, chosen)
     if not os.path.isfile(cand):
-        raise SymtabError("build.json points at %s, which does not exist" % rel)
-    return cand
+        raise SymtabError("build.json points at %s, which does not exist" % chosen)
+    return cand, shipped
 
 
 def repo_root(sym_dir):
@@ -477,7 +492,7 @@ def run(args):
     sym_dir = os.path.abspath(args.out)
     os.makedirs(sym_dir, exist_ok=True)
 
-    binary = pick_binary(sym_dir, args.binary, args.platform)
+    binary, shipped = pick_binary(sym_dir, args.binary, args.platform)
     info = read_binary(binary, args.arch)
     entries = normalize(info["entries"])
     if not entries:
@@ -491,7 +506,12 @@ def run(args):
 
     man, _ = read_manifest(sym_dir)
     fp = ((man or {}).get("exe") or {}).get("fp")
-    write_sym(out, info, entries, rel_to(repo_root(sym_dir), binary), fp)
+    extra = []
+    if shipped and rel_to(repo_root(sym_dir), binary) != shipped:
+        extra.append("shipped  : %s" % shipped)
+        extra.append("note     : this table was read from the pre-strip link output; strip removes")
+        extra.append("           sections only, so every offset below is valid in that file too")
+    write_sym(out, info, entries, rel_to(repo_root(sym_dir), binary), fp, extra)
     record_in_manifest(sym_dir, name, len(entries), os.path.getsize(out), info, rel_to(repo_root(sym_dir), binary))
 
     if not args.quiet:
