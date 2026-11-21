@@ -832,20 +832,38 @@ class SymbolsAfterBuild
 			var dir = parentOf(to);
 			if (!FileSystem.exists(dir)) FileSystem.createDirectory(dir);
 			if (isFile(to) || FileSystem.exists(to)) FileSystem.deleteFile(to);
-			FileSystem.rename(from, to);
+			// A rename can be refused for a moment after the linker wrote the file: on
+			// Windows an indexer, an antivirus scanner or the compiler's own telemetry
+			// process (vctip.exe) can still hold a handle. That is what happened to a
+			// 91 MB ApplicationMain.map once, and the fallback below then refused to copy
+			// anything over 64 MB - so the map stayed in obj/ and the CI step that
+			// publishes the bundle died with "ApplicationMain.map is missing".
+			for (_ in 0...3)
+			{
+				try
+				{
+					FileSystem.rename(from, to);
+					return true;
+				}
+				catch (e:Dynamic)
+				{
+					Sys.sleep(0.7);
+					if (isFile(to) || FileSystem.exists(to)) FileSystem.deleteFile(to);
+				}
+			}
+			// Copy instead of giving up: it is the same volume either way, and a copy
+			// that works beats a rename that has to be explained in a CI log. There is
+			// no size cap any more - an unstripped Android .so is several hundred MB and
+			// a slow copy is still better than a symbol bundle that silently misses it.
+			File.copy(from, to);
+			try FileSystem.deleteFile(from)
+			catch (e:Dynamic) note("left " + rel(from) + " in place (still locked) - the bundle has a copy");
 			return true;
 		}
 		catch (e:Dynamic)
 		{
-			// Same volume is the normal case; a copy fallback is only sane for small files.
-			if (size(from) > 67108864.0) return false;
-			try
-			{
-				File.saveBytes(to, File.getBytes(from));
-				FileSystem.deleteFile(from);
-				return true;
-			}
-			catch (e2:Dynamic) return false;
+			note("could not move " + rel(from) + " into the bundle (" + Std.string(e) + ")");
+			return false;
 		}
 	}
 
