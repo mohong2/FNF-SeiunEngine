@@ -462,6 +462,30 @@ class SymbolsAfterBuild
 		return Std.int(n) + " B";
 	}
 
+	/** True when the first four bytes are a Mach-O or fat Mach-O magic (0xCF.. / 0xCA..). */
+	static function isMachO(path:String):Bool
+	{
+		var f = null;
+		try
+		{
+			f = File.read(path, true);
+			var b = f.read(4);
+			if (b.length < 4) return false;
+			var b0 = b.get(0), b1 = b.get(1), b2 = b.get(2), b3 = b.get(3);
+			// Byte by byte on purpose: 0xCFFAEDFE as a single Int literal does not fit
+			// a 32-bit Int, and a Haxe UTF-8 string cannot hold 0xCF at all.
+			return (b0 == 0xCF && b1 == 0xFA && b2 == 0xED && b3 == 0xFE) // 64-bit, LE
+				|| (b0 == 0xCE && b1 == 0xFA && b2 == 0xED && b3 == 0xFE) // 32-bit, LE
+				|| (b0 == 0xFE && b1 == 0xED && b2 == 0xFA && b3 == 0xCF) // 64-bit, BE
+				|| (b0 == 0xFE && b1 == 0xED && b2 == 0xFA && b3 == 0xCE) // 32-bit, BE
+				|| (b0 == 0xCA && b1 == 0xFE && b2 == 0xBA && b3 == 0xBE) // fat, BE
+				|| (b0 == 0xCA && b1 == 0xFE && b2 == 0xBA && b3 == 0xBF); // fat64, BE
+		}
+		catch (e:Dynamic) return false;
+		if (f != null) try f.close() catch (e:Dynamic) {};
+		return false;
+	}
+
 	/** role, kind, detail, usable (true / "partial" / false). */
 	static function describe(path:String):{kind:String, detail:String, usable:Dynamic}
 	{
@@ -476,6 +500,10 @@ class SymbolsAfterBuild
 			if (e.sym > 0) return { kind: "ELF", detail: "symtab " + human(e.sym) + ", no DWARF -> function names only", usable: "partial" };
 			return { kind: "ELF", detail: "STRIPPED (no .symtab, no .debug_*)", usable: false };
 		}
+		// Mach-O: the symbol table is in the file and tools/symtab.py reads it out.
+		// Compared as bytes, not as a string literal: a Haxe UTF-8 string cannot hold
+		// 0xCF, so string escapes for a binary magic are a coin flip per target.
+		if (isMachO(path)) return { kind: "MACHO", detail: "Mach-O symbol table (tools/symtab.py turns it into .sym)", usable: true };
 		if (StringTools.endsWith(lower, ".js.map")) return { kind: "JSMAP", detail: "JS source map", usable: true };
 		if (StringTools.endsWith(lower, ".map")) return { kind: "MAP", detail: "MSVC map (symbol -> RVA)", usable: true };
 		if (StringTools.endsWith(lower, ".pdb")) return { kind: "PDB", detail: "MSVC debug info (no line table)", usable: "partial" };
@@ -593,9 +621,18 @@ class SymbolsAfterBuild
 		}
 		else if (plat == "linux")
 		{
-			buildTime = mtime(obj + "/ApplicationMain");
+			var shipped = bin + "/" + app;
+			buildTime = Math.max(mtime(obj + "/ApplicationMain"), mtime(shipped));
 			addRow(rows, "binary", obj + "/ApplicationMain");
-			addRow(rows, "binary", bin + "/" + app);
+			// The link output IS the shipped binary here: linux-toolchain.xml only
+			// sets HXCPP_STRIP for the cross toolchains, so a release link leaves
+			// .symtab in place. That table is the only thing that can name a frame,
+			// and build.json records this row so tools/symtab.py knows which file
+			// to read without a second path hardcoded in CI.
+			addRow(rows, "exe", shipped);
+			note("a gcc release link writes no .map, but it strips nothing either: the executable "
+				+ "keeps its .symtab, and 'python tools/symtab.py --platform linux --out export/symbols/linux-"
+				+ mode + "' turns it into SeiunEngine.sym (CI runs this on every build)");
 		}
 		else if (plat == "html5")
 		{
@@ -607,10 +644,29 @@ class SymbolsAfterBuild
 		{
 			for (p in glob(bin, ".n")) addRow(rows, "neko", p);
 		}
+		else if (plat == "macos")
+		{
+			// Same story as Linux: no .map, no dSYM, but mac-toolchain.xml has no
+			// stripper, so the Mach-O in the .app still carries its LC_SYMTAB.
+			// That is the table a report's "pc <offset> <module>" resolves against.
+			var exe = macExecutable(bin);
+			buildTime = exe != null ? mtime(exe) : mtime(obj);
+			if (exe != null)
+			{
+				addRow(rows, "app", exe);
+				note("the .app executable is not stripped, so its Mach-O symbol table is the resolvable "
+					+ "one: 'python tools/symtab.py --platform macos --out export/symbols/macos-"
+					+ mode + "' reads it into SeiunEngine.sym (CI runs this on every build)");
+			}
+			else
+			{
+				note("no executable under " + rel(bin) + "/*.app/Contents/MacOS - nothing to symbolize");
+			}
+		}
 		else
 		{
 			note("no symbol artifact is produced by lime for " + plat
-				+ "; Apple targets put theirs in the dSYM the Xcode archive step writes");
+				+ " (a dSYM would need the Xcode archive step this pipeline does not run)");
 		}
 
 		return rows;
@@ -708,6 +764,29 @@ class SymbolsAfterBuild
 		return out;
 	}
 
+	/** The Mach-O inside export/<mode>/macos/bin/<app>.app - the file that ships. */
+	static function macExecutable(bin:String):String
+	{
+		var apps = [];
+		try
+		{
+			for (name in FileSystem.readDirectory(bin))
+			{
+				var p = bin + "/" + name;
+				if (StringTools.endsWith(name.toLowerCase(), ".app") && FileSystem.isDirectory(p)) apps.push(p);
+			}
+		}
+		catch (e:Dynamic) {}
+		for (appDir in apps)
+		{
+			var macos = appDir + "/Contents/MacOS";
+			if (!FileSystem.exists(macos) || !FileSystem.isDirectory(macos)) continue;
+			var found = files(macos);
+			if (found.length > 0) return found[0];
+		}
+		return null;
+	}
+
 	static function symbolDir():String
 	{
 		return root + "/export/symbols/" + plat + "-" + mode;
@@ -770,6 +849,8 @@ class SymbolsAfterBuild
 		for (s in info) Sys.println(TAG + "   note: " + s);
 		if (plat == "android") Sys.println(TAG + "   resolve: ndk-stack -sym export/symbols/android-" + mode + " -dump <report.txt>");
 		Sys.println(TAG + "   build  : " + STAMP.commit + (STAMP.dirty ? " (dirty tree)" : "") + "  " + STAMP.version);
+		if (plat == "linux" || plat == "macos")
+			Sys.println(TAG + "   resolve: python tools/crash.py sym export/symbols/" + plat + "-" + mode + " 0x<offset>");
 		if (plat == "windows") Sys.println(TAG + "   check  : python tools\\crash.py status");
 		if (plat == "windows") Sys.println(TAG + "   resolve: python tools\\crash.py report <report.txt>");
 		Sys.println(TAG + " " + dashes());

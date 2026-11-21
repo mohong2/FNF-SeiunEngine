@@ -12,6 +12,8 @@ Subcommands
     crash.py prune [--dry-run]     drop superseded bundles (_stale/, *.tmp)
     crash.py triage [...]          the triage engine that 'report' runs
     crash.py resolve <map> <rva>   one offset against one linker map
+    crash.py sym <table|dir> [off]
+                                   one POSIX frame offset against a .sym table
     crash.py verify-map [...]      prove a .map belongs to an exe
     crash.py symbolize [...]       Android report -> source lines (needs pyelftools)
     crash.py linemap [...]         build the SELM address -> line table from a .so
@@ -3405,10 +3407,19 @@ def binary_for(plat, mode):
     app = app_name()
     if not os.path.isdir(base):
         return None
+    if plat == "macos":
+        # The shipped artifact is a bundle directory; the Mach-O a report names -
+        # and the one the symbol table describes - is the executable inside it.
+        apps = [os.path.join(base, app + ".app")] + sorted(glob.glob(os.path.join(base, "*.app")))
+        for a in apps:
+            if os.path.isdir(a):
+                exe = mac_executable(a)
+                if exe:
+                    return exe
+        return None
     cand = {
         "windows": [os.path.join(base, app + ".exe")],
         "linux": [os.path.join(base, app)],
-        "macos": [os.path.join(base, app + ".app")],
     }.get(plat, [])
     for p in cand:
         if os.path.exists(p):
@@ -3515,6 +3526,7 @@ def judge(plat, mode):
     row["symbols_fp"] = fingerprint(ssize, sstamp) if ssize is not None else None
     row["artifacts"] = [a.get("role", "?") for a in man.get("artifacts", [])];
     row["git"] = man.get("git") or {};
+    row["symtab"] = man.get("symtab");
 
     if row["symbols_fp"] != row["binary_fp"]:
         row["verdict"] = STALE
@@ -3536,6 +3548,127 @@ def judge(plat, mode):
     row["verdict"] = OK
     row["reason"] = "symbols belong to this binary"
     return row
+
+
+# --------------------------------------------------------------- symbol tables
+# Windows ships an MSVC .map: a name for every RVA. A gcc/clang release link
+# writes neither a map nor a dSYM, so Linux and macOS get the next best thing:
+# tools/symtab.py reads the ELF .symtab / the Mach-O LC_SYMTAB (hxcpp strips
+# neither on those targets) and writes "<offset> <size> <name>" rows. The offset
+# is "pc - module base" - exactly the number source/backend/native_crash.inc
+# prints for a POSIX frame ("pc <offset> <module>").
+
+SYM_SUFFIX = ".sym"
+
+
+def read_symtab(path):
+    """(rows sorted by offset, header lines) out of a .sym file."""
+    rows, header = [], []
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            if line.startswith("#"):
+                if len(header) < 12:
+                    header.append(line.rstrip())
+                continue
+            parts = line.rstrip("\r\n").split(" ", 2)
+            if len(parts) != 3:
+                continue
+            try:
+                rows.append((int(parts[0], 16), int(parts[1], 16), parts[2]))
+            except ValueError:
+                continue
+    rows.sort(key=lambda r: (r[0], r[1]))
+    return rows, header
+
+
+def sym_file_in(path):
+    """The .sym file of a symbol bundle directory, or None."""
+    if not os.path.isdir(path):
+        return None
+    cands = sorted(f for f in os.listdir(path) if f.lower().endswith(SYM_SUFFIX))
+    return os.path.join(path, cands[0]) if cands else None
+
+
+def mac_executable(appdir):
+    """The Mach-O inside a .app - the file that actually ships and crashes."""
+    macos_dir = os.path.join(appdir, "Contents", "MacOS")
+    if not os.path.isdir(macos_dir):
+        return None
+    cands = [os.path.join(macos_dir, f) for f in sorted(os.listdir(macos_dir))
+             if os.path.isfile(os.path.join(macos_dir, f))]
+    return cands[0] if cands else None
+
+
+def resolve_symtab(rows, offset):
+    """(name, displacement, size, covered) for offset, or None before the first one.
+
+    A symbol table is not just functions - it also carries section labels and
+    data - so the row that actually contains the address wins. Several symbols
+    can share one start (a label and its function); the sized one is the name
+    worth printing.
+    """
+    if not rows:
+        return None
+    i = bisect.bisect_right([r[0] for r in rows], offset) - 1
+    if i < 0:
+        return None
+    start = rows[i][0]
+    j = i
+    while j > 0 and rows[j - 1][0] == start:
+        j -= 1
+    for k in range(j, i + 1):
+        s, size, name = rows[k]
+        if size and s <= offset < s + size:
+            return name, offset - s, size, True
+    s, size, name = rows[i]
+    return name, offset - s, size, offset == s
+
+
+def cmd_sym(args):
+    """One POSIX frame offset against the table published for that platform."""
+    target = args.table
+    if os.path.isdir(target):
+        found = sym_file_in(target)
+        if not found:
+            print("%s holds no *%s - generate it with: python tools/symtab.py --out %s"
+                  % (rel(target), SYM_SUFFIX, rel(target)), file=sys.stderr)
+            return 1
+        target = found
+    if not os.path.isfile(target):
+        print("no such symbol table: %s" % target, file=sys.stderr)
+        return 2
+    rows, header = read_symtab(target)
+    if not rows:
+        print("%s holds no symbols - was it written by tools/symtab.py?" % rel(target), file=sys.stderr)
+        return 1
+    if not args.offset:
+        for line in header:
+            print(line)
+        print("%d symbols" % len(rows))
+        return 0
+    if not args.quiet:
+        print("%s  (%d symbols)" % (rel(target), len(rows)))
+    for text in args.offset:
+        try:
+            offset = int(text, 16)
+        except ValueError:
+            print("%s: not a hex offset" % text, file=sys.stderr)
+            return 2
+        hit = resolve_symtab(rows, offset)
+        if hit is None:
+            print("0x%016x  <before the first symbol in this table>" % offset)
+            continue
+        name, disp, size, covered = hit
+        # A Mach-O nlist carries no size, so a mac table can never prove the
+        # range; an ELF .symtab always carries one, and a frame outside every
+        # range is in padding (a PLT stub, an aligned gap) rather than in the
+        # function printed.
+        note = "  [no symbol covers this offset - nearest preceding]" if size and not covered else ""
+        size_txt = ("size 0x%x" % size) if size else "no size in this table"
+        print("0x%016x  %s+0x%x  (%s)%s" % (offset, name, disp, size_txt, note))
+    return 0
 
 
 # ------------------------------------------------------------------- commands
@@ -3560,6 +3693,10 @@ def cmd_status(args):
             print("         symbols %s" % stat_line(r["manifest"]))
             print("                 build %s  (%s)" % (r["symbols_fp"] or "?",
                                                        ", ".join(r["artifacts"]) or "no files"))
+        if r.get("symtab"):
+            t = r["symtab"]
+            print("                 table %s  %s symbols" % (t.get("file"),
+                                                              format(t.get("symbols") or 0, ",")))
         g = r.get("git") or {}
         if g.get("commit") and g["commit"] != "unknown":
             print("                 commit %s%s  %s" % (g["commit"], "+" if g.get("dirty") else "",
@@ -3765,8 +3902,11 @@ What each directory can do
   android-*    libApplicationMain*.so - the UNSTRIPPED library the APK's .so was
                                      cut from, so ndk-stack/addr2line give file:line.
   linux-*, macos-*
-               build.json/build-info.txt only: a gcc/clang release link keeps no
-               separate map, so the identity of the build is all there is to match.
+               SeiunEngine.sym     - a name for every offset: read out of the ELF
+                                     .symtab / the Mach-O LC_SYMTAB of the binary
+                                     that shipped (a release link on these targets
+                                     is not stripped, so nothing had to be rebuilt).
+                 build.json        - which binary that table describes.
 
 How to use
 ----------
@@ -3781,6 +3921,10 @@ How to use
 3. Resolve offsets by hand when you want to:
 
      python tools/crash.py resolve windows-x64/ApplicationMain.map 0x1340289
+     python tools/crash.py sym linux-x64/SeiunEngine.sym 0x1a2b3c
+
+   On Linux/macOS a crash frame already reads "pc <offset> <module>", and that
+   offset is what .sym rows are keyed on - no subtraction needed.
 
 A .pdb is never published (~50 MB, and release builds do not ship one).
 
@@ -3789,17 +3933,21 @@ A .pdb is never published (~50 MB, and release builds do not ship one).
 这个压缩包里放着本次发布所有平台的符号文件，一个平台一个目录，目录名就是平台名。
 windows-* 里是链接器生成的 .map（把崩溃报告里的偏移还原成函数名）；
 android-* 里是没 strip 的 .so（配合 ndk-stack / addr2line 还能还原到源文件和行号）；
-linux-*、macos-* 里只有 build.json / build-info.txt（gcc/clang 的 release 链接不留单独的 map）。
+linux-*、macos-* 里是 SeiunEngine.sym：直接从随包发布的那个二进制里读出来的符号表
+（ELF 的 .symtab / Mach-O 的 LC_SYMTAB；这两个平台 release 链接不 strip，所以不用重新编译），
+外加 build.json 说明它对应的二进制。
 
 用法：先用报告里的 Build: 行对上 build.json（大小 + TimeDateStamp），
 再跑 python tools/crash.py verify-map SeiunEngine.exe windows-x64/ApplicationMain.map
 确认这份 map 真的属于那个 exe，最后才解析偏移。
+Linux/macOS 的报告帧本身就写成 "pc <偏移> <模块>"，把偏移直接交给
+python tools/crash.py sym linux-x64/SeiunEngine.sym 0x1a2b3c 即可。
 """
 
 # A zip inside a bundle is never wanted (that is the pile this replaces), and a .tmp
 # is a half-written file.
 PACKAGE_SKIP_SUFFIX = (".tmp", ".zip")
-PACKAGE_TEXT_SUFFIX = (".map", ".txt", ".json", ".log", ".md")
+PACKAGE_TEXT_SUFFIX = (".map", ".txt", ".json", ".log", ".md", ".sym")
 
 
 def package_compress_for(path):
@@ -4031,6 +4179,12 @@ def run_diag(argv=None):
         ap.add_argument("--commit", help="commit recorded in the manifest (default: git HEAD)")
         ap.add_argument("--quiet", action="store_true")
         return cmd_package(ap.parse_args(rest))
+    if cmd == "sym":
+        ap = argparse.ArgumentParser(prog="crash.py sym")
+        ap.add_argument("table", help="a .sym file, or the directory of a symbol bundle")
+        ap.add_argument("offset", nargs="*", help="frame offsets (hex), exactly as the report prints them")
+        ap.add_argument("--quiet", action="store_true")
+        return cmd_sym(ap.parse_args(rest))
     if cmd == "ui":
         ap = argparse.ArgumentParser(prog="crash.py ui")
         ap.add_argument("report", nargs="?")

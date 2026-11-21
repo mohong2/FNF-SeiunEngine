@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: krdlab/setup-haxe@d93667502be3b4f31a94a3308a74388f2e178a8d # v2.1.0
         with:
@@ -41,7 +41,7 @@ jobs:
           echo "hxcpp ref: $REF"
 
       - name: Restore hxcpp compile cache
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .hxcpp-cache
           key: seiu-hxcpp-linux-v2-${{ hashFiles('hxcpp-head.txt', 'source/**/*.hx', 'assets/**/*', 'art/**/*', 'templates/**/*', 'Project.xml', 'hmm.json') }}
@@ -55,32 +55,46 @@ jobs:
           build: haxelib run lime build "$GITHUB_WORKSPACE/Project.xml" linux --app-version="$APP_VERSION-$GITHUB_RUN_ID"
           artifact: SeiunEngine-linux-x64
           path: export/release/linux/bin
-          gh-pat: ${{ secrets.GH_PAT }}
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: SeiunEngine-linux-x64
           path: export/release/linux/bin
           if-no-files-found: error
           retention-days: 14
 
-      # A gcc release link writes no .map, so the bundle is build.json + build-info.txt:
-      # the identity of the build (size, git commit) a report is matched against. It
-      # lands in the single SeiunEngine-symbols-<version>.zip the release publishes.
+      # The bundle is build.json + build-info.txt + SeiunEngine.sym. A gcc release
+      # link writes no .map, but it strips nothing either: tools/symtab.py read the
+      # executable's .symtab into SeiunEngine.sym during the build step, and that is
+      # what turns a report's "pc <offset> <module>" into a function name. The table
+      # is a hard requirement - a symbols artifact without one symbolizes nothing.
+      # Everything here lands in the single SeiunEngine-symbols-<version>.zip.
       - name: Check crash symbols
         id: symbols
         shell: bash
         run: |
           DIR=export/symbols/linux-release
-          if [ -f "$DIR/build.json" ]; then
-            echo "present=1" >> "$GITHUB_OUTPUT"
-            cat "$DIR/build-info.txt"
-          else
-            echo "present=0" >> "$GITHUB_OUTPUT"
-            echo "::warning::no build.json in $DIR - the symbol hook (tools/SymbolsAfterBuild.hx) did not run"
+          missing=0
+          for f in build.json build-info.txt; do
+            if [ ! -s "$DIR/$f" ]; then
+              echo "::error::missing crash symbol file: $DIR/$f"
+              missing=1
+            fi
+          done
+          SYM="$(ls "$DIR"/*.sym 2>/dev/null | head -n 1 || true)"
+          if [ -z "$SYM" ] || [ ! -s "$SYM" ]; then
+            echo "::error::$DIR holds no *.sym - tools/symtab.py did not run, or the binary carries no symbol table"
+            missing=1
           fi
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+          head -n 10 "$SYM"
+          grep -c '^[0-9a-f]' "$SYM" | sed 's/^/symbols: /'
+          cat "$DIR/build-info.txt"
+          echo "present=1" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: steps.symbols.outputs.present == '1'
         with:
           name: SeiunEngine-linux-x64-symbols

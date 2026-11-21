@@ -73,7 +73,7 @@ jobs:
     timeout-minutes: 90
     continue-on-error: ${{ matrix.experimental == true }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: krdlab/setup-haxe@d93667502be3b4f31a94a3308a74388f2e178a8d # v2.1.0
         with:
@@ -93,7 +93,7 @@ jobs:
           echo "hxcpp ref: $REF"
 
       - name: Restore hxcpp compile cache
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .hxcpp-cache
           key: seiu-hxcpp-${{ matrix.target }}-v3-${{ hashFiles('hxcpp-head.txt', 'source/**/*.hx', 'assets/**/*', 'art/**/*', 'templates/**/*', 'Project.xml', 'hmm.json') }}
@@ -107,33 +107,47 @@ jobs:
           build: ${{ matrix.build }}
           artifact: ${{ matrix.artifact }}
           path: export/release/macos/bin
-          gh-pat: ${{ secrets.GH_PAT }}
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.artifact }}
           path: export/release/macos/bin
           if-no-files-found: error
           retention-days: 14
 
-      # A clang release link writes no .map (and the dSYM would need an Xcode
-      # archive step), so the bundle is build.json + build-info.txt: the identity of
-      # the build a report is matched against. Each slice uploads its own artifact,
-      # and the release folds them into one SeiunEngine-symbols-<version>.zip.
+      # A clang release link writes no .map (and a dSYM would need an Xcode archive
+      # step this pipeline does not run), but it strips nothing either: tools/symtab.py
+      # read the .app executable's Mach-O LC_SYMTAB into SeiunEngine.sym during the
+      # build step, and that is what names a frame from a report. A Mach-O nlist
+      # carries no size, so a macOS frame resolves to "name+offset" and not to a
+      # range - that is the format's limit, not a missing file.
+      # Each slice uploads its own artifact; the release folds them into one zip.
       - name: Check crash symbols
         id: symbols
         shell: bash
         run: |
           DIR=export/symbols/macos-release
-          if [ -f "$DIR/build.json" ]; then
-            echo "present=1" >> "$GITHUB_OUTPUT"
-            cat "$DIR/build-info.txt"
-          else
-            echo "present=0" >> "$GITHUB_OUTPUT"
-            echo "::warning::no build.json in $DIR - the symbol hook (tools/SymbolsAfterBuild.hx) did not run"
+          missing=0
+          for f in build.json build-info.txt; do
+            if [ ! -s "$DIR/$f" ]; then
+              echo "::error::missing crash symbol file: $DIR/$f"
+              missing=1
+            fi
+          done
+          SYM="$(ls "$DIR"/*.sym 2>/dev/null | head -n 1 || true)"
+          if [ -z "$SYM" ] || [ ! -s "$SYM" ]; then
+            echo "::error::$DIR holds no *.sym - tools/symtab.py did not run, or the .app was stripped"
+            missing=1
           fi
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+          head -n 10 "$SYM"
+          grep -c '^[0-9a-f]' "$SYM" | sed 's/^/symbols: /'
+          cat "$DIR/build-info.txt"
+          echo "present=1" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: steps.symbols.outputs.present == '1'
         with:
           name: ${{ matrix.artifact }}-symbols

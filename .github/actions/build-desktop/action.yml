@@ -17,10 +17,6 @@ inputs:
   path:
     description: 'Artifact path'
     required: true
-  gh-pat:
-    description: 'Optional GitHub PAT for private haxelib dependencies'
-    required: false
-    default: ''
 
 runs:
   using: composite
@@ -41,30 +37,13 @@ runs:
           libasound2-dev libxext-dev libxi-dev libxrandr-dev libxinerama-dev \
           libpulse-dev
 
-    # Every haxelib git dependency is public, so no PAT is required. The PAT path is kept for a
-    # future private dep, but it must never fail the job: a stale or expired token is detected
-    # here and removed again, because an invalid Authorization header would also break cloning
-    # the public repos.
-    - name: Auth private haxelib deps
-      shell: bash
-      env:
-        GH_PAT: ${{ inputs.gh-pat }}
-      run: |
-        GH_PAT="$(printf '%s' "$GH_PAT" | tr -d '\r\n')"
-        if [ -z "$GH_PAT" ]; then
-          echo 'No GH_PAT: haxelib dependencies are public, continuing without auth.'
-          exit 0
-        fi
-        B64="$(printf '%s' "x-access-token:${GH_PAT}" | base64 | tr -d '\r\n')"
-        git config --local --unset-all http.https://github.com/.extraheader || true
-        git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic ${B64}"
-        if GIT_TERMINAL_PROMPT=0 git ls-remote https://github.com/mohong2/flixel.git HEAD >/dev/null 2>&1; then
-          echo 'git auth configured (GH_PAT works)'
-        else
-          git config --global --unset-all http.https://github.com/.extraheader || true
-          echo '::warning::GH_PAT did not authenticate; dropped it and continuing (public deps need no auth).'
-        fi
-
+    # Every haxelib git dependency is public (hmm.json pins forks of public
+    # repositories), so nothing here authenticates. This step used to exist - it set
+    # an Authorization header from secrets.GH_PAT - but the stored token stopped
+    # authenticating and every job paid for it with a warning. A future private
+    # dependency needs the header back (git config --global
+    # http.https://github.com/.extraheader "AUTHORIZATION: basic <base64 of
+    # x-access-token:TOKEN>") and a live PAT underneath it.
     - name: Install haxelib dependencies
       shell: bash
       run: |
@@ -195,14 +174,37 @@ runs:
       shell: bash
       run: ${{ inputs.build }}
 
+    # Linux and macOS links write no .map and no dSYM, but neither is stripped
+    # (linux-toolchain.xml only sets HXCPP_STRIP for the cross toolchains, and
+    # mac-toolchain.xml has no stripper at all), so the ELF .symtab and the Mach-O
+    # LC_SYMTAB are still in the shipped binary. Read them out now, while build.json
+    # names exactly that binary: without this the bundle can only say WHICH build
+    # crashed, never WHERE, which is what it said until now.
+    - name: Extract the symbol table
+      if: inputs.target == 'linux' || startsWith(inputs.target, 'macos')
+      shell: bash
+      run: |
+        set -euo pipefail
+        case "${{ inputs.target }}" in
+          linux)                 PLAT=linux ;;
+          macos-x64|macos-arm64) PLAT=macos ;;
+          *) exit 0 ;;
+        esac
+        # --binary is deliberately not passed: symtab.py takes exe.path out of the
+        # build.json the <postbuild> hook just wrote, so the table can only describe
+        # the binary the manifest names - a mismatch is an error, not a wrong name in
+        # somebody's crash report. It fails loudly on a fully stripped binary too.
+        python3 tools/symtab.py --platform "$PLAT" --out "export/symbols/$PLAT-release"
+
     - name: Verify crash symbols
       shell: bash
       # tools/SymbolsAfterBuild.hx (the <postbuild> hook in Project.xml) has already
-      # moved this link's map/.pdb into export/symbols/<platform>-release/ and wrote
-      # build.json + build-info.txt next to it, so nothing is collected here: the step
-      # only proves the bundle describes the binary that is about to ship. The bundle
-      # is published as its own download - never inside the game zip - and a PDB is
-      # never published (a release link does not even produce one).
+      # written build.json + build-info.txt into export/symbols/<platform>-release/
+      # and moved this link's map into it; the step above added the ELF/Mach-O table.
+      # Nothing is collected here: this only proves the bundle can resolve a report
+      # from the binary that is about to ship. The bundle is published as its own
+      # download - never inside the game zip - and a PDB is never published (a
+      # release link does not even produce one).
       run: |
         set -euo pipefail
         TARGET="${{ inputs.target }}"
@@ -214,18 +216,12 @@ runs:
         esac
         DIR="export/symbols/$PLAT-release"
 
+        # The hook is the only writer of the manifest, so a missing one means it did
+        # not run - and a build nobody can symbolize is not publishable on any target.
         if [ ! -f "$DIR/build.json" ]; then
-          # The hook is the only writer, so a missing manifest means it did not run.
-          # On Windows that is a hard failure: a release whose map does not exist is a
-          # release nobody can debug. Linux/macOS keep no separate map anyway (gcc and
-          # clang release links do not write one), so there the manifest IS the bundle.
-          echo "::warning::$DIR has no build.json - the symbol hook (tools/SymbolsAfterBuild.hx) did not run"
+          echo "::error::$DIR has no build.json - the symbol hook (tools/SymbolsAfterBuild.hx) did not run"
           ls -la export/symbols 2>/dev/null || true
-          if [ "$PLAT" = "windows" ]; then
-            echo "::error::crash symbols missing for windows - refusing to publish a build that cannot be debugged"
-            exit 1
-          fi
-          exit 0
+          exit 1
         fi
         cat "$DIR/build-info.txt"
 
@@ -245,6 +241,22 @@ runs:
             exit 1
           fi
           echo "crash symbols verified: $MAP describes $EXE"
+        else
+          SYM="$(ls "$DIR"/*.sym 2>/dev/null | head -n 1 || true)"
+          if [ -z "$SYM" ] || [ ! -s "$SYM" ]; then
+            echo "::error::$DIR holds no *.sym - a report from this build could only be matched, never resolved"
+            exit 1
+          fi
+          COUNT="$(grep -c '^[0-9a-f]' "$SYM" || true)"
+          if [ "${COUNT:-0}" -lt 100 ]; then
+            echo "::error::$SYM holds ${COUNT:-0} symbols - too few to resolve a real report"
+            exit 1
+          fi
+          # Read it back the way a user would: a table crash.py cannot parse is not
+          # a published symbol file, no matter how many lines it has.
+          FIRST="$(grep -m 1 '^[0-9a-f]' "$SYM" | cut -d' ' -f1)"
+          python3 tools/crash.py sym "$SYM" "0x$FIRST" --quiet | tail -n 1
+          echo "crash symbols verified: $SYM ($COUNT symbols) describes the shipped binary"
         fi
         du -sh "$DIR" || true
         ls -la "$DIR"
