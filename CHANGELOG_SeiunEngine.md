@@ -622,6 +622,16 @@
 
 ---
 
+### 2026年11月22日 — Vulkan 渲染器：Windows 可切换，安卓暂时不提供
+
+- **设置里就能换**：图形页新增「渲染器」行，OpenGL / Vulkan 二选一。选中后先弹确认框（左右切换、确认键确定、B / 返回取消，鼠标要两次点在同一张卡片上），确认后才写进存档；切换在下次启动生效，这一局不会热切。
+- **失败了会自己退回来**：驱动、窗口、管线任一处出问题，本局立刻回到 OpenGL，存档一并改回 OpenGL 并弹窗说明原因；如果进程在启动阶段直接死掉，下次启动会识别到它、留在 OpenGL 并留下失败记录。驱动有问题也不会变成崩溃循环。
+- **帧率**：Vulkan 路径实测由 33 帧提升到 **120 帧**（撞到设置上限），结算界面 33 → 89 帧，整帧渲染耗时从约 30 ms 降到 3 ms 量级。
+- **画面比例**：横屏游戏在竖屏设备上被转成竖屏、非 16:9 屏幕右侧被裁掉，两个显示问题都已修复。
+- **安卓暂时不提供**：本版本的 Vulkan 只在 Windows 上开放，安卓会在后续版本开放。
+
+---
+
 ### 鸣谢
 
 感谢所有参与测试的人员，你们的宝贵反馈是推动引擎不断完善的重要力量。
@@ -1247,6 +1257,16 @@ Bundled regression harness (temp/touch-fix-test/TouchFixTest.hx): replicates the
 - **hxcpp - libc++ and zlib**: `std::atomic<T>::value_type` does not exist in libc++ (what the NDK uses), which failed the Android build until the trait stopped using it; and zlib is no longer built with `ZLIB_WINAPI`, a flag only the `zlib_sources` group ever received while `ZLibCompress.cpp` / `ZLibUncompress.cpp` kept cdecl declarations - on Win32 that asks for `_deflate` when the library defines `_deflate@8` (x64 hides it because `__stdcall` decorates nothing there). Dropping it also restores the upstream convention.
 - **openfl (tried, then reverted)**: on November 8 `BitmapData` was allowed to treat a non-`Context3D` GPU copy as the reason to release CPU pixels (to match Vulkan's own texture table); it was reverted in 8322dfa. The engine side answers the same question through the `GfxMemory.externalActive / externalHolds / externalUpload` callbacks now, so openfl does not need to change semantics. Net change: zero, recorded so the log does not read like a gap.
 - **extension-androidtools**: the Gradle build cache that had been committed by accident is untracked again.
+
+---
+
+### November 22, 2026 — Vulkan renderer: switchable on Windows, not offered on Android yet
+
+- **A real switch in the settings**: the Graphics page has a Renderer row with OpenGL and Vulkan. Picking one asks first (left/right to choose, accept to confirm, B/back to cancel, two clicks on the same card with the mouse) and only a confirmed pick is saved; the switch applies on the next launch, never to the running session.
+- **It backs out on its own**: if the driver, the window or a pipeline fails, the session returns to OpenGL right away, the saved choice is put back to OpenGL and a dialog says why; a launch that dies during startup is recognised on the next boot, which stays on OpenGL and leaves a failure record behind. A broken driver never becomes a crash loop.
+- **Frame rate**: Vulkan measured 33 fps -> **120 fps** (the configured cap) in the menu and 33 -> 89 on the results screen, with the whole render frame down from about 30 ms to about 3 ms.
+- **Aspect ratio**: a landscape game shown as portrait on a portrait device, and the right edge clipped on non-16:9 screens, are both fixed.
+- **Android is not offered yet**: this build opens Vulkan on Windows only; Android follows in a later version.
 
 ---
 
