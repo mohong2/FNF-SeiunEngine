@@ -223,6 +223,11 @@ class SystemDiag
 
 	static function rendererLines(out:Array<String>):Void
 	{
+		// Which backend the engine itself picked, before any of the GL details below: a
+		// crash report from a Vulkan session has to say "renderer=vulkan" or the GL
+		// strings underneath will be read as if OpenGL were still drawing.
+		out.push('Renderer: ' + backend.RendererChoice.describe());
+
 		// Lime RenderContext: type + version + creation attributes (live query).
 		safeLines(() -> {
 			var ctx = FlxG.stage.window.context;

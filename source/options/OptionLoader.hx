@@ -138,6 +138,10 @@ class OptionLoader
 			case 'desktop': #if (desktop && !html5) true #else false #end;
 			case 'mobile': #if mobile true #else false #end;
 			case 'html5': #if html5 true #else false #end;
+			// Targets that carry an alternative graphics backend. Deliberately narrower
+			// than 'desktop': Linux and macOS ship no Vulkan renderer, so the row would
+			// only offer a card that can never be taken.
+			case 'win_android': #if (windows || android) true #else false #end;
 			default: true;
 		};
 	}
@@ -774,10 +778,21 @@ class OptionLoader
 				case 'desktop': #if (desktop && !html5) true #else false #end;
 				case 'mobile':  #if mobile true #else false #end;
 				case 'html5':   #if html5 true #else false #end;
+				// Same rule as categoryAllowedOnPlatform(): the two targets that carry a
+				// second graphics backend (see backend.RendererChoice).
+				case 'win_android': #if (windows || android) true #else false #end;
 				default: true;
 			}
 			if (!shouldInclude) return null;
 		}
+
+		// The renderer picker asks a second question that is not a platform list: the
+		// backend exists on Android, but it is not ready for players there yet
+		// (backend.RendererChoice keeps that rule, and the row reappears on its own while
+		// a forced Vulkan session is running). Decided on the variable, not on the JSON
+		// platform field, so a graphics.json left over on a storage volume - and read in
+		// preference to the packaged one - cannot put the row back on a device.
+		if (def.variable == 'renderer' && !backend.RendererChoice.offered()) return null;
 
 		#if !CHECK_FOR_UPDATES
 		if (def.define == 'CHECK_FOR_UPDATES') return null;

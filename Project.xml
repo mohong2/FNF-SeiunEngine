@@ -65,7 +65,11 @@
 	<define name="DARKMODE" if="desktop" />
 	<define name="CRASH_HANDLER"/>
 
-	<define name="seiun_vulkan" if="windows" unless="SEIUN_NO_VULKAN" />
+	<!-- Experimental Vulkan renderer. Only the two targets Lime actually has a Vulkan
+	     backend for: Windows (Win32 surface) and Android (ANativeWindow surface). The
+	     settings row that picks it is gated on the same pair, see backend.RendererChoice.
+	     -DSEIUN_NO_VULKAN keeps it out of a Windows/Android build on purpose. -->
+	<define name="seiun_vulkan" if="windows || android" unless="SEIUN_NO_VULKAN" />
 
 	<!-- Safety checks: null pointers throw with Haxe file and line information.
 	     Symbol publication is a <postbuild> below, so one "lime build" is enough. -->

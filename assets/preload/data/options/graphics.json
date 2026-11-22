@@ -23,7 +23,7 @@
 		"nameKey": "option.renderer",
 		"defaultName": "Renderer",
 		"descKey": "option.renderer.desc",
-		"defaultDesc": "Which graphics API the engine draws with.\nOpenGL is what every build runs on today; the Vulkan path is still experimental.\nThis row is a preview: the choice is remembered, but only the engine build can actually switch backends.",
+		"defaultDesc": "Which graphics API the engine draws the game with.\nOpenGL is the default and works everywhere; Vulkan is experimental and currently offered on Windows only.\nSwitching asks first and takes effect on the next launch. If Vulkan cannot start, the engine goes back to OpenGL by itself.",
 		"variable": "renderer",
 		"type": "string",
 		"defaultValue": "OpenGL",
@@ -32,7 +32,7 @@
 			"Vulkan"
 		],
 		"onChange": "onChangeRenderer",
-		"platform": "desktop"
+		"platform": "win_android"
 	},
 	{
 		"nameKey": "option.shaders",

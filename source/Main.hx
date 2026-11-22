@@ -317,10 +317,40 @@ class Main extends Sprite
 
 		addChild(new FlxGame(gameWidth, gameHeight, initialState, zoom, updateFramerate, drawFramerate, skipSplash, startFullscreen));
 
+		// ── Renderer choice (Windows; Android has the backend but not the row) ──
+		// A launch that asked for Vulkan and died before the backend proved itself left
+		// logs/vulkan-attempt.txt behind. recover() reads that as "that machine cannot
+		// run Vulkan" and puts this launch back on OpenGL - and rewrites the saved
+		// preference, which is the half of the fallback that survives a hard crash.
+		// It runs here because the boot state's create() (inside the FlxGame above) has
+		// already loaded ClientPrefs, so the saved choice is readable.
+		backend.RendererChoice.recover();
+
+		// One line in logs/renderer.txt: which backend this launch picked and why. Without it
+		// a session that stays on OpenGL leaves no trace at all.
+		backend.RendererChoice.writeDecisionRecord();
+
 		#if seiun_vulkan
+		// A leftover attempt marker means the last launch died before the backend proved
+		// itself. Say so once: the saved choice has already been put back to OpenGL, and a
+		// silent revert looks like the setting "forgot" what was picked.
+		if (backend.RendererChoice.recoveredFromCrash) showVulkanFallback(backend.RendererChoice.failureReason, true);
+
 		// 实验性 Vulkan 后端：等第一帧再探测。setupGame 跑的时候窗口可能还没 show，
 		// lvk_self_window 找不到可见窗口就会判定失败 —— 那是误报。
-		if (FlxG.stage != null) installVulkanAfterFirstFrame();
+		// 要不要真的切，由 saved preference / --vulkan / SEIUN_VULKAN 共同决定
+		// （backend.RendererChoice），失败时自动回到 OpenGL。
+		if (backend.RendererChoice.shouldStart())
+		{
+			if (FlxG.stage != null)
+			{
+				installVulkanAfterFirstFrame();
+			}
+			else
+			{
+				backend.RendererChoice.fellBack('no stage to attach to', false);
+			}
+		}
 		#else
 		// 这一份构建里没有 Vulkan 代码。玩家如果带了 --vulkan，必须**说出来**：
 		// 安静地忽略会让人以为"开了 Vulkan 但画面没变"，反而更难查。
@@ -842,13 +872,15 @@ class Main extends Sprite
 
 	#if seiun_vulkan
 	/**
-	 * 实验性 Vulkan 后端接线。默认不启用：只有 --vulkan / SEIUN_VULKAN=1 才真的切，
-	 * 切不过去就留在 OpenGL。
+	 * 实验性 Vulkan 后端接线。要不要真的切由 backend.RendererChoice 决定：设置里的
+	 * 渲染器选项（仅 Windows / Android）、--vulkan / --no-vulkan、SEIUN_VULKAN。
+	 * 切不过去就留在 OpenGL，并且把存档里的选择改回 OpenGL，下次不再踩同一个坑。
 	 *
-	 * 这里只做三件游戏侧才知道的事：
+	 * 这里只做四件游戏侧才知道的事：
 	 *   1. 回退提示怎么显示（VkRuntime 不认识游戏的 Dialog / 语言表）；
 	 *   2. 每帧末尾提交上屏的时机（必须晚于 flixel 的 draw 和 OpenFL 的 stage render）；
-	 *   3. 窗口尺寸变化和状态切换时通知运行时。
+	 *   3. 窗口尺寸变化和状态切换时通知运行时；
+	 *   4. 把"这次真的跑起来了"记进标记文件（崩溃回退的另一半，见 RendererChoice）。
 	 */
 	static function installVulkanAfterFirstFrame():Void
 	{
@@ -865,22 +897,84 @@ class Main extends Sprite
 
 	static function installVulkan():Void
 	{
+		// The preference can change between the frame that scheduled this call and the
+		// call itself (a recovery, a mod, a command line override): re-check, do not trust.
+		if (!backend.RendererChoice.shouldStart()) return;
+
 		var runtime = seiun.vulkan.VkRuntime;
+
+		// The runtime decides "was Vulkan asked for?" from the command line and the
+		// environment; a renderer picked in the settings menu is neither, so it is handed
+		// over here. Without this a saved choice silently did nothing (and then looked like
+		// a failed start, which reset it).
+		runtime.preferred = function() return backend.RendererChoice.wanted();
+
+		#if android
+		// Android cannot have both: the EGL surface SDL created for OpenGL keeps a buffer
+		// producer on the ANativeWindow, and the driver answers
+		// VK_ERROR_NATIVE_WINDOW_IN_USE_KHR when Vulkan asks for that window (measured on a
+		// Mali-G610). The window is therefore handed over first; if the backend then fails,
+		// the session cannot draw through OpenGL any more and showVulkanFallback() ends the
+		// process so the next launch starts on OpenGL.
+		runtime.releaseOpenGL();
+		#end
+
+		// Before the first native call: from here on this process can die without running
+		// another line of Haxe, and this marker is the only witness of the attempt.
+		backend.RendererChoice.beginAttempt();
+
+		// A start that fails reports through onFallback *and* returns false here. One record
+		// and one dialog are enough; this keeps the second path from repeating the first.
+		var runtimeReported:Bool = false;
 
 		runtime.onFallback = function(reason:String)
 		{
-			try
-			{
-				backend.Dialog.show('Vulkan', reason, 'Warning');
-			}
-			catch (e:Dynamic) {}
+			runtimeReported = true;
+
+			// The runtime hands over a message it already decorated with its own "stays on
+			// OpenGL" preamble; the raw reason is what belongs under *this* engine's heading,
+			// otherwise the dialog says the same thing twice in two languages.
+			var detail:String = runtime.lastFailure;
+			if (detail == null || detail.length == 0) detail = reason;
+
+			// An attempt that never committed has not proven anything, so the saved
+			// preference is corrected and the next launch goes straight to OpenGL. Once it
+			// has committed, a failure is treated as a one-off (a suspend/resume, a driver
+			// reset) and the player's choice is kept for the next launch.
+			var beforeCommit:Bool = backend.RendererChoice.attemptPending;
+
+			backend.RendererChoice.fellBack(detail, beforeCommit);
+
+			showVulkanFallback(detail, beforeCommit);
 		};
 
-		if (!runtime.start(false)) return;
+		if (!runtime.start(false))
+		{
+			// The runtime already cleaned up and asked for its dialog: nothing left to do.
+			if (runtimeReported) return;
+
+			var reason:String = runtime.lastFailure == null
+				? 'Vulkan could not start on this device'
+				: runtime.lastFailure;
+
+			// A start that never reached a frame cannot be a one-off: this machine or this
+			// driver has no usable Vulkan, so stop asking for it in the save file as well.
+			backend.RendererChoice.fellBack(reason, true);
+
+			showVulkanFallback(reason, true);
+
+			return;
+		}
 
 		// Let the settings menu (and anything else) see that this session really is on
 		// Vulkan instead of only assuming OpenGL.
-		backend.VulkanNotice.active = true;
+		backend.RendererChoice.markActive();
+
+		// Take the stage over before this frame is drawn. It used to happen in endFrame(),
+		// which left exactly one frame rendering through the old OpenGLRenderer - and on
+		// Android that frame is fatal: the EGL surface is already gone, so openfl compiles
+		// its quad shader against no context and throws.
+		seiun.vulkan.VkOverlay.install();
 
 		// Vulkan keeps its own texture table, so the CPU release decision can no
 		// longer look for a Context3D texture: this context is about to be deleted,
@@ -918,8 +1012,18 @@ class Main extends Sprite
 
 			window.onRender.add(function(_)
 			{
+				// The backend stopped (a lost Android surface, a device reset, a driver
+				// fault). Leaving the frame alone puts lime's own OpenGL flip back in charge,
+				// so the session keeps drawing: on Android the EGL surface was never
+				// released, and VkStageRenderer hands the stage back the same way.
+				if (!runtime.enabled) return;
+
 				seiun.vulkan.VkTextures.tick ();
 				runtime.endFrame ();
+
+				// The first few hundred frames are the attempt's probation: once they are
+				// on screen the marker is retired and the next launch may try Vulkan again.
+				backend.RendererChoice.tick ();
 
 				frames++;
 
@@ -953,6 +1057,69 @@ class Main extends Sprite
 		// CPU 像素，清掉之后传不回来，下一关满屏精灵就是空的。缓存的寿命跟着
 		// FlxGraphic 走（destroy 时 bitmap 置空，sweep 会回收）。
 		FlxG.signals.preStateCreate.add(function(_) seiun.vulkan.VkQuads.restartTrace ());
+	}
+
+	/**
+	 * The dialog a player sees when Vulkan did not work out.
+	 *
+	 * Three different stories, and telling them apart matters: a backend that never started
+	 * leaves this session on OpenGL and the save file already says so; one that stopped after
+	 * the swapchain existed cannot hand the window back on Windows; and on Android the window
+	 * had to be taken away from OpenGL before the attempt, so there is nothing left to fall
+	 * back into and the process has to restart.
+	 */
+	static function showVulkanFallback(reason:String, beforeCommit:Bool):Void
+	{
+		var head:String;
+
+		#if android
+		// The EGL surface is gone, so OpenGL cannot draw this session again: the only honest
+		// continuation is a fresh launch, which starts on OpenGL because the saved choice has
+		// already been reset by RendererChoice.fellBack().
+		if (seiun.vulkan.VkRuntime.glReleased)
+		{
+			var restartHead:String = beforeCommit
+				? Language.get('renderer.fallback.needsRestart',
+					'Vulkan could not take over this game. Offering it the window meant releasing OpenGL first, so the game has to be restarted - the saved renderer is already back on OpenGL and the next launch is a plain OpenGL session.')
+				: Language.get('renderer.fallback.needsRestartStopped',
+					'Vulkan stopped while the game was running. OpenGL was released when the window was handed over, so the game has to be restarted - the next launch is a plain OpenGL session unless Vulkan is picked again.');
+
+			try
+			{
+				backend.Dialog.showCustom('Vulkan', restartHead + '\n\n' + reason,
+					[{name: Language.get('Dialog.ok', 'OK'), callback: function() Sys.exit(0)}], false);
+			}
+			catch (e:Dynamic) {}
+
+			return;
+		}
+		#end
+
+		if (beforeCommit)
+		{
+			head = Language.get('renderer.fallback.notStarted',
+				'Vulkan could not take over this game, so it keeps running on OpenGL. The saved renderer is back on OpenGL.');
+		}
+		else
+		{
+			#if windows
+			// The swapchain already handed the window to the compositor: GL cannot draw
+			// into it any more, so the honest advice is a restart.
+			head = Language.get('renderer.fallback.stopped',
+				'Vulkan stopped while the game was running. OpenGL cannot take this window back, so the picture stays frozen - restart the game to keep playing on OpenGL.');
+			#else
+			// Android keeps the EGL surface alive, so OpenGL really does take the picture
+			// back and the player can keep going.
+			head = Language.get('renderer.fallback.stoppedAndroid',
+				'Vulkan stopped while the game was running. OpenGL is drawing again, so you can keep playing; restart the game to try Vulkan once more.');
+			#end
+		}
+
+		try
+		{
+			backend.Dialog.show('Vulkan', head + '\n\n' + reason, 'Warning');
+		}
+		catch (e:Dynamic) {}
 	}
 	#end
 

@@ -160,6 +160,8 @@ class OptionsState extends MusicBeatState
 	var settingsRendererID:Int = -1;
 	/** Card picker that takes the page over while the Renderer row is selected. */
 	var rendererShowcase:RendererShowcase = null;
+	/** The renderer confirmation substate is up: it owns this page until it closes. */
+	var rendererConfirmOpen:Bool = false;
 	/** True while the picker owns the page. */
 	var rendererShowcaseOpen:Bool = false;
 	/** The page opened straight onto the Renderer row; wait for the slide-in to settle. */
@@ -1088,12 +1090,13 @@ class OptionsState extends MusicBeatState
 			}
 		}
 
-		// A click or tap on a card is exactly "press Left/Right onto it".
+		// A click or tap on a card asks for that renderer - the same question ACCEPT asks,
+		// just aimed at the card under the pointer instead of the highlighted one.
 		if (rendererShowcaseOpen && !keyboardUsed && FlxG.mouse.justPressed
 			&& !(virtualPad != null && virtualPad.isMouseOverAnyButton()))
 		{
 			var card:Int = rendererShowcase.hoveredCard(FlxG.camera);
-			if (card >= 0) setRendererChoice(card, true);
+			if (card >= 0) requestRendererConfirm(card);
 		}
 
 		if (controls.UI_UP_P)   changeSettingsSelection(-1);
@@ -1109,16 +1112,16 @@ class OptionsState extends MusicBeatState
 
 		if (nextAccept <= 0)
 		{
-			// ENTER on the Renderer row just restates the promise: nothing is applied, because
-			// there is no second backend to apply. controls.ACCEPT is a level (true while the
-			// key is held), so the flash is edge-triggered by hand.
+			// ACCEPT on the Renderer row asks for the highlighted card. It never writes the
+			// preference on its own - requestRendererConfirm() is what raises the panel.
+			// controls.ACCEPT is a level (true while the key is held), so the ask is
+			// edge-triggered by hand.
 			if (rendererShowcaseOpen && setCurOption != null && setCurOption.variable == 'renderer')
 			{
 				if (controls.ACCEPT && !rendererAcceptHeld)
 				{
 					rendererAcceptHeld = true;
-					FlxG.sound.play(Paths.sound('confirmMenu'), 0.6);
-					rendererShowcase.flashNotice();
+					requestRendererConfirm(rendererShowcase.selected);
 				}
 				else if (!controls.ACCEPT)
 					rendererAcceptHeld = false;
@@ -1147,18 +1150,18 @@ class OptionsState extends MusicBeatState
 
 				var isWindowMode:Bool = (setCurOption.variable == 'windowedmode');
 
-				// The picker owns Left/Right on its row: the string cycling below would commit the
-				// value before the row could refuse it. Wrapping keeps both directions answered even
-				// with a single selectable card - they just end up on the locked one and are refused.
+				// The picker owns Left/Right on its row: the string cycling below would commit a
+				// value on the key press, which is exactly what this row must not do. Left/Right
+				// only moves the highlight; ACCEPT (a few lines up) is what asks for the switch.
 				var rendererRow:Bool = rendererRowOwnsInput();
 
 				if (rendererRow && (controls.UI_LEFT_P || controls.UI_RIGHT_P) && setCurOption.options != null)
 				{
 					var count:Int = setCurOption.options.length;
-					var target:Int = setCurOption.curOption + (controls.UI_RIGHT_P ? 1 : -1);
+					var target:Int = rendererShowcase != null ? rendererShowcase.selected + (controls.UI_RIGHT_P ? 1 : -1) : 0;
 					if (target < 0) target = count - 1;
 					else if (target >= count) target = 0;
-					setRendererChoice(target, true);
+					rendererNavigate(target);
 				}
 				else if (!rendererRow && (controls.UI_LEFT || controls.UI_RIGHT))
 				{
@@ -1246,6 +1249,10 @@ class OptionsState extends MusicBeatState
 					var leOption = setOptionsArray[i];
 					// A button row is an action with no default to restore; RESET must not run its onChange.
 					if (leOption.type == 'button')
+						continue;
+					// The Renderer row changes a backend that needs a restart and a confirmation,
+					// so a bulk reset must not switch it behind the player's back.
+					if (leOption.variable == 'renderer')
 						continue;
 					leOption.setValue(leOption.defaultValue);
 					if (leOption.type != 'bool')
@@ -1493,15 +1500,34 @@ class OptionsState extends MusicBeatState
 	/**
 	 * Whether a card may actually be picked.
 	 *
-	 * Only a renderer this build can honour is selectable. The row is a preview, but a preview
-	 * must not become a saved preference that claims a backend the engine cannot draw with -
-	 * ClientPrefs pins the stored value to the same constant.
+	 * Only a renderer this build and this platform can honour is selectable, and the answer
+	 * comes from one place (backend.RendererChoice, through ClientPrefs.rendererAccepted) so
+	 * the menu and the save-file clamp can never disagree.
 	 */
 	function rendererSelectable(index:Int):Bool
 	{
 		var opt:Option = rendererOption();
 		if (opt == null || opt.options == null || index < 0 || index >= opt.options.length) return false;
-		return opt.options[index] == ClientPrefs.SUPPORTED_RENDERER;
+		return ClientPrefs.rendererAccepted(opt.options[index]);
+	}
+
+	/** Index of the renderer that is currently saved for the next launch. */
+	function savedRendererIndex():Int
+	{
+		var opt:Option = rendererOption();
+		if (opt == null || opt.options == null) return 0;
+		var found:Int = opt.options.indexOf(Std.string(opt.getValue()));
+		return found < 0 ? 0 : found;
+	}
+
+	/** Why a card cannot be taken, in the player's language. */
+	function rendererRefusalText():String
+	{
+		if (!backend.RendererChoice.available())
+			return Language.get('option.renderer.notice.unavailable',
+				'This build has no Vulkan backend, so OpenGL is the only renderer here.');
+		return Language.get('option.renderer.notice.refused',
+			'That renderer is not available in this build.');
 	}
 
 	/**
@@ -1607,6 +1633,9 @@ class OptionsState extends MusicBeatState
 		}
 
 		rendererShowcase.enter(index);
+		// The notice line reports the live state (which backend draws this frame, what is
+		// only saved, whether the last launch fell back), so it is rebuilt on every open.
+		rendererShowcase.refreshNotice();
 		setRendererPickerOpen(true);
 	}
 
@@ -1619,54 +1648,131 @@ class OptionsState extends MusicBeatState
 	}
 
 	/**
-	 * Applies a card choice exactly like pressing Left/Right onto it would.
-	 *
-	 * A card this build cannot honour is refused instead of applied: the press is still answered
-	 * (denied sound, the card lights up for a moment, the notice flashes) but neither the option
-	 * nor ClientPrefs is touched, so the row can never leave OpenGL.
+	 * Moves the highlight onto a card. Nothing is saved, nothing is confirmed: browsing the
+	 * two renderers must stay free, and the preference only moves in applyRendererChoice().
 	 */
-	function setRendererChoice(index:Int, playSound:Bool):Void
+	function rendererNavigate(index:Int):Void
+	{
+		if (rendererShowcase == null) return;
+		if (rendererShowcase.selected == index) return;
+
+		FlxG.sound.play(Paths.sound('scrollMenu'));
+		rendererShowcase.select(index);
+		rendererShowcase.refreshNotice();
+	}
+
+	/**
+	 * Asks before a card is taken.
+	 *
+	 * This is the "confirm first" half of the row: the picker only proposes, and the actual
+	 * write happens in applyRendererChoice() once RendererConfirmSubState answers yes. A card
+	 * this build cannot honour is refused here instead (denied sound, the card lights up for
+	 * a moment, the notice says why), and a card that is already saved has nothing to confirm.
+	 */
+	function requestRendererConfirm(index:Int):Void
 	{
 		var opt:Option = rendererOption();
 		if (opt == null || opt.options == null) return;
 		if (index < 0 || index >= opt.options.length) return;
+		if (rendererConfirmOpen) return;
+
+		if (rendererShowcase != null) rendererShowcase.select(index);
 
 		if (!rendererSelectable(index))
 		{
-			if (playSound) FlxG.sound.play(Paths.sound('cancelMenu'), 0.7);
-			if (rendererShowcase != null) rendererShowcase.deny(index);
+			FlxG.sound.play(Paths.sound('cancelMenu'), 0.7);
+			if (rendererShowcase != null) rendererShowcase.deny(index, rendererRefusalText());
 			return;
 		}
 
-		if (opt.curOption == index) return;
+		if (index == savedRendererIndex())
+		{
+			// Already the saved renderer: answer the press, but there is nothing to confirm.
+			FlxG.sound.play(Paths.sound('scrollMenu'));
+			if (rendererShowcase != null) rendererShowcase.flashNotice();
+			return;
+		}
+
+		var from:String = opt.options[savedRendererIndex()];
+		var to:String = opt.options[index];
+
+		var message:String = Language.get('option.renderer.confirm.message',
+			'The renderer is chosen while the game starts, so the switch takes effect on the next launch.\n'
+			+ 'If Vulkan cannot start on this device, the engine writes OpenGL back into your settings by itself -'
+			+ ' a broken driver can never leave you on a black window.');
+
+		rendererConfirmOpen = true;
+		openRendererConfirm(
+			Language.get('option.renderer.confirm.title', 'Switch the renderer?'),
+			from + '  →  ' + to,
+			message,
+			function()
+			{
+				applyRendererChoice(index);
+			},
+			function()
+			{
+				cancelRendererChoice();
+			}
+		);
+	}
+
+	/** Opens the confirmation panel and takes this page's input away until it closes. */
+	function openRendererConfirm(title:String, target:String, message:String, onConfirm:Void->Void,
+		onCancel:Void->Void):Void
+	{
+		// Same reason openOptionPopup() drops the pad: two pads (this page's and the panel's)
+		// would both answer the same key, and the panel's would sit behind the dimmer.
+		#if (TOUCH_CONTROLS || desktop)
+		removeVirtualPad();
+		#end
+
+		openSubState(new RendererConfirmSubState(title, target, message, onConfirm, onCancel));
+	}
+
+	/**
+	 * Writes the confirmed choice. The only place the saved renderer changes.
+	 *
+	 * The value is only a *preference* for the next launch - the backend that is drawing this
+	 * frame cannot be swapped under a running game - so the row and the notice line are
+	 * re-pointed to say "saved, applies on the next launch" instead of pretending otherwise.
+	 */
+	function applyRendererChoice(index:Int):Void
+	{
+		var opt:Option = rendererOption();
+		if (opt == null || opt.options == null) return;
+		if (index < 0 || index >= opt.options.length) return;
+		if (!rendererSelectable(index)) return;
 
 		opt.curOption = index;
 		opt.setValue(opt.options[index]);
 		settingsUpdateText(opt);
-		if (playSound) FlxG.sound.play(Paths.sound('scrollMenu'));
 		opt.change();
+		settingsSaveState();
+	}
+
+	/** The player said no: put the highlight back where the saved value is. */
+	function cancelRendererChoice():Void
+	{
+		if (rendererShowcase == null) return;
+
+		rendererShowcase.select(savedRendererIndex());
+		rendererShowcase.refreshNotice();
 	}
 
 	/**
 	 * Renderer row onChange.
 	 *
-	 * The row is a preview and nothing else: no backend is touched here. All it does is
-	 * re-point the picker and restate the "coming in a later update" notice, which is the
-	 * whole promise the option makes.
+	 * Runs once the confirmed choice has been written: the picker moves onto the saved card
+	 * and the notice line is rebuilt, so the row describes what will happen on the next
+	 * launch rather than what is drawing right now.
 	 */
 	function onChangeRenderer()
 	{
-		var opt:Option = rendererOption();
-		if (opt == null || rendererShowcase == null) return;
+		if (rendererShowcase == null) return;
 
-		var index:Int = opt.curOption;
-		if (opt.options != null)
-		{
-			var found:Int = opt.options.indexOf(Std.string(opt.getValue()));
-			if (found >= 0) index = found;
-		}
-
-		rendererShowcase.select(index);
+		rendererShowcase.select(savedRendererIndex());
+		rendererShowcase.refreshNotice();
 		if (rendererShowcaseOpen) rendererShowcase.flashNotice();
 	}
 
@@ -2351,16 +2457,19 @@ class OptionsState extends MusicBeatState
 		super.closeSubState();
 		ClientPrefs.saveSettings();
 
-		if (optionPopupOpen)
+		if (optionPopupOpen || rendererConfirmOpen)
 		{
-			// Closing the dropdown/slider popup should stay in the settings page,
-			// not bounce back to the category view.
+			// Closing the dropdown/slider popup - or the renderer confirmation - should stay
+			// in the settings page, not bounce back to the category view.
 			optionPopupOpen = false;
+			rendererConfirmOpen = false;
 			transitioning = false;
 			#if (TOUCH_CONTROLS || desktop)
 			addVirtualPad(LEFT_FULL, A_B_C);
 			addPadCamera();
 			#end
+			// An answer may have re-pointed the picker: re-read the notice line.
+			if (rendererShowcase != null) rendererShowcase.refreshNotice();
 			return;
 		}
 

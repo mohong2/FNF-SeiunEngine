@@ -1,11 +1,14 @@
 package options;
 
+import ClientPrefs;
 import Language;
-import backend.VulkanNotice;
+import backend.RendererChoice;
 import flixel.graphics.FlxGraphic;
 import flixel.text.FlxText;
 import flixel.text.FlxText.FlxTextAlign;
 import flixel.text.FlxText.FlxTextBorderStyle;
+
+using StringTools;
 
 /**
  * Full-page renderer picker, shown while the "Renderer" row of the Graphics page is
@@ -13,7 +16,8 @@ import flixel.text.FlxText.FlxTextBorderStyle;
  *
  * `OptionsState` pulls every other row out of the way and slides the row itself into the
  * top-left corner; this group fills the space that is left with the two renderer marks, a
- * brand-tinted halo behind the current one, and the "not live yet" notice.
+ * brand-tinted halo behind the current one, and the notice line that says what this
+ * session really draws with.
  *
  * Every frame is driven by a single `reveal` value that is lerped towards 0 or 1, so opening
  * and closing never allocate a tween and can never fight one: the sprites just chase whatever
@@ -187,27 +191,102 @@ class RendererShowcase extends FlxTypedGroup<FlxSprite>
 		hint.alpha = 0;
 		add(hint);
 
-		notice = new FlxText(0, NOTICE_Y, FlxG.width, buildNoticeText(), 26);
+		notice = new FlxText(0, NOTICE_Y, FlxG.width, noticeFor(), 26);
 		// White here as well: the amber (and the white flash on a change) comes from
 		// sprite.color in update(), which multiplies the rasterized text.
 		notice.setFormat(Paths.optionsfont(), 26, FlxColor.WHITE, CENTER, FlxTextBorderStyle.OUTLINE_FAST, FlxColor.BLACK);
 		notice.color = NOTICE_AMBER;
 		notice.borderSize = 2.4;
 		notice.alpha = 0;
+		// The line explains state now instead of promising a future switch, and the English
+		// sentences are long enough to need a second line on a 1280-wide layout.
+		notice.wordWrap = true;
 		add(notice);
 	}
 
+	// ═══════════════════════════════════════════════════════════════════════════
+	//  Notice line
+	// ═══════════════════════════════════════════════════════════════════════════
+
 	/**
-	 * The "this does nothing yet" line, plus a second line when the session really is drawing
-	 * through Vulkan (only possible in a build compiled with -D seiun_vulkan and launched with
-	 * --vulkan), because then "OpenGL is what every build runs on" would be a lie.
+	 * What the line under the cards says right now.
+	 *
+	 * The row is the only place that can explain the difference between a choice that is
+	 * *saved* and a backend that is *running*: the picker shows the saved one, the notice
+	 * says which one is drawing this frame, and whether the last launch had to fall back.
 	 */
-	static function buildNoticeText():String
+	public function noticeFor():String
 	{
-		var text:String = Language.get('option.renderer.soon',
-			'Only OpenGL for now - the Vulkan switch arrives in a future update. Stay tuned!');
-		if (VulkanNotice.active)
-			text += '\n' + Language.get('option.renderer.active', 'This session is already drawing through Vulkan.');
+		if (!RendererChoice.available())
+			return Language.get('option.renderer.notice.unavailable',
+				'This build has no Vulkan backend, so OpenGL is the only renderer here.');
+
+		var savedVulkan:Bool = (ClientPrefs.data != null && ClientPrefs.data.renderer == RendererChoice.VULKAN);
+
+		if (RendererChoice.recoveredFromCrash)
+		{
+			// No reason to show: a launch that dies cannot report one. The log keeps the
+			// marker file it left behind (logs/vulkan-last-failure.txt).
+			return Language.get('option.renderer.notice.recovered',
+				'The last launch stopped while Vulkan was starting, so OpenGL is back and the saved choice was reset to it.');
+		}
+
+		if (RendererChoice.fellBackThisBoot && RendererChoice.failureReason != null)
+		{
+			return StringTools.replace(Language.get('option.renderer.notice.fallback',
+				'The last Vulkan launch did not work out, so this session is on OpenGL. Reason: %s'),
+				'%s', shortReason(RendererChoice.failureReason));
+		}
+
+		if (RendererChoice.active)
+		{
+			return savedVulkan
+				? Language.get('option.renderer.notice.vulkanActive', 'This session is drawing through Vulkan.')
+				: Language.get('option.renderer.notice.vulkanRunning',
+					'Vulkan is drawing this session. OpenGL is the saved choice and takes over on the next launch.');
+		}
+
+		if (savedVulkan)
+		{
+			return Language.get('option.renderer.notice.vulkanPending',
+				'Vulkan is saved and is tried on the next launch. If it cannot start, the engine goes back to OpenGL by itself.');
+		}
+
+		return Language.get('option.renderer.notice.opengl',
+			'This session is drawing through OpenGL. Vulkan is still experimental - the switch asks first and falls back on its own.');
+	}
+
+	/**
+	 * Re-reads the notice line after the saved choice changed.
+	 *
+	 * The text is re-rasterized only when it actually differs: assigning the same string to
+	 * a FlxText still pays for a full text field rebuild.
+	 */
+	public function refreshNotice():Void
+	{
+		if (notice == null) return;
+
+		var text:String = noticeFor();
+		if (notice.text != text) notice.text = text;
+	}
+
+	/**
+	 * Puts a one-off reason in the notice line - a refused card, for instance - and leaves
+	 * it there until the line is refreshed, which the caller does once the reason no longer
+	 * applies.
+	 */
+	public function showReason(text:String):Void
+	{
+		if (notice == null || text == null) return;
+		if (notice.text != text) notice.text = text;
+		flashNotice();
+	}
+
+	/** Fits a runtime message into the notice line; the log keeps the whole thing. */
+	static function shortReason(reason:String):String
+	{
+		var text:String = reason.split('\n')[0].trim();
+		if (text.length > 150) text = text.substr(0, 147) + '...';
 		return text;
 	}
 
@@ -251,13 +330,18 @@ class RendererShowcase extends FlxTypedGroup<FlxSprite>
 	/**
 	 * Refuses a slot: the card lights up in its own brand colours for a moment - so the player
 	 * does get to see what the choice will look like - while the notice flashes to say why it
-	 * cannot be taken yet. Nothing is selected by this.
+	 * cannot be taken. Nothing is selected by this.
+	 *
+	 * @param reason shown in the notice line; the caller passes the localized sentence, so the
+	 *               picker itself never has to know why a platform or a build cannot honour a card
 	 */
-	public function deny(index:Int):Void
+	public function deny(index:Int, ?reason:String):Void
 	{
 		denySlot = clampSlot(index);
 		denyFlash = 1;
-		flashNotice();
+
+		if (reason != null) showReason(reason);
+		else flashNotice();
 	}
 
 	/**
