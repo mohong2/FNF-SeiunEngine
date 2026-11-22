@@ -330,6 +330,12 @@ class FlxDrawQuadsItem extends FlxDrawBaseItem<FlxDrawQuadsItem>
 		// The shader parameters are complete here, which is what the Vulkan backend
 		// needs. Returns false when the backend is off; the OpenGL path below runs.
 		if (seiun.vulkan.VkQuads.submit(this, camera, shader)) return;
+
+		// The window has been handed to Vulkan, so there is no OpenGL context left: the draw
+		// calls below would compile a shader against nothing and throw (that is what crashed
+		// the first Android frame after the hand-over). Dropping the batch is the only safe
+		// answer - the backend opens its own frame again on the next one.
+		if (seiun.vulkan.VkRuntime.glReleased) return;
 		#end
 
 		#if (openfl > "8.7.0")
