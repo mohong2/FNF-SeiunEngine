@@ -128,6 +128,31 @@ class Achievements {
 		AchievementSave.rebuildMap(achievementsUnlocked, achievementsMap);
 	}
 
+	/**
+	 * Re-reads progress from the live save after a backup restore.
+	 *
+	 * load() is guarded by _firstLoad because every state used to call it; a restore
+	 * replaces the underlying data mid-session, so the guard has to be reset or the
+	 * achievements screen keeps showing the pre-restore progress.
+	 */
+	public static function reload():Void
+	{
+		achievementsUnlocked.resize(0);
+		achievementsMap.clear();
+		variables.clear();
+		henchmenDeath = 0;
+		_firstLoad = true;
+		load();
+
+		if (FlxG.save.data != null && Reflect.hasField(FlxG.save.data, 'henchmenDeath'))
+		{
+			var deaths:Dynamic = Reflect.field(FlxG.save.data, 'henchmenDeath');
+			if (deaths != null) henchmenDeath = Std.int(deaths);
+		}
+
+		AchievementSave.rebuildMap(achievementsUnlocked, achievementsMap);
+	}
+
 	public static function save():Void
 	{
 		if (FlxG.save.data == null) return;

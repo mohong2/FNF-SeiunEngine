@@ -93,6 +93,18 @@ import sys.io.Process;
 	public var violence:Bool = true;
 	public var camZooms:Bool = true;
 	public var hideHud:Bool = false;
+	/**
+	 * The "+12.3ms" / "Miss" hit-timing readout that pops up on every judged note.
+	 * It has been drawn since MohongEngine and never had a switch; this is that switch.
+	 * Also gated by hideHud, like the rest of the play HUD.
+	 */
+	public var showHitMs:Bool = true;
+	/**
+	 * The bottom-left line with the song name, the difficulty and the SE / PE version
+	 * numbers drawn at the start of every song. Deliberately a separate switch from
+	 * showHitMs: the two readouts have nothing in common except their age.
+	 */
+	public var showVersionText:Bool = true;
 	public var noteOffset:Int = 0;
 	// Multi-key: the first four entries are the 4K colour offsets; the last five are space/leftex1/downex1/upex1/rightex1
 	public var arrowHSV:Array<Array<Int>> = [
@@ -407,6 +419,8 @@ class ClientPrefs {
 	public static var violence(get, never):Bool;
 	public static var camZooms(get, never):Bool;
 	public static var hideHud(get, never):Bool;
+	public static var showHitMs(get, never):Bool;
+	public static var showVersionText(get, never):Bool;
 	public static var noteOffset(get, never):Int;
 	public static var arrowHSV(get, never):Array<Array<Int>>;
 	public static var ghostTapping(get, never):Bool;
@@ -528,6 +542,8 @@ class ClientPrefs {
 	static inline function get_violence() return data.violence;
 	static inline function get_camZooms() return data.camZooms;
 	static inline function get_hideHud() return data.hideHud;
+	static inline function get_showHitMs() return data.showHitMs;
+	static inline function get_showVersionText() return data.showVersionText;
 	static inline function get_noteOffset() return data.noteOffset;
 	static inline function get_arrowHSV() return data.arrowHSV;
 	static inline function get_ghostTapping() return data.ghostTapping;

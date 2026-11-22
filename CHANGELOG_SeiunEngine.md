@@ -632,6 +632,17 @@
 
 ---
 
+### 2026年11月22日 — 备份 / 恢复不再吃内存
+
+- **以前为什么会吃掉几个 GB**：旧流程把整份备份在内存里来回复制好几遍——每个成绩文件先编码成 base64 字符串、再拼成一个巨大的 JSON 字符串、再打包成容器、再整体编码成文本。以本机 23 MB 的成绩历史（119 个 .scores 文件）为例，实测导出峰值 **1.7 – 2.1 GB**；游戏本身的内存占用直接被顶上去，这就是「备份的时候内存占用有点高」的来源。
+- **导出改成流式写出**（BackupStream + HeaderSink）：JSON 一边生成、一边异或、一边算校验和、一边 base64、一边写盘；文件头先占位，写完后把长度与校验和回填（桌面与移动端的真实文件都能 seek）。同一份数据导出峰值降到 **90 MB 左右**，文件内容与格式完全不变。
+- **选完保存位置就开始写**：FileDialogHandler.savePath() 只取路径，由导出器自己流式写目标文件，写失败会删掉半截文件，不会留下看起来像备份的残骸。安卓的 SAF 只能接收一整段文本，所以那条路仍要拼完整文本，但同样只保留一份。
+- **导入不再先读成一整个字符串**：按 64 KB 分块解码（BackupFormat.readContainer），并先用文件实际大小挡掉「头部声称 900 MB」的坏文件——以前这种头部会直接申请一大块内存。
+- **恢复**：安全备份直接流式写到 ./.backups/，回滚时再从磁盘读回来，不再同时留第二份完整数据；解码结果只做一次并缓存，第二遍（验证 → 应用）不再重复解码几十 MB。
+- **顺带修掉一个恢复细节**：解析键位时 -1（FlxKey.NONE / FlxGamepadInputID.NONE）被当成「无效值」丢掉了，恢复后所有「第二键位为空」的绑定都会少一个元素。现在按原样保留——这是拿真实存档逐项对比出来的。
+
+---
+
 ### 鸣谢
 
 感谢所有参与测试的人员，你们的宝贵反馈是推动引擎不断完善的重要力量。
@@ -1267,6 +1278,46 @@ Bundled regression harness (temp/touch-fix-test/TouchFixTest.hx): replicates the
 - **Frame rate**: Vulkan measured 33 fps -> **120 fps** (the configured cap) in the menu and 33 -> 89 on the results screen, with the whole render frame down from about 30 ms to about 3 ms.
 - **Aspect ratio**: a landscape game shown as portrait on a portrait device, and the right edge clipped on non-16:9 screens, are both fixed.
 - **Android is not offered yet**: this build opens Vulkan on Windows only; Android follows in a later version.
+
+---
+
+### November 22, 2026 - Two HUD switches and a Backup & Restore that works
+
+#### The two oldest HUD texts finally get switches
+
+- **Hit timing readout, on/off** (`showHitMs` on the Visuals page, on by default): the `+12.3ms` / `Miss` counter drawn at `comboOffset[6..7]` has existed since MohongEngine and never had a switch. It is hidden when the new option is off or when Hide HUD is on - both gates live in one helper, `PlayState.msReadoutVisible()` - and the hit / miss paths skip the text and the scale + alpha tweens entirely instead of updating an invisible object.
+- **Song & version line, on/off** (`showVersionText` on the Visuals page, on by default): the bottom-left `<song> <difficulty> - SE <version> + PE <version>` line gets its own switch, deliberately independent from the ms readout.
+- Both ship in English / Simplified / Traditional Chinese, are saved like every other ClientPrefs field, and old saves fall back to "on" (the previous behaviour).
+
+#### Backup & Restore rewritten
+
+The previous implementation compiled but could not have worked:
+
+- **The container check compared the magic number with itself**, so the version check never ran.
+- **Every Map and Int64 in the save was dropped**: the exporter converted fields to JSON by hand, so `songScores` / `songRating` / `gameplaySettings` / `modSettings` became empty objects and the restore skipped them. Note colours, combo offsets and arrow HSV were on an explicit skip list, so they were never in a backup at all.
+- **Key binds were written to the wrong save object** (`controls_v2` with a `customControls` field, which nothing reads; the engine reads `controls_v3`), so restoring never restored key binds.
+- **The screen had no virtual pad and no keyboard selection** - on Android there was no way to press anything, and on desktop Enter always meant "Backup".
+- It wrote into the live save field by field with no validation, so a truncated file could half-apply.
+
+The rewrite:
+
+- **New pure container layer** (`backend/BackupFormat`): `SEB2` magic, version, XOR key slot, flags, plain-text length and an FNV-1a checksum of the payload; the byte stream is base64-encoded as the file body because OpenFL's `FileReference` writes text on every platform this engine ships. Wrong magic, truncation, an unknown version, a reserved flag and a checksum mismatch each produce a specific message instead of a half-restore. `SEB1` files written by the old code are still readable.
+- **New payload model** (`backend/BackupData`): every field of `FlxG.save.data` is stored as `haxe.Serializer` output - the same serializer `FlxSave` uses - so Maps, Int64, nested arrays and mod-added fields round-trip exactly. Score files are stored as raw bytes plus size and hash. Score paths are normalised and validated (no `..`, no absolute path, no drive letters, only `.json` under `.scores`). A field that cannot be serialized is skipped at export time with a log line, never at restore time.
+- **All-or-nothing restore** (`backend/BackupUtil`): every value and every score blob is decoded and verified before anything is written; the current data is first captured to `./.backups/SeiunEngine_AutoBackup_<date>.SEB` (newest 5 kept), and any failure while writing rolls that copy back and says so - re-importing an old backup is no longer a one-way trip.
+- **It reloads what it restored**: `ClientPrefs.loadPrefs()` (settings and `controls_v3` key binds), `Highscore.load()`, `Allscore.load()`, the new `Achievements.reload()` and `StoryMenuState.weekCompleted`, then `Language.load()`; the options screen resets itself so the restored language and settings are what is on screen.
+- **Legacy `SEB1` backups are upgraded** on read: highscore maps are rebuilt as real `Map`s, `gameplaySettings` / `weekCompleted` as Maps, key binds lifted out of `clientPrefs`, score entries decoded and re-checked. A legacy restore merges into the current save instead of clearing it, because the old exporter never captured the fields it skipped.
+- **New screen**: two cards (Backup / Restore), left-right / mouse / touch selection, a confirmation dialog that shows the file's date, engine version, save-field and score-file counts and size before anything is touched, per-phase status lines, and error dialogs that name the reason.
+
+---
+
+### November 22, 2026 — A backup that no longer eats your RAM
+
+- **Why it used gigabytes**: the old pipeline kept several full copies of the whole backup in memory — every score file was base64-encoded into a string, the strings were joined into one giant JSON string, that string was packed into a container, and the container was encoded again. For a 23 MB score history (119 files in .scores) the export peaked at **1.7 – 2.1 GB**; that is the "backup uses a lot of memory" the player saw.
+- **The export now streams** (BackupStream + HeaderSink): the JSON is hashed, XORed, base64-encoded and written to disk one chunk at a time. The header is reserved on disk and patched with the payload length and checksum at the end (real files are seekable on desktop and mobile). The same data now peaks at **around 90 MB**, in exactly the same file format.
+- **Save first, then write**: FileDialogHandler.savePath() only asks for a destination and the exporter streams into it; a failure deletes the partial file instead of leaving something that looks like a backup. Android's SAF can only receive a finished string, so that path still builds one — but only one.
+- **Import no longer reads the file into one string**: the container is decoded in 64 KB chunks (BackupFormat.readContainer), and a header that claims more data than the file can possibly hold is rejected before anything is allocated for it.
+- **Restore**: the safety copy is streamed straight to ./.backups/ and read back from disk for a rollback, instead of keeping a second full copy in memory; decoding happens once and is cached, so the validate → apply pass no longer decodes the same tens of megabytes twice.
+- **Fixed while testing it**: parsing key binds dropped -1 (FlxKey.NONE / FlxGamepadInputID.NONE), so every restored bind with an empty second slot came back one element short. It is kept as-is now — found by comparing a real save before and after a restore.
 
 ---
 

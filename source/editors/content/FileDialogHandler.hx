@@ -38,6 +38,8 @@ class FileDialogHandler extends FlxBasic
 {
     var _fileRef:FileReferenceCustom;
     var _dialogMode:FileDialogType = OPEN;
+    /** True when the caller wants the path only and reads the file itself (big backups). */
+    var _skipData:Bool = false;
     
     #if android
     var _pendingAndroidRequest:Int = -1;
@@ -141,7 +143,66 @@ class FileDialogHandler extends FlxBasic
         #end
     }
 
-    public function open(?defaultName:String = null, ?title:String = null, ?filter:Array<FileFilter> = null, ?onComplete:Void->Void, ?onCancel:Void->Void, ?onError:Void->Void)
+    /**
+     * Asks where to save and reports the chosen path without writing anything.
+     *
+     * The backup exporter streams a possibly large file to disk, so it must not hand the
+     * whole content to FileReference.save() first. On Android there is no equivalent (SAF
+     * is given the text), so this reports an error there and the caller uses save().
+     */
+    public function savePath(?fileName:String = '', ?onPath:String->Void, ?onCancel:Void->Void, ?onError:Void->Void)
+    {
+        if (!completed)
+        {
+            // same recovery as save(): never throw into the lime main loop
+            TraceManager.error('trace.editor.fileDialogBusy', 'New dialog requested while a previous one is still pending.');
+            completed = true;
+            var cb:Void->Void = onError;
+            _startUp(null, null, null);
+            completed = true;
+            if (cb != null) cb();
+            return;
+        }
+
+        this._dialogMode = SAVE;
+        _startUp(null, onCancel, onError);
+
+        if (fileName == null) fileName = '';
+        if (fileName.length > 0 && !fileName.contains('.')) fileName += '.SEB';
+
+        #if android
+        // SAF cannot hand back a path the game may write into.
+        this.completed = true;
+        if (onError != null) onError();
+        #elseif ios
+        // iOS has no save dialog; documents/ is the only place the player can reach, and
+        // the path is known before anything is written, so this streams there too.
+        var dir:String = SUtil.getStorageDirectory();
+        if (dir != null && dir.length > 0 && !dir.endsWith('/')) dir += '/';
+        this.path = dir + fileName;
+        this.completed = true;
+        TraceManager.info('trace.editor.fileSavePath', 'Backup will be written to: {}', [this.path]);
+        if (onPath != null) onPath(this.path);
+        #else
+        removeEvents();
+
+        var callback:String->Void = onPath;
+        _fileRef._skipWrite = true;
+        _currentEvent = function(_) {
+            @:privateAccess this.path = _fileRef._trackSavedPath;
+            this.completed = true;
+            TraceManager.info('trace.editor.fileSavePath', 'Backup will be written to: {}', [path]);
+            removeEvents();
+            if (callback != null) callback(this.path);
+        };
+        _fileRef.addEventListener(Event.SELECT, _currentEvent);
+        // the empty payload is dropped again in saveFileDialog_onSelect (skipWrite)
+        _fileRef.save('', fileName);
+        #end
+    }
+
+    public function open(?defaultName:String = null, ?title:String = null, ?filter:Array<FileFilter> = null, ?onComplete:Void->Void, ?onCancel:Void->Void, ?onError:Void->Void,
+        ?skipData:Bool = false)
     {
         // 上一次对话框操作尚未结束时，这里曾经直接 throw——调用方（saveChart 等）
         // 都跑在 lime 主循环里，没有 try/catch 能接住它，结果就是整进程崩溃。
@@ -163,6 +224,7 @@ class FileDialogHandler extends FlxBasic
 
         this._dialogMode = OPEN;
         _startUp(onComplete, onCancel, onError);
+        _skipData = skipData;
         
         #if android
         var mimeTypes = "*/*";
@@ -209,7 +271,10 @@ class FileDialogHandler extends FlxBasic
         if(dir != null && dir.length > 0 && !dir.endsWith('/'))
             dir += '/';
 
-        var exts:Array<String> = ['.json', '.osu', '.mc', '.osz', '.mcz'];
+        // .seb is the game-data backup format (options.BackupSettingsSubState), written into
+        // this same Documents directory by save() below, so it has to be listed here or the
+        // file the player just created cannot be picked again.
+        var exts:Array<String> = ['.json', '.osu', '.mc', '.osz', '.mcz', '.seb'];
         var files:Array<String> = [];
         try {
             if(FileSystem.exists(dir))
@@ -233,7 +298,7 @@ class FileDialogHandler extends FlxBasic
         {
             var found:String = files[0];
             this.path = found;
-            this.data = sys.io.File.getContent(found);
+            if (!_skipData) this.data = sys.io.File.getContent(found);
             this.completed = true;
             TraceManager.info('trace.editor.fileLoaded', 'Loaded file from: {}', [found]);
             if(onComplete != null) onComplete();
@@ -261,7 +326,7 @@ class FileDialogHandler extends FlxBasic
                             state.close();
                             var picked:String = f;
                             this.path = picked;
-                            this.data = sys.io.File.getContent(picked);
+                            if (!_skipData) this.data = sys.io.File.getContent(picked);
                             this.completed = true;
                             TraceManager.info('trace.editor.fileLoaded', 'Loaded file from: {}', [picked]);
                             if(onComplete != null) onComplete();
@@ -400,7 +465,7 @@ class FileDialogHandler extends FlxBasic
                     // are handled via this.path by the callers.
                     var lower:String = localPath.toLowerCase();
                     var isBinary:Bool = lower.endsWith('.osz') || lower.endsWith('.mcz');
-                    if (!isBinary) {
+                    if (!isBinary && !_skipData) {
                         var content = AndroidTools.readTextFromUri(uri);
                         if (content != null)
                             this.data = content;
@@ -471,7 +536,7 @@ class FileDialogHandler extends FlxBasic
         // try/catch），所以在这里就地捕获并转成 onError 回调。
         try
         {
-            this.data = File.getContent(this.path);
+            if (!_skipData) this.data = File.getContent(this.path);
         }
         catch(e:Dynamic)
         {
@@ -571,10 +636,30 @@ class FileReferenceCustom extends FileReference
 {
     @:allow(editors.content.FileDialogHandler)
     var _trackSavedPath:String;
-    
+
+    /**
+     * Set by FileDialogHandler.savePath(): the dialog is only asked for a destination,
+     * the caller writes the file itself. Dropping __data before super() keeps this class
+     * from creating (and truncating to) an empty file at the chosen path.
+     */
+    @:allow(editors.content.FileDialogHandler)
+    var _skipWrite:Bool = false;
+
     override function saveFileDialog_onSelect(path:String):Void
     {
         _trackSavedPath = path;
+        if (_skipWrite)
+        {
+            _skipWrite = false;
+            @:privateAccess __data = null;
+        }
         super.saveFileDialog_onSelect(path);
+    }
+
+    // A cancelled path-only dialog must not leave the flag on for the next save().
+    override function saveFileDialog_onCancel():Void
+    {
+        _skipWrite = false;
+        super.saveFileDialog_onCancel();
     }
 }

@@ -1,649 +1,790 @@
 package backend;
 
-import haxe.Json;
-#if sys
-import sys.io.File;
-import sys.FileSystem;
-#end
+import backend.BackupFormat.BackupContainer;
+import backend.BackupFormat.BackupError;
+import backend.BackupFormat.HeaderSink;
+import backend.BackupFormat.InputSource;
+import backend.BackupFormat.BackupStream;
+import backend.BackupFormat.StringHeaderSink;
+import backend.BackupFormat.StringSource;
+import backend.BackupData.BackupJsonStats;
+import backend.BackupData.BackupScoreBlob;
+import backend.BackupData.BackupScoreFile;
 import haxe.io.Bytes;
-import haxe.io.BytesInput;
-import haxe.io.BytesOutput;
-import mohong.TraceManager;
+#if sys
+import sys.FileSystem;
+import sys.io.File;
+import sys.io.FileInput;
+import sys.io.FileOutput;
+import sys.io.FileSeek;
+#end
+import Achievements;
+import Allscore;
+import BuildInfo;
+import ClientPrefs;
+import Highscore;
+import Language;
+import states.StoryMenuState;
 import SUtil;
+import flixel.FlxG;
+import flixel.input.gamepad.FlxGamepadInputID;
+import flixel.input.keyboard.FlxKey;
+import flixel.util.FlxSave;
+import mohong.TraceManager;
+
+/** Everything a successful restore changed, for the status line. */
+typedef BackupApplyResult =
+{
+	var fields:Int;
+	var scores:Int;
+	var scoresRemoved:Int;
+	var bytes:Int;
+	var safetyPath:String;
+}
+
+/** How much a written backup contains, for the status line and the logs. */
+typedef BackupWriteStats =
+{
+	var path:String;
+	/** Size of the text file on disk, in bytes. */
+	var size:Int;
+	/** Size of the JSON payload, in bytes. */
+	var payload:Int;
+	var fields:Int;
+	var scores:Int;
+	var scoreBytes:Int;
+}
+
+/** What a capture produced, before it is written anywhere. */
+typedef BackupCapture =
+{
+	var payload:Int;
+	var fields:Int;
+	var scores:Int;
+	var scoreBytes:Int;
+}
 
 /**
- * Backup utility for FNF-SeiunEngine game data.
- * Provides encryption, packaging, and extraction of backup files (.SEB).
+ * Reads the live game data into a .SEB file and puts it back.
+ *
+ * The file format, the validation and the legacy upgrade live in BackupFormat and
+ * BackupData, which have no engine dependencies and are covered by tools/backup_tests.
+ * This class is only the glue: FlxG.save, key binds, the .scores directory, and the
+ * reload calls that make a restored save visible without restarting the game.
+ *
+ * ## Why the whole save object instead of a field list
+ *
+ * The old exporter walked a hard-coded list of interesting fields and converted them to
+ * JSON by hand. Every field it forgot (or could not convert: Maps, Int64, nested objects)
+ * was silently lost, and the restore path then skipped those fields again. The result was
+ * a backup that "worked" - no error, no crash - while quietly not containing the data.
+ *
+ * Here the unit is the save object itself: every field of FlxG.save.data is stored as a
+ * Serializer string (the same serializer FlxSave uses for the file), so Maps, Int64,
+ * nested arrays and anything a mod put in the save round-trip exactly. Fields that cannot
+ * be serialized are skipped *at export time* with a log line, never at restore time.
+ *
+ * ## Streaming instead of one giant string
+ *
+ * A score history is tens of megabytes. Building the file as one string meant holding the
+ * score base64, the JSON, the packed container and the encoded text at the same time -
+ * several times the size of the data. writeBackupToFile() streams the payload straight to
+ * disk chunk by chunk, so backing up 23 MB of scores needs a few hundred KB of memory.
+ * createBackupText() keeps the old whole-text behaviour for the platforms whose save
+ * dialog only accepts text (Android SAF) and for the tests.
+ *
+ * ## Restore is all-or-nothing
+ *
+ * 1. Decode and validate every field and every score blob (no writes yet).
+ * 2. Write a safety copy of the current data to .backups/.
+ * 3. Apply the save fields, key binds and score files.
+ * 4. If any write fails, put the safety copy back.
+ * 5. Reload the in-memory caches (ClientPrefs, Highscore, Allscore, achievements).
  */
 class BackupUtil
 {
-	/** Magic number for identifying .SEB backup files: "SEB1" */
-	private static var MAGIC:Bytes = Bytes.ofString("SEB1");
+	/** Automatic pre-restore copies. Kept next to the game, like .scores. */
+	public static inline var AUTO_DIR = './.backups/';
+	public static inline var AUTO_PREFIX = 'SeiunEngine_AutoBackup_';
+	public static inline var AUTO_KEEP = 5;
 
-	/** XOR key for basic obfuscation - not military-grade, but prevents casual tampering */
-	private static var XOR_KEY:Array<Int> = [
-		0x9A, 0x3C, 0xF7, 0x2B, 0x6D, 0xE4, 0x15, 0x88,
-		0x4E, 0x71, 0xB2, 0x0F, 0xC9, 0x56, 0xAD, 0x38,
-		0x6F, 0xD2, 0x1B, 0xE7, 0x84, 0x39, 0xCA, 0x5F,
-		0x20, 0x94, 0x6B, 0xD7, 0x41, 0xFE, 0x03, 0xBC
-	];
+	// ------------------------------------------------------------------ export
 
 	/**
-	 * Package all game data into an encrypted backup structure.
-	 * Returns a data object ready for encryptAndPack.
+	 * Captures the current game data and returns the text a .SEB file contains.
+	 * Throws BackupError when the current state cannot be captured, so the caller never
+	 * writes a half-empty backup over a good one.
 	 */
-	public static function collectGameData():Dynamic
+	public static function createBackupText():String
 	{
-		var backup:Dynamic = {};
-
-		// 1. Save version info
-		backup.version = 1;
-		backup.timestamp = Date.now().toString();
-		backup.engine = "FNF-SeiunEngine";
-
-		// 2. Read Highscore data (scores, ratings, stats)
-		backup.highscoreData = readHighscoreFromSave();
-
-		// 3. Read Allscore entries from binary score files (detailed history + replays)
-		backup.allscoreData = readAllscoreFiles();
-
-		// 4. Read ClientPrefs settings + keybinds
-		backup.clientPrefs = captureClientPrefs();
-
-		// 5. Capture week completion data
-		try
-		{
-			backup.weekCompleted = flixel.FlxG.save.data.weekCompleted;
-		}
-		catch (e:Dynamic) {}
-
-		return backup;
+		var sink = new StringHeaderSink();
+		writeTo(sink);
+		return sink.toString();
 	}
 
+	#if sys
 	/**
-	 * Encrypt and pack data into .SEB format bytes.
+	 * Captures the current game data and streams it into `path`.
+	 *
+	 * The file is written as it is produced, so the memory this needs does not depend on
+	 * how big the score history is. A failure deletes the partial file instead of leaving
+	 * a truncated backup behind.
 	 */
-	public static function encryptAndPack(data:Dynamic):Bytes
+	public static function writeBackupToFile(path:String):BackupWriteStats
 	{
-		var json:String = Json.stringify(data, "\t");
-		var inputBytes:Bytes = Bytes.ofString(json, UTF8);
-		var output:BytesOutput = new BytesOutput();
-		output.bigEndian = true;
+		if (path == null || path.length == 0)
+			throw new BackupError('there is no place to write the backup to');
 
-		// Write magic header
-		output.writeBytes(MAGIC, 0, MAGIC.length);
-
-		// Write version byte
-		output.writeByte(1);
-
-		// Write XOR key index (for future key rotation, currently always 0)
-		output.writeByte(0);
-
-		// Write original data length (for verification)
-		output.writeInt32(inputBytes.length);
-
-		// XOR-encrypt the data
-		var encrypted:Bytes = xorEncryptDecrypt(inputBytes, 0);
-
-		// Write encrypted data
-		output.writeBytes(encrypted, 0, encrypted.length);
-
-		return output.getBytes();
-	}
-
-	/**
-	 * Decrypt and unpack .SEB format bytes.
-	 * Returns the parsed data object, or null if invalid.
-	 */
-	public static function decryptAndUnpack(bytes:Bytes):Dynamic
-	{
+		var sink:FileBackupSink = null;
 		try
 		{
-			var totalLen:Int = bytes.length;
-			var input:BytesInput = new BytesInput(bytes);
-			input.bigEndian = true;
+			sink = new FileBackupSink(path);
+			var capture:BackupCapture = writeTo(sink);
+			sink.close();
 
-			// Check magic header
-			var magic:Bytes = input.read(MAGIC.length);
-			if (magic.getString(0, MAGIC.length, UTF8) != MAGIC.getString(0, MAGIC.length, UTF8))
-			{
-				TraceManager.error('trace.backup.invalidMagic', 'BackupUtil: Invalid magic number - not a valid .SEB file');
-				return null;
-			}
+			var size:Int = 0;
+			try size = Std.int(FileSystem.stat(path).size) catch (e:Dynamic) {}
 
-			// Read version
-			var version:Int = input.readByte();
-			if (version != 1)
-			{
-				TraceManager.error('trace.backup.unknownVersion', 'BackupUtil: Unknown backup version: {}', [version]);
-				return null;
-			}
-
-			// Read key index (reserved)
-			var keyIndex:Int = input.readByte();
-
-			// Read original data length
-			var originalLength:Int = input.readInt32();
-
-			// Read encrypted data (remaining bytes after header)
-			var headerSize:Int = MAGIC.length + 1 + 1 + 4; // magic(4) + version(1) + keyIndex(1) + dataLen(4)
-			var encrypted:Bytes = bytes.sub(headerSize, totalLen - headerSize);
-
-			// Decrypt
-			var decrypted:Bytes = xorEncryptDecrypt(encrypted, keyIndex);
-
-			// Verify length
-			if (decrypted.length < originalLength)
-			{
-				TraceManager.error('trace.backup.dataLengthMismatch', 'BackupUtil: Data length mismatch - corrupted backup?');
-				return null;
-			}
-
-			// Truncate to original length (in case of padding)
-			if (decrypted.length > originalLength)
-				decrypted = decrypted.sub(0, originalLength);
-
-			var json:String = decrypted.getString(0, decrypted.length, UTF8);
-			return Json.parse(json);
+			return {
+				path: path,
+				size: size,
+				payload: capture.payload,
+				fields: capture.fields,
+				scores: capture.scores,
+				scoreBytes: capture.scoreBytes
+			};
 		}
 		catch (e:Dynamic)
 		{
-			TraceManager.error('trace.backup.decryptFailed', 'BackupUtil: Failed to decrypt backup: {}', [e]);
-			return null;
+			// nothing is left behind for the player to mistake for a backup
+			if (sink != null) sink.abort();
+			throw rethrow(e, 'the backup file could not be written');
 		}
 	}
+	#end
 
+	/** Captures the live data and pushes it through `sink`; returns what was written. */
+	static function writeTo(sink:HeaderSink):BackupCapture
+	{
+		var started:Float = haxe.Timer.stamp();
+
+		var data:BackupData = captureData();
+		var stream = new BackupStream(sink, 0);
+		var json:BackupJsonStats = data.writeJson(stream.write, scoreOpener());
+		var written = stream.finish();
+
+		var elapsed:Float = Math.round((haxe.Timer.stamp() - started) * 1000) / 1000;
+		TraceManager.info('trace.backup.created',
+			'Backup captured: {} save fields, {} score files, {} payload bytes, {}s', [
+				mapSize(data.saveFields), json.scores, written.length, Std.string(elapsed)
+			]);
+
+		return {
+			payload: written.length,
+			fields: mapSize(data.saveFields),
+			scores: json.scores,
+			scoreBytes: json.scoreBytes
+		};
+	}
+
+	static function captureData():BackupData
+	{
+		var data = new BackupData();
+		data.engineVersion = safeVersion();
+		data.buildVersion = safeBuild();
+		data.platform = platformName();
+
+		var now:Date = Date.now();
+		data.createdAt = now.toString();
+		data.createdAtUnix = now.getTime() / 1000;
+
+		data.saveFields = collectSaveFields();
+		data.keyboard = collectKeyBinds(ClientPrefs.keyBinds);
+		data.gamepad = collectPadBinds();
+
+		#if sys
+		// Only the paths: the bytes of each score file are read while the payload is
+		// written, one file at a time, and dropped as soon as they have been encoded.
+		for (path in Allscore.listScoreFiles())
+			data.scores.push({path: path, size: -1, hash: 0, data: null});
+		#end
+
+		return data;
+	}
+
+	#if sys
+	/** Reads one score file when the payload writer asks for it. Null skips the entry. */
+	static function scoreOpener():BackupScoreFile->Bytes
+	{
+		var dir:String = Allscore.scoreDirectory();
+		return function(score:BackupScoreFile):Bytes {
+			var full:String = dir + score.path;
+			try
+			{
+				return File.getBytes(full);
+			}
+			catch (e:Dynamic)
+			{
+				// A locked or unreadable score file must not fail the whole backup;
+				// losing one history entry is better than losing all of them.
+				TraceManager.warn('trace.backup.scoreReadFailed',
+					'Backup: score file {} could not be read and was skipped: {}', [full, e]);
+				return null;
+			}
+		};
+	}
+	#end
+
+	static function collectSaveFields():Map<String, String>
+	{
+		if (FlxG.save == null || FlxG.save.data == null)
+			throw new BackupError('the game save is not loaded');
+
+		var values:Map<String, Dynamic> = new Map();
+		for (field in Reflect.fields(FlxG.save.data))
+		{
+			try
+			{
+				values.set(field, Reflect.field(FlxG.save.data, field));
+			}
+			catch (e:Dynamic)
+			{
+				TraceManager.warn('trace.backup.readFieldFailed', 'Backup: could not read save field "{}": {}', [field, e]);
+			}
+		}
+
+		return BackupData.encodeSaveFields(values, function(field:String, error:String) {
+			TraceManager.warn('trace.backup.skipField',
+				'Backup: save field "{}" cannot be serialized and was skipped: {}', [field, error]);
+		});
+	}
+
+	static function collectKeyBinds(binds:Map<String, Array<FlxKey>>):Map<String, Array<Int>>
+	{
+		var out:Map<String, Array<Int>> = new Map();
+		if (binds == null) return out;
+
+		for (name => keys in binds)
+		{
+			if (keys == null) continue;
+			var codes:Array<Int> = [];
+			for (key in keys) codes.push(cast key);
+			out.set(name, codes);
+		}
+		return out;
+	}
+
+	static function collectPadBinds():Map<String, Array<Int>>
+	{
+		var out:Map<String, Array<Int>> = new Map();
+		#if !android
+		for (name => buttons in ClientPrefs.gamepadBinds)
+		{
+			if (buttons == null) continue;
+			var codes:Array<Int> = [];
+			for (button in buttons) codes.push(cast button);
+			out.set(name, codes);
+		}
+		#end
+		return out;
+	}
+
+	// ------------------------------------------------------------------ parse
+
+	/** Decodes and fully validates a .SEB file that is already in memory. */
+	public static function parseBackupText(text:String):BackupData
+	{
+		if (text == null || text.length == 0)
+			throw new BackupError('the file is empty');
+
+		return acceptContainer(BackupFormat.readContainer(new StringSource(text)));
+	}
+
+	#if sys
 	/**
-	 * Restore game data from a decrypted backup object.
-	 * Returns true on success.
+	 * Decodes and fully validates a .SEB file on disk.
+	 *
+	 * The file is read in chunks: a 40 MB backup never becomes a 40 MB string, so the
+	 * memory this needs follows the payload, not the text.
 	 */
-	public static function restoreFromBackup(backup:Dynamic):Bool
+	public static function parseBackupFile(path:String):BackupData
+	{
+		var length:Int = -1;
+		try
+		{
+			length = Std.int(FileSystem.stat(path).size);
+		}
+		catch (e:Dynamic) {}
+
+		var input:FileInput = null;
+		var container:BackupContainer = null;
+		var failure:Dynamic = null;
+
+		try
+		{
+			input = File.read(path);
+			container = BackupFormat.readContainer(new InputSource(input, length));
+		}
+		catch (e:Dynamic)
+		{
+			failure = e;
+		}
+
+		// Haxe has no finally, so the handle is closed here either way.
+		if (input != null)
+		{
+			try input.close() catch (e:Dynamic) {}
+		}
+
+		if (failure != null)
+		{
+			if (Std.isOfType(failure, BackupError)) throw failure;
+			throw new BackupError('the backup file could not be read (' + Std.string(failure) + ')');
+		}
+
+		return acceptContainer(container);
+	}
+
+	/** Size of a backup file in bytes, for the "contains" line of the confirm dialog. */
+	public static function backupFileSize(path:String):Int
 	{
 		try
 		{
-			if (backup == null || backup.version == null)
-			{
-				TraceManager.error('trace.backup.invalidData', 'BackupUtil: Invalid backup data');
-				return false;
-			}
+			if (path != null && path.length > 0 && FileSystem.exists(path))
+				return Std.int(FileSystem.stat(path).size);
+		}
+		catch (e:Dynamic) {}
+		return 0;
+	}
+	#end
 
-			// 1. Restore Highscore maps
-			if (backup.highscoreData != null)
-			{
-				restoreHighscore(backup.highscoreData);
-			}
+	static function acceptContainer(container:BackupContainer):BackupData
+	{
+		var data:BackupData = BackupData.fromContainer(container);
 
-			// 2. Restore Allscore entries
-			if (backup.allscoreData != null)
-			{
-				restoreAllscore(backup.allscoreData);
-			}
+		// Validate every value now, while nothing has been written yet. A backup whose
+		// first three fields are fine and whose fourth is garbage must not half-restore.
+		data.decodeSaveFields();
+		data.decodeScores();
 
-			// 3. Restore ClientPrefs
-			if (backup.clientPrefs != null)
-			{
-				restoreClientPrefs(backup.clientPrefs);
-			}
+		TraceManager.info('trace.backup.parsed',
+			'Backup read: format {} ({}), {} save fields, {} score files', [
+				container.version, container.legacy ? 'legacy' : 'current',
+				data.saveFieldCount(), data.scoreCount()
+			]);
+		return data;
+	}
 
-			// 4. Restore week completion data
-			if (backup.weekCompleted != null)
-			{
-				try
-				{
-					flixel.FlxG.save.data.weekCompleted = backup.weekCompleted;
-				}
-				catch (e:Dynamic) {}
-			}
+	// ------------------------------------------------------------------ restore
 
-			// 5. Persist controls_v2 save (keybinds)
+	/**
+	 * Replaces the live save, key binds and score history with the backup.
+	 * Throws BackupError on failure; in that case the previous data has been put back
+	 * (unless the rollback itself failed, which the message says explicitly).
+	 */
+	public static function applyBackup(data:BackupData):BackupApplyResult
+	{
+		if (data == null) throw new BackupError('there is no backup to restore');
+
+		// 1. Decode everything first: this can throw without having touched anything.
+		var values:Map<String, Dynamic> = data.decodeSaveFields();
+		var scoreBlobs:Array<BackupScoreBlob> = data.decodeScores();
+
+		// 2. Safety copy of the *current* state, streamed straight to disk. It is also the
+		//    rollback source, so the current data is never kept in memory a second time.
+		var safetyPath:String = writeSafetyCopy();
+
+		var removed:Int = 0;
+		var bytes:Int = 0;
+		for (blob in scoreBlobs) bytes += blob.bytes.length;
+
+		// 3. Apply. Any exception from here on is rolled back.
+		try
+		{
+			applySaveData(values, !data.legacy);
+			applyKeyBinds(data.keyboard, data.gamepad);
+			#if sys
+			removed = writeScoreFiles(scoreBlobs);
+			#end
+			flushSave();
+		}
+		catch (e:Dynamic)
+		{
+			TraceManager.error('trace.backup.applyFailed', 'Backup restore failed, rolling back: {}', [e]);
+			var rolledBack:Bool = rollback(safetyPath);
+			var reason:String = describeError(e);
+			if (rolledBack)
+				throw new BackupError(reason + ' — your previous data has been put back');
+			throw new BackupError(reason + ' — AND the rollback failed; the previous data is in '
+				+ (safetyPath != null ? safetyPath : AUTO_DIR));
+		}
+
+		return {
+			fields: mapSize(values),
+			scores: scoreBlobs.length,
+			scoresRemoved: removed,
+			bytes: bytes,
+			safetyPath: safetyPath
+		};
+	}
+
+	/**
+	 * Refreshes every in-memory cache that mirrors FlxG.save.data, so the restored data
+	 * is what the running game sees. Called after applyBackup() succeeded.
+	 */
+	public static function reloadAfterRestore():Void
+	{
+		// Order matters: loadPrefs() reads both the main save and controls_v3, and the
+		// other caches read FlxG.save.data directly.
+		ClientPrefs.loadPrefs();
+		Highscore.load();
+		Allscore.load();
+		Achievements.reload();
+
+		if (FlxG.save != null && FlxG.save.data != null && Reflect.hasField(FlxG.save.data, 'weekCompleted'))
+			StoryMenuState.weekCompleted = Reflect.field(FlxG.save.data, 'weekCompleted');
+
+		Language.load();
+		TraceManager.info('trace.backup.reloaded', 'Backup restore: in-memory data reloaded');
+	}
+
+	static function applySaveData(values:Map<String, Dynamic>, clearFirst:Bool):Void
+	{
+		if (FlxG.save == null || FlxG.save.data == null)
+			throw new BackupError('the game save is not loaded');
+
+		if (clearFirst)
+		{
+			// v2 backups contain the whole save: drop stale fields so the result is exactly
+			// the backup. Legacy backups only contain a subset, so they merge instead.
+			for (field in Reflect.fields(FlxG.save.data))
+				Reflect.deleteField(FlxG.save.data, field);
+		}
+
+		for (field => value in values)
+			Reflect.setField(FlxG.save.data, field, value);
+	}
+
+	static function applyKeyBinds(keyboard:Map<String, Array<Int>>, gamepad:Map<String, Array<Int>>):Void
+	{
+		var applied:Int = 0;
+
+		if (keyboard != null)
+		{
+			for (name => codes in keyboard)
+			{
+				if (!ClientPrefs.keyBinds.exists(name)) continue; // control from another engine version
+				var keys:Array<FlxKey> = [];
+				for (code in codes) keys.push(cast code);
+				ClientPrefs.keyBinds.set(name, keys);
+				applied++;
+			}
+		}
+
+		#if !android
+		if (gamepad != null)
+		{
+			for (name => codes in gamepad)
+			{
+				if (!ClientPrefs.gamepadBinds.exists(name)) continue;
+				var buttons:Array<FlxGamepadInputID> = [];
+				for (code in codes) buttons.push(cast code);
+				ClientPrefs.gamepadBinds.set(name, buttons);
+				applied++;
+			}
+		}
+		#end
+
+		// A backup that carries no known control name (or an all-empty one) leaves the
+		// current binds alone rather than making the game unplayable.
+		if (applied == 0) return;
+		persistControls();
+	}
+
+	static function persistControls():Void
+	{
+		var save:FlxSave = new FlxSave();
+		save.bind('controls_v3', 'ninjamuffin99');
+		save.data.keyboard = ClientPrefs.keyBinds;
+		#if !android
+		save.data.gamepad = ClientPrefs.gamepadBinds;
+		#end
+		var written:Bool = save.flush();
+		save.destroy();
+
+		if (!written)
+			throw new BackupError('the key bindings could not be written (the storage may be full)');
+	}
+
+	#if sys
+	static function writeScoreFiles(blobs:Array<BackupScoreBlob>):Int
+	{
+		var dir:String = Allscore.scoreDirectory();
+		SUtil.mkDirs(dir);
+
+		var wanted:Map<String, Bool> = new Map();
+		for (blob in blobs) wanted.set(blob.path, true);
+
+		// Write the backup's files first. Deleting first would open a window where neither
+		// the old nor the new history exists, and a failure inside that window is exactly
+		// what the rollback is supposed to cover.
+		for (blob in blobs)
+		{
+			var target:String = dir + blob.path;
+			var slash:Int = target.lastIndexOf('/');
+			if (slash > 0) SUtil.mkDirs(target.substr(0, slash));
+			File.saveBytes(target, blob.bytes);
+		}
+
+		// Then remove entries the backup does not know about, so the restored history is
+		// the backup's history and not "the backup plus whatever was already here".
+		var removed:Int = 0;
+		for (path in Allscore.listScoreFiles())
+		{
+			if (wanted.exists(path)) continue;
 			try
 			{
-				var controlsSave:flixel.util.FlxSave = new flixel.util.FlxSave();
-				controlsSave.bind('controls_v2', 'ninjamuffin99');
-				controlsSave.data.customControls = ClientPrefs.keyBinds;
-				controlsSave.flush();
-				controlsSave.destroy();
+				FileSystem.deleteFile(dir + path);
+				removed++;
 			}
-			catch (e:Dynamic) {}
+			catch (e:Dynamic)
+			{
+				// Leaving one extra history entry behind is not worth failing a restore.
+				TraceManager.warn('trace.backup.scoreDeleteFailed',
+					'Backup: old score file {} could not be removed: {}', [dir + path, e]);
+			}
+		}
+		return removed;
+	}
+	#end
 
-			// Flush main save
-			try { flixel.FlxG.save.flush(); } catch (e:Dynamic) {}
+	static function flushSave():Void
+	{
+		if (FlxG.save == null) throw new BackupError('the game save is not loaded');
+		if (!FlxG.save.flush())
+		{
+			var detail:String = FlxG.save.lastError != null ? FlxG.save.lastError : 'unknown error';
+			throw new BackupError('the save file could not be written: ' + detail);
+		}
+	}
 
-			TraceManager.info('trace.backup.restoreSuccess', 'BackupUtil: Backup restored successfully');
+	static function rollback(safetyPath:String):Bool
+	{
+		#if sys
+		if (safetyPath == null || safetyPath.length == 0)
+		{
+			TraceManager.error('trace.backup.rollbackFailed', 'Backup rollback failed: no safety copy');
+			return false;
+		}
+
+		try
+		{
+			var snapshot:BackupData = parseBackupFile(safetyPath);
+			applySaveData(snapshot.decodeSaveFields(), true);
+			writeScoreFiles(snapshot.decodeScores());
+			applyKeyBinds(snapshot.keyboard, snapshot.gamepad);
+			flushSave();
 			return true;
 		}
 		catch (e:Dynamic)
 		{
-			TraceManager.error('trace.backup.restoreFailed', 'BackupUtil: Failed to restore backup: {}', [e]);
+			TraceManager.error('trace.backup.rollbackFailed', 'Backup rollback failed: {}', [e]);
 			return false;
 		}
-	}
-
-	// ==================== Private Helpers ====================
-
-	private static function xorEncryptDecrypt(data:Bytes, keyIndex:Int):Bytes
-	{
-		var key = XOR_KEY;
-		var result:Bytes = Bytes.alloc(data.length);
-		for (i in 0...data.length)
-		{
-			var keyByte:Int = key[(i + keyIndex) % key.length];
-			result.set(i, data.get(i) ^ keyByte);
-		}
-		return result;
-	}
-
-
-
-	private static function readHighscoreFromSave():Dynamic
-	{
-		// Highscore data is stored in FlxG.save.data fields
-		// We capture it by reading the in-memory maps
-		var data:Dynamic = {};
-		try
-		{
-		// Int64 maps cannot be JSON.stringify'd as numbers; store exact decimal strings.
-			function exportIntMap(source:Map<String, haxe.Int64>):Map<String, String>
-			{
-			var out:Map<String, String> = new Map();
-			for (key => value in source)
-			out.set(key, haxe.Int64.toStr(value));
-			return out;
-		}
-			data.songScores = exportIntMap(Highscore.songScores);
-			data.songRating = Highscore.songRating;
-			data.weekScores = exportIntMap(Highscore.weekScores);
-			data.songSicks = exportIntMap(Highscore.songSicks);
-			data.songGoods = exportIntMap(Highscore.songGoods);
-			data.songBads = exportIntMap(Highscore.songBads);
-			data.songShits = exportIntMap(Highscore.songShits);
-			data.songMisses = exportIntMap(Highscore.songMisses);
-			data.songMaxCombo = exportIntMap(Highscore.songMaxCombo);
-		}
-		catch (e:Dynamic)
-		{
-			TraceManager.error('trace.backup.readHighscoreFailed', 'BackupUtil: Could not read Highscore data: {}', [e]);
-		}
-		return data;
-	}
-
-	private static function readAllscoreFiles():Array<Dynamic>
-	{
-		var entries:Array<Dynamic> = [];
-		try
-		{
-			#if sys
-			// Read unified encrypted score files
-			var scoreDir:String = "./.scores/";
-			if (FileSystem.exists(scoreDir))
-			{
-				// 递归收集 (兼容 歌曲/难度/ 子目录布局)
-				var files:Array<String> = [];
-				collectScoreFiles(scoreDir, files);
-				for (filePath in files)
-				{
-					try
-					{
-						var bytes:Bytes = File.getBytes(filePath);
-						entries.push({
-							type: "score",
-							fileName: filePath.substring(scoreDir.length), // 相对路径: 歌曲/难度/文件.json
-							data: base64Encode(bytes)  // 加密的二进制, base64 存储
-						});
-					}
-					catch (e:Dynamic)
-					{
-						TraceManager.error('trace.backup.readScoreFileFailed', 'BackupUtil: Failed to read score file {}: {}', [filePath, e]);
-					}
-				}
-			}
-			#end
-		}
-		catch (e:Dynamic)
-		{
-			TraceManager.error('trace.backup.readAllscoreDirsFailed', 'BackupUtil: Could not read Allscore directories: {}', [e]);
-		}
-		return entries;
-	}
-
-	/** 递归收集 .scores 下所有 .json 文件路径 */
-	private static function collectScoreFiles(dir:String, into:Array<String>):Void
-	{
-		#if sys
-		if (!FileSystem.exists(dir) || !FileSystem.isDirectory(dir)) return;
-		var items:Array<String> = FileSystem.readDirectory(dir);
-		for (item in items)
-		{
-			if (item == '.' || item == '..') continue;
-			var path:String = dir + item;
-			try
-			{
-				if (FileSystem.isDirectory(path))
-					collectScoreFiles(path + '/', into);
-				else if (item.endsWith('.json'))
-					into.push(path);
-			}
-			catch (e:Dynamic) {}
-		}
+		#else
+		return false;
 		#end
 	}
 
-	private static function captureClientPrefs():Dynamic
+	// ------------------------------------------------------------------ safety copies
+
+	/** Writes the current data to .backups/ before a restore; returns the path. */
+	static function writeSafetyCopy():String
 	{
-		var data:Dynamic = {};
+		#if sys
 		try
 		{
-			// Field names to skip (complex types that don't serialize well)
-			var skipFields:Array<String> = [
-				"arrowRGB", "arrowRGBPixel", "arrowHSV",
-				"modSettings", "gameplaySettings",
-				"comboOffset", "keyBinds"
-			];
-
-			// Capture all public fields from ClientPrefs.data
-			var prefs = ClientPrefs.data;
-			for (field in Reflect.fields(prefs))
-			{
-				if (skipFields.indexOf(field) >= 0) continue;
-				var val = Reflect.field(prefs, field);
-				if (val != null)
-				{
-					Reflect.setField(data, field, val);
-				}
-			}
-
-			// Capture gameplaySettings manually (Map<String, Dynamic>)
-			var gpSettings = ClientPrefs.data.gameplaySettings;
-			if (gpSettings != null)
-			{
-				var gp:Dynamic = {};
-				for (key in gpSettings.keys())
-				{
-					gpSettings.get(key); // ensure accessible
-					Reflect.setField(gp, key, gpSettings.get(key));
-				}
-				data.gameplaySettings = gp;
-			}
-
-			// Capture keybinds
-			data.keyBinds = captureKeyBinds();
+			SUtil.mkDirs(AUTO_DIR);
+			var path:String = AUTO_DIR + AUTO_PREFIX + timeStamp() + '.SEB';
+			writeBackupToFile(path);
+			pruneSafetyCopies();
+			TraceManager.info('trace.backup.safetyCopy', 'Backup: safety copy written to {}', [path]);
+			return path;
 		}
 		catch (e:Dynamic)
 		{
-			TraceManager.error('trace.backup.captureClientPrefsFailed', 'BackupUtil: Could not capture ClientPrefs: {}', [e]);
+			throw new BackupError('a safety copy of your current data could not be written ('
+				+ describeError(e) + '); nothing was changed');
 		}
-		return data;
+		#else
+		return null;
+		#end
 	}
 
-	private static function captureKeyBinds():Dynamic
-	{
-		var binds:Dynamic = {};
-		try
-		{
-			for (key in ClientPrefs.keyBinds.keys())
-			{
-				var arr = ClientPrefs.keyBinds.get(key);
-				if (arr != null)
-				{
-					Reflect.setField(binds, key, arr);
-				}
-			}
-		}
-		catch (e:Dynamic)
-		{
-			TraceManager.error('trace.backup.captureKeybindsFailed', 'BackupUtil: Could not capture keybinds: {}', [e]);
-		}
-		return binds;
-	}
-
-	private static function restoreFlxSave(saveContent:Dynamic):Void
-	{
-		// Data is restored via Highscore and ClientPrefs individually.
-		// FlxG.save is updated automatically by those restore functions.
-	}
-
-	private static function restoreHighscore(data:Dynamic):Void
+	#if sys
+	static function pruneSafetyCopies():Void
 	{
 		try
 		{
-			// Restore each map: backup stores them as anonymous objects (from JSON),
-			// we convert back to proper Map by iterating Reflect.fields.
-			function restoreIntMap(fieldName:String, target:Map<String, haxe.Int64>)
-			{
-				if (!Reflect.hasField(data, fieldName)) return;
-				var src:Dynamic = Reflect.field(data, fieldName);
-				if (src == null) return;
-				target.clear();
-				// The live FlxSave payload must stay string-encoded: haxe.Serializer does not
-				// round-trip Int64 (see Highscore.saveIntMap). Writing the Int64 map back here
-				// made the next launch's save contain boxed cpp.Int64 values again.
-				var stored:Map<String, String> = new Map();
-				for (key in Reflect.fields(src))
-				{
-					var value:haxe.Int64 = Int64Util.fromDynamic(Reflect.field(src, key));
-					target.set(key, value);
-					stored.set(key, Int64Util.toSaveString(value));
-				}
-				Reflect.setField(flixel.FlxG.save.data, fieldName, stored);
-			}
-			function restoreFloatMap(fieldName:String, target:Map<String, Float>)
-			{
-				if (!Reflect.hasField(data, fieldName)) return;
-				var src:Dynamic = Reflect.field(data, fieldName);
-				if (src == null) return;
-				target.clear();
-				for (key in Reflect.fields(src))
-					target.set(key, Reflect.field(src, key) * 1.0);
-				Reflect.setField(flixel.FlxG.save.data, fieldName, target);
-			}
+			if (!FileSystem.exists(AUTO_DIR)) return;
 
-			restoreIntMap("songScores", Highscore.songScores);
-			restoreFloatMap("songRating", Highscore.songRating);
-			restoreIntMap("weekScores", Highscore.weekScores);
-			restoreIntMap("songSicks", Highscore.songSicks);
-			restoreIntMap("songGoods", Highscore.songGoods);
-			restoreIntMap("songBads", Highscore.songBads);
-			restoreIntMap("songShits", Highscore.songShits);
-			restoreIntMap("songMisses", Highscore.songMisses);
-			restoreIntMap("songMaxCombo", Highscore.songMaxCombo);
+			var names:Array<String> = [];
+			for (name in FileSystem.readDirectory(AUTO_DIR))
+				if (name.indexOf(AUTO_PREFIX) == 0 && name.endsWith('.SEB')) names.push(name);
 
-			flixel.FlxG.save.flush();
-			TraceManager.info('trace.backup.highscoreRestoreSuccess', 'BackupUtil: Highscore data restored successfully');
+			if (names.length <= AUTO_KEEP) return;
+
+			names.sort(function(a, b) return a > b ? -1 : (a < b ? 1 : 0));
+			for (i in AUTO_KEEP...names.length)
+			{
+				try FileSystem.deleteFile(AUTO_DIR + names[i])
+				catch (e:Dynamic) {}
+			}
 		}
-		catch (e:Dynamic)
-		{
-			TraceManager.error('trace.backup.highscoreRestoreFailed', 'BackupUtil: Failed to restore Highscore: {}', [e]);
-		}
+		catch (e:Dynamic) {}
 	}
+	#end
 
-	private static function restoreAllscore(entries:Array<Dynamic>):Void
+	/** Human-readable location of the automatic pre-restore copies (for the UI). */
+	public static function autoBackupDirectory():String
+		return AUTO_DIR;
+
+	public static function countSafetyCopies():Int
 	{
+		#if sys
 		try
 		{
-			#if sys
-			var scoreDir:String = "./.scores/";
-			if (!FileSystem.exists(scoreDir))
-				FileSystem.createDirectory(scoreDir);
-
-			for (entry in entries)
-			{
-				try
-				{
-					var fileName:String = entry.fileName;
-					if (fileName == null || entry.data == null) continue;
-
-					var bytes:Bytes = base64Decode(entry.data);
-					if (bytes != null)
-					{
-						// 兼容新格式相对路径 (歌曲/难度/文件.json) 与旧格式扁平文件名
-						var slash:Int = fileName.lastIndexOf('/');
-						var dirPart:String = slash > -1 ? fileName.substr(0, slash + 1) : '';
-						SUtil.mkDirs(scoreDir + dirPart);
-						File.saveBytes(scoreDir + fileName, bytes);
-					}
-				}
-				catch (e:Dynamic)
-				{
-					TraceManager.error('trace.backup.restoreEntryFailed', 'BackupUtil: Failed to restore entry: {}', [e]);
-				}
-			}
-			#end
-
-			// Reload Allscore data
-			Allscore.load();
+			if (!FileSystem.exists(AUTO_DIR)) return 0;
+			var count:Int = 0;
+			for (name in FileSystem.readDirectory(AUTO_DIR))
+				if (name.indexOf(AUTO_PREFIX) == 0 && name.endsWith('.SEB')) count++;
+			return count;
 		}
-		catch (e:Dynamic)
-		{
-			TraceManager.error('trace.backup.allscoreRestoreFailed', 'BackupUtil: Failed to restore Allscore: {}', [e]);
-		}
+		catch (e:Dynamic) {}
+		#end
+		return 0;
 	}
 
-	private static function restoreClientPrefs(data:Dynamic):Void
+	// ------------------------------------------------------------------ small helpers
+
+	static function timeStamp():String
 	{
-		try
-		{
-			var prefs = ClientPrefs.data;
-
-			// Fields we skip (complex types stored separately)
-			var skipFields:Array<String> = [
-				"arrowRGB", "arrowRGBPixel", "arrowHSV",
-				"modSettings", "gameplaySettings",
-				"comboOffset", "keyBinds"
-			];
-
-			// Restore simple fields: iterate over ALL known fields in ClientPrefs.data,
-			// look each one up in the backup data.
-			for (field in Reflect.fields(prefs))
-			{
-				if (skipFields.indexOf(field) >= 0) continue;
-				if (!Reflect.hasField(data, field)) continue;
-				var val = Reflect.field(data, field);
-				if (val == null) continue;
-				try
-				{
-					Reflect.setField(prefs, field, val);
-				}
-				catch (e:Dynamic)
-				{
-					TraceManager.error('trace.backup.setFieldFailed', 'BackupUtil: Failed to set field {}: {}', [field, e]);
-				}
-			}
-
-			// Restore gameplaySettings (Map<String, Dynamic>)
-			if (Reflect.hasField(data, "gameplaySettings"))
-			{
-				var gpData:Dynamic = Reflect.field(data, "gameplaySettings");
-				if (gpData != null)
-				{
-					var gpMap = prefs.gameplaySettings;
-					for (field in Reflect.fields(gpData))
-					{
-						try { gpMap.set(field, Reflect.field(gpData, field)); }
-						catch (e:Dynamic) {}
-					}
-				}
-			}
-
-			// Restore keybinds (Map<String, Array<FlxKey>>)
-			if (Reflect.hasField(data, "keyBinds"))
-			{
-				var bindsData:Dynamic = Reflect.field(data, "keyBinds");
-				if (bindsData != null)
-				{
-					for (field in Reflect.fields(bindsData))
-					{
-						if (ClientPrefs.keyBinds.exists(field))
-						{
-							try { ClientPrefs.keyBinds.set(field, Reflect.field(bindsData, field)); }
-							catch (e:Dynamic) {}
-						}
-					}
-				}
-			}
-
-			// Persist to disk
-			ClientPrefs.saveSettings();
-			TraceManager.info('trace.backup.clientPrefsRestoreSuccess', 'BackupUtil: ClientPrefs restored successfully');
-		}
-	 catch (e:Dynamic)
-		{
-			TraceManager.error('trace.backup.clientPrefsRestoreFailed', 'BackupUtil: Failed to restore ClientPrefs: {}', [e]);
-		}
+		var now:Date = Date.now();
+		return now.getFullYear() + pad2(now.getMonth() + 1) + pad2(now.getDate())
+			+ '_' + pad2(now.getHours()) + pad2(now.getMinutes()) + pad2(now.getSeconds());
 	}
 
+	static function pad2(value:Int):String
+		return value < 10 ? '0' + value : Std.string(value);
 
-
-	// ==================== Simple Base64 Implementation ====================
-
-	private static var BASE64_CHARS:String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-	private static function base64Encode(bytes:Bytes):String
+	static function safeVersion():String
 	{
-		var output = new StringBuf();
-		var i:Int = 0;
-		var len:Int = bytes.length;
-
-		while (i < len)
-		{
-			var b1:Int = bytes.get(i++);
-			var b2:Int = (i < len) ? bytes.get(i++) : -1;
-			var b3:Int = (i < len) ? bytes.get(i++) : -1;
-
-			output.add(BASE64_CHARS.charAt((b1 >> 2) & 0x3F));
-			output.add(BASE64_CHARS.charAt(((b1 << 4) & 0x30) | ((b2 >> 4) & 0x0F)));
-
-			if (b2 == -1)
-			{
-				output.add("==");
-			}
-			else
-			{
-				output.add(BASE64_CHARS.charAt(((b2 << 2) & 0x3C) | ((b3 >> 6) & 0x03)));
-				if (b3 == -1)
-					output.add("=");
-				else
-					output.add(BASE64_CHARS.charAt(b3 & 0x3F));
-			}
-		}
-
-		return output.toString();
+		try return BuildInfo.appVersion() catch (e:Dynamic) return 'unknown';
 	}
 
-	private static function base64Decode(str:String):Bytes
+	static function safeBuild():String
 	{
-		try
-		{
-			// Remove whitespace
-			str = StringTools.replace(str, "\n", "");
-			str = StringTools.replace(str, "\r", "");
-			str = StringTools.replace(str, " ", "");
+		try return BuildInfo.buildId() catch (e:Dynamic) return 'unknown';
+	}
 
-			var output = new BytesOutput();
-			var i:Int = 0;
-			var len:Int = str.length;
+	static function platformName():String
+	{
+		#if sys
+		try return Sys.systemName() catch (e:Dynamic) {}
+		#end
+		return 'unknown';
+	}
 
-			while (i < len && str.charAt(i) != '=')
-			{
-				var c1:Int = BASE64_CHARS.indexOf(str.charAt(i++));
-				var c2:Int = (i < len && str.charAt(i) != '=') ? BASE64_CHARS.indexOf(str.charAt(i++)) : 0;
-				var c3:Int = (i < len && str.charAt(i) != '=') ? BASE64_CHARS.indexOf(str.charAt(i++)) : 0;
-				var c4:Int = (i < len && str.charAt(i) != '=') ? BASE64_CHARS.indexOf(str.charAt(i++)) : 0;
+	/** Keeps a BackupError's message, turns anything else into a sentence. */
+	static function rethrow(e:Dynamic, what:String):Dynamic
+	{
+		if (Std.isOfType(e, BackupError)) return e;
+		return new BackupError(what + ' (' + Std.string(e) + ')');
+	}
 
-				if (c1 < 0 || c2 < 0) break;
+	static function describeError(e:Dynamic):String
+	{
+		if (e == null) return 'unknown error';
+		if (Std.isOfType(e, BackupError)) return (cast e:BackupError).message;
+		return Std.string(e);
+	}
 
-				output.writeByte((c1 << 2) | ((c2 >> 4) & 0x03));
-				if (c3 >= 0)
-					output.writeByte(((c2 << 4) & 0xF0) | ((c3 >> 2) & 0x0F));
-				if (c4 >= 0)
-					output.writeByte(((c3 << 6) & 0xC0) | c4);
-			}
-
-			return output.getBytes();
-		}
-		catch (e:Dynamic)
-		{
-			TraceManager.error('trace.backup.base64DecodeFailed', 'BackupUtil: Base64 decode failed: {}', [e]);
-			return null;
-		}
+	/** Map has no count() on this Haxe version; every caller here only needs the size. */
+	static function mapSize<K, V>(map:Map<K, V>):Int
+	{
+		if (map == null) return 0;
+		var count:Int = 0;
+		for (_ in map.keys()) count++;
+		return count;
 	}
 }
+
+#if sys
+/**
+ * Writes the container text straight to a file.
+ *
+ * The header is reserved by writing HEADER_CHARS spaces first; patchHeader() seeks back
+ * and overwrites them once the payload length and checksum are known, then returns to the
+ * end. abort() closes the handle and removes the partial file, so a failed export never
+ * leaves something that looks like a backup.
+ */
+class FileBackupSink implements HeaderSink
+{
+	var path:String;
+	var output:FileOutput;
+
+	public function new(path:String)
+	{
+		this.path = path;
+		this.output = File.write(path, false);
+	}
+
+	public function beginHeader(length:Int):Void
+	{
+		var spaces:StringBuf = new StringBuf();
+		for (i in 0...length) spaces.addChar(0x20);
+		output.writeString(spaces.toString());
+	}
+
+	public function write(text:String):Void
+	{
+		output.writeString(text);
+	}
+
+	public function patchHeader(text:String):Void
+	{
+		output.flush();
+		output.seek(0, FileSeek.SeekBegin);
+		output.writeString(text);
+		output.flush();
+		output.seek(0, FileSeek.SeekEnd);
+	}
+
+	public function close():Void
+	{
+		if (output == null) return;
+		output.flush();
+		output.close();
+		output = null;
+	}
+
+	public function abort():Void
+	{
+		try
+		{
+			if (output != null)
+			{
+				output.close();
+				output = null;
+			}
+		}
+		catch (e:Dynamic) {}
+
+		try
+		{
+			if (FileSystem.exists(path)) FileSystem.deleteFile(path);
+		}
+		catch (e:Dynamic) {}
+	}
+}
+#end

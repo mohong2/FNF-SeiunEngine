@@ -117,6 +117,24 @@
 		"defaultValue": false
 	},
 	{
+		"nameKey": "option.showHitMs",
+		"defaultName": "Hit Timing (ms)",
+		"descKey": "option.showHitMs.desc",
+		"defaultDesc": "If unchecked, the \"+12.3ms\" / \"Miss\" timing readout that pops up on every hit is hidden.\nIt follows Hide HUD as well, so it is already hidden while the HUD is off.",
+		"variable": "showHitMs",
+		"type": "bool",
+		"defaultValue": true
+	},
+	{
+		"nameKey": "option.showVersionText",
+		"defaultName": "Song & Version Text",
+		"descKey": "option.showVersionText.desc",
+		"defaultDesc": "If unchecked, the bottom-left line with the song name, the difficulty and the engine versions is hidden.\nThis is a separate switch from Hit Timing (ms).",
+		"variable": "showVersionText",
+		"type": "bool",
+		"defaultValue": true
+	},
+	{
 		"nameKey": "option.showFP",
 		"defaultName": "Show Funkin Points Counter",
 		"descKey": "option.showFP.desc",

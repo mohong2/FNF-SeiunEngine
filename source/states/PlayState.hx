@@ -2127,7 +2127,8 @@ class PlayState extends MusicBeatState
 		msTxtKade.alpha = 0;
 		msTxtKade.scrollFactor.set();
 		msTxtKade.cameras = [camHUD];
-		msTxtKade.visible = !ClientPrefs.data.hideHud;
+		// Two independent reasons to hide it: the player's own switch and Hide HUD.
+		msTxtKade.visible = msReadoutVisible();
 		msTxtKade.setFormat(19, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 		msTxtKade.borderSize = 2;
 		msTxtKade.font = Paths.font("kadems.ttf");
@@ -2158,6 +2159,8 @@ class PlayState extends MusicBeatState
 		atkText.borderSize = 2;
 		atkText.setFormat(15, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
 		atkText.font = Paths.font("vcr.ttf");
+		// Separate switch from the hit-timing readout: this line is about the song and the build.
+		atkText.visible = ClientPrefs.data.showVersionText;
         add(atkText);
 		if(replayMode)
 			atkText.text += '(Replay)';
@@ -8405,11 +8408,14 @@ class PlayState extends MusicBeatState
 				health += daNote.missHealth * healthLoss;
 			else
 				health -= daNote.missHealth * healthLoss;
-			msTxtKade.color = 0xFF0000;
-			msTxtKade.text = 'Miss';
-			msTxtKade.alpha = 1;
-		if (msTween != null) msTween.cancel();
-		msTween = FlxTween.tween(msTxtKade, {alpha: 0}, 0.5, {ease: FlxEase.quintIn});
+			if (msReadoutVisible())
+			{
+				msTxtKade.color = 0xFF0000;
+				msTxtKade.text = 'Miss';
+				msTxtKade.alpha = 1;
+				if (msTween != null) msTween.cancel();
+				msTween = FlxTween.tween(msTxtKade, {alpha: 0}, 0.5, {ease: FlxEase.quintIn});
+			}
 			if(instakillOnMiss)
 			{
 				vocals.volume = 0;
@@ -9723,8 +9729,11 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 	if (hurtCount > 0)
 	{
 		vocals.volume = 0; vocalsPlayer.volume = 0;
-		msTxtKade.color = 0xFF0000;
-		msTxtKade.text = 'Miss';
+		if (msReadoutVisible())
+		{
+			msTxtKade.color = 0xFF0000;
+			msTxtKade.text = 'Miss';
+		}
 		RecalculateRating(true);
 		if (instakillOnMiss) doDeathCheck(true);
 	}
@@ -9776,8 +9785,11 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 	if (bulkHurtCount > 0)
 	{
 		vocals.volume = 0; vocalsPlayer.volume = 0;
-		msTxtKade.color = 0xFF0000;
-		msTxtKade.text = 'Miss';
+		if (msReadoutVisible())
+		{
+			msTxtKade.color = 0xFF0000;
+			msTxtKade.text = 'Miss';
+		}
 	}
 
 		if (drainedHit > 0)
@@ -9938,18 +9950,21 @@ if (!cpuControlled) {
 	var diff:Float = (recordedJ != null) ? recordedJ.hitDiff : (strumTime - songPos + rOffset);
 
 	// 原版语义: 每次命中直接写 ms 行, 并在同一帧起两个 tween (命中这一帧就是新值)。
-	if (rating == 'marvelous') msTxtKade.color = 0xFFFFD700;
-	else if (rating == 'sick') msTxtKade.color = 0x00FFFF;
-	else if (rating == 'good') msTxtKade.color = 0x006400;
-	else if (rating == 'bad') msTxtKade.color = 0xEEFF00;
-	else msTxtKade.color = 0xFF0000;
-	msTxtKade.text = Std.string(FlxMath.roundDecimal(-diff, 3)) + "ms";
-	msTxtKade.alpha = 1;
-	if (msScaleTween != null) msScaleTween.cancel();
-	msTxtKade.scale.set(1.15, 1.15);
-	msScaleTween = FlxTween.tween(msTxtKade.scale, {x: 1, y: 1}, 0.15, {ease: FlxEase.backOut});
-	if (msTween != null) msTween.cancel();
-	msTween = FlxTween.tween(msTxtKade, {alpha: 0}, 0.5, {ease: FlxEase.quintIn});
+	if (msReadoutVisible())
+	{
+		if (rating == 'marvelous') msTxtKade.color = 0xFFFFD700;
+		else if (rating == 'sick') msTxtKade.color = 0x00FFFF;
+		else if (rating == 'good') msTxtKade.color = 0x006400;
+		else if (rating == 'bad') msTxtKade.color = 0xEEFF00;
+		else msTxtKade.color = 0xFF0000;
+		msTxtKade.text = Std.string(FlxMath.roundDecimal(-diff, 3)) + "ms";
+		msTxtKade.alpha = 1;
+		if (msScaleTween != null) msScaleTween.cancel();
+		msTxtKade.scale.set(1.15, 1.15);
+		msScaleTween = FlxTween.tween(msTxtKade.scale, {x: 1, y: 1}, 0.15, {ease: FlxEase.backOut});
+		if (msTween != null) msTween.cancel();
+		msTween = FlxTween.tween(msTxtKade, {alpha: 0}, 0.5, {ease: FlxEase.quintIn});
+	}
 } else {
 	sustainNotescore = 0;
 }
@@ -10991,6 +11006,19 @@ function calculateResetTime():Float {
 
 	public var curLight:Int = -1;
 	public var curLightEvent:Int = -1;
+
+	/**
+	 * Whether the hit-timing readout ("+12.3ms" / "Miss") should be drawn.
+	 *
+	 * Two independent switches gate it: the player's own showHitMs preference (new,
+	 * Options -> Visuals -> Hit Timing (ms)) and hideHud, which has always hidden it
+	 * because the readout sits on camHUD with the rest of the play HUD. Kept in one place
+	 * so every hit/miss path asks the same question instead of poking visible.
+	 */
+	inline function msReadoutVisible():Bool
+	{
+		return ClientPrefs.data.showHitMs && !ClientPrefs.data.hideHud;
+	}
 
 	// ── Generic play-HUD visibility helpers (NOT online-only) ──
 	// syncHudExtras() is called from the unguarded score path inside this class and

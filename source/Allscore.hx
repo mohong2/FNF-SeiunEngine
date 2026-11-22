@@ -45,6 +45,30 @@ class Allscore
 		return SCORE_DIR + Paths.formatToSongPath(songName) + '/' + difficultyFolder(diffName) + '/';
 	}
 
+	/** Directory the score history lives in, relative to the process working directory. */
+	public static function scoreDirectory():String
+	{
+		return SCORE_DIR;
+	}
+
+	/**
+	 * Every score file currently on disk, as paths relative to scoreDirectory().
+	 * Used by the backup exporter; the restore rewrites exactly this set.
+	 */
+	public static function listScoreFiles():Array<String>
+	{
+		#if sys
+		var files:Array<String> = [];
+		collectJsonFiles(SCORE_DIR, files);
+		var out:Array<String> = [];
+		for (file in files)
+			out.push(file.substr(SCORE_DIR.length));
+		return out;
+		#else
+		return [];
+		#end
+	}
+
 	/** 递归收集目录下所有 .json 文件路径 */
 	private static function collectJsonFiles(dir:String, into:Array<String>):Void
 	{
