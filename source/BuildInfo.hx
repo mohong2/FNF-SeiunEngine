@@ -77,7 +77,8 @@ class BuildInfo
 
 	/**
 	 * True for development builds: the version string carries "pre" or "beta".
-	 * Current version (0.2.2preonline3) hits this, so the test-build paragraph shows.
+	 * The release line (0.2.2 and later) does not, so the test-build paragraph stays
+	 * hidden and a version carrying "pre" / "beta" is the only way to bring it back.
 	 */
 	public static function isTestBuild():Bool
 	{
@@ -85,7 +86,7 @@ class BuildInfo
 		return v.indexOf('pre') >= 0 || v.indexOf('beta') >= 0;
 	}
 
-	/** One-line identity for the watermark: ASCII only, e.g. "v0.2.2preonline3 | e618301+". */
+	/** One-line identity for the watermark: ASCII only, e.g. "v0.2.2 | e618301+". */
 	public static function watermarkText():String
 	{
 		var id:String = buildId();

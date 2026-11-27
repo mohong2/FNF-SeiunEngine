@@ -3,7 +3,7 @@
 
 	<!-- Application -->
 
-	<app title="SeiunEngine" file="SeiunEngine" packageName="com.mohong.Seiunengine" package="com.mohong.Seiunengine" main="Main" version="0.2.2preonline3" company="mo_hong" company-url="https://github.com/mohong2/FNF-SeiunEngine"/>
+	<app title="SeiunEngine" file="SeiunEngine" packageName="com.mohong.Seiunengine" package="com.mohong.Seiunengine" main="Main" version="0.2.2" company="mo_hong" company-url="https://github.com/mohong2/FNF-SeiunEngine"/>
 	<set name="APP_ID" value="0x0100f6c013bbc000" />
 	<app preloader="flixel.system.FlxPreloader" />
 

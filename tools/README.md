@@ -70,7 +70,7 @@ to the binary in a given report. It is one file now:
 
     python tools\crash.py package                    # whole store -> export/symbols/<zip>
     python tools\crash.py package --add windows-x64=export/symbols/windows-release \
-                                  --out dist/SeiunEngine-symbols-0.2.2preonline3.zip
+                                  --out dist/SeiunEngine-symbols-0.2.2.zip
 
 CI builds the same archive from the downloaded `*-symbols` artifacts, so a local
 package and a release package have the same layout. Big binaries are stored

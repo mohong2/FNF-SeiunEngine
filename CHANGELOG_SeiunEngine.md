@@ -366,7 +366,7 @@
 
 ---
 
-### 2026年9月12日（0.2.2）
+### 2026年9月12日（0.2.2 联机预发布阶段·起步）
 
 #### 崩溃排查链路（本次重点）
 
@@ -640,6 +640,31 @@
 - **导入不再先读成一整个字符串**：按 64 KB 分块解码（BackupFormat.readContainer），并先用文件实际大小挡掉「头部声称 900 MB」的坏文件——以前这种头部会直接申请一大块内存。
 - **恢复**：安全备份直接流式写到 ./.backups/，回滚时再从磁盘读回来，不再同时留第二份完整数据；解码结果只做一次并缓存，第二遍（验证 → 应用）不再重复解码几十 MB。
 - **顺带修掉一个恢复细节**：解析键位时 -1（FlxKey.NONE / FlxGamepadInputID.NONE）被当成「无效值」丢掉了，恢复后所有「第二键位为空」的绑定都会少一个元素。现在按原样保留——这是拿真实存档逐项对比出来的。
+
+---
+
+### 2026年11月27日 –（0.2.2 正式版，开发中）
+
+> 本条目记录 0.2.2 正式版开发期内**已经落地**的工作。本版尚未完成，条目会随开发继续追加；玩家向公告见 `release-notes/0.2.2.md`（同样标注未完成）。联机预发布阶段（Pre-Online.1 → Pre-Online.3）的最终成果已经进入那份公告，这里不再重复。
+
+#### 版本与文档
+
+- 版本串切到 `0.2.2`：`Project.xml` 与 服务端控制台 `ConsoleApi.VERSION`，并把 `BuildInfo` 里两处拿旧版本串举例的注释、`tools/README.md` 的符号包示例路径一并改成 `0.2.2`。协议版本（`Protocol.VERSION` / `NETWORK_VERSION`）不动，联机握手不受影响。
+- 新增 `release-notes/0.2.2.md`：把联机预发布阶段三个版本的最终成果汇总成一份正式版公告——联机第一次作为正式功能写进公告，只取最终形态，被后续提交推翻的做法不再单独记录。文件顶部标「未完成」、文末列「本版进度」，发布前需要清掉。公告刻意不逐项引用预发布期的实测数字，改用一节「概述」说明方向——那些数字是在特定机器与特定谱面上量出来的，写进公告就等于承诺。
+- `CHANGELOG` 里 9 月 12 日那条改名「0.2.2 联机预发布阶段·起步」：它记录的是联机起步前那批崩溃排查，不属于正式版周期，原来的「（0.2.2）」后缀会和本条目撞名。
+
+#### 脚本引擎 1.5.0（hscript-seiun）
+
+- **编译执行后端**：`hscript.Compiler` 把 AST 降成闭包，不再逐节点解释。
+- **调用帧改成链接捕获环境**：`Interp.locals` 现在只表示当前调用帧，函数创建时捕获的环境放在 `frameParent` 里；引擎侧 `PlayStateInterp.resolveRaw` 随之改用 `getLocal`——继续直接读 `locals` 会漏掉闭包引用的外层变量。
+- **两个运行期护栏**：`maxCallDepth` 与循环迭代预算，把栈溢出与死循环变成可捕获的脚本错误，而不是让整个进程消失。
+- 其余：匿名对象字段走快路径、局部写入带作用域标记、脚本类实例化更快；附带微分「编译 vs 解释」测试套件与 Measure / Cmp / Diff 基准，649 条断言覆盖 compiled、interpreter-only 与 linked-frame 三种构建。
+
+#### C++ 运行时（hxcpp 分支）
+
+- GC 终结器只给「析构非平凡」的值注册：`Boxed` 不再为每个 boxed 值挂一个 finalizer。
+- 缓冲区指针统一改用 `Pointer()` / `data()`，不再写 `&a[0]`（后者在空数组上是未定义行为）。
+- 构建工具源码更新后重建 `hxcpp.n`；CI 工作流迁移到 Node 24 actions。
 
 ---
 
@@ -1013,7 +1038,7 @@ Bundled regression harness (temp/touch-fix-test/TouchFixTest.hx): replicates the
 
 ---
 
-### September 12, 2026 (0.2.2)
+### September 12, 2026 (0.2.2 online pre-release: the beginning)
 
 #### Crash diagnostics (the focus of this round)
 
@@ -1318,6 +1343,31 @@ The rewrite:
 - **Import no longer reads the file into one string**: the container is decoded in 64 KB chunks (BackupFormat.readContainer), and a header that claims more data than the file can possibly hold is rejected before anything is allocated for it.
 - **Restore**: the safety copy is streamed straight to ./.backups/ and read back from disk for a rollback, instead of keeping a second full copy in memory; decoding happens once and is cached, so the validate → apply pass no longer decodes the same tens of megabytes twice.
 - **Fixed while testing it**: parsing key binds dropped -1 (FlxKey.NONE / FlxGamepadInputID.NONE), so every restored bind with an empty second slot came back one element short. It is kept as-is now — found by comparing a real save before and after a restore.
+
+---
+
+### November 27, 2026 onward (0.2.2, in development)
+
+> This entry records what has **actually landed** in the 0.2.2 cycle so far. The version is not finished, and entries will keep being appended; the player-facing notes are in `release-notes/0.2.2.md` (also marked as unfinished). The final state of the online pre-release stage (Pre-Online.1 → Pre-Online.3) now lives in those notes and is not repeated here.
+
+#### Version and documentation
+
+- The version string is `0.2.2`: `Project.xml` and the server console's `ConsoleApi.VERSION`, plus the two `BuildInfo` comments that used the old string as an example and the symbols example path in `tools/README.md`. The protocol versions (`Protocol.VERSION` / `NETWORK_VERSION`) are untouched, so the online handshake is unaffected.
+- New `release-notes/0.2.2.md`: the final state of all three online pre-releases consolidated into one regular-release announcement — online play appears in the notes as an official feature for the first time, written in its final shape only, with approaches that later commits overturned left out. The file carries an "unfinished" notice at the top and a progress list at the end, both to be removed before publishing. The notes deliberately quote no pre-release benchmark figures; an "At a glance" section states the direction instead, because those figures were measured on particular machines with particular charts and publishing them turns them into promises.
+- The September 12 entry is retitled "0.2.2 online pre-release: the beginning": it records the crash work from just before the online port, which is not part of the release cycle, and its old "(0.2.2)" suffix would have collided with this entry.
+
+#### Script engine 1.5.0 (hscript-seiun)
+
+- **A compiled execution backend**: `hscript.Compiler` lowers the AST to closures instead of walking it node by node.
+- **Call frames link the captured environment**: `Interp.locals` now means the current call frame only, and the environment captured when a function was created lives in `frameParent`; the engine's `PlayStateInterp.resolveRaw` switched to `getLocal` accordingly — reading `locals` directly would miss outer variables a closure captured.
+- **Two runtime guards**: `maxCallDepth` and a loop-iteration budget turn stack overflows and infinite loops into catchable script errors instead of taking the process down.
+- Also: a fast path for anonymous-object fields, scope tags on local writes, faster script-class instantiation; a differential compiled-vs-interpreted test suite and Measure / Cmp / Diff bench harnesses ship with it — 649 assertions across compiled, interpreter-only and linked-frame builds.
+
+#### The C++ runtime (the hxcpp fork)
+
+- GC finalisers are registered only for values with a non-trivial destructor: `Boxed` no longer attaches a finaliser to every boxed value.
+- Buffer pointers use `Pointer()` / `data()` instead of `&a[0]` (which is undefined behaviour on an empty array).
+- `hxcpp.n` was rebuilt from the updated build-tool sources, and CI workflows moved to Node 24 actions.
 
 ---
 

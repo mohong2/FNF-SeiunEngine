@@ -1,5 +1,9 @@
 # SeiunEngine 联机协议与架构 / Online Protocol & Architecture
 
+> **状态：随 0.2.2 开发中，内容可能变化。** 本文档描述的是 `0.2.2` 开发期的实现；0.2.2 尚未发布，界面、接口与行为仍可能调整。最后校对于 2026-11-27。
+>
+> **Status: in flux while 0.2.2 is in development.** This document describes the implementation as of the 0.2.2 cycle. 0.2.2 is not released yet, so screens, endpoints and behaviour may still change. Last reviewed 2026-11-27.
+
 > **本文档描述现役实现（Colyseus 兼容 / WebSocket，Haxe 4.3.7 + neko 或 hxcpp 服务端）。**
 > This document describes the current implementation (Colyseus-compatible over WebSocket; server in
 > Haxe 4.3.7, built for neko or hxcpp).

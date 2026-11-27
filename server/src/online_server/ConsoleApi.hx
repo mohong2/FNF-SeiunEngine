@@ -23,7 +23,7 @@ import online_server.ClubStore.Club;
  */
 class ConsoleApi {
 	/** Mirrors Project.xml / installers; the console does not read the exe. */
-	public static inline var VERSION = "0.2.2preonline3";
+	public static inline var VERSION = "0.2.2";
 
 	public static function handle(request:HttpRequest, hub:ServerHub):Null<HttpResponse> {
 		var path = request.path;

@@ -1,5 +1,9 @@
 # 服务端扩展点 / Server extension points
 
+> **状态：随 0.2.2 开发中，内容可能变化。** 本文档描述的是 `0.2.2` 开发期的实现；0.2.2 尚未发布，界面、接口与行为仍可能调整。最后校对于 2026-11-27。
+>
+> **Status: in flux while 0.2.2 is in development.** This document describes the implementation as of the 0.2.2 cycle. 0.2.2 is not released yet, so screens, endpoints and behaviour may still change. Last reviewed 2026-11-27.
+
 SeiunEngine 的服务端（`server/src/online_server/`）**没有脚本加载器**：它不加载 `server/scripts/*.hx` 之类的
 外部脚本，扩展都是直接改源码。可用的扩展点：
 

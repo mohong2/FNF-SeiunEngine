@@ -1,5 +1,9 @@
 # SeiunEngine 联机使用说明 / Online & LAN usage
 
+> **状态：随 0.2.2 开发中，内容可能变化。** 本文档描述的是 `0.2.2` 开发期的实现；0.2.2 尚未发布，界面、接口与行为仍可能调整。最后校对于 2026-11-27。
+>
+> **Status: in flux while 0.2.2 is in development.** This document describes the implementation as of the 0.2.2 cycle. 0.2.2 is not released yet, so screens, endpoints and behaviour may still change. Last reviewed 2026-11-27.
+
 > 本文档描述 SeiunEngine 现役的联机实现：Haxe 4.3.7 客户端 + Colyseus 兼容服务端（可用 neko 运行，
 > 也可以编成独立的 `SeiunServer.exe`），并支持在游戏客户端里直接开服（局域网主机）。
 > 协议细节见 [`docs/multiplayer-protocol.md`](multiplayer-protocol.md)；服务端权威说明见 [`server/README.md`](../server/README.md)。
