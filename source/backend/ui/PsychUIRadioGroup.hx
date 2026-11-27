@@ -340,14 +340,17 @@ class PsychUIRadioGroup extends FlxSpriteGroup
 	{
 		var radio:PsychUIRadioItem = _pool.pop();
 		if (radio == null)
-			radio = new PsychUIRadioItem(x, y, '', textWidth);
+			radio = new PsychUIRadioItem(0, 0, '', textWidth);
 		else
-		{
 			radio.visible = radio.active = true;
-			add(radio);
-			radio.x = x;
-			radio.y = y;
-		}
+
+		// EVERY radio has to join the group, not only a recycled one: a radio that is absent from
+		// 'members' still lands in 'radios' (and in the hit box), but it is never updated or
+		// drawn. Missing this add() made every freshly built radio list - the chart editor's
+		// save-format prompt, the difficulty pickers, the chart converter - render empty.
+		add(radio);
+		radio.x = x;
+		radio.y = y;
 
 		radio.onClick = function()
 		{

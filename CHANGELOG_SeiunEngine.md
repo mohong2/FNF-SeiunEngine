@@ -1397,6 +1397,17 @@ The rewrite:
 - **Dev probes**: `SEIUN_BOOT_HOLD=<seconds>` / `SEIUN_BOOT_PROGRESS=<0..1>` freeze one frame of the boot for screenshots, and `SEIUN_BOOT_STATS=1` prints the splash's end time and its worst frame to stdout. Unset in every normal run.
 - New `backend/boot/`: `BootArt` (procedural drawing), `BootEmblem` (the mark and its motion), `BootChip` (corner label), `BootInfo` (version / platform / renderer, all defensive). `BootBar` and `BootState` were rewritten; `CopyState`'s surface (`bar`, `rangeStart`, `rangeEnd`, `handOver`, `EXTRACT_PORTION`) is unchanged.
 
+#### PsychUI: the radio lists drew nothing
+
+- **What broke.** The Pre-Online.3 rewrite replaced the old `recycle()`-based radio construction with a manual pool, and only the pooled branch called `add()`. A freshly built `PsychUIRadioItem` therefore never entered the group's `members`: it lived in `radios`, widened the hit box and could even be clicked blind, but `FlxTypedGroup.draw()` never reached it. Every list built on the spot came up empty — the chart editor's "Save Chart As..." prompt (all eight format rows and the whole Key-count row), the difficulty pickers, the file picker and the chart converter.
+- **The fix.** `_addNewRadio()` now adds the item in both branches (fresh and pooled) and positions it afterwards, so `radios` and `members` cannot disagree again.
+
+#### The mobile pad in the chart editors
+
+- **What was wrong.** The editor pads were laid out for gameplay, not for an editor margin. `LEFT_FULL` puts its right button at x = 207..339, i.e. 59 px inside the classic chart grid (which starts at x = 280), so the leftmost notes could not be tapped; the top action row covered the modern layout's info box (x = 1000..1220, y = 360..580) over its full 111 px height; and the `NEW_CHART_EDITOR` Q/E pair sat at `FlxG.width - 952` (x = 328 on a 1280 px canvas), on top of the cross' right button (an 11 px overlap that made one tap hit both) and off the left edge on anything narrower.
+- **The new arrangement** (`editors/EditorPadLayout`): the same buttons with the same mappings, at the 60 % scale the online screens already use - a direction cross in the bottom-left corner whose right edge stays at x <= 256 (left of the classic grid and of the modern centred grid), the Q/E pair just above it, and the action block in the bottom-right corner. The same placement is valid for the Modern and the Classic editor layout, so switching layouts no longer needs a re-layout, and both the new and the legacy chart editor use it.
+- **Also fixed by the same change**: the pad now draws on its own camera (the chart camera scrolls every frame, so the pad no longer rides on it), the bottom status line is lifted above the buttons instead of staying underneath them, and the "Press F1 for help" hint is hidden on touch (it was both unreachable and covered).
+
 ---
 
 ### Acknowledgments

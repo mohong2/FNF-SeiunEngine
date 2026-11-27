@@ -359,6 +359,9 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 	var autoSaveTxt:FlxText;
 	var outputTxt:EditorsText;
 	var modIndicatorTxt:EditorsText;
+	var tipText:EditorsText;
+	/** 触屏: 底部输出提示被虚拟按键挡住时的上移量 (0 = 原版位置)。 */
+	var padLift:Float = 0;
 
 	var selectionStart:FlxPoint = FlxPoint.get();
 	var selectionBox:FlxSprite;
@@ -765,7 +768,7 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 		classicExitButton.visible = classicExitButton.active = false;
 		add(classicExitButton);
 
-		var tipText:EditorsText = new EditorsText(FlxG.width - 210, FlxG.height - 30, 200, Language.get('newchartEditor_press_f1_for_help', 'Press F1 for Help'), 20);
+		tipText = new EditorsText(FlxG.width - 210, FlxG.height - 30, 200, Language.get('newchartEditor_press_f1_for_help', 'Press F1 for Help'), 20);
 		tipText.cameras = [camUI];
 		tipText.setFormat(Paths.font('editors.ttf'), 16, FlxColor.WHITE, RIGHT);
 		tipText.borderColor = FlxColor.BLACK;
@@ -834,6 +837,23 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 		setupLayouts();
 		#if (android || desktop)
 		addVirtualPad(LEFT_FULL, NEW_CHART_EDITOR);
+		// 编辑器专属摆法 (见 EditorPadLayout): 方向十字收进左下角, 动作键贴右下角。
+		// 旧版排版的网格从 x=280 开始、新版网格居中, 两者都能让开; 原来的 up2/down2 摆在
+		// FlxG.width-952 (1280 宽时 x=328), 正好压在十字右键上, 窄屏更会直接出屏。
+		if (virtualPad != null)
+		{
+			EditorPadLayout.apply(virtualPad, [
+				virtualPad.buttonX, virtualPad.buttonY, virtualPad.buttonZ,
+				virtualPad.buttonD, virtualPad.buttonB, virtualPad.buttonA
+			]);
+			// 独立相机: 编辑器的 FlxG.camera 会滚动 (scroll.y), 按键不该跟着任何相机变换走。
+			addPadCamera();
+			// 底部输出提示原本就画在按键底下, 触屏上永远看不见, 抬到左列按键上方。
+			padLift = FlxG.height - EditorPadLayout.leftClusterTop(virtualPad) + 10;
+			outputTxt.y = FlxG.height - outputTxt.height - 30 - padLift;
+			// "按 F1 查看帮助" 在触屏上没有意义, 而且会被右下角的动作键盖住。
+			tipText.visible = tipText.active = false;
+		}
 		#end
 	}
 
@@ -2303,7 +2323,7 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 
 		trace(message);
 		outputTxt.text = message;
-		outputTxt.y = FlxG.height - outputTxt.height - 30;
+		outputTxt.y = FlxG.height - outputTxt.height - 30 - padLift;
 		outputTxt.font = 'assets/fonts/editors.ttf';
 		outputAlpha = 4;
 

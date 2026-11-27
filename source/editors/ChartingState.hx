@@ -965,6 +965,17 @@ class ChartingState extends MusicBeatState implements PsychUIEventHandler.PsychU
 		updateGrid();
 		#if (android || desktop)
 		addVirtualPad(LEFT_FULL, CHART_EDITOR);
+		// 与新版编辑器同一套摆法 (见 EditorPadLayout): 旧版网格同样从 x=280 开始,
+		// 原来的 LEFT_FULL 会把最左一列音符压在右键底下; 动作键贴右下角、面板右侧。
+		if (virtualPad != null)
+		{
+			EditorPadLayout.apply(virtualPad, [
+				virtualPad.buttonX, virtualPad.buttonY, virtualPad.buttonZ,
+				virtualPad.buttonD, virtualPad.buttonB, virtualPad.buttonA,
+				virtualPad.buttonC, virtualPad.buttonV, virtualPad.buttonF, virtualPad.buttonG
+			]);
+			addPadCamera();
+		}
 		#end
 		super.create();
 	}
