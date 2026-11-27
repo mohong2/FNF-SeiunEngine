@@ -1570,12 +1570,10 @@ class PlayStateInterp extends hscript.Interp
 	/** Same field resolution as before; split out so resolve() can convert the result. */
 	function resolveRaw(id:String):Dynamic
 	{
-		// 1) 局部变量
-		if (locals.exists(id))
-		{
-			var l = locals.get(id);
+		// 1) 局部变量 (含函数创建时捕获的外层环境 — getLocal 会两级查找)
+		var l:Dynamic = getLocal(id);
+		if (l != null)
 			return l.r;
-		}
 
 		// 2) 显式设置的变量 (包括预设绑定)
 		if (variables.exists(id))
