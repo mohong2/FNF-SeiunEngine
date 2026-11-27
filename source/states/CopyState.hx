@@ -208,6 +208,11 @@ class CopyState extends BootState
 			#else
 			if (copyLoop != null)
 			{
+				// The copy pass does file IO, and file IO during the intro is exactly what made
+				// the old splash stutter. It waits for the splash to hand over, then runs on
+				// the loading screen like everything else.
+				copyLoop.active = introFinished;
+
 				// Legacy loop has no per-file callback; show the counter's real progress.
 				if (maxLoopTimes > 0)
 					bar.setProgress(BootState.EXTRACT_PORTION * (loopTimes / maxLoopTimes));

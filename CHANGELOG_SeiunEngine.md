@@ -666,6 +666,20 @@
 - 缓冲区指针统一改用 `Pointer()` / `data()`，不再写 `&a[0]`（后者在空数组上是未定义行为）。
 - 构建工具源码更新后重建 `hxcpp.n`；CI 工作流迁移到 Node 24 actions。
 
+#### 启动画面（引擎自己的标记）
+
+- **引擎第一次有了自己的标记**：启动画面不再拿 HaxeFlixel 自己的 logo 当招牌（那只说明「这是 flixel」，不是「这是 Seiun」）。新标记全部由几何图形在运行时绘制——六边形核心、两条反向旋转的弧、一圈 56 段的分段进度环、中心一颗四角星；创建时不读任何文件，所以在安卓首次冷启动、`assets/` 还没解包时也能完整画出来。程序化绘制集中在新增的 `backend/boot/BootArt.hx`：所有形状按 2 倍超采样栅格化再降采样，描边与弧线因此才有抗锯齿边缘（openfl 在 1 倍下没有）；光晕、星空、暗角按半分辨率生成再放大——辉光不需要细节，省的是内存。
+- **开场重做**：四条光带（不是四块贴图）跟着 jingle 前四个音从屏幕四角射向中心，第五个音同时抵达、撞出一圈扩散光环；标记亮起后上移让位，`SEIUN ENGINE` 逐字母错峰浮现，分隔线、`RHYTHM ENGINE`、版本行、角落信息依次跟上。任何按键 / 点击 / 手柄键都能跳过开场，加载本身仍然不可跳过。
+- **加载不再和动画抢帧**（上一版最难看的地方）：旧实现一边播动画一边每帧解码一个图集，一次 100–300 ms 的解码正好砸在动画上，玩家看到的是「动画卡住了」而不是「引擎在加载」。现在开场期间**一帧工作都不做**，precache 从开场结束、进度条已经在屏幕上之后才开始；每解完一个超过 40 ms 的资源，还会空出一帧，避免卡顿叠卡顿。
+- **时间轴按真实时间推进**：旧实现把每帧 dt 截到 1/60，机器一慢整段开场就变成慢动作。现在按真实经过时间走，另加两道闸门——单帧超过 300 ms 时时间轴**暂停**而不是快进（否则一次卡顿就把整段开场跳完），jingle 在播放时作为音频基准校正画面（只在两者本来就接近时校正，避免音频把画面猛拽一段）。
+- **首帧与贴图预热**：`create()` 之后第一帧是全引擎最贵的一帧（着色器编译、首次纹理上传、首次呈现），时间轴因此等渲染器画过两帧才启动。这两帧里所有元素以 0.012 的 alpha 参与绘制——flixel 在 alpha 为 0 时直接跳过绘制，被跳过的精灵也就永远不会上传纹理，于是那 12 个标题字母、三个信息块和整个标记的首次上传都会砸在开场里；预热把它们提前到计时开始之前。
+- **进度条重做**：圆角轨道 + 四分之一刻度、紫→青渐变填充、跟着真实进度走的发光头（会呼吸）、扫过已填充区的高光、任务文案（换文案时有一次轻微下压回弹）、百分比，以及底下一行等宽字体的「当前解码键」（`atlas / logoBumpin` 这种）——加载过程第一次是可见的。
+- **角落与版本信息**：右上角平台与字长（`WINDOWS x64`）、左下角当前渲染器（用本地已有的 `options/renderers/opengl.png` / `vulkan.png` 两张白色蒙版按品牌色着色，取不到就退回文字），标题下方是引擎版本与构建号（`v0.2.2 | c6263c1+`）。渲染器在开场中途被 Vulkan 接管时会整体重建这个信息块——那是这一帧真的在用哪个后端，不是存档里的愿望。为此 `BootChip` 的图标改成以左上角为原点缩放：居中原点会让缩放后的图形整体偏移 `origin × (1 − scale)`，这正是 Vulkan 标记一开始画到屏幕外的原因。
+- **收尾不再硬切**：进度到 100% 后先停 0.55 s 播一次「就绪」脉冲（进度头发光放大、标记轻微放大），再用 0.5 s 淡出。
+- **舞台水印让位**：启动画面自己显示版本，`backend/Watermark` 的构建水印在启动期间被藏起来，进标题画面时还原（仍受玩家的显示设置控制）。
+- **开发用探针**：`SEIUN_BOOT_HOLD=<秒>` / `SEIUN_BOOT_PROGRESS=<0..1>` 把开场或加载画面定格在某一帧，方便截图核对；`SEIUN_BOOT_STATS=1` 把开场结束时间与开场内最差的一帧打到 stdout。正常运行时都不设，行为不变。
+- 新增 `backend/boot/`：`BootArt`（程序化绘制）、`BootEmblem`（标记与运动）、`BootChip`（角落信息块）、`BootInfo`（版本 / 平台 / 渲染器，全部带兜底）。`BootBar` 与 `BootState` 重写；`CopyState` 用到的接口（`bar` / `rangeStart` / `rangeEnd` / `handOver` / `EXTRACT_PORTION`）保持不变。
+
 ---
 
 ### 鸣谢
@@ -1368,6 +1382,20 @@ The rewrite:
 - GC finalisers are registered only for values with a non-trivial destructor: `Boxed` no longer attaches a finaliser to every boxed value.
 - Buffer pointers use `Pointer()` / `data()` instead of `&a[0]` (which is undefined behaviour on an empty array).
 - `hxcpp.n` was rebuilt from the updated build-tool sources, and CI workflows moved to Node 24 actions.
+
+#### The boot screen (the engine's own mark)
+
+- **The engine finally has a mark of its own.** The splash no longer flies in HaxeFlixel's artwork — that said "flixel", not "Seiun". The new mark is drawn from geometry at runtime: a hexagonal core, two counter-rotating arcs, a 56-segment progress ring and a four-point star at the centre. Nothing is read from disk, so it renders completely on a first Android launch before `assets/` has been extracted. The drawing lives in the new `backend/boot/BootArt.hx`: every shape is rasterised at 2x and downsampled, which is what gives strokes and arcs an anti-aliased edge (openfl has none at 1x); glows, star tiles and the vignette are generated at half resolution and stretched, because a glow has no detail worth paying for.
+- **The intro, rebuilt.** Four light streaks (not four bitmap quadrants) launch from the screen corners on the jingle's first four notes and arrive together on the fifth, ringing out on impact. The mark then rises out of the way while `SEIUN ENGINE` arrives letter by letter, followed by the hairline, `RHYTHM ENGINE`, the version line and the corner chips. Any key, click or gamepad button skips the intro; the loading itself is never skipped.
+- **Loading no longer competes with the animation** — the ugliest part of the old boot. The previous splash decoded one atlas per frame while the choreography played, and a 100–300 ms decode landed exactly on top of it: it looked like a frozen game, not like loading. The intro now does **no work at all**; the precache starts once the intro is over and the bar is already on screen, and a frame is left alone after any item that took more than 40 ms so stalls cannot stack.
+- **The timeline runs on real time.** The old clock clamped every frame to 1/60 s, so a loaded machine turned the whole intro into slow motion. It now follows elapsed real time with two guards: a frame slower than 300 ms *pauses* the timeline instead of fast-forwarding past the arrival, and the jingle corrects the picture while the two clocks are already close (so audio can never yank the scene forward by a beat).
+- **Warm-up frames and texture pre-warming.** The first frame after `create()` is the most expensive in the engine (shader compilation, first texture uploads, first present), so the timeline waits until the renderer has drawn two frames. During those frames every element is drawn at alpha 0.012 — flixel skips drawing at alpha 0, and a skipped sprite never uploads its texture, so twelve wordmark letters, three chips and the whole mark would all pay their first upload on the frame they become visible, which is the worst possible moment. Pre-warming moves those uploads before the clock starts.
+- **The bar, rebuilt.** Rounded track with quarter ticks, violet-to-cyan fill, a glowing (breathing) head that follows real progress, a highlight sweeping the filled stretch, the localised task line (it dips and returns when the text changes), the percentage, and a mono line underneath showing the asset key being decoded right now (`atlas / logoBumpin`).
+- **Corners and version.** Platform and word size top-right; the renderer that is actually drawing this frame bottom-left, using the `options/renderers/opengl.png` / `vulkan.png` white masks already in the repository, tinted with the brand colour (the name alone when the assets are not unpacked yet); engine version and build under the title (`v0.2.2 | c6263c1+`). The renderer chip is rebuilt whole when a Vulkan session takes the window over mid-boot, because that is the real state, not the saved preference. Its icon is scaled about its top-left corner on purpose: a centred origin shifts artwork by `origin × (1 − scale)` the moment it is scaled, which is what pushed the Vulkan mark off the screen at first.
+- **The exit is choreographed.** At 100% the screen holds for 0.55 s with a "ready" pulse (the head flares, the mark swells slightly) before a 0.5 s fade, instead of cutting to black.
+- **The stage watermark steps aside** while the boot shows its own version line, and returns for the menus (still governed by the player's setting).
+- **Dev probes**: `SEIUN_BOOT_HOLD=<seconds>` / `SEIUN_BOOT_PROGRESS=<0..1>` freeze one frame of the boot for screenshots, and `SEIUN_BOOT_STATS=1` prints the splash's end time and its worst frame to stdout. Unset in every normal run.
+- New `backend/boot/`: `BootArt` (procedural drawing), `BootEmblem` (the mark and its motion), `BootChip` (corner label), `BootInfo` (version / platform / renderer, all defensive). `BootBar` and `BootState` were rewritten; `CopyState`'s surface (`bar`, `rangeStart`, `rangeEnd`, `handOver`, `EXTRACT_PORTION`) is unchanged.
 
 ---
 
