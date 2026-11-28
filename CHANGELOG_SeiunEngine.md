@@ -525,6 +525,8 @@
 - **实测（真实 HUD，1920 宽窗口 = 1.5x 栅格化，p50/次）**：分数行 0.866 ms（栅格 0.212 + 描边盖章 0.594 + 清空 0.043）、无描边 0.248、自动宽度 0.499（其中分配 0.112）、侧边计数×3 0.127、计时器 0.155；`texImage2D` 只有 0.008–0.031 ms。真实游玩 HUD 文本约 1–2% 单核时间。
 - **描边盖章是剩下的最大单项，且脏区裁剪省不到它**：17 遍 Cairo 合成的成本跟着**栅格（source）面积**走、不跟 clip 走——实测把 clip 从整行 1921 px 收到墨迹 823 px，耗时 0.866→0.890（没变）。
 - **本轮试过但没落地**：①「整行重画只重绘墨迹箱」像素一致（0 差异）但耗时无变化，已回滚；②「只上传脏区」不值得（`texImage2D` 本来 0.03 ms）；③「增量重建只栅格化改动字段」盖章降到 ~1/3，却在侧边计数用例留下 5 px 竖缝（150 帧 1278 像素），未通过像素校验，已回滚并记进文档。
+- **真机测量（本轮）**：`SEIUN_TEXT_PROF=1` 让 `FlxTextProf` 在正常启动时自己打开，每次重建往 `SEIUN_TEXT_PROF_LOG` 追加一行 `t,total,layout,alloc,clear,render,raster,stamp,chars,text`；`SEIUN_BOTPLAY=1` 让 `ChartLoadProbe` 置 `botPlay`，配合 `SEIUN_CHART_PROBE` + `SEIUN_CHART_PROBE_STAY=1` 直接进对局自动打分。bopeebo / botplay / 30 s：281 次重建、90.8 ms = **0.31% 墙钟**，p50 0.210 / p90 0.727 / p99 1.303 / max 2.661 ms；**对局阶段 4.9 次/秒、0.16% 墙钟**（60 fps 下每帧 0.027 ms），构成是栅格 60% + 描边 21% + 分配 12% + 清脏区 5% + 排版 ≈0。
+- **结论：这条流水线收尾**。文本重建已经不是性能问题——20 notes/s 的密集段也只占 ~1.4% 单核；而栅格 60% + 描边 21% 的结构意味着「描边换成 SDF/字形贴图」最多再省 0.03% 墙钟，代价是像素不再一致，`premultiply clone`（0.1 ms × 5 次/秒）与自动宽度位图复用（只影响加载/菜单）同理。剩下的投入转入回归保护：动 `FlxText` 先跑 `SEIUN_TEXT_BENCH_VERIFY=1`（必须 `diffPixels=0`）和 `SEIUN_TEXT_PROF=1`（真机成本），再谈优化。原始样本见 `docs/data/textprof-bopeebo-botplay.csv`，方法见 `docs/text-pipeline.md` 第 8 节。
 - **溅射合批**：中性 `ColorSwap` 不再挂 shader，同屏多个溅射可合批。
 
 #### 崩溃诊断：四条路径、符号文件与一个工具

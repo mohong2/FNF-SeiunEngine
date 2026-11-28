@@ -19,6 +19,9 @@ class ChartLoadProbe
 {
 	public static var enabled:Bool = false;
 
+	/** SEIUN_BOTPLAY=1 makes the probe play the chart itself, so the HUD text path is exercised. */
+	public static var botplay:Bool = false;
+
 	/** SEIUN_CHART_PROBE_STAY=1 keeps the process alive after the result, so a test
 	 *  can inspect the first gameplay frames (memory, GPU upload, screenshots). */
 	static var stayAlive:Bool = false;
@@ -49,6 +52,7 @@ class ChartLoadProbe
 			try out = Sys.getEnv('SEIUN_CHART_PROBE_OUT') catch (e:Dynamic) {}
 			if (out != null && out.length > 0) outPath = out;
 			try stayAlive = Sys.getEnv('SEIUN_CHART_PROBE_STAY') == '1' catch (e:Dynamic) {}
+			try botplay = Sys.getEnv('SEIUN_BOTPLAY') == '1' catch (e:Dynamic) {}
 
 			if (modFolder.length > 0) Paths.currentModDirectory = modFolder;
 			ClientPrefs.data.chartCache = useCache;

@@ -1067,7 +1067,7 @@ class PlayState extends MusicBeatState
 			// without materialising the full visible window at 70k notes/s.
 			if (noteLimit > 4096) noteLimit = 4096;
 		}
-		cpuControlled = ClientPrefs.getGameplaySetting('botplay', false);
+		cpuControlled = ClientPrefs.getGameplaySetting('botplay', false) || ChartLoadProbe.botplay;
         playOpponent = ClientPrefs.getGameplaySetting('playOpponent', false);
         reverseNoteHit = ClientPrefs.getGameplaySetting('reverseNoteHit', false);
 		guitarHeroSustains = ClientPrefs.data.guitarHeroSustains;

@@ -123,3 +123,45 @@ FlxText.draw() / updateHitbox()
 - **自动宽度文本的位图重建**（0.11 ms + GC）：做成「只增不减的位图 + 子帧」。
 - **多段增量重绘**：分数行一次改三处，单段脏箱跨大半行；拆段要逐段证明宽度未变。
 - **premultiply clone**：每次上传前整张位图 clone 一次做预乘（≈0.1 ms/次），改成复用一块预乘影子缓冲、只更新脏区，是上传侧唯一还有价值的改动。
+
+## 8. 真机测量：把 `FlxTextProf` 接到真实对局上
+
+合成基准能说明每个阶段多贵，但说明不了**游戏实际多久重建一次、重建的是哪一行**。这一轮把 profiler 接到真实对局上：
+
+- `SEIUN_TEXT_PROF=1`：`FlxTextProf` 在第一次 `set_text()` 时读环境变量打开自己，此后每次重建往 `SEIUN_TEXT_PROF_LOG`（默认 `textprof.csv`）追加一行 `t,total,layout,alloc,clear,render,raster,stamp,chars,text`。行里的时间都是**这一次重建自己的**各项耗时（`beginRebuild()` 打点，`endRebuild()` 求差）。
+- `SEIUN_BOTPLAY=1`：`ChartLoadProbe` 置 `botPlay`，配合 `SEIUN_CHART_PROBE` + `SEIUN_CHART_PROBE_STAY=1` 直接进对局并让机器自己打，HUD 才会按命中节奏刷新。
+
+复现（在 `export/release/windows/bin` 下）：
+
+```
+set SEIUN_CHART_PROBE=bopeebo:bopeebo
+set SEIUN_CHART_PROBE_STAY=1
+set SEIUN_BOTPLAY=1
+set SEIUN_TEXT_PROF=1
+SeiunEngine.exe     :: 跑 ~30s 后结束进程，textprof.csv 就是全部样本
+```
+
+### 8.1 结果（bopeebo / botplay / 30 s / 281 次重建）
+
+| 阶段 | 合计 | 占比 |
+| --- | --- | --- |
+| 栅格化（`raster`） | 54.5 ms | 60% |
+| 描边 + 填充（`stamp`） | 19.2 ms | 21% |
+| 分配（`alloc`） | 11.1 ms | 12% |
+| 清脏区（`clear`） | 4.3 ms | 5% |
+| 排版（`layout`） | ≈0 ms | 0% |
+| **合计** | **90.8 ms / 29.1 s = 0.31% 墙钟** | |
+
+- 单次 p50 **0.210 ms**、p90 0.727 ms、p99 1.303 ms、最大 2.661 ms。
+- 0–10 s 基本是加载画面（大字号标题，1.5 ms/次栅格）；**对局阶段（t≥15 s）69 次重建 / 14.1 s ≈ 4.9 次/秒、23.2 ms ≈ 0.16% 墙钟**，按 60 fps 是每帧 0.027 ms。
+- 最贵的一次是对局第一帧的 `Notes: 0 + 0 = 0 | NPS: …`：2.66 ms，其中栅格 1.50 ms（49 字符的一行在 1.5x 下首次构建）。
+- 稳定态最贵的是分数行（botplay 下 `Notes: … | NPS: …`，约 1.0–1.3 ms/次，描边 0.8–1.0），和合成基准的 0.866 对得上；侧边计数与计时器更小。
+- **排版实测为 0**：对局里这些文本的 `fieldWidth` 固定，`textWidth` 读取不再触发 OpenFL 重新排版，hinting 那轮省下的 166 µs/次在真机上直接消失。
+
+原始数据：`docs/data/textprof-bopeebo-botplay.csv`（281 行，带文本前缀）。
+
+### 8.2 结论：这条流水线可以收了
+
+1. **文本重建已经不是性能问题**：对局阶段 0.16% 墙钟，20 notes/s 的密集段也只有 ~1.4% 单核。用户报的「文本改了 → 整块重来」已经被前三轮的改动消化掉：描边从 `1+8*iterations` 次 TextField 绘制变成 1 次栅格 + 16 次 Cairo 合成；`set_text` 的内容守卫把每帧重写的空操作挡掉（计时器每秒被写 60 次，只有 1 次真的重建）。
+2. **成本结构决定了收益上限**：栅格 60% + 描边 21%。把描边整个干掉也只省 `0.16% × 21% ≈ 0.03%` 墙钟。所以 7.4 里剩的三项（描边换算法、premultiply clone、自动宽度位图）**按现在的收益比都不值得做**，除非目标变成 4K / 更高 `renderScale`（那时面积 ×2.25 再 ×4，描边才会重新变成大头）。
+3. **还值得投入的只有回归保护**：`SEIUN_TEXT_BENCH_VERIFY=1`（像素）和 `SEIUN_TEXT_PROF=1`（真机成本）都是可复算的，以后动 `FlxText` 先跑这两个，再谈优化。
