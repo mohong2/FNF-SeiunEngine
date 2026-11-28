@@ -706,6 +706,7 @@
 - **听感与全解码一致**：解码仍走 libvorbis 同一条 `ov_read` 路径，实测 39 个 8192 帧块（含 seek 之后）与全解码 PCM 逐字节相同（maxdiff = 0）；混音、音量、pitch、pan 完全没改。
 - **引擎内实测**：同一份 bopeebo 谱面，进入歌曲后的工作集从 364.5 MB 降到 281.3 MB（−83 MB，同时驻留 4 条流），`generateSong` 内的音频加载从 249 ms 降到 4 ms。
 - 菜单音乐、Inst、Voices 默认流式；**图表编辑器仍全解码**（波形要读 `AudioBuffer.data`），两者用 `stream:` 前缀的缓存键共存；wav/m4a 与探测失败的 ogg/mp3 自动回退全解码；MP3 不再需要先转 WAV。
+- **修复歌曲位置抖动（打歌判定漂移 / 音频卡顿）。** `AL_SAMPLE_OFFSET` 相对的是「队列起点」，原实现却拿「正在播放的块」当基准，把已放完还没出队的块算了两遍：Mixer 每放完一块（8192 帧 ≈ 186 ms），`music.time` 就往前跳一块、feeder 出队后再掉回去。判定窗口跟着忽前忽后 → 频繁 miss；`PlayState.stepHit` 的 20 ms 漂移检查被误触发，每步调 `resyncVocals()` 把几条人声流重新 seek → 听起来就是卡顿。改为以队首块为基准，并给上报值加单调钳制（仅 seek / 循环回绕允许后退）。实测 bopeebo 24 s / 8594 次查询：修前 63 次 +205.8 ms 与 −185.8 ms 的来回跳，修后 0 次，残差 p99 = 17 ms（混音周期量化），feeder 全程没有让队列跑空。
 - 新增 `docs/audio-streaming.md`（结构、时间 / seek / 循环语义、逐字节对比、踩坑记录）。
 
 ---
@@ -1450,6 +1451,7 @@ The rewrite:
 - **Identical to a full decode**: decoding still goes through the same libvorbis `ov_read` path; 39 blocks of 8192 frames (including after a seek) match the full-decode PCM byte for byte (maxdiff = 0), and the mixing, volume, pitch and pan paths are untouched.
 - **Measured in game**: on the same bopeebo chart the working set after the song starts falls from 364.5 MB to 281.3 MB (−83 MB with four streams resident), and the audio load inside `generateSong` from 249 ms to 4 ms.
 - Menu music, Inst and Voices stream by default; **the chart editors still full-decode** (their waveform renderer reads `AudioBuffer.data`), and the two copies coexist under `stream:`-prefixed cache keys. wav/m4a, and any ogg/mp3 the probe rejects, fall back to a full decode; MP3 no longer needs converting to WAV first.
+- **Fixed the song-position jumps (drifting hit windows / audible stutter).** `AL_SAMPLE_OFFSET` is relative to the *start of the queue*, but the first implementation based it on the block that was playing, so every block that had finished but was not yet unqueued was counted twice: each time the mixer finished a block (8192 frames ≈ 186 ms), `music.time` jumped a block forward and fell back once the feeder unqueued it. Hit windows slid back and forth (misses), and the 20 ms drift check in `PlayState.stepHit` tripped, calling `resyncVocals()` every step to re-seek the Inst and both vocal streams — that is the stutter you could hear. The base is now the oldest queued block, and the reported value is clamped monotonic (only a seek or a loop wrap may go back). Measured on bopeebo, 24 s / 8594 queries: 63 round trips of +205.8 ms / −185.8 ms before, 0 after, residual p99 = 17 ms (the mixer period), and the feeder never let the queue run dry.
 - New `docs/audio-streaming.md` covers the design, time/seek/loop semantics, the byte-for-byte comparison and the two bugs that shaped it.
 
 ---

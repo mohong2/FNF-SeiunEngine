@@ -42,7 +42,7 @@ Paths.inst()/voices()/music()
 ```
 
 - **预填 3 块**（≈0.56 s）后 `alSourcePlay`，之后 feeder 每 5 ms 醒一次：`AL_BUFFERS_PROCESSED` 回收 → 解码补满到 16 块。
-- **时间**：`queueInfo` 记录每个已入队块的起始帧，`currentTime = 起始帧 + AL_SAMPLE_OFFSET`，精确到样本；seek 期间先返回目标值（`seekInFlight`），feeder 应用后切回真实时间，所以拖动进度条不会出现「时间往回跳」。
+- **时间**：`queueInfo` 记录每个已入队块的起始帧，`currentTime = queueInfo.front().startFrame + AL_SAMPLE_OFFSET`（偏移是相对**队首**的，见 §6），精确到样本；seek 期间先返回目标值（`seekInFlight`），feeder 应用后切回真实时间，所以拖动进度条不会出现「时间往回跳」。上报值再经过一次单调钳制：只有 seek 或循环回绕（跨度大于一块）才允许后退。
 - **循环**：不用 `AL_LOOPING`（队列源上它无效），由 feeder 在 EOF 时把解码器 seek 回 0 继续填，语义等于 `Sound.play(loops)`，播完最后一轮才置 FINISHED。
 - **完成**：队列排空 + EOF → `state = FINISHED`；Haxe 侧 25 ms 轮询一次派发 `AudioSource.onComplete`（`SoundChannel` 的 `SOUND_COMPLETE` 由此照常触发）。
 - **控制**：play / pause / stop / seek / loops / gain / pitch / position 全部转发到原生源，静音、淡入淡出、`FlxSound.volume`、`pitch`（变速）行为与静态路径一致。
@@ -76,6 +76,12 @@ blocks: 39  mismatched: 0  maxdiff: 0
 修法：解码器改用纯 CRT stdio（`StreamOpenFile` 在 Windows 上用 `_wfopen`，保留 UTF-8 路径能力），整条 feeder 线程不再碰任何 hxcpp 运行时。内存流仍然用 `alloc_root` 保住 `Bytes`。
 
 **dispose 与时间查询的竞态。** Haxe 侧每 25 ms 轮询一次时间，可能在 `dispose()` 摧毁原生源的同一刻进来。注册表因此改成 `shared_ptr`：查询拿到自己的引用，对象不会在调用中途被释放；`Destroy()` 置 `destroyed` 标记，之后的查询立即返回 0。
+
+**`AL_SAMPLE_OFFSET` 是相对「队列起点」的，不是相对「正在播放的缓冲」。** OpenAL Soft 的 `GetSourceOffset ()` 把当前缓冲之前的每个已入队缓冲长度都加进 `readPos`（`project/lib/openal/OpenAL32/alSource.c` 里那行 `if(!readFin) readPos += BufferList->max_samples;`）。最初的实现拿 `AL_BUFFERS_PROCESSED` 当索引取「正在播放的那块」的起始帧，再叠加这个偏移，等于把「已经放完、但 feeder 还没出队」的块算了两遍：Mixer 每放完一块（8192 帧 ≈ 186 ms），`music.time` 就往前跳一整块，feeder 出队（≤5 ms 后）再掉回去。
+
+游戏里这就是「打击判定忽前忽后」：`PlayState.update` 每帧把 `Conductor.songPosition = FlxG.sound.music.time`，位置跳 186 ms 时音符判定窗口整体错位，直接 miss；而 `PlayState.stepHit` 的 20 ms 漂移检查会被误触发，每步都调一次 `resyncVocals()`，把 Inst 与几条人声流全部 seek 一遍——听感上就是音频卡顿。音频本身没有断流（feeder 从未让队列跑空），卡顿来自这些多余的 seek。
+
+修法是把基准换成**队列里最老的一块** `queueInfo.front().startFrame`（它和 `AL_SAMPLE_OFFSET` 的零点严格对齐），并把上报值做成单调：只有 seek（`FlushQueue` 清空并重置下限）或循环回绕（跨度大于一块）才允许后退，混音周期量化造成的几毫秒回退则被钳住。实测同一份 bopeebo、24 s、8594 次查询：修前 63 次 +205.8 ms / −185.8 ms 的来回跳，修后 0 次，残差 p99 = 17 ms（就是混音周期本身的量化），与全解码路径同一个时间源。
 
 ## 7. 限制
 
