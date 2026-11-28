@@ -101,6 +101,8 @@
     "option.badWindow.desc": "改变你在毫秒内击中\"bad\"的时间(判定区间)",
     "option.tipText": "按 C 自定义您的 Android 控件.",
     "option.safeFrames.desc": "改变你按音符时提前或者晚点的容错帧数.",
+    "option.asyncJudge": "异步判定",
+    "option.asyncJudge.desc": "按键用它自己按下的那一刻判定，而不是被检测到的那一帧。\n消掉最多一整帧的判定误差，打击 ms 不再随帧率跳动。\n键盘和触屏都生效（Hitbox 和虚拟按键）；手柄和鼠标点击保持原有判定方式。\n回放会记录并复用按键时刻。\n开启后判定值平均前移约 8ms（旧路径一直偏晚半个逻辑步）。",
     "option.sustainsAsOneNote.desc": "如果选中, 长条将被视为一个音符,如果你miss了长条,就会被计为一个miss,并且无法再继续按住长条.",
     "option.saveReplayData.desc" : "如果选中, 游戏会记录你的输入并将其与你的得分一起保存.\n这允许你在稍后查看回放.",
     "option.lastNoteAnimation": "末键动画模式",

@@ -579,6 +579,17 @@ class ScoreHistorySubstate extends MusicBeatSubstate
 			hasReplay ? Language.get("ScoreHistorySubstate.replayDataYes", "Available") : Language.get("ScoreHistorySubstate.replayDataNo", "Not Available"),
 			hasReplay ? FlxColor.GREEN : FlxColor.RED));
 
+		// Async judgement: recorded per run in details[31] (older scores have no such field, so the row is
+		// skipped instead of guessing from the current setting). It lives in this column because the right
+		// one is already full: its judge row alone can wrap to two lines.
+		if (e.details != null && e.details.length > 31 && e.details[31] != null)
+		{
+			var asyncOn:Bool = (e.details[31] == true || Std.string(e.details[31]).toLowerCase() == 'true');
+			rows1.push(mk(Language.get("ResultsScreen.asyncJudge", "Async Judge"),
+				asyncOn ? Language.get("ScoreHistorySubstate.on", "ON") : Language.get("ScoreHistorySubstate.off", "OFF"),
+				asyncOn ? FlxColor.fromRGB(255, 215, 0) : FlxColor.GRAY));
+		}
+
 		// -- Right column --
 		if (e.marvelouses != null)
 			rows2.push(mk(Language.get("ScoreHistorySubstate.marvelouses", "Marvelouses"), Std.string(e.marvelouses), FlxColor.fromRGB(255, 215, 0)));
@@ -596,7 +607,10 @@ class ScoreHistorySubstate extends MusicBeatSubstate
 			var judgeType:String = (e.details.length > 26 && e.details[26] != null)
 				? Std.string(e.details[26])
 				: '';
-			var judgeStr = "";
+			// Compact layout, same shape as the results screen: "Preset (25/50/70/100) 10f".
+			// The old spaced-out form ("25 / 50 / 70 / 100 / 10f") is ~44 chars and wrapped inside this
+			// column, drawing its second line on top of the following row.
+			var windows:String = "";
 			if (e.details.length > 24 && e.details[24] != null)
 			{
 				var timings:Array<Dynamic> = e.details[24];
@@ -607,14 +621,20 @@ class ScoreHistorySubstate extends MusicBeatSubstate
 							Std.parseInt(timings[0]), Std.parseInt(timings[1]),
 							Std.parseInt(timings[2]), Std.parseInt(timings[3])
 						]);
-					judgeStr += Std.string(timings[0]) + " / ";
+					// Marvelous window counts only when the rating was enabled for that run
+					var marvOn:Bool = (e.details.length > 25 && e.details[25] != null
+						&& (e.details[25] == true || Std.string(e.details[25]).toLowerCase() == 'true'));
+					if (marvOn)
+						windows += Std.string(e.details.length > 30 && e.details[30] != null ? e.details[30] : timings[0]) + "/";
 				}
 			}
-			judgeStr += Std.string(e.details[20]) + " / " + Std.string(e.details[21])
-				+ " / " + Std.string(e.details[22]) + " / " + Std.string(e.details[23]) + "f";
+			windows += Std.string(e.details[20]) + "/" + Std.string(e.details[21]) + "/" + Std.string(e.details[22]);
 			if (judgeType.length == 0)
 				judgeType = Language.get("ScoreHistorySubstate.custom", "Custom");
-			rows2.push(mk(Language.get("ScoreHistorySubstate.judgeWindows", "Judge Type / Win"), judgeType + " (" + judgeStr + ")", FlxColor.fromRGB(180, 180, 200)));
+			// Left column: it has fewer rows and a wider value column than the right one, so the
+			// "Preset (25/50/70/100) 10f" string fits (and wraps into a free row if it does not).
+			rows1.push(mk(Language.get("ScoreHistorySubstate.judgeWindows", "Judge Type / Win"),
+				judgeType + " (" + windows + ") " + Std.string(e.details[23]) + "f", FlxColor.fromRGB(180, 180, 200)));
 
 			// osu! tail judgement: whether this score had it enabled (skipped for old records)
 			if (e.details.length > 27 && e.details[27] != null)
@@ -677,6 +697,17 @@ class ScoreHistorySubstate extends MusicBeatSubstate
 
 			var valTxt = new FlxText(col1ValX, y, col1ValW, r.value, r.size);
 			valTxt.setFormat(Paths.languageFont(), r.size, r.color, LEFT);
+			// Never wrap a value: this font's line box is ~2.2x its size, so a wrapped second line would be
+			// drawn far below the row and over the next one (that was the judge/async collision).
+			// Shrink the size until the string fits the column instead.
+			valTxt.textField.wordWrap = false;
+			var rawW:Float = valTxt.textField.textWidth;
+			if (rawW > 0 && rawW > valTxt.width - 8)
+			{
+				var fitSize:Int = Std.int(r.size * (valTxt.width - 8) / rawW);
+				if (fitSize < 11) fitSize = 11;
+				valTxt.setFormat(Paths.languageFont(), fitSize, r.color, LEFT);
+			}
 			valTxt.scrollFactor.set();
 			valTxt.alpha = 0;
 			detailGroup.add(valTxt);
@@ -713,6 +744,14 @@ class ScoreHistorySubstate extends MusicBeatSubstate
 
 			var valTxt = new FlxText(col2ValX, y, col2ValW, r.value, r.size);
 			valTxt.setFormat(Paths.languageFont(), r.size, r.color, LEFT);
+			valTxt.textField.wordWrap = false;
+			var rawW2:Float = valTxt.textField.textWidth;
+			if (rawW2 > 0 && rawW2 > valTxt.width - 8)
+			{
+				var fitSize2:Int = Std.int(r.size * (valTxt.width - 8) / rawW2);
+				if (fitSize2 < 11) fitSize2 = 11;
+				valTxt.setFormat(Paths.languageFont(), fitSize2, r.color, LEFT);
+			}
 			valTxt.scrollFactor.set();
 			valTxt.alpha = 0;
 			detailGroup.add(valTxt);
@@ -969,6 +1008,7 @@ class ScoreHistorySubstate extends MusicBeatSubstate
 				//osuTailJudgement: details != null && details.length > 27 && details[27] != null ? details[27] : null,
 				ratingOffset: details != null && details.length > 28 && details[28] != null ? details[28] : null,
 				guitarHeroSustains: details != null && details.length > 29 && details[29] != null ? details[29] : null,
+				asyncJudge: details != null && details.length > 31 && details[31] != null ? details[31] : null,
 				replayVersion: 2
 			};
 

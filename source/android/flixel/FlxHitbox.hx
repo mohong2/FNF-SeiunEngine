@@ -228,7 +228,8 @@ class FlxHitbox extends FlxSpriteGroup
 			hint.onDown.callback = function()
 			{
 				if (oldDown != null) oldDown();
-				if (PlayState.instance != null) PlayState.instance.mobileKeyPressed(hintIndex);
+				// 异步判定: 把这一下的触摸时刻一起送进去 (没有时间戳就是 0, 判定走原路径)。
+				if (PlayState.instance != null) PlayState.instance.mobileKeyPressed(hintIndex, hint.pressTimestampNs);
 			};
 			hint.onUp.callback = function()
 			{
@@ -239,6 +240,17 @@ class FlxHitbox extends FlxSpriteGroup
 			{
 				if (oldOut != null) oldOut();
 				if (PlayState.instance != null) PlayState.instance.mobileKeyReleased(hintIndex);
+			};
+		}
+
+		// 异步判定: 4K 色块不经过 mobileKeyPressed (那条路只给 4 键以上/多k), 按下时刻单独送。
+		if (!isMultiK && hintIndex >= 0 && hintIndex < 4)
+		{
+			var oldDown = hint.onDown.callback;
+			hint.onDown.callback = function()
+			{
+				if (oldDown != null) oldDown();
+				if (PlayState.instance != null) PlayState.instance.mobileNotePressed(hintIndex, hint.pressTimestampNs);
 			};
 		}
 

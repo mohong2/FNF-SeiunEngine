@@ -17,6 +17,10 @@
   "Charting Mode": "CHARTING MODE",
   "PauseSubState.Replay" : "Replay MODE",
   "ReplayDifficultyLock": "Replay MODE does not allow difficulty adjustment.",
-  "ReplayDifficultyLock": "Replay MODE does not allow difficulty adjustment.",
-  "PauseSubState.replayTitle2" : "(Replay data is not necessarily accurate)"
+  "PauseSubState.replayInfo": "Replay Data",
+  "PauseSubState.judge": "Judge",
+  "PauseSubState.replayFrames": "Frames",
+  "PauseSubState.replayVersion": "Version",
+  "PauseSubState.recordedScore": "Recorded Score",
+  "PauseSubState.unknown": "unknown"
 }

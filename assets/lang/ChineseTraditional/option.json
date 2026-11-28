@@ -101,6 +101,8 @@
     "option.badWindow.desc": "改變你在毫秒內擊中「Bad」的判定區間。",
     "option.tipText": "按C鍵自訂你的Android裝置控制設定。",
     "option.safeFrames.desc": "改變你按音符時提前或延遲的容錯影格數。",
+    "option.asyncJudge": "非同步判定",
+    "option.asyncJudge.desc": "按鍵用它自己按下的那一刻判定，而不是被偵測到的那一格。\n消掉最多一整格的判定誤差，打擊 ms 不再隨幀率跳動。\n鍵盤和觸控都生效（Hitbox 和虛擬按鍵）；手把和滑鼠點擊維持原有判定方式。\n回放會記錄並重複使用按鍵時刻。\n開啟後判定值平均前移約 8ms（舊路徑一直偏晚半個邏輯步）。",
     "option.sustainsAsOneNote.desc": "如果選中，長條將被視為一個音符，如果你miss了長條，就會被計為一個miss，並且無法再繼續按住長條。",
     "option.saveReplayData.desc": "如果選中，遊戲會記錄你的輸入並將其與你的分數一起保存。\n這讓你可以稍後查看回放。",
     "option.lastNoteAnimation": "末鍵動畫模式",

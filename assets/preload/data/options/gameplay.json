@@ -130,6 +130,16 @@
 		"changeValue": 0.1
 	},
 	{
+		"nameKey": "option.asyncJudge",
+		"defaultName": "Async Judgement",
+		"descKey": "option.asyncJudge.desc",
+		"defaultDesc": "Judge each press by when it actually went down, not by the frame that noticed it.\nRemoves the up-to-one-frame timing error, so hit ms no longer swings with the frame rate.\nApplies to the keyboard and to the touch controls (hitbox and virtual pad); gamepad and mouse clicks keep their own timing.\nReplays record the press times and judge by them again.\nTurning this on shifts judged ms about 8ms earlier on average.",
+		"variable": "asyncJudge",
+		"type": "bool",
+		"defaultValue": false,
+		"platform": "native"
+	},
+	{
 		"nameKey": "option.marvelousRatings",
 		"defaultName": "Marvelous Ratings",
 		"descKey": "option.marvelousRatings.desc",

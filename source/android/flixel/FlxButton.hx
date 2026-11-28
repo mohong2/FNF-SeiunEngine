@@ -223,6 +223,12 @@ class FlxTypedButton<T:FlxSprite> extends FlxSprite implements IFlxInput
 	public var justPressed(get, never):Bool;
 
 	/**
+	 * 异步判定: 这一次按下对应的触摸事件时间戳 (ns, 和 `System.getTimer` 同一时钟域)。
+	 * 0 = 这个来源没有时间戳 (鼠标 / 键盘合成的按键 / 旧后端), 判定方必须退回这一帧的路径。
+	 */
+	public var pressTimestampNs:Float = 0;
+
+	/**
 	 * We cast label to a `FlxSprite` for internal operations to avoid Dynamic casts in C++
 	 */
 	var _spriteLabel:FlxSprite;
@@ -531,6 +537,10 @@ class FlxTypedButton<T:FlxSprite> extends FlxSprite implements IFlxInput
 	{
 		status = FlxButton.PRESSED;
 		input.press();
+		// 异步判定: 记下这一下真正落下的时刻 (只有真触摸才有; 鼠标代理/合成按键保持 0)。
+		// currentInput 在这一行之前已经指向触发输入的指针对象。
+		var pressedBy:IFlxInput = currentInput;
+		pressTimestampNs = (pressedBy != null && Std.isOfType(pressedBy, FlxTouch)) ? (cast pressedBy : FlxTouch).inputTimestampNs : 0;
 		onDown.fire(); // Order matters here, because onDown.fire() could cause a state change and destroy this object.
 	}
 

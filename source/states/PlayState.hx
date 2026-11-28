@@ -840,6 +840,23 @@ class PlayState extends MusicBeatState
 	var keysPressed:Array<Bool> = [];
 	/** Multi-key touch: currently held touch lanes (driven by FlxHitbox, used by keysCheck for sustains). */
 	public var mobileHeld:Array<Bool> = [];
+
+	// 异步判定 (见 backend.JudgeClock):
+	// 按键用「按下那一刻」的事件时间戳判定, 而不是这一帧的时间。
+	// 两个来源: 键盘 (stage 上的 KeyboardEvent.inputTimestampNs) 和触摸
+	// (FlxHitbox / FlxVirtualPad 的 FlxButton.pressTimestampNs)。
+	/** 判定钟。null = 本局还没锁过 (或没开异步判定)。 */
+	var _judgeClock:backend.JudgeClock;
+	/** 每个 lane 是否处于物理按下状态: 过滤系统连发 (连发只重复 KEY_DOWN, 没有 KEY_UP)。 */
+	var _asyncDown:Array<Bool> = [];
+	/** 每个 lane 尚未被 keysCheck 取走的键盘按下时间戳, `System.getTimer` 毫秒域, -1 = 没有。 */
+	var _asyncPressTick:Array<Float> = [];
+	/** 每个 lane 尚未被 keysCheck 取走的触摸按下时间戳 (同上毫秒域, 触摸才有), -1 = 没有。 */
+	var _touchPressTick:Array<Float> = [];
+	/** keysCheck 每帧复用的 lane -> 判定时刻 (歌曲 ms) 暂存区, 下标 = lane。 */
+	var _asyncLaneTimes:Array<Float> = [];
+	/** keysCheck 每帧复用的 pressedLanes 并行数组 (交给 keyPressBatch 的 pressTimes)。 */
+	var _batchPressTimes:Array<Float> = [];
 	var boyfriendIdleTime:Float = 0.0;
 	var boyfriendIdled:Bool = false;
 
@@ -991,6 +1008,26 @@ class PlayState extends MusicBeatState
 		{
 			keysPressed.push(false);
 			mobileHeld.push(false);
+		}
+
+		// 异步判定: 每个 lane 一份「当前是否按下」和「待消费的按下时间戳」。
+		// 监听常挂 (关掉开关时监听器只做一次布尔判断), 这样中途改设置也能立刻生效。
+		_asyncDown = [for (i in 0...keysArray.length) false];
+		_asyncPressTick = [for (i in 0...keysArray.length) -1];
+		_touchPressTick = [for (i in 0...keysArray.length) -1];
+		if (FlxG.stage != null)
+		{
+			FlxG.stage.addEventListener(KeyboardEvent.KEY_DOWN, onAsyncKeyDown);
+			FlxG.stage.addEventListener(KeyboardEvent.KEY_UP, onAsyncKeyUp);
+			// 失焦时系统不会再送 KEY_UP, 按键状态必须自己清掉, 否则那个 lane 一直算「按着」
+			FlxG.stage.addEventListener(openfl.events.Event.DEACTIVATE, onAsyncFocusLost);
+			#if (seiun_async_probe && sys)
+			FlxG.stage.addEventListener(KeyboardEvent.KEY_DOWN, probeAsyncKeyDown);
+			// 探针: openfl 到底有没有把触摸事件送到 Haxe (桌面用 SEIUN_TOUCH_PROBE=1 时鼠标会合成 finger 事件)
+			FlxG.stage.addEventListener(openfl.events.TouchEvent.TOUCH_BEGIN, function(e:openfl.events.TouchEvent)
+				asyncProbe('touchbegin id=' + e.touchPointID + ' ms=' + Std.string(Math.round(e.inputTimestampNs * 0.000001))
+					+ ' touches=' + FlxG.touches.list.length));
+			#end
 		}
 
 		if (FlxG.sound.music != null)
@@ -7011,7 +7048,9 @@ class PlayState extends MusicBeatState
 					null, // placeholder: tail judgement is disabled but details[27] is kept so later fields do not shift
 					ClientPrefs.data.ratingOffset,
 					ClientPrefs.data.guitarHeroSustains,
-					ClientPrefs.data.marvelousWindow
+					ClientPrefs.data.marvelousWindow,
+					// 异步判定 (31): 这一局是不是按按下时刻判的; 结果页 / 历史记录 / 暂停界面都读这里
+					ClientPrefs.data.asyncJudge
 				];
 				Highscore.saveScore(SONG.song, songScore, storyDifficulty, percent,sicks, goods, bads, shits, songMisses, maxcombo);
 				Allscore.addEntry(
@@ -7292,7 +7331,8 @@ class PlayState extends MusicBeatState
 			// input event; use the countdown clock and let update() start the song.
 			// Save the real position so the countdown clock isn't broken on restore.
 			var lastTime:Float = Conductor.songPosition;
-			var hitTime:Float = (replayMode && time != -999999) ? time : lastTime;
+			// time 是调用方给的判定时刻 (回放帧 / 异步判定的按下时刻); -999999 = 用当前钟。
+			var hitTime:Float = (time != -999999) ? time : lastTime;
 			var startedByInput:Bool = false;
 			if (startingSong || (replayMode && time != -999999))
 			{
@@ -7327,8 +7367,8 @@ class PlayState extends MusicBeatState
 				}
 			}
 
-			// Replay mode: scripts and key handling both use the exact time of the recorded frame.
-			if (replayMode && time != -999999)
+			// Replay mode / async judgement: scripts and key handling both use the exact press time.
+			if (time != -999999)
 				Conductor.songPosition = hitTime;
 
 		keyboardDisplay.pressed(key);
@@ -7343,7 +7383,7 @@ class PlayState extends MusicBeatState
 				// that startup window has passed, otherwise the first hit can report
 				// hundreds of milliseconds even when the key was pressed on time.
 				var audioClockReady:Bool = songStartTicks >= 0 && FlxG.game.ticks - songStartTicks >= 1000;
-				if (replayMode && time != -999999)
+				if (time != -999999)
 					Conductor.songPosition = hitTime;
 				else if (!startedByInput && audioClockReady && FlxG.sound.music != null)
 					Conductor.songPosition = FlxG.sound.music.time;
@@ -7531,6 +7571,15 @@ class PlayState extends MusicBeatState
 			for (i in 0...keys.length)
 			{
 				var key:Int = keys[i];
+				// 异步判定: 这一 lane 的按下时刻和这一帧不一样, 判定期间把钟换到按下时刻 (和 keyPressed 同一套做法)。
+				// 开关关着时一律不换钟, 批量路径的行为和改动前逐条一致。
+				var clockSaved:Float = 0;
+				var clockSwapped:Bool = pressTimes != null && i < pressTimes.length && pressTimes[i] != -999999 && ClientPrefs.data.asyncJudge;
+				if (clockSwapped)
+				{
+					clockSaved = Conductor.songPosition;
+					Conductor.songPosition = pressTimes[i];
+				}
 				var reportTime:Float = (pressTimes != null && i < pressTimes.length && pressTimes[i] != -999999) ? pressTimes[i] : Conductor.songPosition;
 				keyboardDisplay.pressed(key);
 				callOnScripts('preKeyPress', Scripts.fill1(Scripts.get(1), key));
@@ -7555,6 +7604,7 @@ class PlayState extends MusicBeatState
 					keysPressed[key] = true;
 
 					callOnScripts('onKeyPress', Scripts.fill1(Scripts.get(1), key));
+					if (clockSwapped) Conductor.songPosition = clockSaved;
 					continue;
 				}
 
@@ -7591,12 +7641,43 @@ class PlayState extends MusicBeatState
 				keysPressed[key] = true;
 
 				callOnScripts('onKeyPress', Scripts.fill1(Scripts.get(1), key));
+				if (clockSwapped) Conductor.songPosition = clockSaved;
 			}
 			_pressScratchDepth--;
 		}
 
-		/** Multi-key: lets the Android hitbox trigger extended lanes directly (above 4K). */
-		public function mobileKeyPressed(key:Int):Void
+		/**
+		 * 异步判定 (触摸): 虚拟按键 / 触屏色块按下时, 把这一下触摸自己的 SDL 时间戳送进来。
+		 *
+		 * 和键盘走同一条判定: keysCheck 里 `takeAsyncPressTime()` 会优先取这里的时间,
+		 * 换算成歌曲时间后交给 keyPressed / keyPressBatch, 判定用「手指落下的那一刻」
+		 * 而不是「这一帧」。没有时间戳的来源 (鼠标、旧后端、HTML5) 传 0, 判定退回这一帧。
+		 *
+		 * @param lane  轨道下标 (4K 是 0..3; 多k 是 0..ammo-1)
+		 * @param tickNs 触摸事件的纳秒时间戳 (`System.getTimer` 同一时钟域)
+		 */
+		public function mobileNotePressed(lane:Int, tickNs:Float):Void
+		{
+			#if (seiun_async_probe && sys)
+			asyncProbe('touch lane=' + lane + ' ms=' + Std.string(Math.round(tickNs * 0.000001))
+				+ ' list=' + FlxG.touches.list.length
+				+ ' on=' + (ClientPrefs.data.asyncJudge ? 1 : 0)
+				+ ' paused=' + (paused ? 1 : 0) + ' started=' + (startedCountdown ? 1 : 0)
+				+ ' replay=' + (replayMode ? 1 : 0) + ' cpu=' + (cpuControlled ? 1 : 0));
+			#end
+			// 关着开关时一次布尔判断就退出 (每个触摸都走这里, 不能有额外开销)
+			if (!ClientPrefs.data.asyncJudge || tickNs <= 0) return;
+			if (lane < 0 || lane >= _touchPressTick.length) return;
+			// 菜单/暂停/结算里的虚拟按键也会调进来, 只认真正在判定的那些帧
+			if (paused || !startedCountdown || endingSong || replayMode || cpuControlled) return;
+			_touchPressTick[lane] = tickNs * 0.000001; // ns -> ms, 和 System.getTimer 同域
+		}
+
+		/**
+		 * Multi-key: lets the Android hitbox trigger extended lanes directly (above 4K).
+		 * @param tickNs 这一下触摸自己的纳秒时间戳 (异步判定用; 0 = 没有)
+		 */
+		public function mobileKeyPressed(key:Int, ?tickNs:Float = 0):Void
 		{
 			if (key < 0 || key >= Note.ammo[mania] || key >= mobileHeld.length)
 				return;
@@ -7604,6 +7685,8 @@ class PlayState extends MusicBeatState
 			mobileHeld[key] = true;
 			if (replayMode || cpuControlled || paused)
 				return;
+			// 异步判定: 触摸自己的按下时刻 (多k 色块没有下面的 Controls 轮询, 只有这条路)
+			if (tickNs > 0) mobileNotePressed(key, tickNs);
 			// Same-frame multi-touch presses are queued and merged into one keyPressBatch by keysCheck, avoiding a full note scan per finger.
 			if (_mobilePressQueue.indexOf(key) == -1)
 			{
@@ -7979,8 +8062,10 @@ class PlayState extends MusicBeatState
  * @param pressLanes lanes pressed this frame
  * @param releaseLanes lanes released this frame
  * @param heldLanes  lanes currently held
+	 * @param pressTimes per-lane song time the press was originally judged at (异步判定; see Replay's
+	 *                   FrameSave.pressTimes). A lane without an entry falls back to frameTime.
 	 */
-	public function replayApplyInput(frameTime:Float, pressLanes:Array<Int>, releaseLanes:Array<Int>, heldLanes:Array<Bool>):Void
+	public function replayApplyInput(frameTime:Float, pressLanes:Array<Int>, releaseLanes:Array<Int>, heldLanes:Array<Bool>, ?pressTimes:Array<Float>):Void
 	{
 		var laneCount:Int = keysArray.length;
 		for (i in 0...laneCount)
@@ -8010,7 +8095,13 @@ class PlayState extends MusicBeatState
 			for (i in 0..._press.length)
 			{
 				if (_press[i] && strumsBlocked[i] != true)
-					keyPressed(i, frameTime);
+				{
+					// 异步判定回放: 用录制时真正用于判定的按下时刻重判; 没有记录就退回帧时刻 (旧回放 / 未开开关)
+					var pressTime:Float = frameTime;
+					if (pressTimes != null && i < pressTimes.length && pressTimes[i] != -999999)
+						pressTime = pressTimes[i];
+					keyPressed(i, pressTime);
+				}
 			}
 		}
 
@@ -8084,6 +8175,175 @@ class PlayState extends MusicBeatState
 				}
 			}
 			return -1;
+		}
+
+
+		// ---------------------------------------------------------------- 异步判定
+
+		/**
+		 * 异步判定: 记下这次按键**自己的**时间戳, 等这一帧的 keysCheck 来取。
+		 *
+		 * 轮询 (controls.NOTE_LEFT_P / FlxG.keys) 只能回答「按了没有」, 回答不了「什么时候
+		 * 按的」——事件被 SDL 泵进来之后要等到下一个逻辑步才会被看到, 最多晚 16.7 ms。事件
+		 * 自己带着 SDL 的时间戳 (`KeyboardEvent.inputTimestampNs`), 换算成歌曲时间就是真正的
+		 * 按下时刻。
+		 *
+		 * 没有时间戳的来源 (Android 触摸合成的 KeyboardEvent、HTML5) 留空, keysCheck 会退回
+		 * 和今天完全一样的行为。
+		 */
+		private function onAsyncKeyDown(event:KeyboardEvent):Void
+		{
+			// 回放/自动游玩不出判定, 也就没有要记的时间戳; 顺带避免录制时把队列塞满旧值。
+			if (event == null || !ClientPrefs.data.asyncJudge || replayMode || cpuControlled) return;
+
+			var lane:Int = getKeyFromEvent(event.keyCode);
+			if (lane < 0 || lane >= _asyncDown.length) return;
+
+			// 系统连发会不停重复 KEY_DOWN 而不给 KEY_UP, 那不是新的一次按下
+			if (_asyncDown[lane]) return;
+			_asyncDown[lane] = true;
+
+			var stamp:Float = event.inputTimestampNs;
+
+			// 0 = 这个后端没有时间戳; 0.000001 是 ns -> ms, 和 System.getTimer 同域
+			if (stamp <= 0) return;
+			_asyncPressTick[lane] = stamp * 0.000001;
+		}
+
+		private function onAsyncKeyUp(event:KeyboardEvent):Void
+		{
+			// 这里不看开关: 中途关掉异步判定时, _asyncDown 不能卡在 true 上, 否则那个 lane 之后再按都不认。
+			if (event == null) return;
+			var lane:Int = getKeyFromEvent(event.keyCode);
+			if (lane < 0 || lane >= _asyncDown.length) return;
+			_asyncDown[lane] = false;
+		}
+
+		/**
+		 * 每帧把判定钟往音频钟上锁一次, 返回本帧能不能用异步判定。
+		 *
+		 * 用和 keyPressed() 里 audioClockReady 同一个 1 秒窗口: 歌曲刚起播的几百毫秒里
+		 * FlxSound.time 还带着平台音频缓冲的延迟, 这时候锁上去只会把判定值整体拽偏。
+		 */
+		private function refreshJudgeClock():Bool
+		{
+			if (paused || endingSong || !generatedMusic || !startedCountdown)
+			{
+				if (_judgeClock != null) _judgeClock.reset();
+				return false;
+			}
+
+			if (songStartTicks < 0 || FlxG.game.ticks - songStartTicks < 1000)
+			{
+				if (_judgeClock != null) _judgeClock.reset();
+				return false;
+			}
+
+			var track:FlxSound = FlxG.sound.music;
+			if (track == null || !track.playing)
+			{
+				if (_judgeClock != null) _judgeClock.reset();
+				return false;
+			}
+
+			if (_judgeClock == null) _judgeClock = new backend.JudgeClock();
+			_judgeClock.sample(lime.system.System.getTimer(), track.time, playbackRate);
+			return _judgeClock.linked();
+		}
+
+		/**
+		 * 取走某个 lane 待消费的按下时间戳, 换算成歌曲时间; 拿不到就返回 -999999 (= 用今天的路径)。
+		 *
+		 * 键盘和触摸都会留下时间戳。同一 lane 两者都有时取**较新**的那个: 触摸时刻一定是这一帧
+		 * 手指落下的时间, 而更旧的残留 (比如那一下被 strumsBlocked 吞掉了) 不该劫持下一次按键。
+		 */
+		private function takeAsyncPressTime(lane:Int, nowTick:Float):Float
+		{
+			if (lane < 0 || lane >= _asyncPressTick.length) return -999999;
+
+			var keyStamp:Float = _asyncPressTick[lane];
+			var touchStamp:Float = (lane < _touchPressTick.length) ? _touchPressTick[lane] : -1;
+			var fromTouch:Bool = touchStamp > keyStamp;
+			var stamp:Float = fromTouch ? touchStamp : keyStamp;
+			if (stamp < 0) return -999999;
+
+			// 两个都消费掉: 一次按下只判一次 (touchStamp 只有在比 keyStamp 新时才有意义)
+			_asyncPressTick[lane] = -1; // 只消费一次
+			if (lane < _touchPressTick.length) _touchPressTick[lane] = -1;
+
+			if (_judgeClock == null || !_judgeClock.linked()) return -999999;
+
+			// 太新 = 时间戳不可信; 太旧 = 那次按下这一帧的轮询没看到 (按下即松开), 都不能拿来做判定
+			var age:Float = nowTick - stamp;
+
+			#if (seiun_async_probe && sys)
+			// 探针: 判定侧看到的滞后, 以及「异步判定的时刻」和「今天这条路径的判定时刻」差多少。
+			// musicTime 才是关闭开关时 keyPressed() 真正拿去判定的值 (audioClockReady 之后)。
+			var probeMusic:FlxSound = FlxG.sound.music;
+			asyncProbe('judge src=' + (fromTouch ? 'touch' : 'key')
+				+ ' age=' + Std.string(Math.round(age * 1000) / 1000)
+				+ ' asyncSong=' + Std.string(Math.round(_judgeClock.songAt(stamp) * 1000) / 1000)
+				+ ' frameSong=' + Std.string(Math.round(Conductor.songPosition * 1000) / 1000)
+				+ ' musicTime=' + Std.string(probeMusic == null ? -1 : Math.round(probeMusic.time * 1000) / 1000));
+			#end
+
+			if (age < -2 || age > 100) return -999999;
+
+			return _judgeClock.songAt(stamp);
+		}
+
+		private function clearAsyncTicks():Void
+		{
+			for (i in 0..._asyncPressTick.length)
+				_asyncPressTick[i] = -1;
+			for (i in 0..._touchPressTick.length)
+				_touchPressTick[i] = -1;
+		}
+
+		#if (seiun_async_probe && sys)
+		/**
+		 * 判定探针（-D seiun_async_probe）：**不看设置**，每个按键都记一行，用来核对
+		 * lime → openfl → 引擎这条时间戳管道是不是真的接上了 SDL 的时间。
+		 *
+		 * 判据：
+		 *   - `stampNs` 必须是合理的纳秒值（和 `timerMs × 1e6` 同一个量级），不是 0；
+		 *   - `ageMs`（这一帧看到它时已经过去多久）必须 ≥ 0 且小于一个绘制帧：
+		 *     0 说明时间戳没接上（退回今天的行为），天文数字说明内存布局对不上。
+		 */
+		private static function probeAsyncKeyDown(event:KeyboardEvent):Void
+		{
+			if (event == null) return;
+			var now:Float = lime.system.System.getTimer();
+			var stamp:Float = event.inputTimestampNs;
+			asyncProbe('key=' + Std.string(event.keyCode)
+				+ ' stampNs=' + Std.string(stamp)
+				+ ' timerMs=' + Std.string(Math.round(now * 1000) / 1000)
+				+ ' ageMs=' + Std.string(Math.round((now - stamp * 0.000001) * 1000) / 1000));
+		}
+
+		/**
+		 * 探针写盘: 追加一行到运行目录的 async_probe.log。
+		 * 写法和 Replay.dbgLog 一样（读全文再覆盖写）, 行数很少, 不值得为它维护一个句柄。
+		 */
+		private static function asyncProbe(line:String):Void
+		{
+			try
+			{
+				var path:String = 'async_probe.log';
+				var old:String = sys.FileSystem.exists(path) ? sys.io.File.getContent(path) : '';
+				sys.io.File.saveContent(path, old + line + '\n');
+			}
+			catch (e:Dynamic) {}
+		}
+		#end
+
+		/** 失焦: 按键状态和待判定的时间戳都作废 (系统不会再补发 KEY_UP)。 */
+		private function onAsyncFocusLost(?event:openfl.events.Event):Void
+		{
+			for (i in 0..._asyncDown.length)
+				_asyncDown[i] = false;
+			clearAsyncTicks();
+			if (_judgeClock != null) _judgeClock.reset();
 		}
 
 
@@ -8181,6 +8441,25 @@ class PlayState extends MusicBeatState
 				}
 			}
 
+			// 异步判定: 上面的轮询只回答「按了」, 这一帧的按键事件回答「什么时候按的」。
+			// 只在正常游玩帧生效 (脚本/replay 自己传 time 的调用一律走原路径)。
+			var asyncTimes:Array<Float> = null;
+			if (ClientPrefs.data.asyncJudge && time == -999999 && !replayMode && !cpuControlled)
+			{
+				if (refreshJudgeClock())
+				{
+					var asyncNow:Float = lime.system.System.getTimer();
+					asyncTimes = nested ? [] : _asyncLaneTimes;
+					asyncTimes.resize(laneCount);
+					// 多k 的 4 键以上轨道没有进 Controls 轮询, 只在 _mobilePressQueue 里; 它们也算「这一帧按了」。
+					var hasMobileQueue:Bool = _mobilePressQueue.length > 0;
+					for (i in 0...laneCount)
+						asyncTimes[i] = (pressArray[i] || (hasMobileQueue && _mobilePressQueue.indexOf(i) != -1))
+							? takeAsyncPressTime(i, asyncNow) : -999999;
+				}
+				else clearAsyncTicks();
+			}
+
 			if (!cpuControlled && startedCountdown && !paused && !endingSong && !boyfriend.stunned && generatedMusic && !replayMode)
 			{
 				if (ClientPrefs.data.lastNoteAnimation)
@@ -8193,7 +8472,7 @@ class PlayState extends MusicBeatState
 						{
 							var mKey:Int = _mobilePressQueue[mi];
 							if (mKey >= 0 && mKey < laneCount && strumsBlocked[mKey] != true)
-								keyPressed(mKey, time);
+								keyPressed(mKey, (asyncTimes != null && mKey < asyncTimes.length && asyncTimes[mKey] != -999999) ? asyncTimes[mKey] : time);
 						}
 						_mobilePressQueue.resize(0);
 						_mobilePressTimes.resize(0);
@@ -8207,31 +8486,47 @@ class PlayState extends MusicBeatState
 
 					// Multiple keys take the same batch scan, preserving that same visual behavior.
 					pressedLanes.resize(0);
+					var batchTimes:Array<Float> = null;
+					if (asyncTimes != null)
+					{
+						batchTimes = nested ? [] : _batchPressTimes;
+						batchTimes.resize(0);
+					}
 					for (i in 0...laneCount)
 						if (pressArray[i] && strumsBlocked[i] != true)
+						{
 							pressedLanes.push(i);
+							if (batchTimes != null) batchTimes.push(asyncTimes[i]);
+						}
 
 					if (pressedLanes.length == 1)
-						keyPressed(pressedLanes[0], time);
+						keyPressed(pressedLanes[0], batchTimes != null ? batchTimes[0] : time);
 					else if (pressedLanes.length > 1)
-						keyPressBatch(pressedLanes, time, pressedLanes[pressedLanes.length - 1]);
+						keyPressBatch(pressedLanes, time, pressedLanes[pressedLanes.length - 1], batchTimes);
 				}
 				else
 				{
 					// Single scan for all lanes pressed this frame instead of a full note-table scan per key;
 					// same-frame touches are merged in and their raw press times go through pressTimes.
 					pressedLanes.resize(0);
-					var mobileTimes:Array<Float> = null;
+					// laneTimes[k] 对应 pressedLanes[k]: 触摸那次是触摸时刻, 键盘那次是异步判定的按下时刻。
+					var laneTimes:Array<Float> = null;
+					if (_mobilePressQueue.length > 0 || asyncTimes != null)
+					{
+						laneTimes = nested ? [] : _batchPressTimes;
+						laneTimes.resize(0);
+					}
 					if (_mobilePressQueue.length > 0)
 					{
-						mobileTimes = [];
 						for (mi in 0..._mobilePressQueue.length)
 						{
 							var mKey:Int = _mobilePressQueue[mi];
 							if (mKey >= 0 && mKey < laneCount && strumsBlocked[mKey] != true && pressedLanes.indexOf(mKey) == -1)
 							{
 								pressedLanes.push(mKey);
-								mobileTimes.push(_mobilePressTimes[mi]);
+								// 异步判定: 触摸自己的按下时刻优先于「按下时这一帧的歌曲时间」
+								laneTimes.push((asyncTimes != null && mKey < asyncTimes.length && asyncTimes[mKey] != -999999)
+									? asyncTimes[mKey] : _mobilePressTimes[mi]);
 							}
 						}
 					}
@@ -8242,7 +8537,7 @@ class PlayState extends MusicBeatState
 							if (pressedLanes.indexOf(i) == -1)
 							{
 								pressedLanes.push(i);
-								if (mobileTimes != null) mobileTimes.push(-999999);
+								if (laneTimes != null) laneTimes.push(asyncTimes != null ? asyncTimes[i] : -999999);
 							}
 						}
 
@@ -8253,9 +8548,9 @@ class PlayState extends MusicBeatState
 						_mobilePressTimes.resize(0);
 					}
 					if (pressedLanes.length == 1)
-						keyPressed(pressedLanes[0], time);
+						keyPressed(pressedLanes[0], laneTimes != null ? laneTimes[0] : time);
 					else if (pressedLanes.length > 1)
-						keyPressBatch(pressedLanes, time, -1, mobileTimes);
+						keyPressBatch(pressedLanes, time, -1, laneTimes);
 					if (_mobileReleaseQueue.length > 0)
 					{
 						for (r in _mobileReleaseQueue)
@@ -8263,6 +8558,10 @@ class PlayState extends MusicBeatState
 						_mobileReleaseQueue.resize(0);
 					}
 				}
+
+				// 异步判定: 这一帧真正用于判定的按下时刻交给回放记录, 回放时按同一时刻重判 (见 FrameSave.pressTimes)
+				if (asyncTimes != null && pressedLanes.length > 0 && replayExam != null && replayExam.isRecording)
+					replayExam.recordAsyncPressTimes(asyncTimes);
 
 				// With nothing held a sustain cannot be hit, so skip the whole table scan.
 				// Without scripts the compact living list (activeNotes) is used, avoiding dead member slots;
@@ -10298,6 +10597,15 @@ if (CompatEngine.isModern() && hasActiveScripts()) {
 	override function destroy() {
 		// Back to the menus: the watermark is visible again (ClientPrefs.data.showWatermark wins).
 		backend.Watermark.setVisible(true);
+
+		// 异步判定的按键监听挂在 stage 上, 状态销毁时必须摘掉 (否则旧状态会继续收事件)。
+		if (FlxG.stage != null)
+		{
+			FlxG.stage.removeEventListener(KeyboardEvent.KEY_DOWN, onAsyncKeyDown);
+			FlxG.stage.removeEventListener(KeyboardEvent.KEY_UP, onAsyncKeyUp);
+			FlxG.stage.removeEventListener(openfl.events.Event.DEACTIVATE, onAsyncFocusLost);
+		}
+		_judgeClock = null;
 
 		// A render must never outlive the state: leaving it running would keep the
 		// game pinned to a fixed timestep (and the ffmpeg child alive).

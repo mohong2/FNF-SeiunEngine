@@ -102,6 +102,8 @@
     "option.badWindow.desc": "Changes the amount of time you have for hitting a \"Bad\" in milliseconds.",
     "option.tipText": "Press C to customize your android controls.",
     "option.safeFrames.desc": "Changes how many frames you have for hitting a note earlier or late.",
+    "option.asyncJudge": "Async Judgement",
+    "option.asyncJudge.desc": "Judges each press by the moment it actually went down, not by the frame that noticed it.\nRemoves up to one frame of timing error, so your hit ms stops moving with the frame rate.\nApplies to the keyboard and to the touch controls (hitbox and virtual pad); gamepad and mouse clicks keep their own timing.\nReplays record the press times and judge by them again.\nTurning this on makes judged ms about 8ms earlier on average (the old path always ran half a frame late).",
     "option.sustainsAsOneNote.desc": "If checked, Hold Notes can't be pressed if you miss, and count as a single Hit/Miss.\nUncheck this if you prefer the old Input System.",
     "option.saveReplayData.desc": "If checked, the game will record your inputs and save them with your score.\nThis allows you to watch replays later.",
     "option.lastNoteAnimation": "Last Note Animation",

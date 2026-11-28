@@ -22,6 +22,8 @@
     "ResultsScreen.judgeWindows": "判定區間 完美/不錯/不好/幀",
 	"ResultsScreen.replaySaved": "回放已儲存",
 	"ResultsScreen.on": "開啟",
+	"ResultsScreen.asyncJudge": "非同步判定",
+	"ResultsScreen.asyncFrameTime": "幀時刻",
 	"ResultsScreen.off": "關閉",
 	"ResultsScreen.yes": "是",
 	"ResultsScreen.no": "否",

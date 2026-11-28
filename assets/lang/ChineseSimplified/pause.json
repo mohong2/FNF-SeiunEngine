@@ -17,5 +17,10 @@
   "Charting Mode": "谱面编辑模式",
   "PauseSubState.Replay": "回放模式",
   "ReplayDifficultyLock": "回放模式下不允许调整难度.",
-  "PauseSubState.replayTitle2" : "(Replay的回放数据不一定准确)"
+  "PauseSubState.replayInfo": "回放数据",
+  "PauseSubState.judge": "判定",
+  "PauseSubState.replayFrames": "回放帧数",
+  "PauseSubState.replayVersion": "回放版本",
+  "PauseSubState.recordedScore": "录制成绩",
+  "PauseSubState.unknown": "未知"
 }

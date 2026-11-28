@@ -137,6 +137,9 @@ class OptionLoader
 		{
 			case 'desktop': #if (desktop && !html5) true #else false #end;
 			case 'mobile': #if mobile true #else false #end;
+			// Every target that runs the native (SDL) event pump: the same option applies to
+			// keyboard on desktop and to touch on Android/iOS, and only HTML5 is left out.
+			case 'native': #if ((desktop && !html5) || mobile) true #else false #end;
 			case 'html5': #if html5 true #else false #end;
 			// Targets that carry an alternative graphics backend (backend.RendererChoice).
 			// Deliberately narrower than 'desktop': Linux and macOS ship no Vulkan renderer.
@@ -776,6 +779,8 @@ class OptionLoader
 			{
 				case 'desktop': #if (desktop && !html5) true #else false #end;
 				case 'mobile':  #if mobile true #else false #end;
+				// Same as categoryAllowedOnPlatform(): keyboard on desktop, touch on Android/iOS.
+				case 'native':  #if ((desktop && !html5) || mobile) true #else false #end;
 				case 'html5':   #if html5 true #else false #end;
 				// Same rule as categoryAllowedOnPlatform(): the two targets that carry a
 				// second graphics backend (see backend.RendererChoice).

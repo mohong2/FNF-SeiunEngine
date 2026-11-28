@@ -22,6 +22,8 @@
     "ResultsScreen.judgeWindows": "Judge Windows S/G/B/SF",
 	"ResultsScreen.replaySaved": "Replay Saved",
 	"ResultsScreen.on": "ON",
+	"ResultsScreen.asyncJudge": "Async Judge",
+	"ResultsScreen.asyncFrameTime": "frame time",
 	"ResultsScreen.off": "OFF",
 	"ResultsScreen.yes": "YES",
 	"ResultsScreen.no": "NO",

@@ -9,6 +9,7 @@ import flixel.util.FlxDestroyUtil;
 import android.flixel.FlxButton;
 import openfl.display.BitmapData;
 import openfl.utils.Assets;
+import states.PlayState;
 import Replay;
 
 enum FlxDPadMode
@@ -326,12 +327,33 @@ class FlxVirtualPad extends FlxTypedSpriteGroup<FlxButton>
 	private function setupDPadKeySim(button:FlxButton, bindName:String):Void
 	{
 		if (button == null) return;
+		var lane:Int = laneOfBind(bindName);
+		var keyName:String = null;
 		var keys:Array<FlxKey> = ClientPrefs.keyBinds.get(bindName);
-		if (keys == null || keys.length == 0 || keys[0] == FlxKey.NONE) return;
-		var keyName:String = Std.string(keys[0]);
-		button.onDown.callback = function() { Replay.notifyPress(keyName); };
-		button.onUp.callback = function() { Replay.notifyRelease(keyName); };
-		button.onOut.callback = function() { Replay.notifyRelease(keyName); };
+		if (keys != null && keys.length > 0 && keys[0] != FlxKey.NONE)
+			keyName = Std.string(keys[0]);
+
+		// 录制只要键名; 异步判定要 lane + 按下时刻。两者互不依赖: 没绑键也照样送时间戳。
+		button.onDown.callback = function()
+		{
+			if (keyName != null) Replay.notifyPress(keyName);
+			if (PlayState.instance != null) PlayState.instance.mobileNotePressed(lane, button.pressTimestampNs);
+		};
+		button.onUp.callback = function() { if (keyName != null) Replay.notifyRelease(keyName); };
+		button.onOut.callback = function() { if (keyName != null) Replay.notifyRelease(keyName); };
+	}
+
+	/** 方向键 -> lane 下标 (和 4K 的 0..3 顺序一致)。 */
+	private static inline function laneOfBind(bindName:String):Int
+	{
+		return switch (bindName)
+		{
+			case 'note_left': 0;
+			case 'note_down': 1;
+			case 'note_up': 2;
+			case 'note_right': 3;
+			default: -1;
+		};
 	}
 
 	/**

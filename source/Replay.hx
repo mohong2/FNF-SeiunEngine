@@ -32,6 +32,15 @@ typedef FrameSave = {
 	var pressKey:Array<String>;
 	var releaseKey:Array<String>;
 	@:optional var noteJudgments:Array<NoteJudgment>;
+	/**
+	 * Async judgement: the song position (ms) each lane's press was actually judged at, indexed by lane;
+	 * -999999 for lanes without an async press.
+	 *
+	 * Playback feeds these to keyPressed() instead of the frame time, so a replay recorded with async
+	 * judgement reproduces the original press timing (note selection included) instead of judging ~9 ms
+	 * late at the frame boundary. Frames recorded without the option simply lack the field.
+	 */
+	@:optional var pressTimes:Array<Float>;
 }
 
 typedef StateRecord = {
@@ -82,6 +91,14 @@ typedef StateRecord = {
 	/** Judgement feel recorded with the replay: rating offset / whether sustains are judged as single notes. */
 	@:optional var ratingOffset:Int;
 	@:optional var guitarHeroSustains:Bool;
+	/**
+	 * Whether 异步判定 was on while recording.
+	 *
+	 * Informational: the flag is never restored during playback (that would only flip the player's
+	 * setting), and it cannot change a judgement on its own - the press timing that matters is stored
+	 * per frame in FrameSave.pressTimes. Kept so the results screen can say what the replay used.
+	 */
+	@:optional var asyncJudge:Bool;
 	var replayVersion:Int;
 	/** Multi-key: key count while recording (mania+1, used to validate the replay). */
 	@:optional var mania:Int;
@@ -163,6 +180,8 @@ class Replay extends FlxBasic
 	private var tmpPressLanes:Array<Int> = [];
 	private var tmpReleaseLanes:Array<Int> = [];
 	private var tmpHeldLanes:Array<Bool> = [];
+	/** Per-lane press times of the frame being replayed (-999999 = fall back to the frame time). */
+	private var tmpPressTimes:Array<Float> = [];
 
 	/** Empty event array used to pump sustain/idle logic every frame (avoid per-frame GC). */
 	private var tmpEmptyPress:Array<Int> = [];
@@ -172,6 +191,17 @@ class Replay extends FlxBasic
 	public var hasJudgments(default, null):Bool = false;
 	private var judgmentMap:Map<String, NoteJudgment> = new Map<String, NoteJudgment>();
 	public var replayVersion(default, null):Int = 1;
+
+	// ---- async judgement ----
+	/** 异步判定 flag the replay was recorded with (null when it predates the option). Informational only; playback uses FrameSave.pressTimes. */
+	public var recordedAsyncJudge:Null<Bool> = null;
+	/** Whether the loaded frames carry per-lane press times (see FrameSave.pressTimes). */
+	public var hasRecordedPressTimes(default, null):Bool = false;
+
+	/** Replay.update() call counter; tells the async handoff which frame belongs to the current update. */
+	private var updateSerial:Int = 0;
+	/** updateSerial of the last frame pushed by update() (-1 = no frame captured yet). */
+	private var lastCaptureSerial:Int = -1;
 
 	// ---- judgement feel restored during replay ----
 	/** True when the windows restored by the replay differ from the player's current settings. */
@@ -215,6 +245,9 @@ class Replay extends FlxBasic
 		replayVersion = 1;
 		replayTime = 0;
 		lastReplayTimeForResync = Math.NaN;
+		recordedAsyncJudge = null;
+		hasRecordedPressTimes = false;
+		lastCaptureSerial = -1;
 		// Start from the current tick: the first update() must not see a stale value and scan.
 		_lastInputTick = Replay.inputTick;
 		ensureInputListener();
@@ -269,6 +302,7 @@ class Replay extends FlxBasic
 	{
 		isRecording = false;
 		frameData = normalizeFrames(frames);
+		refreshPressTimeFlag();
 		resetSimState();
 		buildJudgmentMap();
 		if (stateRecord != null) restoreState(stateRecord);
@@ -300,6 +334,7 @@ class Replay extends FlxBasic
 				return;
 			}
 			frameData = extractFrames(json);
+			refreshPressTimeFlag();
 			Replay.dbgLog('[DEBUG-rpl] loadFromFile parsed, frameData=' + frameData.length);
 			if (json.stateRecord != null) restoreState(json.stateRecord);
 			buildJudgmentMap();
@@ -316,6 +351,20 @@ class Replay extends FlxBasic
 			frameData = [];
 		}
 		#end
+	}
+
+	/** Recomputes hasRecordedPressTimes for the loaded frames (cheap: stops at the first frame that has them). */
+	private function refreshPressTimeFlag():Void
+	{
+		hasRecordedPressTimes = false;
+		for (f in frameData)
+		{
+			if (f.pressTimes != null)
+			{
+				hasRecordedPressTimes = true;
+				return;
+			}
+		}
 	}
 
 	/** Clears the simulated key state (on replay load / recording start). */
@@ -501,6 +550,11 @@ class Replay extends FlxBasic
 		}
 		else
 			judgementRestoreInfo = '';
+		// Async judgement: remember what the recording used. The playback path does not restore it (that would
+		// flip the player's setting); the press timing comes from FrameSave.pressTimes instead, so this is
+		// only used to describe the replay on the results screen.
+		recordedAsyncJudge = stateRecord.asyncJudge != null ? toBool(stateRecord.asyncJudge) : null;
+
 		// Multi-key: warn when the replay key count does not match the chart (lane mapping would shift)
 		if (stateRecord.mania != null)
 		{
@@ -563,6 +617,7 @@ class Replay extends FlxBasic
 			//tailWindowMult: ClientPrefs.data.tailWindowMult,
 			ratingOffset: ClientPrefs.data.ratingOffset,
 			guitarHeroSustains: ClientPrefs.data.guitarHeroSustains,
+			asyncJudge: ClientPrefs.data.asyncJudge,
 			replayVersion: ClientPrefs.data.saveReplayData ? 2 : 1,
 			mania: PlayState.mania
 		};
@@ -580,6 +635,9 @@ class Replay extends FlxBasic
 	override public function update(elapsed:Float):Void
 	{
 		super.update(elapsed);
+		// Bumped before any early return: the async handoff (recordAsyncPressTimes) compares it against the
+		// serial of the frame captured in this same update, so it has to identify this update either way.
+		updateSerial++;
 		if (!isRecording || PlayState.instance == null) return;
 
 		// With replay saving off the recording is never consumed (Allscore only reads frames when saveReplayData is set),
@@ -620,6 +678,7 @@ class Replay extends FlxBasic
 				pendingJudgments = [];
 			}
 			frameData.push(frame);
+			lastCaptureSerial = updateSerial;
 			lastRecordedSongSpeed = ps.songSpeed;
 			lastRecordedPlaybackRate = ps.playbackRate;
 		}
@@ -636,6 +695,31 @@ class Replay extends FlxBasic
 			rating: rating,
 			isSustain: isSustain
 		});
+	}
+
+	/**
+	 * Hands the async judgement press times of the frame being recorded to the frame captured this update.
+	 *
+	 * Ordering: PlayState.update() calls super.update() (which reaches this class's update() -> captureFrame)
+	 * before keysCheck(), so the frame that already holds the press exists when the press is judged; the
+	 * update serial guarantees we never write into a frame from an earlier update. times is indexed by lane,
+	 * -999999 meaning "this lane had no async press".
+	 */
+	public function recordAsyncPressTimes(times:Array<Float>):Void
+	{
+		if (!isRecording || times == null) return;
+		if (lastCaptureSerial != updateSerial || frameData.length == 0) return;
+		// Nothing usable (clock not linked yet, or no trusted timestamp): leave the frame alone so playback
+		// keeps the frame-time behaviour instead of carrying a row of -999999 for every frame.
+		var usable:Bool = false;
+		for (t in times)
+			if (t != -999999)
+			{
+				usable = true;
+				break;
+			}
+		if (!usable) return;
+		frameData[frameData.length - 1].pressTimes = times.copy();
 	}
 
 	/** Captures the key state of the current frame. */
@@ -800,8 +884,15 @@ class Replay extends FlxBasic
 			// Apply this frame's press/release before building the held lanes, so a release frame is not still held
 			buildHeldLanes();
 
+			// Async judgement: judge each press at the position it was originally judged at when the replay
+			// carries it; frames without times (or lanes without one) keep the frame-time behaviour.
+			if (tmpPressTimes.length != laneCount) tmpPressTimes.resize(laneCount);
+			var frameTimes:Array<Float> = frame.pressTimes;
+			for (i in 0...laneCount)
+				tmpPressTimes[i] = (frameTimes != null && i < frameTimes.length) ? frameTimes[i] : -999999;
+
 			// Hand the keys to PlayState
-			ps.replayApplyInput(frame.time, tmpPressLanes, tmpReleaseLanes, tmpHeldLanes);
+			ps.replayApplyInput(frame.time, tmpPressLanes, tmpReleaseLanes, tmpHeldLanes, tmpPressTimes);
 
 			lastFrameCount++;
 			globalTick++;
@@ -999,14 +1090,18 @@ class Replay extends FlxBasic
 		var songSpeed:Float = toFloat(d.songSpeed, 1); if (songSpeed <= 0) songSpeed = 1;
 		var playbackRate:Float = toFloat(d.playbackRate, 1); if (playbackRate <= 0) playbackRate = 1;
 
-		out.push({
+		var frame:FrameSave = {
 			time: time,
 			songSpeed: songSpeed,
 			playbackRate: playbackRate,
 			pressKey: toKeyArray(d.pressKey),
 			releaseKey: toKeyArray(d.releaseKey),
 			noteJudgments: toJudgments(d.noteJudgments)
-		});
+		};
+		// Only attached when present, so replays without async press times stay byte-identical in shape
+		var pressTimes:Array<Float> = toFloatArray(d.pressTimes);
+		if (pressTimes != null) frame.pressTimes = pressTimes;
+		out.push(frame);
 	}
 
 	/** Numeric coercion: numbers, numeric strings and booleans; parse failures return the default. */
@@ -1038,6 +1133,16 @@ class Replay extends FlxBasic
 			return out;
 		}
 		return [Std.string(v)];
+	}
+
+	/** Float-array coercion: arrays of numbers/numeric strings; non-numeric entries become -999999 ("no time"). */
+	private static function toFloatArray(v:Dynamic):Array<Float>
+	{
+		if (v == null || !Std.isOfType(v, Array)) return null;
+		var arr:Array<Dynamic> = cast v;
+		var out:Array<Float> = [];
+		for (x in arr) out.push(toFloat(x, -999999));
+		return out.length > 0 ? out : null;
 	}
 
 	/** Judgement coercion: only structurally complete judgements are kept. */
@@ -1075,14 +1180,16 @@ class Replay extends FlxBasic
 		var result:Array<Dynamic> = [];
 		for (f in frames)
 		{
-			result.push({
+			var o:Dynamic = {
 				time: f.time,
 				songSpeed: f.songSpeed,
 				playbackRate: f.playbackRate,
 				pressKey: f.pressKey,
 				releaseKey: f.releaseKey,
 				noteJudgments: f.noteJudgments
-			});
+			};
+			if (f.pressTimes != null) Reflect.setField(o, 'pressTimes', f.pressTimes);
+			result.push(o);
 		}
 		return result;
 	}

@@ -242,7 +242,7 @@ class PauseSubState extends MusicBeatSubstate
 			replayCard.scrollFactor.set();
 			replayInfoGroup.add(replayCard);
 
-			var replayTitle1 = new FlxText(replayCard.x + 12, replayCard.y + 8, replayCard.width - 24, Language.get("ScoreHistorySubstate.title", "Song History:"), 18);
+			var replayTitle1 = new FlxText(replayCard.x + 12, replayCard.y + 8, replayCard.width - 24, Language.get("PauseSubState.replayInfo", "Replay Data"), 18);
 			replayTitle1.setFormat(Paths.languageFont(), 18, FlxColor.fromRGB(255, 220, 80), CENTER);
 			replayTitle1.scrollFactor.set();
 			replayInfoGroup.add(replayTitle1);
@@ -253,34 +253,93 @@ class PauseSubState extends MusicBeatSubstate
 			var detailX2 = replayCard.x + replayCard.width / 2 + 4;
 			var detailWidth = replayCard.width / 2 - 18;
 
-			if (entries != null)
+			function addDetail(tg:FlxSpriteGroup, x:Float, y:Float, w:Float, label:String, val:String, ?clr:FlxColor = FlxColor.CYAN)
 			{
-				function addDetail(tg:FlxSpriteGroup, x:Float, y:Float, w:Float, label:String, val:String, ?clr:FlxColor = FlxColor.CYAN)
-				{
-					var t = new FlxText(x, y, w, label + ": " + val, detailLineHeight);
-					t.setFormat(Paths.languageFont(), detailLineHeight, clr, LEFT);
-					t.scrollFactor.set();
-					tg.add(t);
-				}
+				var t = new FlxText(x, y, w, label + ": " + val, detailLineHeight);
+				t.setFormat(Paths.languageFont(), detailLineHeight, clr, LEFT);
+				t.scrollFactor.set();
+				tg.add(t);
+			}
 
-				addDetail(replayInfoGroup, detailX1, detailStartY, detailWidth, Language.get("ScoreHistorySubstate.date", "Date"), entries.date);
-				addDetail(replayInfoGroup, detailX2, detailStartY, detailWidth, Language.get("ScoreHistorySubstate.score", "Score"), Std.string(entries.score));
-				addDetail(replayInfoGroup, detailX1, detailStartY + detailLineHeight, detailWidth, Language.get("ScoreHistorySubstate.accuracy", "Accuracy"), Highscore.floorDecimal(entries.ratingPercent * 100, 2) + "%");
-				addDetail(replayInfoGroup, detailX2, detailStartY + detailLineHeight, detailWidth, Language.get("ScoreHistorySubstate.rating", "Rating"), entries.ratingName);
-				addDetail(replayInfoGroup, detailX1, detailStartY + detailLineHeight * 2, detailWidth, Language.get("ScoreHistorySubstate.songRating", "Song Rating"), entries.ratingFC);
-				addDetail(replayInfoGroup, detailX2, detailStartY + detailLineHeight * 2, detailWidth, Language.get("ScoreHistorySubstate.misses", "Misses"), Std.string(entries.misses));
-				addDetail(replayInfoGroup, detailX1, detailStartY + detailLineHeight * 3, detailWidth, Language.get("ScoreHistorySubstate.sicks", "Sicks"), Std.string(entries.sicks));
-				addDetail(replayInfoGroup, detailX2, detailStartY + detailLineHeight * 3, detailWidth, Language.get("ScoreHistorySubstate.goods", "Goods"), Std.string(entries.goods));
-				addDetail(replayInfoGroup, detailX1, detailStartY + detailLineHeight * 4, detailWidth, Language.get("ScoreHistorySubstate.bads", "Bads"), Std.string(entries.bads));
-				addDetail(replayInfoGroup, detailX2, detailStartY + detailLineHeight * 4, detailWidth, Language.get("ScoreHistorySubstate.shits", "Shits"), Std.string(entries.shits));
-				addDetail(replayInfoGroup, detailX1, detailStartY + detailLineHeight * 5, detailWidth, Language.get("ScoreHistorySubstate.maxCombo", "Max Combo"), Std.string(entries.maxCombo));
-				addDetail(replayInfoGroup, detailX2, detailStartY + detailLineHeight * 5, detailWidth, Language.get("ScoreHistorySubstate.songSpeed", "Song Speed"), Std.string(entries.songSpeed));
-				addDetail(replayInfoGroup, detailX1, detailStartY + detailLineHeight * 6, detailWidth, Language.get("ScoreHistorySubstate.playbackRate", "Playback Rate"), Std.string(entries.playbackRate));
-				addDetail(replayInfoGroup, detailX2, detailStartY + detailLineHeight * 6, detailWidth, Language.get("ScoreHistorySubstate.songSpeedType", "Speed Type"), entries.songSpeedType);
+			// 先写「这次回放是怎么判的」: 播放时已经把录像里的判定窗口还原进 ClientPrefs,
+			// 所以下面这行描述的是回放本身, 不是玩家当前设置。
+			var replayObj = PlayState.instance != null ? PlayState.instance.replayExam : null;
+			var judgeType:String = ClientPrefs.data.judgementPreset;
+			if (judgeType == null || judgeType.length == 0)
+				judgeType = backend.Ratings.presetNameForTimings(ClientPrefs.data.judgementTimings);
+			var windows:String = "";
+			if (ClientPrefs.data.marvelousRatings)
+				windows += Std.string(ClientPrefs.data.marvelousWindow) + "/";
+			windows += Std.string(ClientPrefs.data.sickWindow) + "/" + Std.string(ClientPrefs.data.goodWindow)
+				+ "/" + Std.string(ClientPrefs.data.badWindow);
+			var judgeStr:String = judgeType + " (" + windows + ") " + Std.string(ClientPrefs.data.safeFrames) + "f";
+
+			// 异步判定: 报录像里记的（null = 录这份回放时还没有这个选项）, 不拿当前设置冒充。
+			var asyncVal:String;
+			var asyncColor:FlxColor;
+			if (replayObj == null || replayObj.recordedAsyncJudge == null)
+			{
+				asyncVal = Language.get("PauseSubState.unknown", "unknown");
+				asyncColor = FlxColor.GRAY;
+			}
+			else if (replayObj.recordedAsyncJudge == true)
+			{
+				asyncVal = Language.get("ResultsScreen.on", "ON");
+				// 开了开关但帧里没有按键时刻 (旧格式回放): 播放只能按帧时刻判
+				if (!replayObj.hasRecordedPressTimes)
+					asyncVal += " (" + Language.get("ResultsScreen.asyncFrameTime", "frame time") + ")";
+				asyncColor = FlxColor.fromRGB(255, 215, 0);
 			}
 			else
 			{
-				var noDetailsText = new FlxText(replayCard.x + 10, detailStartY + 10, replayCard.width - 20,
+				asyncVal = Language.get("ResultsScreen.off", "OFF");
+				asyncColor = FlxColor.GRAY;
+			}
+
+			// 左列: 这次回放本身; 右列: 录制时的成绩 (旧卡片里的数字一个不落, 全部保留)
+			var rowY1:Int = 0;
+			function addLeft(label:String, val:String, ?clr:FlxColor = FlxColor.CYAN)
+			{
+				addDetail(replayInfoGroup, detailX1, detailStartY + detailLineHeight * rowY1, detailWidth, label, val, clr);
+				rowY1++;
+			}
+			var rowY2:Int = 0;
+			function addRight(label:String, val:String, ?clr:FlxColor = FlxColor.CYAN)
+			{
+				addDetail(replayInfoGroup, detailX2, detailStartY + detailLineHeight * rowY2, detailWidth, label, val, clr);
+				rowY2++;
+			}
+
+			addLeft(Language.get("PauseSubState.judge", "Judge"), judgeStr, FlxColor.fromRGB(180, 180, 200));
+			addLeft(Language.get("ResultsScreen.asyncJudge", "Async Judge"), asyncVal, asyncColor);
+			if (replayObj != null)
+			{
+				addLeft(Language.get("PauseSubState.replayFrames", "Frames"), Std.string(replayObj.getFrameData().length), FlxColor.fromRGB(200, 200, 200));
+				addLeft(Language.get("PauseSubState.replayVersion", "Version"), "v" + Std.string(replayObj.replayVersion), FlxColor.fromRGB(200, 200, 200));
+			}
+			addLeft(Language.get("ScoreHistorySubstate.songSpeed", "Song Speed"), Std.string(PlayState.instance != null ? PlayState.instance.songSpeed : 1), FlxColor.fromRGB(200, 200, 200));
+			addLeft(Language.get("ScoreHistorySubstate.playbackRate", "Playback Rate"), "x" + Std.string(PlayState.instance != null ? PlayState.instance.playbackRate : 1), FlxColor.fromRGB(200, 200, 200));
+
+			if (entries != null)
+			{
+				addLeft(Language.get("ScoreHistorySubstate.date", "Date"), entries.date);
+				addRight(Language.get("PauseSubState.recordedScore", "Recorded"), Std.string(entries.score), FlxColor.fromRGB(255, 215, 0));
+				addRight(Language.get("ScoreHistorySubstate.accuracy", "Accuracy"), Highscore.floorDecimal(entries.ratingPercent * 100, 2) + "%");
+				addRight(Language.get("ScoreHistorySubstate.rating", "Rating"), entries.ratingName);
+				addRight(Language.get("ScoreHistorySubstate.songRating", "Song Rating"), entries.ratingFC);
+				addRight(Language.get("ScoreHistorySubstate.maxCombo", "Max Combo"), Std.string(entries.maxCombo));
+				addRight(Language.get("ScoreHistorySubstate.misses", "Misses"), Std.string(entries.misses), FlxColor.fromRGB(255, 100, 100));
+				if (entries.marvelouses != null)
+					addRight(Language.get("ScoreHistorySubstate.marvelouses", "Marvelouses"), Std.string(entries.marvelouses), FlxColor.fromRGB(255, 215, 0));
+				addRight(Language.get("ScoreHistorySubstate.sicks", "Sicks"), Std.string(entries.sicks), FlxColor.fromRGB(0, 255, 255));
+				addRight(Language.get("ScoreHistorySubstate.goods", "Goods"), Std.string(entries.goods), FlxColor.WHITE);
+				addRight(Language.get("ScoreHistorySubstate.bads", "Bads"), Std.string(entries.bads), FlxColor.GRAY);
+				addRight(Language.get("ScoreHistorySubstate.shits", "Shits"), Std.string(entries.shits), FlxColor.GRAY);
+				addRight(Language.get("ScoreHistorySubstate.songSpeedType", "Speed Type"), entries.songSpeedType, FlxColor.fromRGB(200, 200, 200));
+			}
+			else
+			{
+				var noDetailsText = new FlxText(replayCard.x + 10, detailStartY + detailLineHeight * 2, replayCard.width - 20,
 					Language.get("ScoreHistorySubstate.emptyMsg", "No saved scores.\nPlay without Practice/Botplay to record."), detailLineHeight);
 				noDetailsText.setFormat(Paths.languageFont(), detailLineHeight, FlxColor.GRAY, CENTER);
 				noDetailsText.scrollFactor.set();

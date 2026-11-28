@@ -571,7 +571,7 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 
 		// --- Status header (moved to the top so it never overlaps the rating icon) ---
 		var statusLineH:Float = 13;
-		var statusCount:Int = 4 + (isReplay ? 1 : 0) + ((replayEntry != null || best != null) ? 1 : 0);
+		var statusCount:Int = 5 + (isReplay ? 1 : 0) + ((replayEntry != null || best != null) ? 1 : 0);
 		if (isReplay && game.replayExam != null && game.replayExam.judgementRestoredDifferent) statusCount++;
 		var statusY:Float = leftPanel.y + 14;
 
@@ -645,6 +645,22 @@ class PlayStateResultsSubstate extends MusicBeatSubstate
 			+ Std.string(ClientPrefs.data.badWindow) + ") "
 			+ Std.string(ClientPrefs.data.safeFrames) + "f";
 		addStatusLine(si++, judgeInfo, FlxColor.fromRGB(180, 180, 200));
+
+		// Async judgement: were presses judged at their own event time? In a replay this reports what the
+		// recording used, because playback re-uses the recorded press times instead of the current setting.
+		var asyncOn:Bool = ClientPrefs.data.asyncJudge;
+		var asyncSuffix:String = "";
+		if (isReplay && game.replayExam != null)
+		{
+			if (game.replayExam.recordedAsyncJudge != null) asyncOn = (game.replayExam.recordedAsyncJudge == true);
+			// Recorded with the option on but the frames carry no press times (replay from before the format
+			// change): playback can only fall back to the frame time, so say so instead of implying accuracy.
+			if (asyncOn && !game.replayExam.hasRecordedPressTimes)
+				asyncSuffix = " (" + Language.get("ResultsScreen.asyncFrameTime", "frame time") + ")";
+		}
+		addStatusLine(si++, Language.get("ResultsScreen.asyncJudge", "Async Judge") + ": "
+			+ (asyncOn ? Language.get("ResultsScreen.on", "ON") : Language.get("ResultsScreen.off", "OFF")) + asyncSuffix,
+			asyncOn ? FlxColor.fromRGB(255, 215, 0) : FlxColor.GRAY);
 
 		// osu! tail judgement: whether this play or replay had it enabled
 		/**var tailOn:Bool = ClientPrefs.data.osuTailJudgement;
@@ -1382,6 +1398,7 @@ return Std.string(v);
 							//osuTailJudgement: details != null && details.length > 27 && details[27] != null ? details[27] : null,
 							ratingOffset: details != null && details.length > 28 && details[28] != null ? details[28] : null,
 							guitarHeroSustains: details != null && details.length > 29 && details[29] != null ? details[29] : null,
+							asyncJudge: details != null && details.length > 31 && details[31] != null ? details[31] : null,
 							replayVersion: 2
 						};
 

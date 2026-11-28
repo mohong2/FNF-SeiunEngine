@@ -238,6 +238,20 @@ import sys.io.Process;
 
 	public var saveReplayData:Bool = true;
 	public var lastNoteAnimation:Bool = false;
+	/**
+	 * 异步判定: 按键用它自己的按下时间戳 (SDL 事件时间) 判定, 而不是这一帧的时间。
+	 *
+	 * 逻辑是定频 60 的, 但按键事件只能在帧边界被看到, 所以同一次物理按键的判定值会随
+	 * 手感帧率抖动 (0~16.7 ms)。打开后判定值改成「按下那一刻」的歌曲时间, 波动只剩判定钟
+	 * 本身的误差 (实测 p99 ≤ 1.4 ms)。代价: 平均值前移约 8–10 ms (旧路径一直偏晚半个
+	 * 逻辑步, 实测事件滞后 p50 8.9 ms), 想找回手感就往 ratingOffset 里加。
+	 * 见 backend/JudgeClock。
+	 *
+	 * 生效范围: 键盘 (KeyboardEvent.inputTimestampNs) 和触屏 (FlxHitbox / 虚拟按键的
+	 * FlxButton.pressTimestampNs); 手柄和鼠标点击没有事件时间戳, 保持原路径。选项在桌面和
+	 * Android/iOS 都可见 (platform: native), 回放会记录本局的取值。
+	 */
+	public var asyncJudge:Bool = false;
 
 	//not 063 compatible
 	public var debugEnabled:Bool = false;
