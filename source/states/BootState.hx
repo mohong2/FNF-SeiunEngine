@@ -1215,6 +1215,14 @@ class BootState extends MusicBeatState
 		FlxTransitionableState.skipNextTransIn = true;
 		FlxTransitionableState.skipNextTransOut = true;
 
+		// Dev-only text-pipeline bench (see TextBenchState): SEIUN_TEXT_BENCH=1 measures the
+		// HUD's text rebuilds and exits, instead of booting the game.
+		if (TextBenchState.shouldRun())
+		{
+			FlxG.switchState(new TextBenchState());
+			return;
+		}
+
 		// Dev-only chart-load probe (see ChartLoadProbe): when SEIUN_CHART_PROBE is set, boot
 		// straight into a PlayState for that chart instead of the title screen.
 		if (ChartLoadProbe.tryAutoStart()) return;
