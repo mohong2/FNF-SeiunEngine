@@ -64,6 +64,14 @@ class FPS extends Sprite
 	static inline var SAMPLE_MS:Float = 100;
 	static inline var HISTORY_MAX:Int = 240;
 
+	/** Lab probe: SEIUN_LAB_NO_FPS=1 hides the overlay without touching the save. */
+	static var labHidden:Null<Bool> = null;
+
+	/** Cached background geometry; a redraw is only needed when the panel size changes. */
+	var bgW:Float = -1;
+	var bgH:Float = -1;
+	var bgDrawn:Bool = false;
+
 	static inline var BG_ALPHA:Float = 0.62;
 	static inline var C_LBL:Int  = 0xA8B0B8;
 	static inline var C_VAL:Int  = 0xFFFFFF; 
@@ -179,6 +187,10 @@ class FPS extends Sprite
 
 	private #if !flash override #end function __enterFrame(deltaTime:Float):Void
 	{
+		#if sys
+		if (labHidden == null) labHidden = (Sys.getEnv('SEIUN_LAB_NO_FPS') == '1');
+		if (labHidden) { visible = false; return; }
+		#end
 		if (FlxG.keys.justPressed.F3)
 		{
 			mode = (mode + 1) % 3;
@@ -465,13 +477,10 @@ class FPS extends Sprite
 	function setFmt(tf:TextField, font:String, size:Int, color:Int,
 			letter:Float, text:String, px:Float, py:Float):Void
 	{
+		// The format only changes when the text/position does (this overlay owns its fields),
+		// so there is no need to allocate a TextFormat snapshot on every unchanged frame.
 		if (tf.visible && tf.text == text && tf.x == px && tf.y == py)
-		{
-			var f = tf.getTextFormat();
-			if (Std.int(f.size) == size && Std.int(f.color) == color
-				&& (letter <= 0 || f.letterSpacing == letter))
-				return;
-		}
+			return;
 		tf.visible = true;
 		tf.text = text;
 		var f = new TextFormat(font, size, color);
@@ -525,8 +534,11 @@ class FPS extends Sprite
 
 	function drawBg():Void
 	{
-		graphics.clear();
-		if (mode == 2) return;
+		if (mode == 2)
+		{
+			if (bgDrawn) { graphics.clear(); bgDrawn = false; bgW = bgH = -1; }
+			return;
+		}
 
 		var w:Float, h:Float;
 
@@ -561,6 +573,12 @@ class FPS extends Sprite
 			h = bot + P;
 		}
 
+		if (bgDrawn && w == bgW && h == bgH) return;
+		bgW = w;
+		bgH = h;
+		bgDrawn = true;
+
+		graphics.clear();
 		graphics.beginFill(0x000000, BG_ALPHA);
 		graphics.drawRoundRect(0, 0, w, h, 6, 6);
 		graphics.endFill();

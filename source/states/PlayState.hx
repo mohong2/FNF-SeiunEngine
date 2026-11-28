@@ -650,6 +650,12 @@ class PlayState extends MusicBeatState
 	public var endingSong:Bool = false;
 	public var startingSong:Bool = false;
 	private var updateTime:Bool = true;
+
+	/** Score-line layout cache: avoids asking openfl to measure the TextField on every hit. */
+	var _scoreWordWrapOff:Bool = false;
+	var _botplayCompact:Bool = false;
+	var _scoreTextLen:Int = -1;
+
 	public static var changedDifficulty:Bool = false;
 	public static var chartingMode:Bool = false;
 
@@ -873,13 +879,19 @@ class PlayState extends MusicBeatState
 	var _noteCleanupFrameCounter:Int = 0;
 	/** Interval for batched note cleanup (in frames). Soft-coded for tuning. */
 	static final NOTE_CLEANUP_INTERVAL:Int = 3;
-	/** Frame counter for periodic unused-graphic purges (see Paths.purgeUnusedGraphics). */
-	var _memoryPurgeFrameCounter:Int = 0;
+	/** Seconds accumulator for periodic unused-graphic purges (see Paths.purgeUnusedGraphics). */
+	var _memoryPurgeAccum:Float = 0;
 	/** disableGC 堆预算的检查节拍 (帧, 60 = 约每秒一次)。 */
 	static final GC_BUDGET_CHECK_INTERVAL:Int = 60;
 	var _gcBudgetFrameCounter:Int = 0;
-	/** Purge useCount<=0 graphics roughly every 15 seconds (60fps x 900 frames). */
-	static final MEMORY_PURGE_INTERVAL:Int = 900;
+	/**
+	 * Purge useCount<=0 graphics every 15 seconds of play time. This used to be a frame count
+	 * (900 frames), which is 15 s at 60 fps but only 2.5 s at 360 fps: high-refresh players paid
+	 * six times the purge frequency and the reload it can cause. Time is the intent.
+	 */
+	static final MEMORY_PURGE_SECONDS:Float = 15.0;
+	static var _purgeSeconds:Float = MEMORY_PURGE_SECONDS;
+	static var _purgeSecondsInit:Bool = false;
 
 	/**
 	 * Create the appropriate StageBackdrop for the current stage.
@@ -1707,6 +1719,16 @@ class PlayState extends MusicBeatState
 		if(ClientPrefs.data.downScroll) {
 			botplayTxt.y = timeBarBG.y - 78;
 		}
+
+		#if sys
+		// Lab probe: hide the dynamic HUD texts to attribute their raster/upload cost.
+		if (Sys.getEnv('SEIUN_LAB_NO_HUD_TEXT') == '1')
+		{
+			if (scoreTxt != null) scoreTxt.visible = false;
+			if (timeTxt != null) timeTxt.visible = false;
+			if (botplayTxt != null) botplayTxt.visible = false;
+		}
+		#end
 
 		replayTxt = new FlxText(400, timeBarBG.y + 55, FlxG.width - 800, "REPLAY", 32);
 		replayTxt.setFormat(Paths.font("vcr.ttf"), 32, FlxColor.WHITE, CENTER, FlxTextBorderStyle.OUTLINE, FlxColor.BLACK);
@@ -3582,9 +3604,24 @@ class PlayState extends MusicBeatState
 			return;
 		}
 
-		scoreTxt.wordWrap = false;
-		scoreTxt.text = buildBotplayScoreText();
-		if (scoreTxt.textField.textWidth > FlxG.width)
+		if (!_scoreWordWrapOff)
+		{
+			_scoreWordWrapOff = true;
+			scoreTxt.wordWrap = false;
+		}
+
+		var full:String = buildBotplayScoreText();
+		scoreTxt.text = full;
+
+		// Measuring a TextField forces its layout (and can upload a fresh text texture). The
+		// line only changes width when its length changes, so measure then and reuse the
+		// answer for every hit in between.
+		if (_botplayCompact || full.length != _scoreTextLen)
+		{
+			_scoreTextLen = full.length;
+			_botplayCompact = scoreTxt.textField.textWidth > FlxG.width;
+		}
+		if (_botplayCompact)
 			scoreTxt.text = buildBotplayScoreText(true);
 	}
 
@@ -5652,6 +5689,7 @@ class PlayState extends MusicBeatState
 		// 键盘-KPS 面板必须一起关，否则会盖在模组自制界面上面。见 syncHudExtras()。
 		syncHudExtras();
 		keyboardDisplay.dataUpdate(elapsed);
+
 		/*
 		lerpSongScore = FlxMath.lerp(lerpSongScore, songScore, CoolUtil.boundTo(elapsed * 10, 0, 1));
    		if (Math.abs(lerpSongScore - songScore) <= 10) lerpSongScore = songScore;
@@ -5734,6 +5772,7 @@ class PlayState extends MusicBeatState
 			replaySine += 180 * elapsed;
 			replayTxt.alpha = 1 - Math.sin((Math.PI * replaySine) / 180);
 		}
+
 
 
 		if ((controls.PAUSE	#if android || FlxG.android.justReleased.BACK #end) && startedCountdown && canPause)
@@ -6053,6 +6092,7 @@ class PlayState extends MusicBeatState
 				resetBotGateArrays();
 
 				bulkHitDueMaterialized(); // batch-hit botplay's due materialised notes (merged per-hit call chain)
+
 				if (ClientPrefs.data.perfMode)
 				{
 					// Iterate the compact living list (O(living), no full member scan).
@@ -6120,11 +6160,24 @@ class PlayState extends MusicBeatState
 				}
 
 				// Periodically release unused graphics to bound memory on long runs / mod-heavy sets.
-				_memoryPurgeFrameCounter++;
-				if (_memoryPurgeFrameCounter >= MEMORY_PURGE_INTERVAL)
+				if (!_purgeSecondsInit)
 				{
-					_memoryPurgeFrameCounter = 0;
-					Paths.purgeUnusedGraphics();
+					_purgeSecondsInit = true;
+					#if sys
+					try {
+						var labPurge = Std.parseInt(Sys.getEnv('SEIUN_LAB_PURGE_SEC'));
+						if (labPurge != null) _purgeSeconds = labPurge;
+					} catch (e:Dynamic) {}
+					#end
+				}
+				if (_purgeSeconds > 0)
+				{
+					_memoryPurgeAccum += elapsed;
+					if (_memoryPurgeAccum >= _purgeSeconds)
+					{
+						_memoryPurgeAccum = 0;
+						Paths.purgeUnusedGraphics();
+					}
 				}
 
 				// disableGC 的堆预算闸门: 约每秒查一次 (两次 memInfo), 过线才真的回收一次再关回去。

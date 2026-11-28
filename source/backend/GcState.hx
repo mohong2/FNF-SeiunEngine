@@ -11,6 +11,9 @@ class GcState
 
 	public static var budgetCollects(default, null):Int = 0;
 
+	/** Lab probe: duration of the last budget-triggered collection, milliseconds. */
+	public static var lastCollectMs:Float = 0;
+
 	public static function setDisabled(v:Bool):Void
 	{
 		#if cpp
@@ -65,10 +68,20 @@ class GcState
 		#if cpp
 		if (!disabled || heapBudgetBytes <= 0) return false;
 		if (currentHeapBytes() < heapBudgetBytes) return false;
+		var before:Float = currentHeapBytes();
+		var t0:Float = 0;
+		#if sys
+		t0 = Sys.time();
+		#end
 		setDisabled(false);
 		cpp.vm.Gc.run(true);
 		setDisabled(true);
 		budgetCollects++;
+		#if sys
+		lastCollectMs = (Sys.time() - t0) * 1000.0;
+		LabFrameLog.event('gc', lastCollectMs, '#' + budgetCollects + ' heap=' + Math.round(before / 1048576.0)
+			+ 'MB -> ' + Math.round(currentHeapBytes() / 1048576.0) + 'MB budget=' + Math.round(heapBudgetBytes / 1048576.0) + 'MB');
+		#end
 		return true;
 		#else
 		return false;

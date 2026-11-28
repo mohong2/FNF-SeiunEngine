@@ -955,6 +955,23 @@ class ClientPrefs {
 			if (key != 'gameplaySettings' && Reflect.hasField(FlxG.save.data, key))
 				Reflect.setField(data, key, Reflect.field(FlxG.save.data, key));
 
+		// Lab-only overrides (probe builds). No effect when the variables are unset.
+		#if sys
+		try {
+			var labFps = Sys.getEnv('SEIUN_LAB_FPS');
+			if (labFps != null && labFps.length > 0) {
+				var v = Std.parseInt(labFps);
+				if (v != null && v >= 0) { data.framerate = v; data.drawFramerate = v; }
+			}
+			var labGc = Sys.getEnv('SEIUN_LAB_DISABLE_GC');
+			if (labGc != null && labGc.length > 0) data.disableGC = (labGc == '1');
+			var labPerf = Sys.getEnv('SEIUN_LAB_PERF_MODE');
+			if (labPerf != null && labPerf.length > 0) data.perfMode = (labPerf == '1');
+			var labFpsHide = Sys.getEnv('SEIUN_LAB_NO_FPS');
+			if (labFpsHide == '1') data.showFPS = false;
+		} catch (e:Dynamic) {}
+		#end
+
 		// Corrupted/older saves can set collections to null. Never let those
 		// propagate: every gameplay code path assumes these maps/arrays exist.
 		if (data.gameplaySettings == null)
