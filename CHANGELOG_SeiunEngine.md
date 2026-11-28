@@ -680,6 +680,14 @@
 - **开发用探针**：`SEIUN_BOOT_HOLD=<秒>` / `SEIUN_BOOT_PROGRESS=<0..1>` 把开场或加载画面定格在某一帧，方便截图核对；`SEIUN_BOOT_STATS=1` 把开场结束时间与开场内最差的一帧打到 stdout。正常运行时都不设，行为不变。
 - 新增 `backend/boot/`：`BootArt`（程序化绘制）、`BootEmblem`（标记与运动）、`BootChip`（角落信息块）、`BootInfo`（版本 / 平台 / 渲染器，全部带兜底）。`BootBar` 与 `BootState` 重写；`CopyState` 用到的接口（`bar` / `rangeStart` / `rangeEnd` / `handOver` / `EXTRACT_PORTION`）保持不变。
 
+#### 渲染器
+
+- **游戏内不再提供切换接口**：图形页的「渲染器」一行从内置 `assets/preload/data/options/graphics.json` 删除；`backend.RendererChoice` 新增 `IN_GAME_PICKER = false`，`offered()` 在任何平台都直接返回 false，所以旧存档、模组自带或从别的存储卷读到的选项文件都放不回这一行。0.2.2 在所有平台都不提供，包括 Windows。
+
+#### 设置项
+
+- **「触控/滑动手势」删除**：这是一项 `[TEST]` 实验——`FlxMouse` 在按住左键拖动累计超过 15 px 时合成一格滚轮，并用 80 ms 限流，本意是给触屏一个拖动滚动的入口。实际效果是任何拖动都会顺带滚一格，与面板 / 编辑器拖拽、虚拟按键拖动、列表点击互相打架；真正要滚动时，滚轮或触摸板已经够用。设置项、三语文案、`ClientPrefs.touchSwipeEnabled`、`Main` 与 `OptionsState` 的接线一并移除，flixel 里 `FlxMouse.update()` 的 52 行补丁也删掉。旧存档里的 `touchSwipeEnabled` 键会被忽略，不需要迁移；触屏虚拟按键与 Hitbox 的判定不受影响。
+
 ---
 
 ### 鸣谢
@@ -1407,6 +1415,14 @@ The rewrite:
 - **What was wrong.** The editor pads were laid out for gameplay, not for an editor margin. `LEFT_FULL` puts its right button at x = 207..339, i.e. 59 px inside the classic chart grid (which starts at x = 280), so the leftmost notes could not be tapped; the top action row covered the modern layout's info box (x = 1000..1220, y = 360..580) over its full 111 px height; and the `NEW_CHART_EDITOR` Q/E pair sat at `FlxG.width - 952` (x = 328 on a 1280 px canvas), on top of the cross' right button (an 11 px overlap that made one tap hit both) and off the left edge on anything narrower.
 - **The new arrangement** (`editors/EditorPadLayout`): the same buttons with the same mappings, at the 60 % scale the online screens already use - a direction cross in the bottom-left corner whose right edge stays at x <= 256 (left of the classic grid and of the modern centred grid), the Q/E pair just above it, and the action block in the bottom-right corner. The same placement is valid for the Modern and the Classic editor layout, so switching layouts no longer needs a re-layout, and both the new and the legacy chart editor use it.
 - **Also fixed by the same change**: the pad now draws on its own camera (the chart camera scrolls every frame, so the pad no longer rides on it), the bottom status line is lifted above the buttons instead of staying underneath them, and the "Press F1 for help" hint is hidden on touch (it was both unreachable and covered).
+
+#### Renderer
+
+- **No in-game switch**: the Renderer row is gone from the built-in `assets/preload/data/options/graphics.json`, and `backend.RendererChoice` gained `IN_GAME_PICKER = false`, making `offered()` return false on every platform, so a leftover save, a mod-supplied option file or a copy read from another storage volume cannot put the row back. 0.2.2 ships no picker anywhere, Windows included.
+
+#### Settings
+
+- **"Touch/Swipe Gestures" removed**: this was a `[TEST]` experiment — `FlxMouse` synthesised one wheel notch once a left-button drag had accumulated 15 px of movement, rate-limited to one per 80 ms, meant to give touchscreens a drag-to-scroll path. In practice every drag scrolled an extra notch and fought panel and editor drags, virtual-pad drags and list clicks; a wheel or a touchpad already covers scrolling. The option, its three-language strings, `ClientPrefs.touchSwipeEnabled`, the `Main` / `OptionsState` wiring and the 52-line patch in `FlxMouse.update()` are gone. The `touchSwipeEnabled` key in an old save is ignored, no migration needed, and the touch pad / hitbox behaviour is unchanged.
 
 ---
 

@@ -227,7 +227,6 @@ class OptionsState extends MusicBeatState
 
 		buildCategoryView();
 		playEnterAnimation();
-		syncDragToWheel();
 
 		// Settings are not saved in create(): nothing has changed yet, and a sync flush only costs a frame on mobile
 
@@ -269,7 +268,6 @@ class OptionsState extends MusicBeatState
 			'onChangeLanguage'             => onChangeLanguage,
 			'onChangeTraceConsole'         => onChangeTraceConsole,
 			'onChangeTraceConsoleLevel'    => onChangeTraceConsoleLevel,
-			'onChangeTouchSwipe'           => onChangeTouchSwipe,
 			'onClearImageCache'            => onClearImageCache,
 			'onChangeShowWatermark'        => onChangeShowWatermark,
 			'onChangeShowNoteOptimizationNotice' => onChangeShowNoteOptimizationNotice,
@@ -1473,6 +1471,10 @@ class OptionsState extends MusicBeatState
 
 	// ═══════════════════════════════════════════════════════════════════════════
 	//  Renderer picker
+	//
+	//  0.2.2 builds none of this: backend.RendererChoice.IN_GAME_PICKER is false, the
+	//  Renderer row is absent and settingsRendererID stays -1, so every function below
+	//  returns at its first guard. Kept for the version that reopens the picker.
 	// ═══════════════════════════════════════════════════════════════════════════
 
 	/** The Renderer option on the current page, or null when this page has none. */
@@ -2295,11 +2297,6 @@ class OptionsState extends MusicBeatState
 		mohong.TraceManager.applyConsoleLevel(ClientPrefs.data.traceConsoleLevel);
 	}
 
-	function onChangeTouchSwipe()
-	{
-		syncDragToWheel();
-	}
-
 	/**
 	 * The storage type decides where the process working directory, the extracted assets and
 	 * the native crash directory live. Changing it therefore has to invalidate the cached
@@ -2406,14 +2403,6 @@ class OptionsState extends MusicBeatState
 		var msg:String = Language.get('option.clearChartCache.done', 'Deleted every cached chart note list (~{mb} MB).')
 			.replace('{mb}', mbStr);
 		backend.Dialog.show(Language.get('option.clearChartCache.doneTitle', 'Chart Cache'), msg, 'Info');
-	}
-
-	function syncDragToWheel()
-	{
-		#if !FLX_UNIT_TEST
-		if (FlxG.mouse != null)
-			FlxG.mouse.dragToWheelEnabled = ClientPrefs.data.touchSwipeEnabled;
-		#end
 	}
 
 	// ── Helpers ──

@@ -138,9 +138,8 @@ class OptionLoader
 			case 'desktop': #if (desktop && !html5) true #else false #end;
 			case 'mobile': #if mobile true #else false #end;
 			case 'html5': #if html5 true #else false #end;
-			// Targets that carry an alternative graphics backend. Deliberately narrower
-			// than 'desktop': Linux and macOS ship no Vulkan renderer, so the row would
-			// only offer a card that can never be taken.
+			// Targets that carry an alternative graphics backend (backend.RendererChoice).
+			// Deliberately narrower than 'desktop': Linux and macOS ship no Vulkan renderer.
 			case 'win_android': #if (windows || android) true #else false #end;
 			default: true;
 		};
@@ -786,12 +785,11 @@ class OptionLoader
 			if (!shouldInclude) return null;
 		}
 
-		// The renderer picker asks a second question that is not a platform list: the
-		// backend exists on Android, but it is not ready for players there yet
-		// (backend.RendererChoice keeps that rule, and the row reappears on its own while
-		// a forced Vulkan session is running). Decided on the variable, not on the JSON
-		// platform field, so a graphics.json left over on a storage volume - and read in
-		// preference to the packaged one - cannot put the row back on a device.
+		// 0.2.2 ships no in-game renderer picker on any platform; backend.RendererChoice
+		// owns that decision (offered() is false everywhere in this release, including
+		// Windows). Decided on the variable, not on the JSON platform field, so a
+		// graphics.json left over on a storage volume - or supplied by a mod - cannot put
+		// the row back on any device.
 		if (def.variable == 'renderer' && !backend.RendererChoice.offered()) return null;
 
 		#if !CHECK_FOR_UPDATES

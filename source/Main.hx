@@ -317,7 +317,7 @@ class Main extends Sprite
 
 		addChild(new FlxGame(gameWidth, gameHeight, initialState, zoom, updateFramerate, drawFramerate, skipSplash, startFullscreen));
 
-		// ── Renderer choice (Windows; Android has the backend but not the row) ──
+		// ── Renderer choice (0.2.2 has no in-game row; save / flags still work) ──
 		// A launch that asked for Vulkan and died before the backend proved itself left
 		// logs/vulkan-attempt.txt behind. recover() reads that as "that machine cannot
 		// run Vulkan" and puts this launch back on OpenGL - and rewrites the saved
@@ -505,9 +505,6 @@ class Main extends Sprite
 		#if (desktop && MODS_ALLOWED)
 		setModWindowIcon();
 		#end
-
-		// [TEST] Sync drag-to-wheel setting from ClientPrefs to FlxMouse at startup
-		initDragToWheel();
 
 		fpsVar = new FPS(10, 3, 0xFFFFFF);
 		oldFpsVar = new OldFPS(10, 3, 0xFFFFFF);
@@ -872,9 +869,10 @@ class Main extends Sprite
 
 	#if seiun_vulkan
 	/**
-	 * 实验性 Vulkan 后端接线。要不要真的切由 backend.RendererChoice 决定：设置里的
-	 * 渲染器选项（仅 Windows / Android）、--vulkan / --no-vulkan、SEIUN_VULKAN。
-	 * 切不过去就留在 OpenGL，并且把存档里的选择改回 OpenGL，下次不再踩同一个坑。
+	 * 实验性 Vulkan 后端接线。要不要真的切由 backend.RendererChoice 决定：存档里的
+	 * 渲染器选择、--vulkan / --no-vulkan、SEIUN_VULKAN。0.2.2 不在游戏内提供切换
+	 * 接口，但这几条入口照旧。切不过去就留在 OpenGL，并且把存档里的选择改回
+	 * OpenGL，下次不再踩同一个坑。
 	 *
 	 * 这里只做四件游戏侧才知道的事：
 	 *   1. 回退提示怎么显示（VkRuntime 不认识游戏的 Dialog / 语言表）；
@@ -904,9 +902,9 @@ class Main extends Sprite
 		var runtime = seiun.vulkan.VkRuntime;
 
 		// The runtime decides "was Vulkan asked for?" from the command line and the
-		// environment; a renderer picked in the settings menu is neither, so it is handed
-		// over here. Without this a saved choice silently did nothing (and then looked like
-		// a failed start, which reset it).
+		// environment; a saved choice is neither, so it is handed over here. Without this
+		// a saved choice silently did nothing (and then looked like a failed start, which
+		// reset it).
 		runtime.preferred = function() return backend.RendererChoice.wanted();
 
 		#if android
@@ -1082,7 +1080,7 @@ class Main extends Sprite
 				? Language.get('renderer.fallback.needsRestart',
 					'Vulkan could not take over this game. Offering it the window meant releasing OpenGL first, so the game has to be restarted - the saved renderer is already back on OpenGL and the next launch is a plain OpenGL session.')
 				: Language.get('renderer.fallback.needsRestartStopped',
-					'Vulkan stopped while the game was running. OpenGL was released when the window was handed over, so the game has to be restarted - the next launch is a plain OpenGL session unless Vulkan is picked again.');
+					'Vulkan stopped while the game was running. OpenGL was released when the window was handed over, so the game has to be restarted - the next launch is a plain OpenGL session unless Vulkan is requested again.');
 
 			try
 			{
@@ -1122,17 +1120,6 @@ class Main extends Sprite
 		catch (e:Dynamic) {}
 	}
 	#end
-
-	/** [TEST] Initialize FlxMouse drag-to-wheel from saved setting. */
-	static function initDragToWheel():Void
-	{
-		#if !FLX_UNIT_TEST
-		if (FlxG.mouse != null)
-		{
-			FlxG.mouse.dragToWheelEnabled = ClientPrefs.data.touchSwipeEnabled;
-		}
-		#end
-	}
 
 	/**
 	 * Installs the desktop background-dim focus handling and re-evaluates it.

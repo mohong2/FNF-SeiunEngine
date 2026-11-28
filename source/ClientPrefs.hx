@@ -71,14 +71,14 @@ import sys.io.Process;
 	public var noteSplashes:Bool = true;
 	public var lowQuality:Bool = false;
 	/**
-	 * Graphics API picked on the Renderer row of the Graphics page.
+	 * Graphics API this save asks for.
 	 *
 	 * Read once per launch, before the first frame: Main hands the window to Vulkan when
-	 * this says 'Vulkan', and backend.RendererChoice writes 'OpenGL' back here whenever
-	 * that attempt fails (or a previous launch died while trying). Windows offers the
-	 * choice in the menu; Android carries the backend but keeps it out of the menu until
-	 * its shader translation works (backend.RendererChoice.offered()). Every other target
-	 * pins this to OpenGL.
+	 * this says 'Vulkan'. 0.2.2 has no in-game renderer row on any platform, so the value
+	 * normally changes only through a save edit or a command-line override; the backend
+	 * still writes 'OpenGL' back here whenever an attempt fails (or a previous launch
+	 * died while trying). Windows and Android carry the backend, every other target pins
+	 * this to OpenGL. backend.RendererChoice owns which values this build can honour.
 	 */
 	public var renderer:String = 'OpenGL';
 	/**
@@ -250,9 +250,6 @@ import sys.io.Process;
 	// Trace Console debug settings
 	public var traceConsoleEnabled:Bool = false;
 	public var traceConsoleLevel:String = 'DEBUG';
-
-	// Touch/Swipe gestures
-	public var touchSwipeEnabled:Bool = true;
 
 	// Separate Update/Draw mode
 	public var separateUpdateDraw:Bool = false;
@@ -475,7 +472,6 @@ class ClientPrefs {
 	public static var judgementNameCompat(get, never):Bool;
 	//public static var osuTailJudgement(get, never):Bool;
 	//public static var tailWindowMult(get, never):Float;
-	public static var touchSwipeEnabled(get, never):Bool;
 	public static var separateUpdateDraw(get, never):Bool;
 
 	public static var ignoreErrorLoopScripts(get, never):Bool;
@@ -598,7 +594,6 @@ class ClientPrefs {
 	static inline function get_marvelousWindow() return data.marvelousWindow;
 	//static inline function get_osuTailJudgement() return data.osuTailJudgement;
 	//static inline function get_tailWindowMult() return data.tailWindowMult;
-	static inline function get_touchSwipeEnabled() return data.touchSwipeEnabled;
 	static inline function get_separateUpdateDraw() return data.separateUpdateDraw;
 
 	static inline function get_ignoreErrorLoopScripts() return data.ignoreErrorLoopScripts;

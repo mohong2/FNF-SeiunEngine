@@ -73,7 +73,7 @@
     "renderer.fallback.stopped": "遊戲執行時 Vulkan 停止了。OpenGL 無法重新接管這個視窗，畫面會停留在最後一格——請重新啟動遊戲，用 OpenGL 繼續遊玩。",
     "renderer.fallback.stoppedAndroid": "遊戲執行時 Vulkan 停止了。OpenGL 已經重新接管畫面，可以繼續遊玩；想再試一次 Vulkan 請重新啟動遊戲。",
     "renderer.fallback.needsRestart": "Vulkan 無法接管這次遊戲。為了把視窗交給 Vulkan，本局的 OpenGL 已經先釋放了，所以需要重新開啟遊戲——存檔裡的渲染器已改回 OpenGL，下次啟動就是普通的 OpenGL 工作階段。",
-    "renderer.fallback.needsRestartStopped": "遊戲執行時 Vulkan 停止了。交出視窗時 OpenGL 已經釋放，所以需要重新開啟遊戲——除非再次選擇 Vulkan，下次啟動就是普通的 OpenGL 工作階段。",
+    "renderer.fallback.needsRestartStopped": "遊戲執行時 Vulkan 停止了。交出視窗時 OpenGL 已經釋放，所以需要重新開啟遊戲——除非再次要求 Vulkan，下次啟動就是普通的 OpenGL 工作階段。",
     "option.shaders.desc": "如果不勾選，會禁用著色器。這用來實現一些視覺效果，對於較弱的電腦來說還挺消耗CPU的。",
     "option.framerate.desc": "每秒遊戲邏輯更新次數（物理、動畫、輸入處理）。",
     "option.drawFramerate.desc": "每秒遊戲渲染的幀數。\n在高刷新率螢幕上可高於更新幀率以獲得流暢畫面。\n啟用「渲染與更新分離」效果最佳。",
@@ -297,8 +297,6 @@
     "DataBackup.androidWarning.title": "重要提示：建議備份資料",
     "DataBackup.androidWarning.message": "您的遊戲資料（分數、設定、進度）儲存在應用程式內部儲存中。\n\n如果您解除安裝或重新安裝遊戲，所有資料可能會永久遺失！\n\n強烈建議立即建立一份備份來保存您的進度。\n\n要現在建立備份嗎？",
 
-    "option.touchSwipe": "觸控/滑動手勢",
-    "option.touchSwipe.desc": "啟用後，您可以通過拖拽滑鼠或觸摸螢幕來滑動/滾動。\n如果您更喜歡純點擊操作，可以關閉此選項。",
     "option.touchControls": "觸控支援",
     "option.touchControls.desc": "把安卓移動端的控制項（虛擬按鍵/Hitbox）帶到電腦上，可用滑鼠或觸控螢幕操作。\n模式和佈局可在「觸控控制」選單中修改。",
     "option.touchControlsMenu": "觸控控制",

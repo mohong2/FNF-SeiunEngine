@@ -73,7 +73,7 @@
     "renderer.fallback.stopped": "游戏运行时 Vulkan 停止了。OpenGL 无法重新接管这个窗口，画面会停留在最后一帧——请重启游戏，用 OpenGL 继续游玩。",
     "renderer.fallback.stoppedAndroid": "游戏运行时 Vulkan 停止了。OpenGL 已经重新接管画面，可以继续游玩；想再试一次 Vulkan 请重启游戏。",
     "renderer.fallback.needsRestart": "Vulkan 无法接管这次游戏。为了把窗口交给 Vulkan，本局的 OpenGL 已经先释放了，所以需要重新打开游戏——存档里的渲染器已改回 OpenGL，下次启动就是普通的 OpenGL 会话。",
-    "renderer.fallback.needsRestartStopped": "游戏运行时 Vulkan 停止了。交出窗口时 OpenGL 已经释放，所以需要重新打开游戏——除非再次选择 Vulkan，下次启动就是普通的 OpenGL 会话。",
+    "renderer.fallback.needsRestartStopped": "游戏运行时 Vulkan 停止了。交出窗口时 OpenGL 已经释放，所以需要重新打开游戏——除非再次要求 Vulkan，下次启动就是普通的 OpenGL 会话。",
     "option.shaders.desc": "如果不勾选,会禁用着色器.这是用来实现一些视觉效果的,对于较弱的电脑来说还挺消耗CPU的.",
     "option.framerate.desc": "每秒游戏逻辑更新次数（物理、动画、输入处理）。",
     "option.drawFramerate.desc": "每秒游戏渲染的帧数。\n在高刷新率屏幕上可高于更新帧率以获得更流畅的画面。\n启用「渲染与更新分离」效果最佳。",
@@ -315,8 +315,6 @@
     "option.clearImageCache.released": "已释放 {n} 张图片（约 {mb} MB）。",
     "option.clearImageCache.none": "没有可释放的缓存图片。",
 
-    "option.touchSwipe": "触控/滑动手势",
-    "option.touchSwipe.desc": "启用后，您可以通过拖拽鼠标或触摸屏幕来滑动/滚动。\n如果您更喜欢纯点击操作，可以关闭此选项。",
     "option.touchControls": "触屏支持",
     "option.touchControls.desc": "把安卓移动端的控件（虚拟按键/Hitbox）带到电脑上，可用鼠标或触屏操作。\n模式和布局可在“触屏控制”菜单中修改。",
     "option.touchControlsMenu": "触屏控制",

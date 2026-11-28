@@ -73,7 +73,7 @@
     "renderer.fallback.stopped": "Vulkan stopped while the game was running. OpenGL cannot take this window back, so the picture stays frozen - restart the game to keep playing on OpenGL.",
     "renderer.fallback.stoppedAndroid": "Vulkan stopped while the game was running. OpenGL is drawing again, so you can keep playing; restart the game to try Vulkan once more.",
     "renderer.fallback.needsRestart": "Vulkan could not take over this game. Offering it the window meant releasing OpenGL first, so the game has to be restarted - the saved renderer is already back on OpenGL and the next launch is a plain OpenGL session.",
-    "renderer.fallback.needsRestartStopped": "Vulkan stopped while the game was running. OpenGL was released when the window was handed over, so the game has to be restarted - the next launch is a plain OpenGL session unless Vulkan is picked again.",
+    "renderer.fallback.needsRestartStopped": "Vulkan stopped while the game was running. OpenGL was released when the window was handed over, so the game has to be restarted - the next launch is a plain OpenGL session unless Vulkan is requested again.",
     "option.shaders.desc": "If unchecked, disables shaders. It's used for some visual effects, and also CPU intensive for weaker PCs.",
     "option.framerate.desc": "How many times per second the game logic updates (physics, animations, input).",
     "option.drawFramerate.desc": "How many frames per second the game renders at.\nCan be higher than Update Framerate for smooth visuals on high-refresh monitors.\nWorks best when Separate Update/Draw is enabled.",
@@ -316,8 +316,6 @@
     "option.clearImageCache.released": "Released {n} graphics (~{mb} MB).",
     "option.clearImageCache.none": "No unused cached images to release.",
 
-    "option.touchSwipe": "Touch/Swipe Gestures",
-    "option.touchSwipe.desc": "If enabled, you can swipe/scroll by dragging with the mouse or touching the screen.\nDisable if you prefer standard click-only navigation.",
     "option.touchControls": "Touch Support",
     "option.touchControls.desc": "Bring the Android mobile controls (virtual pad / hitbox) to PC, usable with mouse or touchscreen.\nMode and layout can be changed in the Touch Controls menu.",
     "option.touchControlsMenu": "Touch Controls",

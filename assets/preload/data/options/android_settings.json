@@ -47,16 +47,6 @@
 		"platform": "desktop"
 	},
 	{
-		"nameKey": "option.touchSwipe",
-		"defaultName": "Touch/Swipe Gestures",
-		"descKey": "option.touchSwipe.desc",
-		"defaultDesc": "If enabled, you can swipe/scroll by dragging with the mouse or touching the screen.\nDisable if you prefer standard click-only navigation.",
-		"variable": "touchSwipeEnabled",
-		"type": "bool",
-		"defaultValue": true,
-		"onChange": "onChangeTouchSwipe"
-	},
-	{
 		"nameKey": "option.mobileCAlpha",
 		"defaultName": "Mobile Controls Opacity",
 		"descKey": "option.mobileCAlpha.desc",

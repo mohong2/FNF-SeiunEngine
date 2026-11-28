@@ -33,6 +33,10 @@ using StringTools;
  *   https://commons.wikimedia.org/wiki/File:Vulkan_logo.svg
  * both public domain (the trademarks themselves belong to the Khronos Group). They are
  * redistributed here as white alpha masks, used only on this settings page.
+ *
+ * 0.2.2 does not build this picker: backend.RendererChoice.IN_GAME_PICKER is false, so
+ * the Renderer row is never added and this class is never instantiated by the menu. It
+ * stays in the tree for the version that reopens the picker.
  */
 class RendererShowcase extends FlxTypedGroup<FlxSprite>
 {

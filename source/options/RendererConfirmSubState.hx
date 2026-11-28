@@ -29,6 +29,10 @@ import flixel.util.FlxColor;
  * cancelled it. BACK cancels, and CANCEL is one Left/Right press away. The first update is
  * still skipped, exactly like OptionPopupSubState, so the key press that opened the panel
  * cannot answer it.
+ *
+ * 0.2.2 does not build this panel: backend.RendererChoice.IN_GAME_PICKER is false, so
+ * the Renderer row that opens it is never added. It stays in the tree for the version
+ * that reopens the picker.
 **/
 class RendererConfirmSubState extends MusicBeatSubstate
 {

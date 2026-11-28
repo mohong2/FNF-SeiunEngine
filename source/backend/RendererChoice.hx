@@ -9,25 +9,25 @@ import sys.io.File;
  * The renderer preference and the fallback bookkeeping that goes with it.
  *
  * Windows and Android are the only targets that carry a Vulkan backend (macOS/iOS have
- * no Vulkan driver, Linux is not offered yet), so this class owns every question the
- * settings menu asks about it:
+ * no Vulkan driver, Linux is not offered yet), so this class owns every question about
+ * it:
  *
  *   - can this build/platform draw through Vulkan at all (available()),
- *   - may the settings menu offer it here (offered()),
+ *   - may a build ship the in-game picker (offered()),
  *   - which backend is this *session* really drawing through (active),
  *   - should the next launch try Vulkan (shouldStart()), and
  *   - did the last launch die while trying (recover()).
  *
- * "Can" and "may" are two questions on purpose. Android *can*: the backend is compiled
- * in, it takes the ANativeWindow over and it is fast. It may not *yet*: every mod and
- * OpenFL shader has to be translated from GLSL to SPIR-V at runtime, and that
- * translation has no implementation on device today, so anything that expects a custom
- * shader silently falls back to the built-in pipeline. That is a hole in the renderer,
- * not a choice to put in front of a player, so the picker stays hidden on Android
- * until it is fixed (target: the 0.2.2 release). Nobody who gets there anyway is
- * blocked - a saved preference, --vulkan, SEIUN_VULKAN or -D seiun_vulkan_force still
- * start the backend - and such a session keeps the picker, so there is a way back to
- * OpenGL from inside the game instead of a dead end.
+ * 0.2.2 deliberately ships no in-game picker on any platform (see IN_GAME_PICKER).
+ * That is a release decision, not a platform limit: the backend still honours a saved
+ * preference, --vulkan / --no-vulkan, SEIUN_VULKAN and -D seiun_vulkan_force, and the
+ * fallback bookkeeping below is unchanged. Nothing that already asks for Vulkan is
+ * blocked by the missing row.
+ *
+ * The picker code is kept in the tree so a later version can reopen it by flipping one
+ * constant. On Android the old rule still applies once it is reopened: the backend is
+ * compiled in, but the row stays hidden until runtime GLSL -> SPIR-V translation
+ * works on device.
  *
  * The fallback has two halves, and both have to exist or a broken driver becomes a
  * boot loop:
@@ -69,7 +69,7 @@ class RendererChoice
 	/** True when this session could not start Vulkan and stayed on OpenGL. */
 	public static var fellBackThisBoot(default, null):Bool = false;
 
-	/** True once Vulkan really took the session over (read by the settings menu). */
+	/** True once Vulkan really took the session over (read by the boot screen and diagnostics). */
 	public static var active(default, null):Bool = false;
 
 	/** True when this launch *asked* for Vulkan (flag, environment or saved preference). */
@@ -102,9 +102,10 @@ class RendererChoice
 	/**
 	 * The targets that have a Vulkan backend wired up.
 	 *
-	 * This is about the backend, not about the menu: offered() is what the settings page
-	 * reads, and it can say no on a target where this says yes. Every other target keeps
-	 * the choice out of the menu instead of showing a card that can never be picked.
+	 * This is about the backend, not about the menu: offered() adds the release decision
+	 * (IN_GAME_PICKER is off in 0.2.2) on top of this answer. Every target without the
+	 * backend pins the stored value to OpenGL instead of showing a card that can never be
+	 * picked.
 	**/
 	public static var platformSupported(get, never):Bool;
 
@@ -144,16 +145,27 @@ class RendererChoice
 	static inline var ANDROID_OFFERED:Bool = false;
 
 	/**
+	 * Whether this release ships the in-game renderer picker at all.
+	 *
+	 * 0.2.2 ships none, on every platform. This is the release decision, kept apart
+	 * from ANDROID_OFFERED (which is a readiness question) so support can tell the two
+	 * apart from logs/renderer.txt. Turning this back on is the one change a later
+	 * version needs to bring the Graphics-page row back.
+	 */
+	static inline var IN_GAME_PICKER:Bool = false;
+
+	/**
 	 * True when the settings menu may show the renderer picker.
 	 *
-	 * False where the backend does not exist, and false on Android while it is not ready
-	 * for players. A session that is already on Vulkan - the saved preference says so, or
-	 * this launch was forced into it - still gets the row even there: it is the only way
-	 * back to OpenGL from inside the game, and without it a forced Android session is a
-	 * dead end.
+	 * 0.2.2 answers false everywhere, before any platform question: the row is not part
+	 * of this release. A later version that flips IN_GAME_PICKER gets the old rules
+	 * back - false where the backend does not exist, and false on Android while it is
+	 * not ready for players; a session already on Vulkan keeps the row there, because
+	 * it is the only way back to OpenGL from inside the game.
 	 */
 	public static function offered():Bool
 	{
+		if (!IN_GAME_PICKER) return false;
 		if (!available()) return false;
 
 		#if android
@@ -221,8 +233,8 @@ class RendererChoice
 
 		#if seiun_vulkan_force
 		// Diagnostic build only (lime build ... -D seiun_vulkan_force): try the backend
-		// regardless of the saved choice, so a device can be tested without scripting the
-		// menu. Never set in a shipped build.
+		// regardless of the saved choice, so a device can be tested without editing the
+		// save. Never set in a shipped build.
 		return true;
 		#else
 		return ClientPrefs.data != null && ClientPrefs.data.renderer == VULKAN;
@@ -427,8 +439,10 @@ class RendererChoice
 		var mode:String = active ? 'vulkan' : 'opengl';
 		var saved:String = (ClientPrefs.data == null) ? '?' : Std.string(ClientPrefs.data.renderer);
 
-		var text:String = 'renderer=' + mode + ' saved=' + saved + ' platform=' + platformName();
+		var text:String = 'renderer=' + mode + ' saved=' + saved + ' platform=' + platformName()
+			+ ' picker=' + (IN_GAME_PICKER ? 'on' : 'off');
 		if (!compiled) text += ' (not compiled into this build)';
+		else if (!IN_GAME_PICKER) text += ' (no in-game picker)';
 		else if (!offered()) text += ' (not offered on this platform)';
 		if (recoveredFromCrash) text += ' (previous Vulkan launch failed)';
 		if (fellBackThisBoot && failureReason != null) text += ' (fallback: ' + failureReason + ')';
