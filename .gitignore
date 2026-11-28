@@ -58,10 +58,3 @@ __pycache__/
 
 # script diagnostics log written by backend.ScriptLog when the test harness runs
 /logs/
-docs/vulkan/
-# Written by tools/toolchain.py at build time (CI does it before the object-cache
-# restore). Build identity, not source: toolchain.json is merged into build.json
-# by the symbol hook, toolchain-key.txt only keys the hxcpp object cache.
-/toolchain.json
-/toolchain.txt
-/toolchain-key.txt
