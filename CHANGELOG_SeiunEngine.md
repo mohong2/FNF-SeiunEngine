@@ -700,6 +700,14 @@
 
 - **「触控/滑动手势」删除**：这是一项 `[TEST]` 实验——`FlxMouse` 在按住左键拖动累计超过 15 px 时合成一格滚轮，并用 80 ms 限流，本意是给触屏一个拖动滚动的入口。实际效果是任何拖动都会顺带滚一格，与面板 / 编辑器拖拽、虚拟按键拖动、列表点击互相打架；真正要滚动时，滚轮或触摸板已经够用。设置项、三语文案、`ClientPrefs.touchSwipeEnabled`、`Main` 与 `OptionsState` 的接线一并移除，flixel 里 `FlxMouse.update()` 的 52 行补丁也删掉。旧存档里的 `touchSwipeEnabled` 键会被忽略，不需要迁移；触屏虚拟按键与 Hitbox 的判定不受影响。
 
+#### 流式音频
+
+- **音频不再整段解码常驻内存。** Ogg Vorbis 与 MP3 现在由 Lime 的 feeder 线程边解码边播放，只保留 16 × 8192 帧（≈512 KiB）的 OpenAL 环形队列，`AudioBuffer` 里不再有 PCM。仓库自带的 `freakyMenu.ogg` 从 19.0 MiB 常驻降到 0，加载耗时从 234 ms 降到 0–6 ms。
+- **听感与全解码一致**：解码仍走 libvorbis 同一条 `ov_read` 路径，实测 39 个 8192 帧块（含 seek 之后）与全解码 PCM 逐字节相同（maxdiff = 0）；混音、音量、pitch、pan 完全没改。
+- **引擎内实测**：同一份 bopeebo 谱面，进入歌曲后的工作集从 364.5 MB 降到 281.3 MB（−83 MB，同时驻留 4 条流），`generateSong` 内的音频加载从 249 ms 降到 4 ms。
+- 菜单音乐、Inst、Voices 默认流式；**图表编辑器仍全解码**（波形要读 `AudioBuffer.data`），两者用 `stream:` 前缀的缓存键共存；wav/m4a 与探测失败的 ogg/mp3 自动回退全解码；MP3 不再需要先转 WAV。
+- 新增 `docs/audio-streaming.md`（结构、时间 / seek / 循环语义、逐字节对比、踩坑记录）。
+
 ---
 
 ### 鸣谢
@@ -1435,6 +1443,14 @@ The rewrite:
 #### Settings
 
 - **"Touch/Swipe Gestures" removed**: this was a `[TEST]` experiment — `FlxMouse` synthesised one wheel notch once a left-button drag had accumulated 15 px of movement, rate-limited to one per 80 ms, meant to give touchscreens a drag-to-scroll path. In practice every drag scrolled an extra notch and fought panel and editor drags, virtual-pad drags and list clicks; a wheel or a touchpad already covers scrolling. The option, its three-language strings, `ClientPrefs.touchSwipeEnabled`, the `Main` / `OptionsState` wiring and the 52-line patch in `FlxMouse.update()` are gone. The `touchSwipeEnabled` key in an old save is ignored, no migration needed, and the touch pad / hitbox behaviour is unchanged.
+
+#### Streaming audio
+
+- **Audio no longer decodes a whole track into RAM.** Ogg Vorbis and MP3 are decoded on a Lime feeder thread while they play, keeping only a 16 × 8192-frame OpenAL ring (≈512 KiB); the `AudioBuffer` holds no PCM. The bundled `freakyMenu.ogg` drops from 19.0 MiB resident to 0, and from 234 ms to 0–6 ms to load.
+- **Identical to a full decode**: decoding still goes through the same libvorbis `ov_read` path; 39 blocks of 8192 frames (including after a seek) match the full-decode PCM byte for byte (maxdiff = 0), and the mixing, volume, pitch and pan paths are untouched.
+- **Measured in game**: on the same bopeebo chart the working set after the song starts falls from 364.5 MB to 281.3 MB (−83 MB with four streams resident), and the audio load inside `generateSong` from 249 ms to 4 ms.
+- Menu music, Inst and Voices stream by default; **the chart editors still full-decode** (their waveform renderer reads `AudioBuffer.data`), and the two copies coexist under `stream:`-prefixed cache keys. wav/m4a, and any ogg/mp3 the probe rejects, fall back to a full decode; MP3 no longer needs converting to WAV first.
+- New `docs/audio-streaming.md` covers the design, time/seek/loop semantics, the byte-for-byte comparison and the two bugs that shaped it.
 
 ---
 

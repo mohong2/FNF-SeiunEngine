@@ -3019,7 +3019,7 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 
 		try
 		{
-			FlxG.sound.playMusic(Paths.inst(PlayState.SONG.song), 0);
+			FlxG.sound.playMusic(Paths.inst(PlayState.SONG.song, null, false), 0);
 			FlxG.sound.music.pause();
 			FlxG.sound.music.time = time;
 			FlxG.sound.music.onComplete = (function() songFinished = true);
@@ -3036,7 +3036,7 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 		{
 			try
 			{
-				var file:Dynamic = Paths.voices(Paths.formatToSongPath(PlayState.SONG.song));
+				var file:Dynamic = Paths.voices(Paths.formatToSongPath(PlayState.SONG.song), false);
 				vocals = new FlxSound();
 				opponentVocals = new FlxSound();
 				if (Std.isOfType(file, Sound) || OpenFlAssets.exists(file)) {
@@ -8860,7 +8860,7 @@ class NewChartingState extends MusicBeatState implements PsychUIEventHandler.Psy
 		}
 		
 		@:privateAccess
-		if (sound != null && sound._sound != null && sound._sound.__buffer != null)
+		if (sound != null && sound._sound != null && sound._sound.__buffer != null && sound._sound.__buffer.data != null)
 		{
 			var bytes:Bytes = sound._sound.__buffer.data.toBytes();
 			wavData = waveformData(sound._sound.__buffer, bytes, cachedSectionTimes[curSec] - Conductor.offset, cachedSectionTimes[curSec+1] - Conductor.offset, 1, wavData, height);

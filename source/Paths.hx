@@ -88,10 +88,36 @@ class Paths
 		return bmp;
 	}
 
-	static function loadSoundFile(path:String):Sound
+	/**
+	 * Loads a sound from disk. When `streaming` is true, Ogg Vorbis and MP3
+	 * files become an AudioBuffer that owns no PCM: Lime decodes them on a
+	 * native feeder thread while the song plays. Anything the probe rejects
+	 * (WAV, M4A, an unusual Ogg stream) falls back to the full decode.
+	 */
+	static function loadSoundFile(path:String, streaming:Bool = false):Sound
 	{
 		var started:Float = Timer.stamp();
-		var snd:Sound = Sound.fromFile(path);
+		var snd:Sound = null;
+
+		#if cpp
+		if (streaming)
+		{
+			try
+			{
+				var buffer:lime.media.AudioBuffer = lime.media.AudioBuffer.fromStreamFile(path);
+				if (buffer != null)
+					snd = Sound.fromAudioBuffer(buffer);
+			}
+			catch (e:Dynamic)
+			{
+				snd = null;
+			}
+		}
+		#end
+
+		if (snd == null)
+			snd = Sound.fromFile(path);
+
 		if (snd != null)
 			GfxMemory.recordAudioLoad(path, (Timer.stamp() - started) * 1000);
 		return snd;
@@ -491,29 +517,29 @@ class Paths
 		return sound(key + FlxG.random.int(min, max), library);
 	}
 
-	inline static public function music(key:String, ?library:String):Sound
+	inline static public function music(key:String, ?library:String, ?streaming:Bool = true):Sound
 	{
-		var file:Sound = returnSound('music', key, library);
+		var file:Sound = returnSound('music', key, library, streaming);
 		return file;
 	}
 
-	inline static public function voices(song:String):Any
+	inline static public function voices(song:String, ?streaming:Bool = true):Any
 	{
 		var songKey:String = '${formatToSongPath(song)}/Voices';
-		var voices = returnSound('songs', songKey);
+		var voices = returnSound('songs', songKey, null, streaming);
 		return voices;
 	}
 
-		inline static public function opponentvoices(song:String):Any
+		inline static public function opponentvoices(song:String, ?streaming:Bool = true):Any
 	{
 		var songKey:String = '${formatToSongPath(song)}/Voices-Opponent';
-		var voices = returnSound('songs', songKey);
+		var voices = returnSound('songs', songKey, null, streaming);
 		return voices;
 	}
-		inline static public function playervoices(song:String):Any
+		inline static public function playervoices(song:String, ?streaming:Bool = true):Any
 	{
 		var songKey:String = '${formatToSongPath(song)}/Voices-Player';
-		var voices = returnSound('songs', songKey);
+		var voices = returnSound('songs', songKey, null, streaming);
 		return voices;
 	}
 
@@ -535,7 +561,7 @@ class Paths
 	}
 	#end
 
-	static public function inst(song:String, ?songSuffix:String = null):Any
+	static public function inst(song:String, ?songSuffix:String = null, ?streaming:Bool = true):Any
 	{
 		var songKey:String = '${formatToSongPath(song)}/Inst';
 		#if ONLINE_ALLOWED
@@ -554,41 +580,61 @@ class Paths
 			var file:String = modFolders('songs/' + songKey + '.' + ext);
 			if (!FileSystem.exists(file)) continue;
 
+			// Editors pass streaming=false because their waveform renderer
+			// reads the decoded PCM straight off the AudioBuffer. Everything
+			// else streams OGG/MP3 and keeps only a small feeder ring resident.
+			var doStream:Bool = streaming && (ext == 'ogg' || ext == 'mp3');
+			var cacheKey:String = doStream ? 'stream:' + file : file;
+
+			if (currentTrackedSounds.exists(cacheKey))
+			{
+				trackLocalAsset(cacheKey);
+				return currentTrackedSounds.get(cacheKey);
+			}
+
 			var snd:Sound = null;
 			if (ext == 'mp3')
 			{
-				// lime has no native MP3 decoder on Windows/Android — decode to
-				// WAV via dr_mp3 and play from memory instead (cached per session).
-				#if cpp
-				var mp3Started:Float = Timer.stamp();
-				try
+				// Prefer the native MP3 stream (dr_mp3 on the feeder thread).
+				if (doStream)
 				{
-					var wav:haxe.io.Bytes = editors.content.DrMp3Tools.decodeFileToWav(file);
-					if (wav != null)
-					{
-						var buffer:lime.media.AudioBuffer = lime.media.AudioBuffer.fromBytes(lime.utils.Bytes.ofData(wav.getData()));
-						if (buffer != null) snd = Sound.fromAudioBuffer(buffer);
-						if (snd != null) GfxMemory.recordAudioLoad(file, (Timer.stamp() - mp3Started) * 1000);
-					}
+					try { snd = loadSoundFile(file, true); } catch (e:Dynamic) { snd = null; }
 				}
-				catch (e:Dynamic) snd = null;
-				#end
+
+				// Older path kept as a fallback for MP3s the streaming probe
+				// rejects: decode to WAV via dr_mp3 and play from memory.
+				if (snd == null)
+				{
+					#if cpp
+					var mp3Started:Float = Timer.stamp();
+					try
+					{
+						var wav:haxe.io.Bytes = editors.content.DrMp3Tools.decodeFileToWav(file);
+						if (wav != null)
+						{
+							var buffer:lime.media.AudioBuffer = lime.media.AudioBuffer.fromBytes(lime.utils.Bytes.ofData(wav.getData()));
+							if (buffer != null) snd = Sound.fromAudioBuffer(buffer);
+							if (snd != null) GfxMemory.recordAudioLoad(file, (Timer.stamp() - mp3Started) * 1000);
+						}
+					}
+					catch (e:Dynamic) snd = null;
+					#end
+				}
 			}
 			else
 			{
-				try { snd = loadSoundFile(file); } catch (e:Dynamic) { snd = null; }
+				try { snd = loadSoundFile(file, doStream); } catch (e:Dynamic) { snd = null; }
 			}
 
 			if (snd != null)
 			{
-				if (!currentTrackedSounds.exists(file))
-					currentTrackedSounds.set(file, snd);
-				trackLocalAsset(songKey);
-				return currentTrackedSounds.get(file);
+				currentTrackedSounds.set(cacheKey, snd);
+				trackLocalAsset(cacheKey);
+				return snd;
 			}
 		}
 		#end
-		return returnSound('songs', songKey);
+		return returnSound('songs', songKey, null, streaming);
 	}
 	/*
 	inline static public function image(key:String, ?library:String):FlxGraphic
@@ -1337,34 +1383,36 @@ class Paths
 		ramInstBytes.remove('${formatToSongPath(song)}/Inst');
 	}
 
-	public static function returnSound(path:String, key:String, ?library:String) {
+	public static function returnSound(path:String, key:String, ?library:String, ?streaming:Bool = false) {
 		#if MODS_ALLOWED
 		var file:String = modsSounds(path, key);
+		var fileKey:String = streaming ? 'stream:' + file : file;
 		if(FileSystem.exists(file)) {
-			if(!currentTrackedSounds.exists(file)) {
-				currentTrackedSounds.set(file, loadSoundFile(file));
+			if(!currentTrackedSounds.exists(fileKey)) {
+				currentTrackedSounds.set(fileKey, loadSoundFile(file, streaming));
 			}
-			trackLocalAsset(key);
-			return currentTrackedSounds.get(file);
+			trackLocalAsset(fileKey);
+			return currentTrackedSounds.get(fileKey);
 		}
 		#end
 		// I hate this so god damn much
 		var gottenPath:String = getPath('$path/$key.$SOUND_EXT', SOUND, library);
 		gottenPath = gottenPath.substring(gottenPath.indexOf(':') + 1, gottenPath.length);
 		// trace(gottenPath);
-		if(!currentTrackedSounds.exists(gottenPath))
+		var cacheKey:String = streaming ? 'stream:' + gottenPath : gottenPath;
+		if(!currentTrackedSounds.exists(cacheKey))
 		#if MODS_ALLOWED
-			currentTrackedSounds.set(gottenPath, loadSoundFile(gottenPath));
+			currentTrackedSounds.set(cacheKey, loadSoundFile(gottenPath, streaming));
 		#else
 		{
 			var folder:String = '';
 			if(path == 'songs') folder = 'songs:';
 
-			currentTrackedSounds.set(gottenPath, OpenFlAssets.getSound(folder + getPath('$path/$key.$SOUND_EXT', SOUND, library)));
+			currentTrackedSounds.set(cacheKey, OpenFlAssets.getSound(folder + getPath('$path/$key.$SOUND_EXT', SOUND, library)));
 		}
 		#end
-		trackLocalAsset(gottenPath);
-		return currentTrackedSounds.get(gottenPath);
+		trackLocalAsset(cacheKey);
+		return currentTrackedSounds.get(cacheKey);
 	}
 
 	#if MODS_ALLOWED

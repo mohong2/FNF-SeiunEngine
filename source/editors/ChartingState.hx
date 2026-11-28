@@ -2034,7 +2034,7 @@ openSubState(new Prompt('This action will clear current progress.\n\nProceed?', 
 			// vocals.stop();
 		}
 
-		var file:Dynamic = Paths.voices(Paths.formatToSongPath(PlayState.SONG.song));
+		var file:Dynamic = Paths.voices(Paths.formatToSongPath(PlayState.SONG.song), false);
 		vocals = new FlxSound();
 		opponentVocals = new FlxSound();
 		if (Std.isOfType(file, Sound) || OpenFlAssets.exists(file)) {
@@ -2068,7 +2068,7 @@ openSubState(new Prompt('This action will clear current progress.\n\nProceed?', 
 	}
 
 function generateSong() {
-    FlxG.sound.playMusic(Paths.inst(currentSongName), 0.6/*, false*/);
+    FlxG.sound.playMusic(Paths.inst(currentSongName, null, false), 0.6/*, false*/);
     if (instVolume != null) FlxG.sound.music.volume = instVolume.value;
     if (check_mute_inst != null && check_mute_inst.checked) FlxG.sound.music.volume = 0;
     if (opponentVolume != null) opponentVocals.volume = opponentVolume.value;
@@ -3140,7 +3140,7 @@ function generateSong() {
 
 		if (FlxG.save.data.chart_waveformInst) {
 			var sound:FlxSound = FlxG.sound.music;
-			if (sound._sound != null && sound._sound.__buffer != null) {
+			if (sound._sound != null && sound._sound.__buffer != null && sound._sound.__buffer.data != null) {
 				var bytes:Bytes = sound._sound.__buffer.data.toBytes();
 
 				wavData = waveformData(
@@ -3158,7 +3158,7 @@ function generateSong() {
 		if (FlxG.save.data.chart_waveformVoices) {
 			var sound:FlxSound = vocals;
 			var soundOpponent:FlxSound = opponentVocals;
-			if (sound._sound != null && sound._sound.__buffer != null) {
+			if (sound._sound != null && sound._sound.__buffer != null && sound._sound.__buffer.data != null) {
 				var bytes:Bytes = sound._sound.__buffer.data.toBytes();
 
 				wavData = waveformData(
@@ -3171,7 +3171,7 @@ function generateSong() {
 					chartSectionHeight(curSec)
 				);
 			}
-			if (soundOpponent._sound != null && soundOpponent._sound.__buffer != null) {
+			if (soundOpponent._sound != null && soundOpponent._sound.__buffer != null && soundOpponent._sound.__buffer.data != null) {
 				var bytes:Bytes = soundOpponent._sound.__buffer.data.toBytes();
 				wavData = waveformData(
 					soundOpponent._sound.__buffer,
