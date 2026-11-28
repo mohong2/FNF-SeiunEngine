@@ -199,6 +199,20 @@ class Main extends Sprite
 
 	public function new()
 	{
+		#if sys
+		// Text layout no longer hints glyph advances by default (TextEngine.shapeHinting):
+		// hinting costs ~15 us per newly shaped glyph on large fonts and only rounds advances
+		// the Cairo rasterizer then places at fractional positions anyway. The only visible
+		// effect is that a line is up to ~0.5% narrower, so this is the escape hatch for anyone
+		// who needs the old spacing back.
+		try
+		{
+			if (Sys.getEnv('SEIUN_TEXT_HINTING') == '1')
+				openfl.text._internal.TextEngine.shapeHinting = true;
+		}
+		catch (e:Dynamic) {}
+		#end
+
 		#if android
 		SUtil.doPermissionsShit();
 		// Floating keyboard button: show automatically if overlay permission is
