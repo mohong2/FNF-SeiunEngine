@@ -733,7 +733,17 @@ class FlxAnimationController implements IFlxDestroyable
 	{
 		if (_sprite.frames != null && frames > 0)
 		{
-			Frame = Frame % frames;
+			if (Frame < 0)
+			{
+				#if FLX_DEBUG
+				FlxG.log.warn('frameIndex must be a positive number, got $Frame, using 0 instead');
+				#end
+				Frame = 0;
+			}
+			else if (Frame >= frames)
+			{
+				Frame = Frame % frames;
+			}
 			_sprite.frame = _sprite.frames.frames[Frame];
 			frameIndex = Frame;
 			fireCallback();
