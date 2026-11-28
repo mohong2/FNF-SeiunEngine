@@ -1297,19 +1297,7 @@ class Main extends Sprite
 		try
 		{
 			for (stackItem in haxe.CallStack.exceptionStack(true))
-			{
-				switch (stackItem)
-				{
-					case haxe.CallStack.StackItem.FilePos(s, file, line, column):
-						stackLines += file + " (line " + line + ")\n";
-					default:
-						#if sys
-						Sys.println(stackItem);
-						#end
-						// keep non-FilePos entries too, otherwise the report stack may end up empty
-						stackLines += Std.string(stackItem) + "\n";
-				}
-			}
+				stackLines += formatStackItem(stackItem) + "\n";
 		}
 		catch (x:Dynamic) {}
 
@@ -1319,6 +1307,34 @@ class Main extends Sprite
 			try { stackLines = haxe.CallStack.toString(haxe.CallStack.callStack()); } catch (x:Dynamic) {}
 		}
 		return stackLines == null ? '' : stackLines;
+	}
+
+	/**
+	 * One report line per stack frame, function name first.
+	 *
+	 * hxcpp wraps every frame as FilePos(Method(class, method), file, line), and the old reporter
+	 * printed only "file (line N)" - the one part that identifies a null pointer (the C++ function
+	 * name) was thrown away. The line number is printed only when the build records it
+	 * (HXCPP_STACK_LINE); release builds skip that store and leave the field meaningless.
+	 */
+	static function formatStackItem(item:haxe.CallStack.StackItem, depth:Int = 0):String
+	{
+		if (item == null || depth > 8) return '';
+		switch (item)
+		{
+			case haxe.CallStack.StackItem.Method(classname, method):
+				return (classname == null || classname.length == 0 ? '' : classname + '.') + method + '()';
+			case haxe.CallStack.StackItem.FilePos(inner, file, line, column):
+				var head:String = formatStackItem(inner, depth + 1);
+				var where:String = '(' + file;
+				#if HXCPP_STACK_LINE
+				if (line > 0) where += ':' + line;
+				#end
+				where += ')';
+				return (head.length == 0 ? '' : head + '  ') + where;
+			default:
+				return Std.string(item);
+		}
 	}
 
 	/**

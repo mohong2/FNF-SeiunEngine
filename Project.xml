@@ -67,13 +67,17 @@
 
 	<define name="seiun_vulkan" if="windows || android" unless="SEIUN_NO_VULKAN" />
 
-	<!-- Safety checks: null pointers throw with Haxe file and line information.
+	<!-- Safety checks: a null pointer dereference throws a catchable Haxe exception, which
+	     CRASH_HANDLER turns into a crash report instead of a dead process, and the report's
+	     stack names the functions involved (hxcpp records one StackFrame per Haxe call).
+	     HXCPP_STACK_LINE is deliberately NOT set: it adds a line-number store to every Haxe
+	     call for Haxe file/line information, which the reports do not need - a null pointer
+	     is identified from the C++ function names in the stack.
 	     Symbol publication is a <postbuild> below, so one "lime build" is enough. -->
 	<define name="hxcpp_safe" unless="hxcpp_nosafe" />
 	<section if="hxcpp_safe">
 		<haxedef name="HXCPP_CHECK_POINTER" />
 		<haxedef name="HXCPP_STACK_TRACE" />
-		<haxedef name="HXCPP_STACK_LINE" />
 	</section>
 	<haxedef name="HXCPP_GC_CHECK_POINTER" if="hxcpp_gc_check" />
 
