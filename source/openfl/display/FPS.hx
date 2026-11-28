@@ -55,6 +55,8 @@ class FPS extends Sprite
 	var ramCeil:Float = 100;
 
 	var mode:Int = 0;
+	/** Lab: SEIUN_LAB_FPS_MODE=1 starts the overlay in the F3 debug view (screenshot/QA). */
+	static var labMode:Null<Int> = null;
 	var baseColor:Int;
 	var dataFont:Font;
 
@@ -212,6 +214,16 @@ class FPS extends Sprite
 		#if sys
 		if (labHidden == null) labHidden = (Sys.getEnv('SEIUN_LAB_NO_FPS') == '1');
 		if (labHidden) { visible = false; return; }
+		if (labMode == null)
+		{
+			labMode = 0;
+			try
+			{
+				var m:String = Sys.getEnv('SEIUN_LAB_FPS_MODE');
+				if (m != null && m.length > 0) mode = labMode = Std.parseInt(m);
+			}
+			catch (e:Dynamic) {}
+		}
 		#end
 		if (FlxG.keys.justPressed.F3)
 		{
