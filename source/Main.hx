@@ -317,11 +317,6 @@ class Main extends Sprite
 
 		addChild(new FlxGame(gameWidth, gameHeight, initialState, zoom, updateFramerate, drawFramerate, skipSplash, startFullscreen));
 
-		#if sys
-		// Lab probe: slow step/draw-record logging (SEIUN_LAB_FRAME_LOG=1).
-		try { if (Sys.getEnv('SEIUN_LAB_FRAME_LOG') == '1') backend.LabFrameLog.install(); } catch (e:Dynamic) {}
-		#end
-
 		// ── Renderer choice (0.2.2 has no in-game row; save / flags still work) ──
 		// A launch that asked for Vulkan and died before the backend proved itself left
 		// logs/vulkan-attempt.txt behind. recover() reads that as "that machine cannot

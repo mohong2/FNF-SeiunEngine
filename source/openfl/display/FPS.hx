@@ -81,7 +81,7 @@ class FPS extends Sprite
 	// Here every string is rasterised once into a tiny BitmapData, cached by
 	// (size, colour, letterSpacing, text), and blitted into ONE canvas bitmap per frame:
 	// one upload, one draw call, identical content and identical per-frame refresh.
-	static inline var TEXT_CACHE_MAX:Int = 4096;
+	static inline var TEXT_CACHE_MAX:Int = 1024;
 	var textCache:Map<String, CachedText> = new Map();
 	var textCacheN:Int = 0;
 	var canvas:BitmapData;
