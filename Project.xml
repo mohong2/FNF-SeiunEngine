@@ -67,6 +67,11 @@
 
 	<define name="seiun_vulkan" if="windows || android" unless="SEIUN_NO_VULKAN" />
 
+	<!-- 流式音频：Paths 默认把 Ogg/MP3 交给 Lime 的原生 feeder 解码，设置页的
+	     Audio > Streaming Audio 开关只在定义存在时出现。用 `-DSEIUN_NO_STREAMING`
+	     （或 lime build 时加 -DSEIUN_NO_STREAMING）编出纯全解码版本。 -->
+	<define name="seiun_streaming" unless="SEIUN_NO_STREAMING" />
+
 	<!-- Safety checks: a null pointer dereference throws a catchable Haxe exception, which
 	     CRASH_HANDLER turns into a crash report instead of a dead process, and the report's
 	     stack names the functions involved (hxcpp records one StackFrame per Haxe call).

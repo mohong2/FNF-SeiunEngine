@@ -708,6 +708,12 @@
 - 菜单音乐、Inst、Voices 默认流式；**图表编辑器仍全解码**（波形要读 `AudioBuffer.data`），两者用 `stream:` 前缀的缓存键共存；wav/m4a 与探测失败的 ogg/mp3 自动回退全解码；MP3 不再需要先转 WAV。
 - **修复歌曲位置抖动（打歌判定漂移 / 音频卡顿）。** `AL_SAMPLE_OFFSET` 相对的是「队列起点」，原实现却拿「正在播放的块」当基准，把已放完还没出队的块算了两遍：Mixer 每放完一块（8192 帧 ≈ 186 ms），`music.time` 就往前跳一块、feeder 出队后再掉回去。判定窗口跟着忽前忽后 → 频繁 miss；`PlayState.stepHit` 的 20 ms 漂移检查被误触发，每步调 `resyncVocals()` 把几条人声流重新 seek → 听起来就是卡顿。改为以队首块为基准，并给上报值加单调钳制（仅 seek / 循环回绕允许后退）。实测 bopeebo 24 s / 8594 次查询：修前 63 次 +205.8 ms 与 −185.8 ms 的来回跳，修后 0 次，残差 p99 = 17 ms（混音周期量化），feeder 全程没有让队列跑空。
 - 新增 `docs/audio-streaming.md`（结构、时间 / seek / 循环语义、逐字节对比、踩坑记录）。
+- **开关与编译宏**：设置 → Audio 新增「流式音频」（默认开，存进 `ClientPrefs.streamingAudio`），由 `Paths.wantsStreaming()` 统一判断；关掉后下一次加载歌曲 / 菜单音乐退回全解码，切换时同时丢弃已缓存的音乐副本。`Project.xml` 新增 `seiun_streaming` 定义，`-DSEIUN_NO_STREAMING` 编出纯全解码版本，设置页对应行随 `define` 隐藏。
+- **安卓静态检查**：确认 `Build.xml` 的 `LIME_OPENAL` 段在 Android 上同样编译两个新文件，Windows 专用调用都在 `#ifdef _WIN32` 内，`fopen` 在解包后的存储根目录可用，打不开时自动回退全解码；本机没有 NDK，未做 Android 编译与真机验证，APK 内直接流式仍需补 `AAssetManager` 分支。
+
+#### 清理
+
+- **删除文本基准探针**：删除 `source/states/TextBenchState.hx` 与它依赖的未跟踪文件 `.haxelib/openfl/git/src/openfl/_internal/RenderProf.hx`（连同 `.haxelib/openfl/probe-backup-20261128/`）。这套基准的另一半从来没进过 OpenFL 版本库，每次清环境后引擎都会缺类编不过；文本流水线的历史数据仍保留在 `docs/text-pipeline.md` 与 `docs/data/textprof-bopeebo-botplay.csv`，复现方式改为按文档搭临时状态。
 
 ---
 
@@ -1453,6 +1459,12 @@ The rewrite:
 - Menu music, Inst and Voices stream by default; **the chart editors still full-decode** (their waveform renderer reads `AudioBuffer.data`), and the two copies coexist under `stream:`-prefixed cache keys. wav/m4a, and any ogg/mp3 the probe rejects, fall back to a full decode; MP3 no longer needs converting to WAV first.
 - **Fixed the song-position jumps (drifting hit windows / audible stutter).** `AL_SAMPLE_OFFSET` is relative to the *start of the queue*, but the first implementation based it on the block that was playing, so every block that had finished but was not yet unqueued was counted twice: each time the mixer finished a block (8192 frames ≈ 186 ms), `music.time` jumped a block forward and fell back once the feeder unqueued it. Hit windows slid back and forth (misses), and the 20 ms drift check in `PlayState.stepHit` tripped, calling `resyncVocals()` every step to re-seek the Inst and both vocal streams — that is the stutter you could hear. The base is now the oldest queued block, and the reported value is clamped monotonic (only a seek or a loop wrap may go back). Measured on bopeebo, 24 s / 8594 queries: 63 round trips of +205.8 ms / −185.8 ms before, 0 after, residual p99 = 17 ms (the mixer period), and the feeder never let the queue run dry.
 - New `docs/audio-streaming.md` covers the design, time/seek/loop semantics, the byte-for-byte comparison and the two bugs that shaped it.
+- **Switch and build flag**: Audio settings gained **Streaming Audio** (on by default, stored in `ClientPrefs.streamingAudio`), gated in one place by `Paths.wantsStreaming()`. Turning it off makes the next song / menu track load full-decode and drops the cached music copies; `-DSEIUN_NO_STREAMING` builds the engine without the native path at all and hides the row.
+- **Android static check**: confirmed that the `LIME_OPENAL` section in `Build.xml` compiles both new files on Android, that every Windows-only call sits behind `#ifdef _WIN32`, that `fopen` reaches the extracted assets under the storage root, and that a failed probe falls back to a full decode. No NDK was installed on this machine, so Android was not built or run; streaming files that live only inside the APK still needs an `AAssetManager` branch.
+
+#### Cleanup
+
+- **Text bench probe removed**: `source/states/TextBenchState.hx` and its untracked OpenFL half `.haxelib/openfl/git/src/openfl/_internal/RenderProf.hx` (plus `.haxelib/openfl/probe-backup-20261128/`) are gone. That half was never in the OpenFL repository, so a clean environment could not compile the engine; the text-pipeline numbers stay in `docs/text-pipeline.md` and `docs/data/textprof-bopeebo-botplay.csv`, reproduced by building a temporary harness as the doc describes.
 
 ---
 

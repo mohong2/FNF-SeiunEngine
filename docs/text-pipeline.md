@@ -82,11 +82,8 @@ FlxText.draw() / updateHitbox()
 
 ### 7.1 怎么测（已经落到仓库里）
 
-- `source/states/TextBenchState.hx`：`SEIUN_TEXT_BENCH=1` 启动时直接进这个状态，用和 `PlayState` 完全相同的字体/字号/描边/字段宽/对齐建 5 组文本，逐帧改一次、同步 `calcFrame(true)` 触发重建，跑完打印 p50/p90 并退出。
-  - `SEIUN_TEXT_BENCH_FRAMES=<n>` 每组样本数（默认 100）；`SEIUN_TEXT_BENCH_TAG=<label>` 报告标签。
-  - `SEIUN_TEXT_BENCH_VERIFY=1`：每组样本都再强制整行重画一次，和正常路径逐像素比较，打印差异像素数与所在 x 区间。**改动文本流水线必须先跑这个，`diffPixels` 必须是 0。**
-  - `SEIUN_TEXT_BENCH_DETAIL=1`：打开 `RenderProf` 的逐 draw 计时，只为拿 `uploadMs`（`texImage2D` 本身）；它会给其它阶段带来额外开销，看阶段耗时时不要开。
 - `flixel/text/FlxTextProf.hx`：`FlxText` 重建的分项计时（`total/layout/alloc/clear/render/raster/stamp`），默认关闭，关闭时每个阶段只是一次静态读。
+- 2026-11-28：合成基准 `TextBenchState`（`SEIUN_TEXT_BENCH=1`）连同它依赖的 `openfl._internal.RenderProf` 探针一起删除——那份 OpenFL 文件没有进版本库，引擎为了它必须额外带一个未跟踪文件才编得过。7.2 的合成数据保留，复现按 §6 搭临时状态；真机成本仍走 §8 的 `SEIUN_TEXT_PROF=1`。
 
 ### 7.2 现在的构成（1280×720 游戏、1920 宽窗口、renderScale 1.5、p50 ms/次）
 
@@ -164,4 +161,4 @@ SeiunEngine.exe     :: 跑 ~30s 后结束进程，textprof.csv 就是全部样�
 
 1. **文本重建已经不是性能问题**：对局阶段 0.16% 墙钟，20 notes/s 的密集段也只有 ~1.4% 单核。用户报的「文本改了 → 整块重来」已经被前三轮的改动消化掉：描边从 `1+8*iterations` 次 TextField 绘制变成 1 次栅格 + 16 次 Cairo 合成；`set_text` 的内容守卫把每帧重写的空操作挡掉（计时器每秒被写 60 次，只有 1 次真的重建）。
 2. **成本结构决定了收益上限**：栅格 60% + 描边 21%。把描边整个干掉也只省 `0.16% × 21% ≈ 0.03%` 墙钟。所以 7.4 里剩的三项（描边换算法、premultiply clone、自动宽度位图）**按现在的收益比都不值得做**，除非目标变成 4K / 更高 `renderScale`（那时面积 ×2.25 再 ×4，描边才会重新变成大头）。
-3. **还值得投入的只有回归保护**：`SEIUN_TEXT_BENCH_VERIFY=1`（像素）和 `SEIUN_TEXT_PROF=1`（真机成本）都是可复算的，以后动 `FlxText` 先跑这两个，再谈优化。
+3. **还值得投入的只有回归保护**：改 `FlxText` 后按 §6 复测合成用例，再用 `SEIUN_TEXT_PROF=1` 抓一次真机成本；两者都可复算，先跑再谈优化。

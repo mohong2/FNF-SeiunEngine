@@ -256,6 +256,7 @@ class OptionsState extends MusicBeatState
 			'onChangeBackgroundDim'        => onChangeBackgroundDim,#end
 			'onChangeFPSCounter'           => onChangeFPSCounter,
 			'onChangePauseMusic'           => onChangePauseMusic,
+			'onChangeStreamingAudio'       => onChangeStreamingAudio,
 			'onChangeGameplayHitsoundVolume' => onChangeGameplayHitsoundVolume,
 			'onChangeHitsound'             => onChangeHitsound,
 			'onChangeMarvelousRatings'     => onChangeMarvelousRatings,
@@ -2144,6 +2145,23 @@ class OptionsState extends MusicBeatState
 	function onChangePauseMusic()
 	{
 		// nothing needed
+	}
+
+	function onChangeStreamingAudio()
+	{
+		// The setting is read at load time and Paths caches by path, so drop the music
+		// copies: the next song / menu track then really reloads in the new mode instead
+		// of reusing a Sound built (and cached) under the old one. SFX are never streamed,
+		// and anything still playing keeps its own reference until it stops.
+		var stale:Array<String> = [];
+		for (key in Paths.currentTrackedSounds.keys())
+			if (key != null && (key.indexOf('songs/') >= 0 || key.indexOf('music/') >= 0))
+				stale.push(key);
+		for (key in stale)
+		{
+			Paths.currentTrackedSounds.remove(key);
+			Paths.untrackLocalAsset(key);
+		}
 	}
 
 	// ── Gameplay ──

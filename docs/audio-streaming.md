@@ -68,6 +68,8 @@ blocks: 39  mismatched: 0  maxdiff: 0
 - 缓存键加 `stream:` 前缀，避免「编辑器加载过的全解码副本」被游戏内误用（反之亦然）。
 - MP3 不再必须先转 WAV：`Paths.inst` 对 mp3 直接建流，`DrMp3Tools.decodeFileToWav` 只作为探测失败时的兜底。
 - 音效（`Paths.sound`）保持全解码：它们短、频繁触发，流式只会增加线程和队列开销。
+- **设置开关**：设置 → Audio 新增 `Streaming Audio`（默认开），存进 `ClientPrefs.streamingAudio`，由 `Paths.wantsStreaming()` 统一把关。关掉后下一次加载歌曲 / 菜单音乐就退回全解码；`onChangeStreamingAudio` 会把已经缓存的歌曲 / 菜单音乐副本丢掉，否则切换后仍会复用旧模式下的缓存。图表编辑器的 `streaming = false` 不受影响——这个开关只能把「流式」降成「全解码」，不能反过来让需要 PCM 的代码拿到流。
+- **编译宏**：`Project.xml` 定义 `seiun_streaming`（默认存在）。用 `-DSEIUN_NO_STREAMING` 编出纯全解码版本：`Paths.wantsStreaming()` 编译期直接返回 false，设置页那一行也由 `OptionLoader` 的 `define` 门控隐藏。
 
 ## 6. 踩过的坑（重要）
 
@@ -88,7 +90,7 @@ blocks: 39  mismatched: 0  maxdiff: 0
 - 每条流一个解码线程 + 16 个 AL buffer；一首歌有 Inst、Voices（可能还有 Player/Opponent）时就是 2–4 条，仍然远小于整首 PCM。
 - 只支持 Ogg Vorbis 与 MP3；其他容器/编码回退到全解码（`AudioBuffer.fromStreamFile` 返回 null）。
 - 编辑器波形、以及任何需要 `buffer.data` 的地方必须显式要求全解码。
-- 本机只验证了 Windows/x64；Android 的 asset 路径走 `lime::fopen`（非 stdio）时，`StreamOpenFile` 需要按平台补 `AAsset` 分支。
+- 本机只验证了 Windows/x64。**Android 只做了静态检查**（本机没装 NDK，没有编 Android，也没有真机跑）：`project/Build.xml` 的 `LIME_OPENAL` 段在 Android 上同样开启（`LIME_OPENALSOFT` 的条件是 `windows || linux || mac || android`），两个新编译单元会进 `liblime.so`；`_wfopen` / `MultiByteToWideChar` 全在 `#ifdef _WIN32` 内，Android 只走 `::fopen`；`std::thread` / `<atomic>` / `<mutex>` 是 NDK libc++ 的标准部分；引擎在 Android 上先 `Sys.setCwd()` 到解包根目录再加载，`assets/...` 与 `mods/...` 都是真实文件，`fopen` 能打开。资源只在 APK 内（未解包）时探测会失败并自动回退全解码，不会崩。**仍需真机验证**：APK-only 资源、feeder 线程在省电 / 大小核调度下的唤醒、以及含中文或空格的路径。要做 APK 内流式，得在 `StreamOpenFile` 里补 `AAssetManager` 分支。
 
 ## 8. 关键文件
 
@@ -108,5 +110,20 @@ OpenFL（`.haxelib/openfl/git`）：
 
 引擎：
 
-- `source/Paths.hx` — 流式策略与缓存键
+- `source/Paths.hx` — 流式策略、缓存键、`wantsStreaming()` 开关
+- `source/ClientPrefs.hx` — `streamingAudio` 设置
+- `assets/preload/data/options/audio.json` — Audio 页的开关行
+- `source/options/OptionLoader.hx` — `define` 门控（`SEIUN_NO_STREAMING` 时隐藏）
+- `source/options/OptionsState.hx` — 切换时丢弃缓存的歌曲 / 菜单音乐
+- `Project.xml` — `seiun_streaming` 定义
 - `source/editors/ChartingState.hx`、`source/editors/NewChartingState.hx` — 编辑器强制全解码
+
+## 9. 构建开关速查
+
+| 构建 / 设置 | 结果 |
+|---|---|
+| 默认构建 | `seiun_streaming` 存在；菜单音乐、Inst、Voices 流式；设置页显示 `Audio > Streaming Audio`（默认开） |
+| `lime build windows -64 -release -DSEIUN_NO_STREAMING` | `Paths.wantsStreaming()` 编译期恒为 `false`；设置行隐藏；全部走全解码 |
+| 运行时把 `Streaming Audio` 关掉 | 不重编；下一次加载歌曲 / 菜单音乐时退回全解码，切换瞬间清掉已缓存的音乐副本 |
+| 图表编辑器 | 始终全解码（不读设置） |
+| WAV / M4A / 探测失败的 Ogg/MP3 | 始终全解码（运行时自动回退） |

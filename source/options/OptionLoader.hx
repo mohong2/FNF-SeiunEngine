@@ -795,6 +795,11 @@ class OptionLoader
 		#if !CHECK_FOR_UPDATES
 		if (def.define == 'CHECK_FOR_UPDATES') return null;
 		#end
+		// Same idea for the streaming-audio row: a SEIUN_NO_STREAMING build has no native
+		// stream path, so the checkbox must not be offered at all.
+		#if !seiun_streaming
+		if (def.define == 'seiun_streaming') return null;
+		#end
 
 		var displayName = Language.get(def.nameKey, def.defaultName);
 		var description = Language.get(def.descKey, def.defaultDesc);

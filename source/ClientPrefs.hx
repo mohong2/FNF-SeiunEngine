@@ -122,6 +122,16 @@ import sys.io.Process;
 	public var hitsound:String = "osu!mania";
 	public var trackAlpha:Float = 0;
 	public var pauseMusic:String = 'Tea Time';
+	/**
+	 * Stream Ogg Vorbis / MP3 music from disk instead of decoding the whole file up front.
+	 *
+	 * Read by Paths at load time: menu music and a song's Inst / Voices keep a ~512 KiB
+	 * native decode ring resident instead of the full PCM. WAV / M4A, every sound effect
+	 * and the chart editors' waveform copies still use the full decode, so this only ever
+	 * trades memory, never sound or timing. Off = every track is fully decoded (the old
+	 * behaviour). The row is hidden when the build defines SEIUN_NO_STREAMING.
+	 */
+	public var streamingAudio:Bool = true;
 	public var checkForUpdates:Bool = true;
 	public var checkForPrereleases:Bool = false;
 	public var comboStacking = false;
@@ -430,6 +440,7 @@ class ClientPrefs {
 	public static var hitsound(get, never):String;
 	public static var trackAlpha(get, never):Float;
 	public static var pauseMusic(get, never):String;
+	public static var streamingAudio(get, never):Bool;
 	public static var checkForUpdates(get, never):Bool;
 	public static var checkForPrereleases(get, never):Bool;
 	public static var comboStacking(get, never):Bool;
@@ -552,6 +563,7 @@ class ClientPrefs {
 	static inline function get_hitsound() return data.hitsound;
 	static inline function get_trackAlpha() return data.trackAlpha;
 	static inline function get_pauseMusic() return data.pauseMusic;
+	static inline function get_streamingAudio() return data.streamingAudio;
 	static inline function get_checkForUpdates() return data.checkForUpdates;
 	static inline function get_checkForPrereleases() return data.checkForPrereleases;
 	static inline function get_comboStacking() return data.comboStacking;

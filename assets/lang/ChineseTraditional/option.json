@@ -49,6 +49,8 @@
     "option.newFPPreview.desc": "如果啟用，計數器中會顯示新的FP算法結果。",
     "option.showFPS.desc": "如果不選中，將隱藏FPS計數器。",
     "option.pauseMusic.desc": "您更喜歡哪首歌曲用於暫停介面？",
+    "option.streamingAudio": "串流音訊",
+    "option.streamingAudio.desc": "邊播放邊解碼 Ogg Vorbis / MP3，而不是進遊戲前把整首解碼進記憶體。\n能省下大量記憶體（例如 2 MB 的歌曲不再常駐約 20 MB 的 PCM），音質、判定和拖動進度都不變。\n下次載入歌曲或選單音樂時生效；WAV / M4A 始終整段解碼。",
     "option.checkForUpdates.desc": "在正式版中，打開此選項可以在啟動遊戲時檢查更新。",
     "option.checkForPrereleases.desc": "檢查更新時也包含預發行/預覽版本。",
     "option.comboStacking.desc": "如果不勾選，評分和連擊不會疊加，這樣可以節省系統記憶體且更易閱讀。",

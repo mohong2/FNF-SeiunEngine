@@ -45,5 +45,16 @@
 			"Tea Time"
 		],
 		"onChange": "onChangePauseMusic"
+	},
+	{
+		"nameKey": "option.streamingAudio",
+		"defaultName": "Streaming Audio",
+		"descKey": "option.streamingAudio.desc",
+		"defaultDesc": "Decode Ogg Vorbis and MP3 music while it plays instead of decoding the whole track up front.\nSaves a lot of memory (a 2 MB song no longer keeps ~20 MB of PCM resident); sound, timing and seeking are unchanged.\nApplies the next time a song or menu track is loaded. WAV / M4A always use the full decode.",
+		"variable": "streamingAudio",
+		"type": "bool",
+		"defaultValue": true,
+		"onChange": "onChangeStreamingAudio",
+		"define": "seiun_streaming"
 	}
 ]

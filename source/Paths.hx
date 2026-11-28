@@ -89,6 +89,24 @@ class Paths
 	}
 
 	/**
+	 * Whether a load that asked for streaming may actually stream.
+	 *
+	 * Two gates, both cheap: the player's Audio option (`streamingAudio`) and the
+	 * compile-time `seiun_streaming` define from project.xml. Building with
+	 * `-DSEIUN_NO_STREAMING` produces a full-decode-only binary (the Audio row is hidden
+	 * too). Call sites that need PCM pass `false` and keep getting it: this setting can
+	 * never turn an editor's waveform buffer into a stream.
+	 */
+	public static inline function wantsStreaming(requested:Bool):Bool
+	{
+		#if seiun_streaming
+		return requested && ClientPrefs.data != null && ClientPrefs.data.streamingAudio;
+		#else
+		return false;
+		#end
+	}
+
+	/**
 	 * Loads a sound from disk. When `streaming` is true, Ogg Vorbis and MP3
 	 * files become an AudioBuffer that owns no PCM: Lime decodes them on a
 	 * native feeder thread while the song plays. Anything the probe rejects
@@ -100,7 +118,7 @@ class Paths
 		var snd:Sound = null;
 
 		#if cpp
-		if (streaming)
+		if (wantsStreaming(streaming))
 		{
 			try
 			{
@@ -582,8 +600,9 @@ class Paths
 
 			// Editors pass streaming=false because their waveform renderer
 			// reads the decoded PCM straight off the AudioBuffer. Everything
-			// else streams OGG/MP3 and keeps only a small feeder ring resident.
-			var doStream:Bool = streaming && (ext == 'ogg' || ext == 'mp3');
+			// else streams OGG/MP3 and keeps only a small feeder ring resident,
+			// unless the player turned the Audio > Streaming Audio option off.
+			var doStream:Bool = wantsStreaming(streaming) && (ext == 'ogg' || ext == 'mp3');
 			var cacheKey:String = doStream ? 'stream:' + file : file;
 
 			if (currentTrackedSounds.exists(cacheKey))
@@ -1384,12 +1403,15 @@ class Paths
 	}
 
 	public static function returnSound(path:String, key:String, ?library:String, ?streaming:Bool = false) {
+		// Resolve the setting exactly once: the cache key and the load must agree, or a
+		// full-decode Sound could end up cached under (and reused through) a "stream:" key.
+		var doStream:Bool = wantsStreaming(streaming);
 		#if MODS_ALLOWED
 		var file:String = modsSounds(path, key);
-		var fileKey:String = streaming ? 'stream:' + file : file;
+		var fileKey:String = doStream ? 'stream:' + file : file;
 		if(FileSystem.exists(file)) {
 			if(!currentTrackedSounds.exists(fileKey)) {
-				currentTrackedSounds.set(fileKey, loadSoundFile(file, streaming));
+				currentTrackedSounds.set(fileKey, loadSoundFile(file, doStream));
 			}
 			trackLocalAsset(fileKey);
 			return currentTrackedSounds.get(fileKey);
@@ -1399,10 +1421,10 @@ class Paths
 		var gottenPath:String = getPath('$path/$key.$SOUND_EXT', SOUND, library);
 		gottenPath = gottenPath.substring(gottenPath.indexOf(':') + 1, gottenPath.length);
 		// trace(gottenPath);
-		var cacheKey:String = streaming ? 'stream:' + gottenPath : gottenPath;
+		var cacheKey:String = doStream ? 'stream:' + gottenPath : gottenPath;
 		if(!currentTrackedSounds.exists(cacheKey))
 		#if MODS_ALLOWED
-			currentTrackedSounds.set(cacheKey, loadSoundFile(gottenPath, streaming));
+			currentTrackedSounds.set(cacheKey, loadSoundFile(gottenPath, doStream));
 		#else
 		{
 			var folder:String = '';
